@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data & cache
+cache/
+uploads/
+logs/
+*.tif
+*.tiff
+*.geotiff
+*.cog
+*.shp
+*.shx
+*.dbf
+*.prj
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# SQLite / local DBs
+*.db
+earthvision.db
+
