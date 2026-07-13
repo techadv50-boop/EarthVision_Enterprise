@@ -75,6 +75,14 @@ class TerrainService:
             return self._product_profile(dem, bounds, request)
         if product == "line_of_sight":
             return self._product_los(dem, bounds, request)
+        if product == "flow_direction":
+            return self._product_flow_direction(dem, bounds)
+        if product == "flow_accumulation":
+            return self._product_flow_accumulation(dem, bounds)
+        if product == "ruggedness":
+            return self._product_ruggedness(dem, bounds)
+        if product == "cut_fill":
+            return self._product_cut_fill(dem, bounds)
         raise ValidationError(f"Unsupported terrain product: {product}")
 
     def _resolve_bounds(
@@ -177,6 +185,19 @@ class TerrainService:
             r = np.clip(0.15 + 0.85 * t, 0, 1)
             g = np.clip(0.45 + 0.4 * (1 - abs(t - 0.45) * 2), 0, 1)
             b = np.clip(0.35 + 0.5 * (1 - t), 0, 1)
+        elif name == "flow":
+            r = 0.05 + 0.15 * t
+            g = 0.25 + 0.55 * t
+            b = 0.55 + 0.45 * t
+        elif name == "tri":
+            r = np.clip(0.3 + 0.7 * t, 0, 1)
+            g = np.clip(0.55 - 0.2 * t, 0, 1)
+            b = np.clip(0.2 + 0.1 * t, 0, 1)
+        elif name == "cutfill":
+            # blue = cut, red = fill
+            r = np.where(t < 0.5, 0.15 + 0.3 * (t / 0.5), 0.55 + 0.45 * ((t - 0.5) / 0.5))
+            g = np.where(t < 0.5, 0.35 + 0.4 * (t / 0.5), 0.75 - 0.55 * ((t - 0.5) / 0.5))
+            b = np.where(t < 0.5, 0.85 - 0.2 * (t / 0.5), 0.35 - 0.25 * ((t - 0.5) / 0.5))
         else:
             r = g = b = t
         return np.clip(r, 0, 1), np.clip(g, 0, 1), np.clip(b, 0, 1)
@@ -421,6 +442,114 @@ class TerrainService:
         col = int(np.clip(round(col), 0, w - 1))
         row = int(np.clip(round(row), 0, h - 1))
         return float(dem[row, col])
+
+    def _flow_accumulation(self, dem: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return (flow_direction, flow_accumulation)."""
+        h, w = dem.shape
+        dirs = self._flow_direction(dem)
+        acc = np.ones((h, w), dtype=np.float64)
+        order = np.argsort(dem.ravel())[::-1]
+        offsets = [(0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1)]
+        for idx in order:
+            i, j = divmod(int(idx), w)
+            d = int(dirs[i, j])
+            if d < 0:
+                continue
+            di, dj = offsets[d]
+            ni, nj = i + di, j + dj
+            if 0 <= ni < h and 0 <= nj < w:
+                acc[ni, nj] += acc[i, j]
+        return dirs, acc
+
+    def _product_flow_direction(
+        self, dem: np.ndarray, bounds: list[float]
+    ) -> TerrainComputeResponse:
+        dirs = self._flow_direction(dem).astype(np.float64)
+        # Map -1 → nan for transparency at pits
+        vis = np.where(dirs < 0, np.nan, dirs)
+        return self._product_raster(
+            vis,
+            bounds,
+            "flow_direction",
+            "Flow direction (D8)",
+            "code 0–7",
+            "aspect",
+            "D8: E,SE,S,SW,W,NW,N,NE",
+            0,
+            7,
+        )
+
+    def _product_flow_accumulation(
+        self, dem: np.ndarray, bounds: list[float]
+    ) -> TerrainComputeResponse:
+        _dirs, acc = self._flow_accumulation(dem)
+        log_acc = np.log1p(acc)
+        return self._product_raster(
+            log_acc,
+            bounds,
+            "flow_accumulation",
+            "Flow accumulation",
+            "log(cells+1)",
+            "flow",
+            "D8 flow accumulation (log1p)",
+            None,
+            None,
+        )
+
+    def _product_ruggedness(
+        self, dem: np.ndarray, bounds: list[float]
+    ) -> TerrainComputeResponse:
+        """Terrain Ruggedness Index (Riley et al.) — mean absolute elevation difference vs 8 neighbours."""
+        tri = np.zeros_like(dem)
+        offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        for di, dj in offsets:
+            shifted = np.roll(np.roll(dem, di, axis=0), dj, axis=1)
+            tri += np.abs(dem - shifted)
+        tri /= 8.0
+        # Zero out edges (roll wraps)
+        tri[0, :] = tri[-1, :] = tri[:, 0] = tri[:, -1] = np.nan
+        return self._product_raster(
+            tri,
+            bounds,
+            "ruggedness",
+            "Ruggedness (TRI)",
+            "m",
+            "tri",
+            "TRI = mean |z − z_neighbour| (8-neighbour)",
+            None,
+            None,
+        )
+
+    def _product_cut_fill(
+        self, dem: np.ndarray, bounds: list[float]
+    ) -> TerrainComputeResponse:
+        """Simple cut/fill vs planar reference surface through DEM mean elevation."""
+        ref = float(np.nanmean(dem))
+        # Convention: + fill (dem below ref), − cut (dem above ref)
+        cut_fill = ref - dem
+        lo = float(np.nanpercentile(cut_fill, 2))
+        hi = float(np.nanpercentile(cut_fill, 98))
+        span = max(abs(lo), abs(hi), 1.0)
+        png = self._rgba(cut_fill, "cutfill", -span, span)
+        cut_vol = float(np.nansum(np.maximum(-cut_fill, 0)))
+        fill_vol = float(np.nansum(np.maximum(cut_fill, 0)))
+        dx, dy = self._pixel_size_m(bounds, dem.shape[0])
+        cell = dx * dy
+        return TerrainComputeResponse(
+            product="cut_fill",
+            bounds=bounds,
+            overlay_base64=base64.b64encode(png).decode("ascii"),
+            legend=self._legend("Cut / Fill", "m vs mean", -span, span, "cutfill"),
+            dem_stats={
+                "reference_m": ref,
+                "cut_m_sum": cut_vol,
+                "fill_m_sum": fill_vol,
+                "cut_m3_approx": cut_vol * cell,
+                "fill_m3_approx": fill_vol * cell,
+            },
+            formula=f"Δz = mean(DEM) − DEM  (ref={ref:.1f} m)",
+            message=f"Cut≈{cut_vol * cell:.0f} m³ · Fill≈{fill_vol * cell:.0f} m³ (approx)",
+        )
 
     def _product_viewshed(
         self, dem: np.ndarray, bounds: list[float], request: TerrainComputeRequest

@@ -77,6 +77,30 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "cmap": "thermal",
         "ref": "Planck / Landsat Collection 2 TIRS",
     },
+    "EVI": {
+        "formula": "2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*GREEN + 1)",
+        "label": "EVI",
+        "unit": "index (−1…1)",
+        "range": (-1.0, 1.0),
+        "cmap": "rdylgn",
+        "ref": "Huete et al. 2002 / MODIS EVI",
+    },
+    "NDMI": {
+        "formula": "(NIR - SWIR) / (NIR + SWIR)",
+        "label": "NDMI",
+        "unit": "index (−1…1)",
+        "range": (-1.0, 1.0),
+        "cmap": "blues",
+        "ref": "Gao 1996 / moisture index",
+    },
+    "NBR": {
+        "formula": "(NIR - SWIR2) / (NIR + SWIR2)",
+        "label": "NBR",
+        "unit": "index (−1…1)",
+        "range": (-1.0, 1.0),
+        "cmap": "rdbu",
+        "ref": "Key & Benson / burn ratio",
+    },
 }
 
 
@@ -129,6 +153,31 @@ class AnalyticsService:
         num = (s + r) - (n + g)
         den = (s + r) + (n + g)
         return np.clip(self._safe_divide(num, den), -1.0, 1.0)
+
+    def compute_evi(
+        self, red: np.ndarray, nir: np.ndarray, green: np.ndarray
+    ) -> np.ndarray:
+        """EVI = 2.5 * (NIR − RED) / (NIR + 6*RED − 7.5*GREEN + 1)."""
+        r, n, g = (
+            red.astype(np.float64),
+            nir.astype(np.float64),
+            green.astype(np.float64),
+        )
+        return np.clip(
+            2.5 * self._safe_divide(n - r, n + 6.0 * r - 7.5 * g + 1.0),
+            -1.0,
+            1.0,
+        )
+
+    def compute_ndmi(self, nir: np.ndarray, swir: np.ndarray) -> np.ndarray:
+        """NDMI = (NIR − SWIR) / (NIR + SWIR)."""
+        n, s = nir.astype(np.float64), swir.astype(np.float64)
+        return np.clip(self._safe_divide(n - s, n + s), -1.0, 1.0)
+
+    def compute_nbr(self, nir: np.ndarray, swir2: np.ndarray) -> np.ndarray:
+        """NBR = (NIR − SWIR2) / (NIR + SWIR2) — burn ratio."""
+        n, s = nir.astype(np.float64), swir2.astype(np.float64)
+        return np.clip(self._safe_divide(n - s, n + s), -1.0, 1.0)
 
     def compute_lst(
         self,
@@ -197,6 +246,13 @@ class AnalyticsService:
             0,
             1,
         )
+        # SWIR2-like (longer SWIR) for NBR / burn mapping
+        swir2 = np.clip(
+            0.14 + 0.18 * (1 - veg) + 0.35 * urban + 0.38 * soil - 0.2 * water
+            + rng.normal(0, 0.015, (size, size)),
+            0,
+            1,
+        )
         # Thermal as radiance-ish DN range used by compute_lst
         thermal = np.clip(
             28000 + 2500 * urban - 1800 * water - 900 * veg + 800 * soil
@@ -210,6 +266,7 @@ class AnalyticsService:
             "red": red,
             "nir": nir,
             "swir": swir,
+            "swir2": swir2,
             "thermal": thermal,
         }
 
@@ -400,6 +457,8 @@ class AnalyticsService:
         def band(name: str) -> np.ndarray:
             arr = bands.get(name)
             if arr is None or not np.isfinite(arr).any():
+                if name == "swir2":
+                    return synth.get("swir2", synth["swir"])
                 key = "swir" if name == "swir" else name
                 return synth[key if key in synth else "red"]
             if arr.shape != (size, size):
@@ -417,6 +476,12 @@ class AnalyticsService:
             return self.compute_savi(band("red"), band("nir"), L)
         if index == "BSI":
             return self.compute_bsi(band("red"), band("green"), band("nir"), band("swir"))
+        if index == "EVI":
+            return self.compute_evi(band("red"), band("nir"), band("green"))
+        if index == "NDMI":
+            return self.compute_ndmi(band("nir"), band("swir"))
+        if index == "NBR":
+            return self.compute_nbr(band("nir"), band("swir2"))
         if index == "LST":
             thermal = bands.get("thermal")
             if thermal is not None and np.isfinite(thermal).any():
@@ -475,6 +540,7 @@ class AnalyticsService:
                 "nir": self._load_band(request.nir_band_path, synth["nir"]),
                 "green": self._load_band(request.green_band_path, synth["green"]),
                 "swir": self._load_band(request.swir_band_path, synth["swir"]),
+                "swir2": synth["swir2"],
                 "thermal": self._load_band(request.thermal_band_path, synth["thermal"]),
             }
             result = self._index_from_bands(
@@ -838,6 +904,11 @@ class AnalyticsService:
                         py, px
                     ]
                 ),
+                "EVI": float(
+                    self.compute_evi(bands["red"], bands["nir"], bands["green"])[py, px]
+                ),
+                "NDMI": float(self.compute_ndmi(bands["nir"], bands["swir"])[py, px]),
+                "NBR": float(self.compute_nbr(bands["nir"], bands["swir2"])[py, px]),
                 "LST": float(self.compute_lst(bands["thermal"])[py, px]),
             },
         )

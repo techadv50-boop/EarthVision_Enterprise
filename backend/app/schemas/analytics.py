@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-IndexName = Literal["NDVI", "NDWI", "NDBI", "SAVI", "BSI", "LST"]
+IndexName = Literal["NDVI", "NDWI", "NDBI", "SAVI", "BSI", "LST", "EVI", "NDMI", "NBR"]
 
 
 class ColormapStop(BaseModel):

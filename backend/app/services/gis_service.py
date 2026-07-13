@@ -17,6 +17,8 @@ from app.schemas.gis import (
     GeocodeResult,
     MeasurementRequest,
     MeasurementResponse,
+    SpatialOpRequest,
+    SpatialOpResponse,
 )
 
 
@@ -349,3 +351,268 @@ class GISService:
             area_sq_meters=area,
             bounds=[minx, miny, maxx, maxy],
         ).model_dump()
+
+    # ------------------------------------------------------------------
+    # Spatial operations
+    # ------------------------------------------------------------------
+
+    def spatial_op(self, request: SpatialOpRequest) -> SpatialOpResponse:
+        geoms, props = self._parse_geometries(request.geometries)
+        if not geoms:
+            raise ValidationError("No valid geometries provided")
+        op = request.operation
+        dist = request.distance_meters
+
+        if op == "intersect":
+            result_geoms, result_props = self._op_intersect(geoms, props)
+        elif op == "union":
+            result_geoms, result_props = self._op_union(geoms, props)
+        elif op == "clip":
+            result_geoms, result_props = self._op_clip(geoms, props)
+        elif op == "dissolve":
+            result_geoms, result_props = self._op_dissolve(geoms, props)
+        elif op == "merge":
+            result_geoms, result_props = self._op_merge(geoms, props)
+        elif op == "convex_hull":
+            result_geoms, result_props = self._op_convex_hull(geoms, props)
+        elif op in ("voronoi", "thiessen"):
+            result_geoms, result_props = self._op_voronoi(geoms, props)
+        elif op == "nearest":
+            result_geoms, result_props = self._op_nearest(geoms, props, dist)
+        elif op in ("density", "hotspot"):
+            result_geoms, result_props = self._op_density(geoms, props, dist, hotspot=op == "hotspot")
+        else:
+            raise ValidationError(f"Unsupported spatial operation: {op}")
+
+        features = []
+        for i, (g, p) in enumerate(zip(result_geoms, result_props, strict=False)):
+            if g is None or g.is_empty:
+                continue
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {**(p or {}), "operation": op, "index": i},
+                    "geometry": mapping(g),
+                }
+            )
+        fc = {"type": "FeatureCollection", "features": features}
+        bounds = None
+        if features:
+            from shapely.geometry import shape as shp_shape
+            from shapely.ops import unary_union
+
+            try:
+                combined = unary_union([shp_shape(f["geometry"]) for f in features])
+                minx, miny, maxx, maxy = combined.bounds
+                bounds = [minx, miny, maxx, maxy]
+            except Exception:  # noqa: BLE001
+                bounds = None
+        return SpatialOpResponse(
+            operation=op,
+            geojson=fc,
+            count=len(features),
+            message=f"{op}: {len(features)} feature(s)",
+            bounds=bounds,
+        )
+
+    def _parse_geometries(
+        self, items: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        from shapely.geometry import shape as shp_shape
+
+        geoms: list[Any] = []
+        props: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            # Allow passing a FeatureCollection as a single list element
+            if item.get("type") == "FeatureCollection":
+                for feat in item.get("features") or []:
+                    try:
+                        g = shp_shape(feat.get("geometry") or feat)
+                        geoms.append(g)
+                        props.append(dict(feat.get("properties") or {}))
+                    except Exception:  # noqa: BLE001
+                        continue
+                continue
+            try:
+                if item.get("type") == "Feature":
+                    g = shp_shape(item["geometry"])
+                    geoms.append(g)
+                    props.append(dict(item.get("properties") or {}))
+                elif "coordinates" in item:
+                    g = shp_shape(item)
+                    geoms.append(g)
+                    props.append({})
+                elif "geometry" in item:
+                    g = shp_shape(item["geometry"])
+                    geoms.append(g)
+                    props.append(dict(item.get("properties") or {}))
+            except Exception:  # noqa: BLE001
+                continue
+        return geoms, props
+
+    def _op_intersect(
+        self, geoms: list[Any], props: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        if len(geoms) < 2:
+            raise ValidationError("intersect requires at least 2 geometries")
+        result = geoms[0]
+        for g in geoms[1:]:
+            result = result.intersection(g)
+        return [result], [{"name": "intersection"}]
+
+    def _op_union(
+        self, geoms: list[Any], props: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        from shapely.ops import unary_union
+
+        return [unary_union(geoms)], [{"name": "union"}]
+
+    def _op_clip(
+        self, geoms: list[Any], props: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        """Clip geometries[1:] by geometries[0] (clip mask)."""
+        if len(geoms) < 2:
+            raise ValidationError("clip requires mask + at least one target geometry")
+        mask = geoms[0]
+        out_g, out_p = [], []
+        for g, p in zip(geoms[1:], props[1:], strict=False):
+            clipped = g.intersection(mask)
+            if not clipped.is_empty:
+                out_g.append(clipped)
+                out_p.append(p)
+        return out_g, out_p
+
+    def _op_dissolve(
+        self, geoms: list[Any], props: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        from shapely.ops import unary_union
+
+        return [unary_union(geoms)], [{"name": "dissolved", "n_input": len(geoms)}]
+
+    def _op_merge(
+        self, geoms: list[Any], props: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        """Merge into a GeometryCollection / keep as Multi* when possible."""
+        from shapely.geometry import GeometryCollection
+        from shapely.ops import unary_union
+
+        types = {g.geom_type for g in geoms}
+        if len(types) == 1:
+            return [unary_union(geoms)], [{"name": "merged", "n_input": len(geoms)}]
+        return [GeometryCollection(geoms)], [{"name": "merged", "n_input": len(geoms)}]
+
+    def _op_convex_hull(
+        self, geoms: list[Any], props: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        from shapely.ops import unary_union
+
+        hull = unary_union(geoms).convex_hull
+        return [hull], [{"name": "convex_hull"}]
+
+    def _op_voronoi(
+        self, geoms: list[Any], props: list[dict[str, Any]]
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        from shapely.geometry import MultiPoint, Point
+        from shapely.ops import unary_union, voronoi_diagram
+
+        points = []
+        for g in geoms:
+            if g.geom_type == "Point":
+                points.append(g)
+            elif g.geom_type == "MultiPoint":
+                points.extend(list(g.geoms))
+            else:
+                points.append(Point(g.centroid.x, g.centroid.y))
+        if len(points) < 2:
+            raise ValidationError("voronoi/thiessen requires at least 2 points")
+        mp = MultiPoint(points)
+        envelope = unary_union(geoms).envelope.buffer(
+            max(unary_union(geoms).bounds[2] - unary_union(geoms).bounds[0], 0.01) * 0.1
+        )
+        diagram = voronoi_diagram(mp, envelope=envelope)
+        cells = list(diagram.geoms) if hasattr(diagram, "geoms") else [diagram]
+        out_g, out_p = [], []
+        for i, cell in enumerate(cells):
+            out_g.append(cell)
+            out_p.append({"name": f"cell_{i}", "site_index": i})
+        return out_g, out_p
+
+    def _op_nearest(
+        self,
+        geoms: list[Any],
+        props: list[dict[str, Any]],
+        distance_meters: float | None,
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        """Nearest-neighbour links from each geometry to the closest other."""
+        from shapely.geometry import LineString
+
+        if len(geoms) < 2:
+            raise ValidationError("nearest requires at least 2 geometries")
+        to_m = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
+        projected = [transform(to_m.transform, g) for g in geoms]
+        out_g, out_p = [], []
+        max_d = distance_meters if distance_meters and distance_meters > 0 else None
+        for i, a in enumerate(projected):
+            best_j, best_d = None, float("inf")
+            for j, b in enumerate(projected):
+                if i == j:
+                    continue
+                d = a.distance(b)
+                if d < best_d:
+                    best_d, best_j = d, j
+            if best_j is None:
+                continue
+            if max_d is not None and best_d > max_d:
+                continue
+            c0 = geoms[i].centroid
+            c1 = geoms[best_j].centroid
+            out_g.append(LineString([(c0.x, c0.y), (c1.x, c1.y)]))
+            out_p.append(
+                {
+                    "from_index": i,
+                    "to_index": best_j,
+                    "distance_meters": float(best_d),
+                }
+            )
+        return out_g, out_p
+
+    def _op_density(
+        self,
+        geoms: list[Any],
+        props: list[dict[str, Any]],
+        distance_meters: float | None,
+        *,
+        hotspot: bool = False,
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        """Simple point-density: count neighbours within radius, emit buffered circles."""
+        radius = distance_meters if distance_meters and distance_meters > 0 else 500.0
+        to_m = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
+        to_ll = Transformer.from_crs("EPSG:6933", "EPSG:4326", always_xy=True)
+        projected = [transform(to_m.transform, g) for g in geoms]
+        centroids = [g.centroid for g in projected]
+        counts = []
+        for i, c in enumerate(centroids):
+            n = sum(1 for j, o in enumerate(centroids) if i != j and c.distance(o) <= radius)
+            counts.append(n)
+        threshold = 0
+        if hotspot and counts:
+            import numpy as np
+
+            threshold = float(np.percentile(counts, 75)) if max(counts) > 0 else 0
+        out_g, out_p = [], []
+        for i, (c, n) in enumerate(zip(centroids, counts, strict=False)):
+            if hotspot and n < threshold:
+                continue
+            buffered = c.buffer(radius * (0.35 + 0.1 * min(n, 5)))
+            out_g.append(transform(to_ll.transform, buffered))
+            out_p.append(
+                {
+                    "density": int(n),
+                    "radius_meters": radius,
+                    "hotspot": bool(hotspot and n >= threshold),
+                    **(props[i] if i < len(props) else {}),
+                }
+            )
+        return out_g, out_p

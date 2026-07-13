@@ -732,7 +732,7 @@ class SceneImageryService:
         if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
             raise ValidationError(
                 "Sentinel-1 SAR is grayscale radar and does not support optical indices "
-                "(NDVI, NDWI, NDBI, SAVI, BSI, LST). Use a Sentinel-2 or Landsat scene."
+                "(NDVI, NDWI, NDBI, SAVI, BSI, LST, EVI, NDMI, NBR). Use a Sentinel-2 or Landsat scene."
             )
 
         bounds = [float(x) for x in layer["bounds"]]

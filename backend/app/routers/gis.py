@@ -13,6 +13,8 @@ from app.schemas.gis import (
     MeasurementRequest,
     MeasurementResponse,
     ReverseGeocodeRequest,
+    SpatialOpRequest,
+    SpatialOpResponse,
 )
 from app.schemas.terrain import BufferRequest, BufferResponse
 from app.services.gis_service import GISService
@@ -46,6 +48,12 @@ async def buffer_geometry(data: BufferRequest, user: CurrentUser) -> BufferRespo
     service = GISService()
     result = service.buffer_geometry(data.geometry, data.distance_meters, data.segments)
     return BufferResponse(**result)
+
+
+@router.post("/spatial", response_model=SpatialOpResponse)
+async def spatial_operation(data: SpatialOpRequest, user: CurrentUser) -> SpatialOpResponse:
+    """Run spatial ops: intersect, union, clip, dissolve, merge, convex_hull, voronoi/thiessen, nearest, density, hotspot."""
+    return GISService().spatial_op(data)
 
 
 @router.post("/export")

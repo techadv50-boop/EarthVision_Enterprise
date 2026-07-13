@@ -52,3 +52,38 @@ class ExportRequest(BaseModel):
     format: Literal["geojson", "kml", "csv"] = "geojson"
     features: dict[str, Any]
     filename: str = "export"
+
+
+SpatialOperation = Literal[
+    "intersect",
+    "union",
+    "clip",
+    "dissolve",
+    "merge",
+    "convex_hull",
+    "voronoi",
+    "thiessen",
+    "nearest",
+    "density",
+    "hotspot",
+]
+
+
+class SpatialOpRequest(BaseModel):
+    operation: SpatialOperation
+    geometries: list[dict[str, Any]] = Field(
+        min_length=1,
+        description="GeoJSON geometries, Features, or a FeatureCollection",
+    )
+    distance_meters: float | None = Field(
+        default=None,
+        description="Search / kernel radius for nearest, density, hotspot",
+    )
+
+
+class SpatialOpResponse(BaseModel):
+    operation: SpatialOperation
+    geojson: dict[str, Any]
+    count: int
+    message: str | None = None
+    bounds: list[float] | None = None
