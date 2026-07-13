@@ -259,21 +259,40 @@ class CopernicusCatalogService:
             sensing = now - timedelta(days=j * 5, hours=j % 7)
             cloud_cap = request.cloud_cover_max if request.cloud_cover_max is not None else 80.0
             cloud = round((j * 4.7) % max(cloud_cap, 1.0), 1)
-            # Slight footprint jitter so overlays are distinguishable
+            # Footprints: Landsat/S1 are orbit-tilted parallelograms; S2 closer to rectangular tile
             ox = ((j % 5) - 2) * 0.02
             oy = ((j % 3) - 1) * 0.02
-            footprint = {
-                "type": "Polygon",
-                "coordinates": [
-                    [
-                        [west + ox, south + oy],
-                        [east + ox, south + oy],
-                        [east + ox, north + oy],
-                        [west + ox, north + oy],
-                        [west + ox, south + oy],
-                    ]
-                ],
-            }
+            w = (east - west) * 0.55
+            h = (north - south) * 0.55
+            cx, cy = clon + ox, clat + oy
+            if collection.startswith("LANDSAT") or collection == "SENTINEL-1":
+                # ~12–18° orbit skew (WRS / IW swath style)
+                skew = 0.18 if collection.startswith("LANDSAT") else 0.28
+                footprint = {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [cx - w - skew * h, cy - h],
+                            [cx + w - skew * h, cy - h],
+                            [cx + w + skew * h, cy + h],
+                            [cx - w + skew * h, cy + h],
+                            [cx - w - skew * h, cy - h],
+                        ]
+                    ],
+                }
+            else:
+                footprint = {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [west + ox, south + oy],
+                            [east + ox, south + oy],
+                            [east + ox, north + oy],
+                            [west + ox, north + oy],
+                            [west + ox, south + oy],
+                        ]
+                    ],
+                }
             tile = f"T{43 + (j % 3)}R{66 + (j % 9):02d}"
             scenes.append(
                 SceneSummary(
@@ -291,7 +310,7 @@ class CopernicusCatalogService:
                         else None
                     ),
                     footprint=footprint,
-                    center=[clon + ox, clat + oy],
+                    center=[cx, cy],
                     thumbnail_url=None,
                     size_bytes=int(720_000_000 + j * 18_000_000 + abs(math.sin(j)) * 2_000_000),
                     content_date=sensing.isoformat(),

@@ -125,13 +125,16 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
         "tile_url": layer["tile_url_template"],
         "source": layer["source"],
         "composite": layer["composite"],
+        "render_mode": layer.get("render_mode"),
         "bands": layer["bands"],
+        "label": layer.get("label"),
+        "collection": layer.get("collection"),
         "stac_id": layer.get("stac_id"),
         "acquisition_date": layer.get("acquisition_date"),
         "cloud_cover": layer.get("cloud_cover"),
+        "footprint": layer.get("footprint"),
         "thumbnail_url": layer.get("thumbnail_url"),
         "content_type": "image/png",
-        # Backward-compatible empty field (map now uses tiles, not a static PNG)
         "overlay_base64": "",
         "download_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
     }

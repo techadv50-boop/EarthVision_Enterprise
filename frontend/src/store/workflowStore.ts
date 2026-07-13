@@ -23,11 +23,14 @@ export interface MapOverlay {
   sceneId?: string;
   /** Static image URL (indices / change). Empty when using tileUrl. */
   url: string;
-  /** XYZ tile template for sharp Sentinel-2 true-color scene layers */
+  /** XYZ tile template for sharp scene layers */
   tileUrl?: string;
   bounds: [number, number, number, number];
+  /** Actual scene footprint (tilted for Landsat / S1) */
+  footprint?: GeoJSON.Polygon | null;
   opacity: number;
   label: string;
+  renderMode?: 'rgb' | 'grayscale';
 }
 
 interface WorkflowState {

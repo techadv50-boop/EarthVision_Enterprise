@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, Fragment } from 'react';
 import {
   MapContainer,
   TileLayer,
   Marker,
   Polyline,
+  Polygon,
   ImageOverlay,
   useMap,
   useMapEvents,
@@ -225,40 +226,58 @@ export function LightMap({
 
       {place && <Marker position={[place.latitude, place.longitude]} icon={markerIcon} />}
 
-      {/* Scene eye → Sentinel-2 TCI XYZ tiles (sharp on zoom). Indices/change stay ImageOverlay. */}
+      {/* Scene eye → collection-specific XYZ tiles + footprint outline (tilted for Landsat/S1). */}
       {overlays.map((overlay) => {
         const [west, south, east, north] = overlay.bounds;
         const leafletBounds: [[number, number], [number, number]] = [
           [south, west],
           [north, east],
         ];
-        if (overlay.kind === 'scene' && overlay.tileUrl) {
-          return (
-            <TileLayer
-              key={overlay.id}
-              url={overlay.tileUrl}
-              bounds={leafletBounds}
-              opacity={overlay.opacity}
-              maxNativeZoom={16}
-              maxZoom={18}
-              zIndex={430}
-              updateWhenZooming={false}
-              updateWhenIdle
-              keepBuffer={2}
-            />
-          );
-        }
-        if (!overlay.url) return null;
+        const footprintRing =
+          overlay.kind === 'scene' &&
+          overlay.footprint?.type === 'Polygon' &&
+          overlay.footprint.coordinates?.[0]
+            ? overlay.footprint.coordinates[0].map(
+                (c) => [c[1], c[0]] as [number, number],
+              )
+            : null;
+
         return (
-          <ImageOverlay
-            key={overlay.id}
-            url={overlay.url}
-            bounds={leafletBounds}
-            opacity={overlay.opacity}
-            zIndex={
-              overlay.kind === 'change' ? 460 : overlay.kind === 'index' ? 450 : 430
-            }
-          />
+          <Fragment key={overlay.id}>
+            {overlay.kind === 'scene' && overlay.tileUrl ? (
+              <TileLayer
+                url={overlay.tileUrl}
+                bounds={leafletBounds}
+                opacity={overlay.opacity}
+                maxNativeZoom={16}
+                maxZoom={18}
+                zIndex={430}
+                updateWhenZooming={false}
+                updateWhenIdle
+                keepBuffer={2}
+              />
+            ) : overlay.url ? (
+              <ImageOverlay
+                url={overlay.url}
+                bounds={leafletBounds}
+                opacity={overlay.opacity}
+                zIndex={
+                  overlay.kind === 'change' ? 460 : overlay.kind === 'index' ? 450 : 430
+                }
+              />
+            ) : null}
+            {footprintRing && (
+              <Polygon
+                positions={footprintRing}
+                pathOptions={{
+                  color: overlay.renderMode === 'grayscale' ? '#e5e7eb' : '#f59e0b',
+                  weight: 2,
+                  fillOpacity: 0,
+                  dashArray: '6 4',
+                }}
+              />
+            )}
+          </Fragment>
         );
       })}
 

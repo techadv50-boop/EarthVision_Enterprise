@@ -55,10 +55,14 @@ export interface SceneOverlay {
   tile_url?: string;
   source?: string;
   composite?: string;
+  render_mode?: 'rgb' | 'grayscale';
   bands?: { R: string; G: string; B: string };
+  label?: string;
+  collection?: string;
   stac_id?: string;
   acquisition_date?: string;
-  cloud_cover?: number;
+  cloud_cover?: number | null;
+  footprint?: GeoJSON.Polygon | null;
   thumbnail_url?: string;
 }
 

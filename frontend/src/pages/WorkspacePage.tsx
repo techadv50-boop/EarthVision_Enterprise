@@ -169,6 +169,13 @@ export function WorkspacePage() {
         });
         const tileUrl =
           overlay.tile_url || analyticsService.sceneTileUrl(scene.id);
+        const label =
+          overlay.label ||
+          (scene.collection === 'SENTINEL-1'
+            ? 'Sentinel-1 GRD (grayscale)'
+            : scene.collection.startsWith('LANDSAT')
+              ? `${scene.collection} true-color`
+              : `${scene.collection} true-color (TCI)`);
         upsertOverlay({
           id: `scene-${scene.id}`,
           kind: 'scene',
@@ -178,8 +185,10 @@ export function WorkspacePage() {
             : '',
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
+          footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,
           opacity: 1,
-          label: `${scene.collection} Sentinel-2 true-color (TCI)`,
+          label,
+          renderMode: overlay.render_mode,
         });
       } catch (err) {
         setError(getErrorMessage(err));

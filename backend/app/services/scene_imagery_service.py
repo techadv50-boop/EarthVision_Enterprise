@@ -1,4 +1,4 @@
-"""Resolve real Sentinel-2 true-color (TCI) COGs and serve sharp XYZ tiles."""
+"""Collection-aware scene imagery: S2 TCI, S1 SAR grayscale, Landsat RGB + footprints."""
 
 from __future__ import annotations
 
@@ -13,11 +13,14 @@ import httpx
 import numpy as np
 from loguru import logger
 from PIL import Image
+from shapely.geometry import Point, shape
 
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundError, ValidationError
 
 EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
+PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+PC_SIGN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/sign"
 
 GDAL_ENV = {
     "AWS_NO_SIGN_REQUEST": "YES",
@@ -27,9 +30,12 @@ GDAL_ENV = {
     "GDAL_HTTP_MULTIPLEX": "YES",
 }
 
+# Registry schema version — bump to invalidate old all-S2 layers
+LAYER_VERSION = 2
+
 
 class SceneImageryService:
-    """Map catalog scenes to Sentinel-2 L2A visual (TCI) COGs and XYZ tiles."""
+    """Resolve per-collection satellite imagery and serve XYZ tiles."""
 
     TILE_SIZE = 256
 
@@ -44,19 +50,42 @@ class SceneImageryService:
         safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", scene_id)[:180]
         return self.registry_dir / f"{safe}.json"
 
+    def _tile_cache_root(self, scene_id: str) -> Path:
+        safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", scene_id)[:180]
+        return self.tile_cache / safe
+
     def get_layer(self, scene_id: str) -> dict[str, Any] | None:
         path = self._registry_path(scene_id)
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_bytes())
+            layer = json.loads(path.read_bytes())
         except Exception:  # noqa: BLE001
             return None
+        if layer.get("version") != LAYER_VERSION:
+            return None
+        return layer
 
     def save_layer(self, scene_id: str, layer: dict[str, Any]) -> dict[str, Any]:
+        layer = {**layer, "version": LAYER_VERSION}
         path = self._registry_path(scene_id)
         path.write_text(json.dumps(layer), encoding="utf-8")
         return layer
+
+    @staticmethod
+    def _normalize_collection(collection: str | None) -> str:
+        c = (collection or "SENTINEL-2").upper().replace("_", "-")
+        if c.startswith("S2") or "SENTINEL-2" in c:
+            return "SENTINEL-2"
+        if c.startswith("S1") or "SENTINEL-1" in c:
+            return "SENTINEL-1"
+        if "LANDSAT-8" in c or c in {"LC08", "L8"}:
+            return "LANDSAT-8"
+        if "LANDSAT-9" in c or c in {"LC09", "L9"}:
+            return "LANDSAT-9"
+        if "LANDSAT" in c:
+            return "LANDSAT-8"
+        return c
 
     @staticmethod
     def _bbox_from_footprint(footprint: dict[str, Any] | None) -> list[float] | None:
@@ -72,11 +101,11 @@ class SceneImageryService:
         bbox: list[float] | None,
         footprint: dict[str, Any] | None,
     ) -> list[float]:
-        if bbox and len(bbox) == 4:
-            return [float(x) for x in bbox]
         from_fp = self._bbox_from_footprint(footprint)
         if from_fp:
             return from_fp
+        if bbox and len(bbox) == 4:
+            return [float(x) for x in bbox]
         return [74.15, 31.35, 74.55, 31.7]
 
     def _parse_sensing_time(self, sensing_time: str | None) -> datetime | None:
@@ -87,23 +116,42 @@ class SceneImageryService:
         except ValueError:
             return None
 
-    def find_sentinel2_visual(
-        self,
-        bbox: list[float],
-        sensing_time: str | None = None,
-        cloud_cover_max: float | None = 40.0,
-    ) -> dict[str, Any]:
-        """Find a Sentinel-2 L2A visual (true-color TCI) COG covering the AOI."""
+    @staticmethod
+    def _coverage(bbox: list[float], item_bbox: list[float]) -> float:
         west, south, east, north = bbox
+        if len(item_bbox) != 4:
+            return 0.0
+        ix0 = max(west, float(item_bbox[0]))
+        iy0 = max(south, float(item_bbox[1]))
+        ix1 = min(east, float(item_bbox[2]))
+        iy1 = min(north, float(item_bbox[3]))
+        if ix1 <= ix0 or iy1 <= iy0:
+            return 0.0
+        inter = (ix1 - ix0) * (iy1 - iy0)
+        area = max((east - west) * (north - south), 1e-12)
+        return inter / area
+
+    @staticmethod
+    def _s3_to_https(href: str) -> str:
+        if href.startswith("s3://"):
+            bucket, _, key = href[5:].partition("/")
+            return f"https://{bucket}.s3.amazonaws.com/{key}"
+        return href
+
+    def _sign_pc(self, href: str, client: httpx.Client) -> str:
+        resp = client.get(PC_SIGN_URL, params={"href": href})
+        if resp.status_code != 200:
+            raise NotFoundError(f"Failed to sign Landsat asset ({resp.status_code})")
+        return resp.json()["href"]
+
+    def _datetime_windows(self, sensing_time: str | None) -> list[tuple[str, str]]:
         dt = self._parse_sensing_time(sensing_time)
-        # Prefer imagery near the scene date; expand if needed (demo dates may be future)
         windows: list[tuple[str, str]] = []
         if dt:
-            for days in (7, 30, 90, 365):
+            for days in (3, 10, 30, 90, 365):
                 start = (dt - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
                 end = (dt + timedelta(days=days)).strftime("%Y-%m-%dT23:59:59Z")
                 windows.append((start, end))
-        # Always include a recent global window as final fallback
         now = datetime.now(UTC)
         windows.append(
             (
@@ -111,78 +159,207 @@ class SceneImageryService:
                 now.strftime("%Y-%m-%dT23:59:59Z"),
             )
         )
+        return windows
 
-        cloud_q = min(float(cloud_cover_max if cloud_cover_max is not None else 40.0), 80.0)
-        last_error: str | None = None
+    def _stac_search(
+        self,
+        client: httpx.Client,
+        url: str,
+        collections: list[str],
+        bbox: list[float],
+        start: str,
+        end: str,
+        query: dict[str, Any] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        body: dict[str, Any] = {
+            "collections": collections,
+            "bbox": bbox,
+            "datetime": f"{start}/{end}",
+            "limit": limit,
+            "sortby": [{"field": "properties.datetime", "direction": "desc"}],
+        }
+        if query:
+            body["query"] = query
+        resp = client.post(url, json=body)
+        if resp.status_code != 200:
+            logger.warning("STAC search {} → {}", url, resp.status_code)
+            return []
+        return resp.json().get("features") or []
 
+    def find_sentinel2(
+        self,
+        bbox: list[float],
+        sensing_time: str | None,
+        target_cloud: float | None,
+    ) -> dict[str, Any]:
+        """Match S2 TCI whose cloud cover is closest to the catalog scene."""
+        last_error = "empty"
         with httpx.Client(timeout=45.0, follow_redirects=True) as client:
-            for start, end in windows:
-                body = {
-                    "collections": ["sentinel-2-l2a"],
-                    "bbox": [west, south, east, north],
-                    "datetime": f"{start}/{end}",
-                    "limit": 12,
-                    "query": {"eo:cloud_cover": {"lt": cloud_q}},
-                    "sortby": [{"field": "properties.datetime", "direction": "desc"}],
-                }
-                try:
-                    resp = client.post(EARTH_SEARCH_URL, json=body)
-                    if resp.status_code != 200:
-                        last_error = f"STAC {resp.status_code}: {resp.text[:200]}"
-                        continue
-                    features = resp.json().get("features") or []
-                except Exception as exc:  # noqa: BLE001
-                    last_error = str(exc)
-                    logger.warning("Earth Search failed: {}", exc)
-                    continue
-
-                def _coverage(feat: dict[str, Any]) -> float:
-                    ib = feat.get("bbox") or []
-                    if len(ib) != 4:
-                        return 0.0
-                    ix0 = max(west, float(ib[0]))
-                    iy0 = max(south, float(ib[1]))
-                    ix1 = min(east, float(ib[2]))
-                    iy1 = min(north, float(ib[3]))
-                    if ix1 <= ix0 or iy1 <= iy0:
-                        return 0.0
-                    inter = (ix1 - ix0) * (iy1 - iy0)
-                    area = max((east - west) * (north - south), 1e-12)
-                    return inter / area
-
-                # Prefer max AOI coverage, then lowest cloud cover
-                features = sorted(
-                    features,
-                    key=lambda f: (
-                        -_coverage(f),
-                        float(f.get("properties", {}).get("eo:cloud_cover") or 99),
-                    ),
+            for start, end in self._datetime_windows(sensing_time):
+                # Allow high cloud so cloudy catalog scenes can match cloudy imagery
+                features = self._stac_search(
+                    client,
+                    EARTH_SEARCH_URL,
+                    ["sentinel-2-l2a"],
+                    bbox,
+                    start,
+                    end,
+                    query={"eo:cloud_cover": {"lt": 95}},
                 )
+                scored: list[tuple[float, dict[str, Any]]] = []
                 for feat in features:
-                    if _coverage(feat) < 0.15:
+                    cov = self._coverage(bbox, feat.get("bbox") or [])
+                    if cov < 0.15:
                         continue
                     assets = feat.get("assets") or {}
-                    visual = assets.get("visual") or assets.get("overview")
+                    visual = assets.get("visual")
                     if not visual or not visual.get("href"):
                         continue
-                    item_bbox = feat.get("bbox") or bbox
-                    props = feat.get("properties") or {}
-                    return {
-                        "stac_id": feat.get("id"),
-                        "cog_url": visual["href"],
-                        "bbox": [float(x) for x in item_bbox],
-                        "datetime": props.get("datetime"),
-                        "cloud_cover": props.get("eo:cloud_cover"),
-                        "platform": props.get("platform") or "sentinel-2",
-                        "collection": "sentinel-2-l2a",
-                        "thumbnail_url": (assets.get("thumbnail") or {}).get("href"),
-                        "coverage": _coverage(feat),
-                    }
+                    cloud = float((feat.get("properties") or {}).get("eo:cloud_cover") or 0)
+                    # Prefer coverage, then closest cloud % to catalog scene
+                    target = float(target_cloud) if target_cloud is not None else cloud
+                    cloud_delta = abs(cloud - target)
+                    score = cov * 5.0 - cloud_delta / 8.0
+                    # Strongly penalize clear substitutes for cloudy catalog scenes
+                    if target_cloud is not None and target_cloud >= 15 and cloud < max(5.0, target_cloud * 0.35):
+                        score -= 3.0
+                    scored.append((score, feat))
+                if not scored:
+                    last_error = f"no covering S2 in {start}..{end}"
+                    continue
+                scored.sort(key=lambda t: -t[0])
+                feat = scored[0][1]
+                props = feat.get("properties") or {}
+                assets = feat.get("assets") or {}
+                return {
+                    "stac_id": feat.get("id"),
+                    "cog_url": assets["visual"]["href"],
+                    "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
+                    "footprint": feat.get("geometry"),
+                    "datetime": props.get("datetime"),
+                    "cloud_cover": props.get("eo:cloud_cover"),
+                    "render_mode": "rgb",
+                    "source": "sentinel2_tci",
+                    "bands": {"R": "B04 Red", "G": "B03 Green", "B": "B02 Blue"},
+                    "label": "Sentinel-2 true-color (TCI)",
+                }
+        raise NotFoundError(f"No Sentinel-2 TCI found ({last_error})")
 
-        raise NotFoundError(
-            "No Sentinel-2 true-color (TCI) imagery found for this area/date. "
-            f"Last error: {last_error or 'empty result'}"
-        )
+    def find_sentinel1(self, bbox: list[float], sensing_time: str | None) -> dict[str, Any]:
+        """Match Sentinel-1 GRD VV (grayscale SAR)."""
+        last_error = "empty"
+        with httpx.Client(timeout=45.0, follow_redirects=True) as client:
+            for start, end in self._datetime_windows(sensing_time):
+                features = self._stac_search(
+                    client, EARTH_SEARCH_URL, ["sentinel-1-grd"], bbox, start, end
+                )
+                scored: list[tuple[float, dict[str, Any]]] = []
+                for feat in features:
+                    cov = self._coverage(bbox, feat.get("bbox") or [])
+                    if cov < 0.05:
+                        continue
+                    assets = feat.get("assets") or {}
+                    vv = assets.get("vv") or assets.get("vh")
+                    if not vv or not vv.get("href"):
+                        continue
+                    scored.append((cov, feat))
+                if not scored:
+                    last_error = f"no covering S1 in {start}..{end}"
+                    continue
+                scored.sort(key=lambda t: -t[0])
+                feat = scored[0][1]
+                props = feat.get("properties") or {}
+                assets = feat.get("assets") or {}
+                pol = "vv" if "vv" in assets else "vh"
+                return {
+                    "stac_id": feat.get("id"),
+                    "cog_url": self._s3_to_https(assets[pol]["href"]),
+                    "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
+                    "footprint": feat.get("geometry"),
+                    "datetime": props.get("datetime"),
+                    "cloud_cover": None,
+                    "render_mode": "grayscale",
+                    "source": "sentinel1_grd",
+                    "polarization": pol.upper(),
+                    "bands": {"R": f"{pol.upper()} SAR", "G": f"{pol.upper()} SAR", "B": f"{pol.upper()} SAR"},
+                    "label": f"Sentinel-1 GRD {pol.upper()} (grayscale)",
+                    "proj_epsg": props.get("proj:epsg"),
+                    "proj_transform": props.get("proj:transform"),
+                }
+        raise NotFoundError(f"No Sentinel-1 GRD found ({last_error})")
+
+    def find_landsat(
+        self,
+        bbox: list[float],
+        sensing_time: str | None,
+        target_cloud: float | None,
+        platform: str,
+    ) -> dict[str, Any]:
+        """Match Landsat C2 L2 RGB via Planetary Computer (signed COGs) + tilted footprint."""
+        last_error = "empty"
+        # Filter by platform when possible
+        platform_q = "landsat-8" if platform == "LANDSAT-8" else "landsat-9"
+        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+            for start, end in self._datetime_windows(sensing_time):
+                features = self._stac_search(
+                    client,
+                    PC_STAC_URL,
+                    ["landsat-c2-l2"],
+                    bbox,
+                    start,
+                    end,
+                    query={"eo:cloud_cover": {"lt": 95}},
+                    limit=25,
+                )
+                scored: list[tuple[float, dict[str, Any]]] = []
+                for feat in features:
+                    props = feat.get("properties") or {}
+                    plat = (props.get("platform") or "").lower()
+                    # Soft preference for requested Landsat-8 vs 9
+                    if platform == "LANDSAT-8" and "9" in plat and "8" not in plat:
+                        platform_bonus = -0.05
+                    elif platform == "LANDSAT-9" and "8" in plat and "9" not in plat:
+                        platform_bonus = -0.05
+                    else:
+                        platform_bonus = 0.0
+                    cov = self._coverage(bbox, feat.get("bbox") or [])
+                    if cov < 0.1:
+                        continue
+                    assets = feat.get("assets") or {}
+                    if not all(k in assets and assets[k].get("href") for k in ("red", "green", "blue")):
+                        continue
+                    cloud = float(props.get("eo:cloud_cover") or 0)
+                    target = float(target_cloud) if target_cloud is not None else cloud
+                    cloud_delta = abs(cloud - target)
+                    score = cov * 10.0 - cloud_delta / 100.0 + platform_bonus
+                    scored.append((score, feat))
+                if not scored:
+                    last_error = f"no covering Landsat in {start}..{end}"
+                    continue
+                scored.sort(key=lambda t: -t[0])
+                feat = scored[0][1]
+                props = feat.get("properties") or {}
+                assets = feat.get("assets") or {}
+                return {
+                    "stac_id": feat.get("id"),
+                    "cog_urls": {
+                        "red": assets["red"]["href"],
+                        "green": assets["green"]["href"],
+                        "blue": assets["blue"]["href"],
+                    },
+                    "sign": "planetary_computer",
+                    "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
+                    "footprint": feat.get("geometry"),
+                    "datetime": props.get("datetime"),
+                    "cloud_cover": props.get("eo:cloud_cover"),
+                    "render_mode": "rgb",
+                    "source": "landsat_c2_l2",
+                    "platform": props.get("platform") or platform_q,
+                    "bands": {"R": "SR_B4 Red", "G": "SR_B3 Green", "B": "SR_B2 Blue"},
+                    "label": f"{platform} true-color (OLI)",
+                }
+        raise NotFoundError(f"No Landsat imagery found ({last_error})")
 
     def prepare_scene_layer(
         self,
@@ -194,41 +371,52 @@ class SceneImageryService:
         cloud_cover: float | None = None,
         collection: str | None = None,
     ) -> dict[str, Any]:
-        """Resolve + register a scene imagery layer; return tile metadata for the map."""
+        coll = self._normalize_collection(collection)
         existing = self.get_layer(scene_id)
-        if existing and existing.get("cog_url"):
+        if existing and existing.get("collection") == coll:
             return existing
 
-        bounds = self.resolve_bounds(bbox, footprint)
-        # For non-optical collections, still show S2 optical context over the AOI
-        cloud_max = 40.0
-        if cloud_cover is not None:
-            cloud_max = max(float(cloud_cover) + 15.0, 25.0)
+        # Prefer STAC footprint bounds; fall back to request bbox
+        search_bbox = self.resolve_bounds(bbox, footprint)
 
-        match = self.find_sentinel2_visual(
-            bounds,
-            sensing_time=sensing_time,
-            cloud_cover_max=cloud_max,
-        )
-        # Keep the requested AOI as display bounds so the map centers on the place
-        display = bounds
+        if coll == "SENTINEL-1":
+            match = self.find_sentinel1(search_bbox, sensing_time)
+        elif coll in {"LANDSAT-8", "LANDSAT-9"}:
+            match = self.find_landsat(search_bbox, sensing_time, cloud_cover, coll)
+        else:
+            # SENTINEL-2 and other optical defaults
+            match = self.find_sentinel2(search_bbox, sensing_time, cloud_cover)
+            coll = "SENTINEL-2"
 
-        layer = {
+        stac_fp = match.get("footprint")
+        # Display bounds from actual STAC footprint (tilted scenes → correct envelope)
+        display_bounds = self._bbox_from_footprint(stac_fp) or match.get("bbox") or search_bbox
+
+        layer: dict[str, Any] = {
             "scene_id": scene_id,
-            "collection": collection or "SENTINEL-2",
-            "source": "sentinel2_tci",
-            "composite": "true_color_RGB",
-            "bands": {"R": "B04 Red", "G": "B03 Green", "B": "B02 Blue"},
-            "cog_url": match["cog_url"],
-            "stac_id": match["stac_id"],
-            "bounds": display,
-            "scene_bbox": match["bbox"],
+            "collection": coll,
+            "source": match["source"],
+            "composite": "grayscale_SAR" if match["render_mode"] == "grayscale" else "true_color_RGB",
+            "render_mode": match["render_mode"],
+            "bands": match["bands"],
+            "label": match["label"],
+            "cog_url": match.get("cog_url"),
+            "cog_urls": match.get("cog_urls"),
+            "sign": match.get("sign"),
+            "stac_id": match.get("stac_id"),
+            "bounds": display_bounds,
+            "footprint": stac_fp,
             "acquisition_date": match.get("datetime"),
             "cloud_cover": match.get("cloud_cover"),
-            "coverage": match.get("coverage"),
-            "thumbnail_url": match.get("thumbnail_url"),
+            "polarization": match.get("polarization"),
             "tile_url_template": f"/api/v1/catalog/scenes/{scene_id}/tiles/{{z}}/{{x}}/{{y}}.png",
         }
+        # Drop previous tile cache when remapping a scene
+        cache_root = self._tile_cache_root(scene_id)
+        if cache_root.exists():
+            import shutil
+
+            shutil.rmtree(cache_root, ignore_errors=True)
         return self.save_layer(scene_id, layer)
 
     def _mercator_bounds(self, z: int, x: int, y: int) -> tuple[float, float, float, float]:
@@ -240,9 +428,183 @@ class SceneImageryService:
         return lon_min, lat_min, lon_max, lat_max
 
     def _empty_tile(self) -> bytes:
-        img = Image.new("RGBA", (self.TILE_SIZE, self.TILE_SIZE), (0, 0, 0, 0))
         import io
 
+        img = Image.new("RGBA", (self.TILE_SIZE, self.TILE_SIZE), (0, 0, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+
+    def _footprint_mask(
+        self, footprint: dict[str, Any] | None, lon_min: float, lat_min: float, lon_max: float, lat_max: float
+    ) -> np.ndarray | None:
+        """Boolean mask (True=inside footprint) for the tile grid."""
+        if not footprint:
+            return None
+        try:
+            geom = shape(footprint)
+        except Exception:  # noqa: BLE001
+            return None
+        size = self.TILE_SIZE
+        xs = np.linspace(lon_min, lon_max, size, endpoint=False) + (lon_max - lon_min) / (2 * size)
+        ys = np.linspace(lat_max, lat_min, size, endpoint=False) + (lat_min - lat_max) / (2 * size)
+        # Coarser mask then upsample for speed
+        step = 4
+        mask_small = np.zeros((size // step, size // step), dtype=bool)
+        for iy, lat in enumerate(ys[::step]):
+            for ix, lon in enumerate(xs[::step]):
+                mask_small[iy, ix] = geom.contains(Point(lon, lat)) or geom.touches(Point(lon, lat))
+        # Nearest upsample
+        mask = np.repeat(np.repeat(mask_small, step, axis=0), step, axis=1)
+        if mask.shape[0] < size or mask.shape[1] < size:
+            padded = np.zeros((size, size), dtype=bool)
+            padded[: mask.shape[0], : mask.shape[1]] = mask
+            mask = padded
+        return mask[:size, :size]
+
+    def _read_rgb_cog(
+        self, cog_url: str, lon_min: float, lat_min: float, lon_max: float, lat_max: float
+    ) -> np.ndarray:
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.warp import transform_bounds
+        from rasterio.windows import from_bounds
+
+        with rasterio.Env(**GDAL_ENV):
+            with rasterio.open(cog_url) as src:
+                left, bottom, right, top = transform_bounds(
+                    "EPSG:4326", src.crs, lon_min, lat_min, lon_max, lat_max
+                )
+                window = from_bounds(left, bottom, right, top, transform=src.transform)
+                oversampling = float(window.width) < self.TILE_SIZE or float(window.height) < self.TILE_SIZE
+                resampling = Resampling.nearest if oversampling else Resampling.bilinear
+                count = min(3, src.count)
+                data = src.read(
+                    indexes=list(range(1, count + 1)),
+                    out_shape=(count, self.TILE_SIZE, self.TILE_SIZE),
+                    window=window,
+                    resampling=resampling,
+                    boundless=True,
+                    fill_value=0,
+                )
+        if data.shape[0] == 1:
+            return np.stack([data[0], data[0], data[0]], axis=0)
+        return data[:3]
+
+    def _read_landsat_rgb(
+        self,
+        cog_urls: dict[str, str],
+        lon_min: float,
+        lat_min: float,
+        lon_max: float,
+        lat_max: float,
+    ) -> np.ndarray:
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.warp import transform_bounds
+        from rasterio.windows import from_bounds
+
+        bands: list[np.ndarray] = []
+        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+            signed = {k: self._sign_pc(v, client) for k, v in cog_urls.items()}
+        with rasterio.Env():
+            for name in ("red", "green", "blue"):
+                with rasterio.open(signed[name]) as src:
+                    left, bottom, right, top = transform_bounds(
+                        "EPSG:4326", src.crs, lon_min, lat_min, lon_max, lat_max
+                    )
+                    window = from_bounds(left, bottom, right, top, transform=src.transform)
+                    oversampling = float(window.width) < self.TILE_SIZE or float(window.height) < self.TILE_SIZE
+                    resampling = Resampling.nearest if oversampling else Resampling.bilinear
+                    arr = src.read(
+                        1,
+                        out_shape=(self.TILE_SIZE, self.TILE_SIZE),
+                        window=window,
+                        resampling=resampling,
+                        boundless=True,
+                        fill_value=0,
+                    )
+                    bands.append(arr.astype(np.float32))
+        stacked = np.stack(bands, axis=0)
+        # Landsat C2 SR scaling
+        refl = np.clip(stacked * 0.0000275 - 0.2, 0, 1)
+        return (refl * 10000).astype(np.float32)  # keep as float reflectance*10000 for joint stretch
+
+    def _read_s1_gray(
+        self, cog_url: str, lon_min: float, lat_min: float, lon_max: float, lat_max: float
+    ) -> np.ndarray:
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.warp import reproject
+
+        dst = np.zeros((self.TILE_SIZE, self.TILE_SIZE), dtype=np.float32)
+        dst_transform = rasterio.transform.from_bounds(
+            lon_min, lat_min, lon_max, lat_max, self.TILE_SIZE, self.TILE_SIZE
+        )
+        with rasterio.Env(**GDAL_ENV):
+            with rasterio.open(self._s3_to_https(cog_url)) as src:
+                src_crs = src.crs
+                gcps = None
+                if src_crs is None and src.gcps and src.gcps[0]:
+                    gcps = src.gcps[0]
+                    src_crs = src.gcps[1]
+                reproject(
+                    source=rasterio.band(src, 1),
+                    destination=dst,
+                    src_transform=src.transform if gcps is None else None,
+                    src_crs=src_crs,
+                    src_gcps=gcps,
+                    dst_transform=dst_transform,
+                    dst_crs="EPSG:4326",
+                    resampling=Resampling.bilinear,
+                    src_nodata=0,
+                    dst_nodata=0,
+                )
+        return np.stack([dst, dst, dst], axis=0)
+
+    def _to_rgba(self, rgb: np.ndarray, mask: np.ndarray | None, mode: str) -> bytes:
+        import io
+
+        rgb_f = rgb.astype(np.float32)
+        if mode == "grayscale":
+            band = rgb_f[0]
+            valid = band[band > 0]
+            if valid.size:
+                lo, hi = np.percentile(valid, (2, 98))
+                g = np.clip((band - lo) / (hi - lo + 1e-9), 0, 1)
+            else:
+                g = np.zeros_like(band)
+            g[band <= 0] = 0
+            rgb_u8 = (np.stack([g, g, g], axis=0) * 255).astype(np.uint8)
+            alpha = np.where(band > 0, 255, 0).astype(np.uint8)
+        else:
+            # Joint stretch for natural color balance
+            if rgb_f.max() <= 1.5:
+                # already 0–1 reflectance-ish
+                stacked = rgb_f
+            elif rgb_f.max() <= 255:
+                stacked = rgb_f
+            else:
+                # Landsat scaled reflectance*10000 or raw DN
+                stacked = np.clip(rgb_f / 10000.0, 0, 1) if rgb_f.max() > 255 else rgb_f
+            valid_mask = np.any(stacked > 0, axis=0)
+            valid = stacked[:, valid_mask]
+            if valid.size:
+                lo = float(np.percentile(valid, 2))
+                hi = float(np.percentile(valid, 98))
+                if hi <= lo:
+                    hi = lo + 1e-6
+                stretched = np.clip((stacked - lo) / (hi - lo), 0, 1)
+            else:
+                stretched = np.zeros_like(stacked)
+            rgb_u8 = (stretched * 255).astype(np.uint8)
+            alpha = np.where(valid_mask, 255, 0).astype(np.uint8)
+
+        if mask is not None:
+            alpha = np.where(mask, alpha, 0).astype(np.uint8)
+
+        rgba = np.dstack([rgb_u8[0], rgb_u8[1], rgb_u8[2], alpha])
+        img = Image.fromarray(rgba, mode="RGBA")
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         return buf.getvalue()
@@ -255,22 +617,14 @@ class SceneImageryService:
             raise ValidationError("Tile coordinates out of range")
 
         layer = self.get_layer(scene_id)
-        if not layer or not layer.get("cog_url"):
+        if not layer:
             raise NotFoundError("Scene imagery layer not prepared — open the eye overlay first")
 
-        cache_path = self.tile_cache / scene_id / str(z) / str(x) / f"{y}.png"
-        # sanitize path segments
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:  # noqa: BLE001
-            safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", scene_id)[:180]
-            cache_path = self.tile_cache / safe / str(z) / str(x) / f"{y}.png"
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-
+        cache_path = self._tile_cache_root(scene_id) / str(z) / str(x) / f"{y}.png"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         if cache_path.exists():
             return cache_path.read_bytes()
 
-        # Skip tiles fully outside display bounds
         lon_min, lat_min, lon_max, lat_max = self._mercator_bounds(z, x, y)
         west, south, east, north = layer["bounds"]
         if lon_max < west or lon_min > east or lat_max < south or lat_min > north:
@@ -278,62 +632,20 @@ class SceneImageryService:
             cache_path.write_bytes(data)
             return data
 
+        mode = layer.get("render_mode") or "rgb"
         try:
-            import rasterio
-            from rasterio.enums import Resampling
-            from rasterio.warp import transform_bounds
-            from rasterio.windows import from_bounds
-        except ImportError as exc:
-            raise ValidationError("rasterio is required for scene tiles") from exc
-
-        cog_url = layer["cog_url"]
-        try:
-            with rasterio.Env(**GDAL_ENV):
-                with rasterio.open(cog_url) as src:
-                    left, bottom, right, top = transform_bounds(
-                        "EPSG:4326", src.crs, lon_min, lat_min, lon_max, lat_max
-                    )
-                    window = from_bounds(left, bottom, right, top, transform=src.transform)
-                    count = min(3, src.count)
-                    # Nearest when oversampling (zoomed past ~10 m) keeps edges crisp;
-                    # bilinear when many source pixels → one tile pixel.
-                    oversampling = float(window.width) < self.TILE_SIZE or float(window.height) < self.TILE_SIZE
-                    resampling = Resampling.nearest if oversampling else Resampling.bilinear
-                    data = src.read(
-                        indexes=list(range(1, count + 1)),
-                        out_shape=(count, self.TILE_SIZE, self.TILE_SIZE),
-                        window=window,
-                        resampling=resampling,
-                        boundless=True,
-                        fill_value=0,
-                    )
+            if layer.get("source") == "sentinel1_grd":
+                rgb = self._read_s1_gray(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
+            elif layer.get("cog_urls"):
+                rgb = self._read_landsat_rgb(layer["cog_urls"], lon_min, lat_min, lon_max, lat_max)
+            else:
+                rgb = self._read_rgb_cog(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Scene tile read failed {}/{}/{}/{}: {}", scene_id, z, x, y, exc)
             return self._empty_tile()
 
-        if data.shape[0] == 1:
-            rgb = np.stack([data[0], data[0], data[0]], axis=0)
-        else:
-            rgb = data[:3]
-
-        # TCI is already uint8 true-color. Apply a joint contrast stretch only
-        # (shared across R/G/B) so colors stay natural but features pop.
-        rgb_f = rgb.astype(np.float32)
-        mask = np.any(rgb > 0, axis=0)
-        valid = rgb_f[:, mask]
-        if valid.size:
-            lo = float(np.percentile(valid, 1))
-            hi = float(np.percentile(valid, 99))
-            if hi > lo:
-                rgb_f = np.clip((rgb_f - lo) / (hi - lo), 0, 1) * 255.0
-        rgb_u8 = rgb_f.astype(np.uint8)
-        alpha = np.where(mask, 255, 0).astype(np.uint8)
-        rgba = np.dstack([rgb_u8[0], rgb_u8[1], rgb_u8[2], alpha])
-        img = Image.fromarray(rgba, mode="RGBA")
-        import io
-
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
-        png = buf.getvalue()
+        # Clip to tilted STAC footprint (critical for Landsat / S1 swaths)
+        mask = self._footprint_mask(layer.get("footprint"), lon_min, lat_min, lon_max, lat_max)
+        png = self._to_rgba(rgb, mask, mode)
         cache_path.write_bytes(png)
         return png
