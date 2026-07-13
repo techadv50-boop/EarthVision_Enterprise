@@ -1,11 +1,15 @@
-import { ArrowLeft, Satellite } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, Loader2, Satellite } from 'lucide-react';
 import type { SceneSummary } from '../../services/catalogService';
 
 interface Props {
   placeName: string;
   scenes: SceneSummary[];
+  visibleSceneIds: string[];
+  focusSceneId: string | null;
   loading: boolean;
-  onSelect: (scene: SceneSummary) => void;
+  loadingOverlayIds: string[];
+  onToggleEye: (scene: SceneSummary) => void;
+  onFocus: (scene: SceneSummary) => void;
   onBack: () => void;
 }
 
@@ -22,13 +26,17 @@ function formatDate(value?: string | null): string {
   }
 }
 
-function formatSize(bytes?: number | null): string {
-  if (!bytes) return '';
-  const mb = bytes / (1024 * 1024);
-  return mb > 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(0)} MB`;
-}
-
-export function ScenesStep({ placeName, scenes, loading, onSelect, onBack }: Props) {
+export function ScenesStep({
+  placeName,
+  scenes,
+  visibleSceneIds,
+  focusSceneId,
+  loading,
+  loadingOverlayIds,
+  onToggleEye,
+  onFocus,
+  onBack,
+}: Props) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3">
@@ -37,7 +45,8 @@ export function ScenesStep({ placeName, scenes, loading, onSelect, onBack }: Pro
         </button>
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
-          20 most recent scenes near <span className="font-medium text-[var(--ink)]">{placeName}</span>
+          Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
+          {' — '}use the eye to show/hide on the map
         </p>
       </div>
 
@@ -49,41 +58,75 @@ export function ScenesStep({ placeName, scenes, loading, onSelect, onBack }: Pro
 
       {!loading && scenes.length === 0 && (
         <div className="rounded-lg bg-[var(--accent-soft)] p-4 text-sm text-[var(--accent)]">
-          No scenes found. Try another place.
+          No scenes found. Try another place or AOI.
         </div>
       )}
 
       {!loading && scenes.length > 0 && (
         <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-          {scenes.map((scene, i) => (
-            <li key={scene.id}>
-              <button
-                type="button"
-                onClick={() => onSelect(scene)}
-                className="ev-card flex w-full items-start gap-3 p-3 text-left hover:border-[var(--accent)]"
-              >
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
-                  <Satellite className="h-4 w-4" />
+          {scenes.map((scene, i) => {
+            const visible = visibleSceneIds.includes(scene.id);
+            const focused = focusSceneId === scene.id;
+            const overlayLoading = loadingOverlayIds.includes(scene.id);
+            return (
+              <li key={scene.id}>
+                <div
+                  className={`ev-card flex w-full items-start gap-2 p-2.5 ${
+                    focused ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]/30' : ''
+                  } ${visible ? 'bg-[var(--accent-soft)]/40' : ''}`}
+                >
+                  <button
+                    type="button"
+                    className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-white text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+                    title={visible ? 'Hide on map' : 'Show on map'}
+                    onClick={() => onToggleEye(scene)}
+                    disabled={overlayLoading}
+                  >
+                    {overlayLoading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : visible ? (
+                      <Eye className="h-4 w-4" />
+                    ) : (
+                      <EyeOff className="h-4 w-4 text-[var(--muted)]" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => {
+                      if (visible) onFocus(scene);
+                      else onToggleEye(scene);
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="rounded bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                        #{i + 1}
+                      </span>
+                      <span className="text-xs font-semibold uppercase tracking-wide text-[var(--accent)]">
+                        {scene.collection}
+                      </span>
+                      {visible && (
+                        <span className="rounded bg-teal-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-white">
+                          on map
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 flex items-start gap-1.5">
+                      <Satellite className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--muted)]" />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">{scene.name}</div>
+                        <div className="mt-0.5 text-xs text-[var(--muted)]">
+                          {formatDate(scene.sensing_time)}
+                          {scene.cloud_cover != null && ` · ${scene.cloud_cover}% cloud`}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                      #{i + 1}
-                    </span>
-                    <span className="text-xs font-semibold uppercase tracking-wide text-[var(--accent)]">
-                      {scene.collection}
-                    </span>
-                  </div>
-                  <div className="mt-1 truncate text-sm font-medium">{scene.name}</div>
-                  <div className="mt-1 text-xs text-[var(--muted)]">
-                    {formatDate(scene.sensing_time)}
-                    {scene.cloud_cover != null && ` · ${scene.cloud_cover}% cloud`}
-                    {scene.size_bytes != null && ` · ${formatSize(scene.size_bytes)}`}
-                  </div>
-                </div>
-              </button>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

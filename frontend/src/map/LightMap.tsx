@@ -18,6 +18,7 @@ import {
   pathLengthMeters,
   polygonAreaSqMeters,
 } from '../utils/geoMath';
+import { LatLngGrid, NorthArrow, ScaleBar } from '../components/map/MapDecorations';
 import 'leaflet/dist/leaflet.css';
 
 const markerIcon = L.icon({
@@ -33,11 +34,12 @@ const markerIcon = L.icon({
 interface Props {
   place: PlaceSelection | null;
   scenes: SceneSummary[];
-  selectedScene: SceneSummary | null;
+  focusSceneId: string | null;
   overlays: MapOverlay[];
   mapTool: MapTool;
   aoiGeoJson: GeoJSON.Feature | null;
   enablePlaceClick: boolean;
+  showGrid?: boolean;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
   onMeasure: (label: string) => void;
@@ -97,7 +99,7 @@ function DrawingHandler({
   onAoiComplete: (feature: GeoJSON.Feature) => void;
   onMeasure: (label: string) => void;
 }) {
-  const points = useRef<Array<[number, number]>>([]); // lon,lat
+  const points = useRef<Array<[number, number]>>([]);
   const rectStart = useRef<[number, number] | null>(null);
 
   useMapEvents({
@@ -113,8 +115,7 @@ function DrawingHandler({
       if (mapTool === 'measure-line') {
         points.current.push([lon, lat]);
         if (points.current.length >= 2) {
-          const meters = pathLengthMeters(points.current);
-          onMeasure(`Distance: ${formatDistance(meters)}`);
+          onMeasure(`Distance: ${formatDistance(pathLengthMeters(points.current))}`);
         }
         return;
       }
@@ -171,17 +172,7 @@ function DrawingHandler({
       }
     },
     dblclick() {
-      if (mapTool === 'measure-line' || mapTool === 'measure-area' || mapTool === 'aoi-poly') {
-        if (mapTool === 'aoi-poly' && points.current.length >= 3) {
-          const ring = [...points.current, points.current[0]];
-          onAoiComplete({
-            type: 'Feature',
-            properties: { kind: 'polygon', name: 'AOI' },
-            geometry: { type: 'Polygon', coordinates: [ring] },
-          });
-        }
-        points.current = [];
-      }
+      points.current = [];
     },
   });
 
@@ -193,20 +184,15 @@ function DrawingHandler({
   return null;
 }
 
-function SketchLayer({ mapTool }: { mapTool: MapTool }) {
-  // Visual feedback handled via AOI prop; keep hook for future live sketch
-  void mapTool;
-  return null;
-}
-
 export function LightMap({
   place,
   scenes,
-  selectedScene,
+  focusSceneId,
   overlays,
   mapTool,
   aoiGeoJson,
   enablePlaceClick,
+  showGrid = true,
   onPlaceClick,
   onAoiComplete,
   onMeasure,
@@ -246,6 +232,7 @@ export function LightMap({
         updateWhenIdle
         keepBuffer={1}
       />
+      <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={overlays} />
       <DrawingHandler
@@ -255,21 +242,23 @@ export function LightMap({
         onAoiComplete={onAoiComplete}
         onMeasure={onMeasure}
       />
-      <SketchLayer mapTool={mapTool} />
 
       {place && <Marker position={[place.latitude, place.longitude]} icon={markerIcon} />}
 
       {footprints.map(({ scene, positions }) => {
-        const active = selectedScene?.id === scene.id;
+        const focused = focusSceneId === scene.id;
+        const hasSceneOverlay = overlays.some(
+          (o) => o.kind === 'scene' && o.sceneId === scene.id,
+        );
         return (
           <Polygon
             key={scene.id}
             positions={positions}
             pathOptions={{
-              color: active ? '#0d9488' : '#64748b',
-              weight: active ? 2 : 1,
-              fillColor: active ? '#14b8a6' : '#94a3b8',
-              fillOpacity: overlays.length ? 0.05 : active ? 0.2 : 0.08,
+              color: focused ? '#0d9488' : '#64748b',
+              weight: focused ? 2 : 1,
+              fillColor: focused ? '#14b8a6' : '#94a3b8',
+              fillOpacity: hasSceneOverlay ? 0.02 : focused ? 0.15 : 0.06,
             }}
           />
         );
@@ -286,30 +275,34 @@ export function LightMap({
               [north, east],
             ]}
             opacity={overlay.opacity}
-            zIndex={overlay.kind === 'change' ? 450 : overlay.kind === 'index' ? 440 : 430}
+            zIndex={
+              overlay.kind === 'change' ? 460 : overlay.kind === 'index' ? 450 : 430
+            }
           />
         );
       })}
 
       {aoiPositions && (
-        <Polygon
-          positions={aoiPositions}
-          pathOptions={{
-            color: '#b45309',
-            weight: 2,
-            fillColor: '#f59e0b',
-            fillOpacity: 0.15,
-            dashArray: '6 4',
-          }}
-        />
+        <>
+          <Polygon
+            positions={aoiPositions}
+            pathOptions={{
+              color: '#b45309',
+              weight: 2,
+              fillColor: '#f59e0b',
+              fillOpacity: 0.12,
+              dashArray: '6 4',
+            }}
+          />
+          <Polyline
+            positions={aoiPositions}
+            pathOptions={{ color: '#b45309', weight: 2, dashArray: '4 4' }}
+          />
+        </>
       )}
 
-      {aoiPositions && aoiPositions.length > 1 && (
-        <Polyline
-          positions={aoiPositions}
-          pathOptions={{ color: '#b45309', weight: 2, dashArray: '4 4' }}
-        />
-      )}
+      <NorthArrow />
+      <ScaleBar />
     </MapContainer>
   );
 }

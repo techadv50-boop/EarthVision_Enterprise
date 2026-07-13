@@ -11,7 +11,7 @@ export function MapLegend({ legend, title }: Props) {
   const gradient = legend.stops.map((s) => s.color).join(', ');
 
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-3 z-[1000] w-[min(100%-1.5rem,16rem)] rounded-xl border border-[var(--line)] bg-white/95 p-3 shadow-sm">
+    <div className="pointer-events-auto absolute bottom-14 left-3 z-[1000] w-[min(100%-1.5rem,15rem)] rounded-xl border border-[var(--line)] bg-white/95 p-3 shadow-sm">
       <div className="text-xs font-semibold text-[var(--ink)]">
         {title || legend.label}
       </div>
