@@ -70,7 +70,7 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
         [south, west],
         [north, east],
       ],
-      { padding: [40, 40], maxZoom: 13, animate: true },
+      { padding: [40, 40], maxZoom: 15, animate: true },
     );
   }, [overlays, map]);
   return null;
@@ -225,18 +225,36 @@ export function LightMap({
 
       {place && <Marker position={[place.latitude, place.longitude]} icon={markerIcon} />}
 
-      {/* Eye toggle → true-color RGB ImageOverlay only (no footprint boxes) */}
+      {/* Scene eye → Sentinel-2 TCI XYZ tiles (sharp on zoom). Indices/change stay ImageOverlay. */}
       {overlays.map((overlay) => {
         const [west, south, east, north] = overlay.bounds;
+        const leafletBounds: [[number, number], [number, number]] = [
+          [south, west],
+          [north, east],
+        ];
+        if (overlay.kind === 'scene' && overlay.tileUrl) {
+          return (
+            <TileLayer
+              key={overlay.id}
+              url={overlay.tileUrl}
+              bounds={leafletBounds}
+              opacity={overlay.opacity}
+              maxNativeZoom={16}
+              maxZoom={18}
+              zIndex={430}
+              updateWhenZooming={false}
+              updateWhenIdle
+              keepBuffer={2}
+            />
+          );
+        }
+        if (!overlay.url) return null;
         return (
           <ImageOverlay
             key={overlay.id}
             url={overlay.url}
-            bounds={[
-              [south, west],
-              [north, east],
-            ]}
-            opacity={overlay.kind === 'scene' ? 1 : overlay.opacity}
+            bounds={leafletBounds}
+            opacity={overlay.opacity}
             zIndex={
               overlay.kind === 'change' ? 460 : overlay.kind === 'index' ? 450 : 430
             }

@@ -21,7 +21,10 @@ export interface MapOverlay {
   id: string;
   kind: 'scene' | 'index' | 'change';
   sceneId?: string;
+  /** Static image URL (indices / change). Empty when using tileUrl. */
   url: string;
+  /** XYZ tile template for sharp Sentinel-2 true-color scene layers */
+  tileUrl?: string;
   bounds: [number, number, number, number];
   opacity: number;
   label: string;

@@ -164,15 +164,22 @@ export function WorkspacePage() {
           collection: scene.collection,
           bbox: bounds,
           footprint: scene.footprint ?? null,
+          sensing_time: scene.sensing_time ?? null,
+          cloud_cover: scene.cloud_cover ?? null,
         });
+        const tileUrl =
+          overlay.tile_url || analyticsService.sceneTileUrl(scene.id);
         upsertOverlay({
           id: `scene-${scene.id}`,
           kind: 'scene',
           sceneId: scene.id,
-          url: analyticsService.toDataUrl(overlay.overlay_base64),
+          url: overlay.overlay_base64
+            ? analyticsService.toDataUrl(overlay.overlay_base64)
+            : '',
+          tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           opacity: 1,
-          label: `${scene.collection} true-color RGB`,
+          label: `${scene.collection} Sentinel-2 true-color (TCI)`,
         });
       } catch (err) {
         setError(getErrorMessage(err));

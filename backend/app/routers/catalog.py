@@ -14,7 +14,6 @@ from app.schemas.catalog import (
 )
 from app.services.copernicus_service import CopernicusCatalogService
 from app.services.scene_service import SceneService
-from app.services.analytics_service import AnalyticsService
 from pydantic import BaseModel, Field
 from typing import Any
 
@@ -98,16 +97,57 @@ class SceneOverlayBody(BaseModel):
     collection: str | None = None
     bbox: list[float] | None = None
     footprint: dict[str, Any] | None = None
+    sensing_time: str | None = None
+    cloud_cover: float | None = None
 
 
 @router.post("/scenes/overlay")
 async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
-    """Return a georeferenced true-color PNG for Leaflet ImageOverlay."""
-    service = AnalyticsService()
-    return service.truecolor_overlay(
+    """Prepare Sentinel-2 true-color (TCI) tiles for a scene and return map layer metadata.
+
+    Uses real Sentinel-2 L2A visual COGs (B04/B03/B02) served as XYZ tiles so
+    features stay sharp when zooming — not a low-res basemap PNG.
+    """
+    from app.services.scene_imagery_service import SceneImageryService
+
+    imagery = SceneImageryService()
+    layer = imagery.prepare_scene_layer(
         data.scene_id,
         bbox=data.bbox,
         footprint=data.footprint,
+        sensing_time=data.sensing_time,
+        cloud_cover=data.cloud_cover,
+        collection=data.collection,
+    )
+    return {
+        "scene_id": data.scene_id,
+        "bounds": layer["bounds"],
+        "tile_url": layer["tile_url_template"],
+        "source": layer["source"],
+        "composite": layer["composite"],
+        "bands": layer["bands"],
+        "stac_id": layer.get("stac_id"),
+        "acquisition_date": layer.get("acquisition_date"),
+        "cloud_cover": layer.get("cloud_cover"),
+        "thumbnail_url": layer.get("thumbnail_url"),
+        "content_type": "image/png",
+        # Backward-compatible empty field (map now uses tiles, not a static PNG)
+        "overlay_base64": "",
+        "download_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
+    }
+
+
+@router.get("/scenes/{scene_id}/tiles/{z}/{x}/{y}.png")
+async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
+    """XYZ tile from the scene's Sentinel-2 true-color COG (no auth — used by Leaflet)."""
+    from app.services.scene_imagery_service import SceneImageryService
+
+    imagery = SceneImageryService()
+    png = imagery.render_tile(scene_id, z, x, y)
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
@@ -120,15 +160,38 @@ async def scene_overlay_png(
     east: float | None = None,
     north: float | None = None,
 ) -> Response:
-    service = AnalyticsService()
+    """Export a single true-color preview PNG for the scene AOI (download helper)."""
+    from app.services.scene_imagery_service import SceneImageryService
+
+    imagery = SceneImageryService()
     bbox = None
     if None not in (west, south, east, north):
         bbox = [west, south, east, north]  # type: ignore[list-item]
-    result = service.truecolor_overlay(scene_id, bbox=bbox)
-    import base64
+    layer = imagery.get_layer(scene_id)
+    if not layer:
+        layer = imagery.prepare_scene_layer(scene_id, bbox=bbox)
+    # Build a mid-zoom mosaic preview from a few tiles
+    bounds = layer["bounds"]
+    # Approximate center tile at z=13
+    clon = (bounds[0] + bounds[2]) / 2
+    clat = (bounds[1] + bounds[3]) / 2
+    z = 13
+    n = 2**z
+    import math
 
+    tx = int((clon + 180.0) / 360.0 * n)
+    ty = int(
+        (
+            1.0
+            - math.log(math.tan(math.radians(clat)) + 1.0 / math.cos(math.radians(clat)))
+            / math.pi
+        )
+        / 2.0
+        * n
+    )
+    png = imagery.render_tile(scene_id, z, tx, ty)
     return Response(
-        content=base64.b64decode(result["overlay_base64"]),
+        content=png,
         media_type="image/png",
-        headers={"Content-Disposition": f'attachment; filename="scene_{scene_id}.png"'},
+        headers={"Content-Disposition": f'attachment; filename="scene_{scene_id}_tci.png"'},
     )

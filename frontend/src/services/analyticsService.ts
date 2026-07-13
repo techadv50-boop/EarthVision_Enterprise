@@ -47,10 +47,19 @@ export interface ChangeResult {
 
 export interface SceneOverlay {
   scene_id: string;
-  overlay_base64: string;
+  overlay_base64?: string;
   bounds: number[];
-  download_url: string;
+  download_url?: string;
   local_path?: string;
+  /** XYZ template e.g. /api/v1/catalog/scenes/{id}/tiles/{z}/{x}/{y}.png */
+  tile_url?: string;
+  source?: string;
+  composite?: string;
+  bands?: { R: string; G: string; B: string };
+  stac_id?: string;
+  acquisition_date?: string;
+  cloud_cover?: number;
+  thumbnail_url?: string;
 }
 
 function toDataUrl(b64: string): string {
@@ -98,9 +107,16 @@ export const analyticsService = {
     collection?: string;
     bbox?: number[];
     footprint?: GeoJSON.Geometry | null;
+    sensing_time?: string | null;
+    cloud_cover?: number | null;
   }): Promise<SceneOverlay> {
     const { data } = await api.post<SceneOverlay>('/catalog/scenes/overlay', payload);
     return data;
+  },
+
+  sceneTileUrl(sceneId: string): string {
+    const base = import.meta.env.VITE_API_URL || '/api/v1';
+    return `${base}/catalog/scenes/${encodeURIComponent(sceneId)}/tiles/{z}/{x}/{y}.png`;
   },
 
   exportIndexPngUrl(index: IndexName, sceneId: string, bbox: number[]): string {

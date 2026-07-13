@@ -46,7 +46,7 @@ export function ScenesStep({
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
-          {' — '}eye shows true-color optical RGB over the scene area
+          {' — '}eye shows Sentinel-2 true-color (10 m TCI); zoom stays sharp
         </p>
       </div>
 
