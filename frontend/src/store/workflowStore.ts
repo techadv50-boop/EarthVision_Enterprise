@@ -5,6 +5,7 @@ import type { IndexName, IndexResult, ChangeResult } from '../services/analytics
 export type WorkflowStep = 'place' | 'browse';
 export type MapTool =
   | 'navigate'
+  | 'draw-point'
   | 'measure-line'
   | 'measure-area'
   | 'aoi-rect'
@@ -19,18 +20,27 @@ export interface PlaceSelection {
 
 export interface MapOverlay {
   id: string;
-  kind: 'scene' | 'index' | 'change';
+  kind: 'scene' | 'index' | 'change' | 'terrain' | 'buffer';
   sceneId?: string;
-  /** Static image URL (indices / change). Empty when using tileUrl. */
+  /** Static image URL (indices / change / terrain). Empty when using tileUrl or geojson-only. */
   url: string;
   /** XYZ tile template for sharp scene layers */
   tileUrl?: string;
   bounds: [number, number, number, number];
   /** Actual scene footprint (tilted for Landsat / S1) */
   footprint?: GeoJSON.Polygon | null;
+  /** Vector overlay (contours, drainage, LOS, buffer outline) */
+  geojson?: GeoJSON.GeoJsonObject | null;
   opacity: number;
   label: string;
   renderMode?: 'rgb' | 'grayscale';
+}
+
+/** Drawn feature available for buffer / profile / LOS */
+export interface DrawnFeature {
+  type: 'Point' | 'LineString' | 'Polygon';
+  geometry: GeoJSON.Geometry;
+  label: string;
 }
 
 interface WorkflowState {
@@ -40,6 +50,7 @@ interface WorkflowState {
   visibleSceneIds: string[];
   focusSceneId: string | null;
   analysisOpen: boolean;
+  terrainOpen: boolean;
   compareSceneId: string | null;
   indexResult: IndexResult | null;
   changeResult: ChangeResult | null;
@@ -50,6 +61,9 @@ interface WorkflowState {
   error: string | null;
   mapTool: MapTool;
   aoiGeoJson: GeoJSON.Feature | null;
+  drawnFeature: DrawnFeature | null;
+  measureLine: GeoJSON.LineString | null;
+  bufferGeoJson: GeoJSON.Polygon | null;
   measureLabel: string | null;
   overlays: MapOverlay[];
   layerOpacity: number;
@@ -58,6 +72,7 @@ interface WorkflowState {
   setScenes: (scenes: SceneSummary[]) => void;
   setFocusSceneId: (id: string | null) => void;
   setAnalysisOpen: (open: boolean) => void;
+  setTerrainOpen: (open: boolean) => void;
   setCompareSceneId: (id: string | null) => void;
   setIndexResult: (result: IndexResult | null) => void;
   setChangeResult: (result: ChangeResult | null) => void;
@@ -69,6 +84,9 @@ interface WorkflowState {
   setError: (error: string | null) => void;
   setMapTool: (tool: MapTool) => void;
   setAoiGeoJson: (f: GeoJSON.Feature | null) => void;
+  setDrawnFeature: (f: DrawnFeature | null) => void;
+  setMeasureLine: (line: GeoJSON.LineString | null) => void;
+  setBufferGeoJson: (g: GeoJSON.Polygon | null) => void;
   setMeasureLabel: (label: string | null) => void;
   upsertOverlay: (overlay: MapOverlay) => void;
   removeOverlay: (id: string) => void;
@@ -78,6 +96,7 @@ interface WorkflowState {
   showScene: (sceneId: string) => void;
   hideScene: (sceneId: string) => void;
   clearAnalysis: () => void;
+  clearDrawn: () => void;
   resetFromPlace: () => void;
   backToPlace: () => void;
 }
@@ -89,6 +108,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   visibleSceneIds: [],
   focusSceneId: null,
   analysisOpen: false,
+  terrainOpen: false,
   compareSceneId: null,
   indexResult: null,
   changeResult: null,
@@ -99,6 +119,9 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   error: null,
   mapTool: 'navigate',
   aoiGeoJson: null,
+  drawnFeature: null,
+  measureLine: null,
+  bufferGeoJson: null,
   measureLabel: null,
   overlays: [],
   layerOpacity: 0.8,
@@ -108,6 +131,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   setScenes: (scenes) => set({ scenes }),
   setFocusSceneId: (focusSceneId) => set({ focusSceneId }),
   setAnalysisOpen: (analysisOpen) => set({ analysisOpen }),
+  setTerrainOpen: (terrainOpen) => set({ terrainOpen }),
   setCompareSceneId: (compareSceneId) => set({ compareSceneId }),
   setIndexResult: (indexResult) => set({ indexResult }),
   setChangeResult: (changeResult) => set({ changeResult }),
@@ -125,13 +149,19 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   setError: (error) => set({ error }),
   setMapTool: (mapTool) => set({ mapTool }),
   setAoiGeoJson: (aoiGeoJson) => set({ aoiGeoJson }),
+  setDrawnFeature: (drawnFeature) => set({ drawnFeature }),
+  setMeasureLine: (measureLine) => set({ measureLine }),
+  setBufferGeoJson: (bufferGeoJson) => set({ bufferGeoJson }),
   setMeasureLabel: (measureLabel) => set({ measureLabel }),
 
   upsertOverlay: (overlay) =>
     set((state) => {
       let next = state.overlays.filter((o) => o.id !== overlay.id);
-      if (overlay.kind === 'index' || overlay.kind === 'change') {
+      if (overlay.kind === 'index' || overlay.kind === 'change' || overlay.kind === 'terrain') {
         next = next.filter((o) => o.kind !== overlay.kind);
+      }
+      if (overlay.kind === 'buffer') {
+        next = next.filter((o) => o.kind !== 'buffer');
       }
       if (overlay.kind === 'scene' && overlay.sceneId) {
         next = next.filter((o) => !(o.kind === 'scene' && o.sceneId === overlay.sceneId));
@@ -178,6 +208,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         visibleSceneIds,
         focusSceneId,
         analysisOpen: clearAnalysis ? false : state.analysisOpen,
+        terrainOpen: clearAnalysis ? false : state.terrainOpen,
         indexResult: clearAnalysis ? null : state.indexResult,
         changeResult: clearAnalysis ? null : state.changeResult,
         selectedIndex: clearAnalysis ? null : state.selectedIndex,
@@ -196,7 +227,19 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       changeResult: null,
       selectedIndex: null,
       compareSceneId: null,
-      overlays: state.overlays.filter((o) => o.kind === 'scene'),
+      overlays: state.overlays.filter(
+        (o) => o.kind === 'scene' || o.kind === 'terrain' || o.kind === 'buffer',
+      ),
+    })),
+
+  clearDrawn: () =>
+    set((state) => ({
+      aoiGeoJson: null,
+      drawnFeature: null,
+      measureLine: null,
+      bufferGeoJson: null,
+      measureLabel: null,
+      overlays: state.overlays.filter((o) => o.kind !== 'buffer'),
     })),
 
   resetFromPlace: () =>
@@ -206,6 +249,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       visibleSceneIds: [],
       focusSceneId: null,
       analysisOpen: false,
+      terrainOpen: false,
       compareSceneId: null,
       indexResult: null,
       changeResult: null,
@@ -224,6 +268,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       visibleSceneIds: [],
       focusSceneId: null,
       analysisOpen: false,
+      terrainOpen: false,
       compareSceneId: null,
       indexResult: null,
       changeResult: null,
@@ -234,6 +279,9 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       loadingOverlayIds: [],
       overlays: [],
       aoiGeoJson: null,
+      drawnFeature: null,
+      measureLine: null,
+      bufferGeoJson: null,
       measureLabel: null,
       mapTool: 'navigate',
     }),

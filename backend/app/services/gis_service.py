@@ -326,3 +326,26 @@ class GISService:
                 props = dict(zip(fields, sr.record, strict=False))
                 features.append({"type": "Feature", "geometry": geom, "properties": props})
             return {"type": "FeatureCollection", "features": features}
+
+    def buffer_geometry(self, geometry: dict[str, Any], distance_meters: float, segments: int = 32) -> dict[str, Any]:
+        """Buffer a GeoJSON geometry by distance in metres (EPSG:6933)."""
+        from app.schemas.terrain import BufferResponse
+
+        try:
+            geom = shape(geometry if geometry.get("type") != "Feature" else geometry["geometry"])
+        except Exception as exc:
+            raise ValidationError("Invalid geometry", details=str(exc)) from exc
+
+        to_m = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
+        to_ll = Transformer.from_crs("EPSG:6933", "EPSG:4326", always_xy=True)
+        projected = transform(to_m.transform, geom)
+        buffered = projected.buffer(distance_meters, resolution=max(segments // 4, 2))
+        result = transform(to_ll.transform, buffered)
+        minx, miny, maxx, maxy = result.bounds
+        area = float(buffered.area) if not buffered.is_empty else None
+        return BufferResponse(
+            geometry=mapping(result),
+            distance_meters=distance_meters,
+            area_sq_meters=area,
+            bounds=[minx, miny, maxx, maxy],
+        ).model_dump()

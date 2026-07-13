@@ -14,6 +14,7 @@ from app.schemas.gis import (
     MeasurementResponse,
     ReverseGeocodeRequest,
 )
+from app.schemas.terrain import BufferRequest, BufferResponse
 from app.services.gis_service import GISService
 
 router = APIRouter(prefix="/gis", tags=["GIS"])
@@ -37,6 +38,14 @@ async def reverse_geocode(data: ReverseGeocodeRequest, user: CurrentUser) -> dic
 async def measure(data: MeasurementRequest, user: CurrentUser) -> MeasurementResponse:
     service = GISService()
     return service.measure(data)
+
+
+@router.post("/buffer", response_model=BufferResponse)
+async def buffer_geometry(data: BufferRequest, user: CurrentUser) -> BufferResponse:
+    """Buffer a drawn point, line, or polygon by a distance in metres."""
+    service = GISService()
+    result = service.buffer_geometry(data.geometry, data.distance_meters, data.segments)
+    return BufferResponse(**result)
 
 
 @router.post("/export")

@@ -10,9 +10,10 @@ import {
   ImageOverlay,
   useMap,
   useMapEvents,
+  GeoJSON,
 } from 'react-leaflet';
 import L from 'leaflet';
-import type { PlaceSelection, MapTool, MapOverlay } from '../store/workflowStore';
+import type { PlaceSelection, MapTool, MapOverlay, DrawnFeature } from '../store/workflowStore';
 import {
   formatArea,
   formatDistance,
@@ -40,10 +41,13 @@ interface Props {
   overlays: MapOverlay[];
   mapTool: MapTool;
   aoiGeoJson: GeoJSON.Feature | null;
+  drawnFeature: DrawnFeature | null;
+  bufferGeoJson: GeoJSON.Polygon | null;
   enablePlaceClick: boolean;
   showGrid?: boolean;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
+  onDrawnFeature: (feature: DrawnFeature) => void;
   onMeasure: (label: string | null) => void;
 }
 
@@ -73,6 +77,11 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
   useEffect(() => {
     const last = overlays[overlays.length - 1];
     if (!last || last.id === lastId.current) return;
+    // Don't auto-fit buffer-only updates
+    if (last.kind === 'buffer') {
+      lastId.current = last.id;
+      return;
+    }
     lastId.current = last.id;
     const [west, south, east, north] = last.bounds;
     map.fitBounds(
@@ -106,7 +115,6 @@ function MapInteractionMode({ mapTool }: { mapTool: MapTool }) {
       map.dragging.disable();
       map.doubleClickZoom.disable();
       map.boxZoom.disable();
-      // Keep scroll zoom for convenience while measuring
       map.scrollWheelZoom.enable();
       container.style.cursor = 'crosshair';
       container.classList.add('ev-draw-mode');
@@ -142,14 +150,15 @@ function DrawingTools({
   enablePlaceClick,
   onPlaceClick,
   onAoiComplete,
+  onDrawnFeature,
   onMeasure,
-  draft,
   setDraft,
 }: {
   mapTool: MapTool;
   enablePlaceClick: boolean;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
+  onDrawnFeature: (feature: DrawnFeature) => void;
   onMeasure: (label: string | null) => void;
   draft: DraftState;
   setDraft: Dispatch<SetStateAction<DraftState>>;
@@ -166,18 +175,27 @@ function DrawingTools({
     setDraft({ points: pts, rectStart, cursor });
   };
 
+  const emitLine = (pts: LonLat[], label: string) => {
+    if (pts.length < 2) return;
+    const geometry: GeoJSON.LineString = { type: 'LineString', coordinates: pts };
+    onDrawnFeature({ type: 'LineString', geometry, label });
+  };
+
   const finishPolygon = (pts: LonLat[], kind: 'polygon' | 'area') => {
     if (pts.length < 3) return;
     const ring = [...pts, pts[0]];
     const areaLabel = formatArea(polygonAreaSqMeters(ring));
+    const geometry: GeoJSON.Polygon = { type: 'Polygon', coordinates: [ring] };
     if (kind === 'polygon') {
       onAoiComplete({
         type: 'Feature',
         properties: { kind: 'polygon', name: 'AOI' },
-        geometry: { type: 'Polygon', coordinates: [ring] },
+        geometry,
       });
+      onDrawnFeature({ type: 'Polygon', geometry, label: 'AOI polygon' });
       onMeasure(`AOI area: ${areaLabel}`);
     } else {
+      onDrawnFeature({ type: 'Polygon', geometry, label: 'Area polygon' });
       onMeasure(`Area: ${areaLabel}`);
     }
     syncDraft([], null, null);
@@ -189,7 +207,7 @@ function DrawingTools({
     },
     mousemove(e) {
       const tool = toolRef.current;
-      if (tool === 'navigate') return;
+      if (tool === 'navigate' || tool === 'draw-point') return;
       const cursor: LonLat = [e.latlng.lng, e.latlng.lat];
       setDraft((prev) => ({ ...prev, cursor }));
     },
@@ -208,13 +226,22 @@ function DrawingTools({
         return;
       }
 
+      if (tool === 'draw-point') {
+        const geometry: GeoJSON.Point = { type: 'Point', coordinates: [lon, lat] };
+        onDrawnFeature({ type: 'Point', geometry, label: 'Point' });
+        onMeasure(`Point: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
+        syncDraft([pt], null, null);
+        return;
+      }
+
       if (tool === 'measure-line') {
         const pts = [...pointsRef.current, pt];
         syncDraft(pts, null, pt);
         if (pts.length === 1) {
-          onMeasure('Distance: click next point (double-click to reset)');
+          onMeasure('Distance: click next point (double-click to finish)');
         } else {
-          onMeasure(`Distance: ${formatDistance(pathLengthMeters(pts))}`);
+          onMeasure(`Distance: ${formatDistance(pathLengthMeters(pts))} · double-click to finish`);
+          emitLine(pts, 'Distance line');
         }
         return;
       }
@@ -266,11 +293,13 @@ function DrawingTools({
             [west, north],
             [west, south],
           ];
+          const geometry: GeoJSON.Polygon = { type: 'Polygon', coordinates: [ring] };
           onAoiComplete({
             type: 'Feature',
             properties: { kind: 'rectangle', name: 'AOI' },
-            geometry: { type: 'Polygon', coordinates: [ring] },
+            geometry,
           });
+          onDrawnFeature({ type: 'Polygon', geometry, label: 'AOI rectangle' });
           onMeasure(`AOI area: ${formatArea(polygonAreaSqMeters(ring))}`);
           syncDraft([], null, null);
         }
@@ -286,13 +315,13 @@ function DrawingTools({
       if (tool === 'measure-line') {
         if (pointsRef.current.length >= 2) {
           onMeasure(`Distance: ${formatDistance(pathLengthMeters(pointsRef.current))}`);
+          emitLine(pointsRef.current, 'Distance line');
         }
         syncDraft([], null, null);
         return;
       }
 
       if (tool === 'measure-area' || tool === 'aoi-poly') {
-        // Drop the vertex added by the first click of the double-click pair
         const pts =
           pointsRef.current.length > 0
             ? pointsRef.current.slice(0, -1)
@@ -311,7 +340,8 @@ function DrawingTools({
   useEffect(() => {
     syncDraft([], null, null);
     suppressClick.current = false;
-    if (mapTool === 'measure-line') onMeasure('Distance: click points on the map');
+    if (mapTool === 'draw-point') onMeasure('Point: click the map');
+    else if (mapTool === 'measure-line') onMeasure('Distance: click points on the map');
     else if (mapTool === 'measure-area') onMeasure('Area: click 3+ vertices, double-click to finish');
     else if (mapTool === 'aoi-rect') onMeasure('Rect AOI: click two opposite corners');
     else if (mapTool === 'aoi-poly') onMeasure('Poly AOI: click vertices, double-click to finish');
@@ -331,7 +361,11 @@ function DraftGraphics({
 }) {
   const { points, rectStart, cursor } = draft;
   const color =
-    mapTool === 'measure-line' || mapTool === 'measure-area' ? '#0ea5e9' : '#b45309';
+    mapTool === 'measure-line' || mapTool === 'measure-area'
+      ? '#0ea5e9'
+      : mapTool === 'draw-point'
+        ? '#0f766e'
+        : '#b45309';
 
   const previewLine = useMemo(() => {
     if (!cursor || points.length === 0) return null;
@@ -407,7 +441,7 @@ function DraftGraphics({
         <CircleMarker
           key={`v-${i}`}
           center={[lat, lon]}
-          radius={5}
+          radius={mapTool === 'draw-point' ? 7 : 5}
           interactive={false}
           pathOptions={{
             color: '#fff',
@@ -421,15 +455,57 @@ function DraftGraphics({
   );
 }
 
+function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
+  if (!feature) return null;
+  if (feature.type === 'Point' && feature.geometry.type === 'Point') {
+    const [lon, lat] = feature.geometry.coordinates;
+    return (
+      <CircleMarker
+        center={[lat, lon]}
+        radius={7}
+        interactive={false}
+        pathOptions={{ color: '#fff', weight: 2, fillColor: '#0f766e', fillOpacity: 1 }}
+      />
+    );
+  }
+  if (feature.type === 'LineString' && feature.geometry.type === 'LineString') {
+    const positions = feature.geometry.coordinates.map(
+      (c) => [c[1], c[0]] as LatLon,
+    );
+    return (
+      <Polyline
+        positions={positions}
+        interactive={false}
+        pathOptions={{ color: '#0ea5e9', weight: 3, opacity: 0.95 }}
+      />
+    );
+  }
+  if (feature.type === 'Polygon' && feature.geometry.type === 'Polygon') {
+    // AOI already rendered separately; skip duplicate if same
+    return null;
+  }
+  return null;
+}
+
+function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
+  if (kind === 'buffer') {
+    return { color: '#7c3aed', weight: 2, fillColor: '#7c3aed', fillOpacity: 0.18 };
+  }
+  return { color: '#0f766e', weight: 1.5, fillOpacity: 0, opacity: 0.9 };
+}
+
 export function LightMap({
   place,
   overlays,
   mapTool,
   aoiGeoJson,
+  drawnFeature,
+  bufferGeoJson,
   enablePlaceClick,
   showGrid = true,
   onPlaceClick,
   onAoiComplete,
+  onDrawnFeature,
   onMeasure,
 }: Props) {
   const [draft, setDraft] = useState<DraftState>({
@@ -444,6 +520,11 @@ export function LightMap({
       (c) => [c[1], c[0]] as LatLon,
     );
   }, [aoiGeoJson]);
+
+  const bufferPositions = useMemo(() => {
+    if (!bufferGeoJson || bufferGeoJson.type !== 'Polygon') return null;
+    return bufferGeoJson.coordinates[0].map((c) => [c[1], c[0]] as LatLon);
+  }, [bufferGeoJson]);
 
   return (
     <MapContainer
@@ -471,6 +552,7 @@ export function LightMap({
         enablePlaceClick={enablePlaceClick}
         onPlaceClick={onPlaceClick}
         onAoiComplete={onAoiComplete}
+        onDrawnFeature={onDrawnFeature}
         onMeasure={onMeasure}
         draft={draft}
         setDraft={setDraft}
@@ -499,6 +581,17 @@ export function LightMap({
               )
             : null;
 
+        const zIndex =
+          overlay.kind === 'change'
+            ? 460
+            : overlay.kind === 'index'
+              ? 450
+              : overlay.kind === 'terrain'
+                ? 455
+                : overlay.kind === 'buffer'
+                  ? 470
+                  : 430;
+
         return (
           <Fragment key={overlay.id}>
             {overlay.kind === 'scene' && overlay.tileUrl ? (
@@ -519,11 +612,17 @@ export function LightMap({
                 bounds={leafletBounds}
                 opacity={overlay.opacity}
                 interactive={false}
-                zIndex={
-                  overlay.kind === 'change' ? 460 : overlay.kind === 'index' ? 450 : 430
-                }
+                zIndex={zIndex}
               />
             ) : null}
+            {overlay.geojson && (
+              <GeoJSON
+                key={`${overlay.id}-gj`}
+                data={overlay.geojson as GeoJSON.GeoJsonObject}
+                interactive={false}
+                style={() => geoStyle(overlay.kind)}
+              />
+            )}
             {footprintRing && (
               <Polygon
                 positions={footprintRing}
@@ -542,6 +641,7 @@ export function LightMap({
       })}
 
       <DraftGraphics mapTool={mapTool} draft={draft} />
+      <DrawnFeatureLayer feature={drawnFeature} />
 
       {aoiOutline && (
         <Polygon
@@ -553,6 +653,20 @@ export function LightMap({
             fillColor: '#b45309',
             fillOpacity: 0.08,
             dashArray: '6 4',
+          }}
+        />
+      )}
+
+      {bufferPositions && (
+        <Polygon
+          positions={bufferPositions}
+          interactive={false}
+          pathOptions={{
+            color: '#7c3aed',
+            weight: 2.5,
+            fillColor: '#7c3aed',
+            fillOpacity: 0.16,
+            dashArray: '4 3',
           }}
         />
       )}

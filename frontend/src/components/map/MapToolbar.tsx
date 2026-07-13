@@ -1,5 +1,6 @@
 import {
   MousePointer2,
+  MapPin,
   Ruler,
   Square,
   Pentagon,
@@ -12,16 +13,22 @@ import type { MapTool } from '../../store/workflowStore';
 const TOOLS: Array<{ id: MapTool; icon: typeof Ruler; label: string; hint: string }> = [
   { id: 'navigate', icon: MousePointer2, label: 'Pan', hint: 'Drag to pan · scroll to zoom' },
   {
+    id: 'draw-point',
+    icon: MapPin,
+    label: 'Point',
+    hint: 'Click to place a point for buffer / viewshed',
+  },
+  {
     id: 'measure-line',
     icon: Ruler,
     label: 'Distance',
-    hint: 'Click points along a path · double-click to reset',
+    hint: 'Click points along a path · double-click to finish (buffer / profile)',
   },
   {
     id: 'measure-area',
     icon: CircleDashed,
     label: 'Area',
-    hint: 'Click 3+ vertices · double-click to finish',
+    hint: 'Click 3+ vertices · double-click to finish (buffer)',
   },
   {
     id: 'aoi-rect',
