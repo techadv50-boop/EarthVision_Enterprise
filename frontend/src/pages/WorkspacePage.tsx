@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LogOut, Wrench } from 'lucide-react';
 import { LightMap } from '../map/LightMap';
 import { MapToolbar } from '../components/map/MapToolbar';
@@ -30,6 +30,7 @@ import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
 import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
 import { bookmarkService } from '../services/bookmarkService';
+import { TOOLBOXES } from '../toolbox/catalog';
 
 function sceneBounds(
   scene: SceneSummary,
@@ -153,6 +154,36 @@ export function WorkspacePage() {
     resetFromPlace,
     backToPlace,
   } = useWorkflowStore();
+
+  // Recover from stale HMR / old store snapshots missing new fields
+  useEffect(() => {
+    const state = useWorkflowStore.getState();
+    const patch: Record<string, unknown> = {};
+    if (typeof state.toolboxOpen !== 'boolean') patch.toolboxOpen = true;
+    if (!state.expandedToolbox) patch.expandedToolbox = 'image';
+    if (!state.mapChrome || typeof state.mapChrome !== 'object') {
+      patch.mapChrome = {
+        compass: true,
+        scaleBar: true,
+        coordinates: true,
+        miniMap: false,
+        swipe: false,
+        splitView: false,
+        syncMaps: false,
+        rotate: false,
+        view3d: false,
+        terrainRelief: false,
+        timeSlider: false,
+        bookmarks: false,
+        manualVerify: false,
+      };
+    }
+    // Always reopen toolboxes after login so the new UI is visible
+    if (state.toolboxOpen === false) patch.toolboxOpen = true;
+    if (Object.keys(patch).length) {
+      useWorkflowStore.setState(patch as Partial<typeof state>);
+    }
+  }, []);
 
   const focusScene = useMemo(
     () => scenes.find((s) => s.id === focusSceneId) ?? null,
@@ -776,7 +807,7 @@ export function WorkspacePage() {
             onClick={() => setToolboxOpen(!toolboxOpen)}
           >
             <Wrench className="h-4 w-4" />
-            Toolboxes
+            Toolboxes ({TOOLBOXES.reduce((n, b) => n + b.tools.length, 0)})
           </button>
           <span className="hidden max-w-[10rem] truncate text-xs text-[var(--muted)] sm:inline">
             {user?.full_name}
@@ -787,14 +818,8 @@ export function WorkspacePage() {
         </div>
       </header>
 
-      <div
-        className={`grid min-h-0 flex-1 ${
-          toolboxOpen
-            ? 'lg:grid-cols-[minmax(17rem,21rem)_1fr_minmax(20rem,24rem)]'
-            : 'lg:grid-cols-[minmax(18rem,24rem)_1fr]'
-        }`}
-      >
-        <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto border-b border-[var(--line)] bg-white p-3 sm:p-4 lg:border-b-0 lg:border-r">
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-[min(21rem,100%)] shrink-0 flex-col gap-3 overflow-y-auto border-r border-[var(--line)] bg-white p-3 sm:p-4">
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
               {error}
@@ -822,7 +847,7 @@ export function WorkspacePage() {
 
         <section
           ref={mapHostRef}
-          className="relative min-h-[40vh] lg:min-h-0"
+          className="relative min-h-[40vh] min-w-0 flex-1 lg:min-h-0"
           id="ev-map-host"
           style={filterStyle}
         >
@@ -895,42 +920,69 @@ export function WorkspacePage() {
           )}
         </section>
 
-        {toolboxOpen && (
-          <ToolboxPanel
-            expanded={(expandedToolbox as ToolboxId | null) ?? null}
-            activeToolId={activeToolId}
-            loading={toolLoading}
-            status={toolStatus}
-            overlays={overlays}
-            layerOpacity={layerOpacity}
-            hasScene={hasVisibleScene}
-            hasDrawn={Boolean(drawnFeature)}
-            drawnType={drawnFeature?.type ?? null}
-            bufferLoading={bufferLoading}
-            lastBufferDistance={lastBufferDistance}
-            lastBufferArea={lastBufferArea}
-            lastLegend={lastLegend}
-            lastMessage={lastMessage}
-            mapChrome={mapChrome}
-            onExpand={(id) => setExpandedToolbox(id)}
-            onTool={onTool}
-            onClose={() => setToolboxOpen(false)}
-            onOpacity={setLayerOpacity}
-            onToggleOverlay={(id) => {
-              const layer = overlays.find((o) => o.id === id);
-              if (layer) setOverlayVisible(id, layer.visible === false);
-            }}
-            onRemoveOverlay={removeOverlay}
-            onMoveOverlay={moveOverlay}
-            onRenameOverlay={renameOverlay}
-            onApplyBuffer={onApplyBuffer}
-            onClearBuffer={() => {
-              setBufferGeoJson(null);
-              removeOverlaysByKind('buffer');
-              setLastBufferDistance(null);
-              setLastBufferArea(null);
-            }}
-          />
+        {toolboxOpen ? (
+          <div className="flex w-[min(24rem,100%)] shrink-0 flex-col overflow-hidden">
+            <ToolboxPanel
+              expanded={(expandedToolbox as ToolboxId | null) ?? 'image'}
+              activeToolId={activeToolId}
+              loading={toolLoading}
+              status={toolStatus}
+              overlays={overlays}
+              layerOpacity={layerOpacity}
+              hasScene={hasVisibleScene}
+              hasDrawn={Boolean(drawnFeature)}
+              drawnType={drawnFeature?.type ?? null}
+              bufferLoading={bufferLoading}
+              lastBufferDistance={lastBufferDistance}
+              lastBufferArea={lastBufferArea}
+              lastLegend={lastLegend}
+              lastMessage={lastMessage}
+              mapChrome={mapChrome}
+              onExpand={(id) => setExpandedToolbox(id)}
+              onTool={onTool}
+              onClose={() => setToolboxOpen(false)}
+              onOpacity={setLayerOpacity}
+              onToggleOverlay={(id) => {
+                const layer = overlays.find((o) => o.id === id);
+                if (layer) setOverlayVisible(id, layer.visible === false);
+              }}
+              onRemoveOverlay={removeOverlay}
+              onMoveOverlay={moveOverlay}
+              onRenameOverlay={renameOverlay}
+              onApplyBuffer={onApplyBuffer}
+              onClearBuffer={() => {
+                setBufferGeoJson(null);
+                removeOverlaysByKind('buffer');
+                setLastBufferDistance(null);
+                setLastBufferArea(null);
+              }}
+            />
+          </div>
+        ) : (
+          <div className="flex w-12 shrink-0 flex-col items-center gap-1 border-l border-[var(--line)] bg-white py-2">
+            <button
+              type="button"
+              className="rounded-lg bg-[var(--accent)] p-2 text-white"
+              title="Open toolboxes"
+              onClick={() => setToolboxOpen(true)}
+            >
+              <Wrench className="h-4 w-4" />
+            </button>
+            {TOOLBOXES.slice(0, 6).map((box) => (
+              <button
+                key={box.id}
+                type="button"
+                className="rounded p-1.5 text-[9px] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
+                title={box.title}
+                onClick={() => {
+                  setExpandedToolbox(box.id);
+                  setToolboxOpen(true);
+                }}
+              >
+                {box.title.split(' ')[0]}
+              </button>
+            ))}
+          </div>
         )}
       </div>
     </div>

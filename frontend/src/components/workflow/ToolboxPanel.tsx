@@ -1,7 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  ChevronDown,
-  ChevronRight,
   X,
   Compass,
   Layers,
@@ -19,7 +17,6 @@ import {
   TOOLBOXES,
   type ToolboxId,
   type ToolboxTool,
-  type ToolAction,
 } from '../../toolbox/catalog';
 import type { MapOverlay } from '../../store/workflowStore';
 import type { LegendInfo } from '../../services/analyticsService';
@@ -38,6 +35,12 @@ const ICONS: Record<ToolboxId, typeof Compass> = {
   measure: Ruler,
 };
 
+const DEFAULT_CHROME: Record<string, boolean> = {
+  compass: true,
+  scaleBar: true,
+  coordinates: true,
+};
+
 interface Props {
   expanded: ToolboxId | null;
   activeToolId: string | null;
@@ -53,8 +56,8 @@ interface Props {
   lastBufferArea?: number | null;
   lastLegend?: LegendInfo | null;
   lastMessage?: string | null;
-  mapChrome: Record<string, boolean>;
-  onExpand: (id: ToolboxId | null) => void;
+  mapChrome?: Record<string, boolean> | null;
+  onExpand: (id: ToolboxId) => void;
   onTool: (tool: ToolboxTool) => void;
   onClose: () => void;
   onOpacity: (v: number) => void;
@@ -96,23 +99,62 @@ export function ToolboxPanel({
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
 
-  const managedLayers = useMemo(
-    () => [...overlays].reverse(),
-    [overlays],
-  );
+  const activeId = expanded || 'image';
+  const activeBox = TOOLBOXES.find((b) => b.id === activeId) || TOOLBOXES[2];
+  const chrome = mapChrome || DEFAULT_CHROME;
+
+  const managedLayers = useMemo(() => [...overlays].reverse(), [overlays]);
+
+  // Ensure a category is always selected
+  useEffect(() => {
+    if (!expanded) onExpand('image');
+  }, [expanded, onExpand]);
 
   return (
-    <aside className="flex h-full min-h-0 w-full flex-col border-l border-[var(--line)] bg-white">
-      <div className="flex shrink-0 items-start justify-between gap-2 border-b border-[var(--line)] px-3 py-2.5">
+    <aside
+      className="flex h-full min-h-[50vh] w-full min-w-[20rem] flex-col border-l-2 border-[var(--accent)] bg-white shadow-sm"
+      data-testid="toolbox-panel"
+    >
+      <div className="flex shrink-0 items-start justify-between gap-2 border-b border-[var(--line)] bg-[var(--accent-soft)] px-3 py-2.5">
         <div>
-          <h2 className="font-display text-base font-semibold">Toolboxes</h2>
+          <h2 className="font-display text-base font-semibold text-[var(--accent)]">
+            Toolboxes
+          </h2>
           <p className="text-[11px] text-[var(--muted)]">
-            Right-side analysis · apply on imagery where available
+            {TOOLBOXES.length} categories · {TOOLBOXES.reduce((n, b) => n + b.tools.length, 0)} tools
           </p>
         </div>
         <button type="button" className="ev-btn-ghost p-1" onClick={onClose} title="Close">
           <X className="h-4 w-4" />
         </button>
+      </div>
+
+      {/* Category tabs — always visible */}
+      <div className="shrink-0 border-b border-[var(--line)] bg-white px-2 py-2">
+        <div className="grid grid-cols-5 gap-1">
+          {TOOLBOXES.map((box) => {
+            const Icon = ICONS[box.id];
+            const on = activeId === box.id;
+            return (
+              <button
+                key={box.id}
+                type="button"
+                title={box.title}
+                onClick={() => onExpand(box.id)}
+                className={`flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[9px] font-semibold leading-tight ${
+                  on
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'bg-[var(--bg)] text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]'
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span className="line-clamp-2 w-full text-center">
+                  {box.title.split(' ')[0]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {(loading || status) && (
@@ -122,116 +164,112 @@ export function ToolboxPanel({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {TOOLBOXES.map((box) => {
-          const Icon = ICONS[box.id];
-          const open = expanded === box.id;
-          return (
-            <div key={box.id} className="border-b border-[var(--line)]">
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-[var(--accent-soft)]"
-                onClick={() => onExpand(open ? null : box.id)}
-              >
-                {open ? (
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted)]" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--muted)]" />
-                )}
-                <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold">{box.title}</div>
-                  <div className="truncate text-[10px] text-[var(--muted)]">{box.blurb}</div>
-                </div>
-                <span className="rounded bg-[var(--accent-soft)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--accent)]">
-                  {box.tools.length}
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="mb-2">
+          <div className="font-display text-sm font-semibold">{activeBox.title}</div>
+          <p className="text-[11px] text-[var(--muted)]">{activeBox.blurb}</p>
+          {!hasScene && activeBox.tools.some((t) => t.needsScene) && (
+            <p className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+              Tip: open a place and toggle a scene eye for best imagery results. Tools still run on the map AOI.
+            </p>
+          )}
+        </div>
+
+        {activeBox.id === 'layers' && (
+          <div className="mb-3">
+            <LayerManagerBody
+              layers={managedLayers}
+              layerOpacity={layerOpacity}
+              renameId={renameId}
+              renameValue={renameValue}
+              onOpacity={onOpacity}
+              onToggle={onToggleOverlay}
+              onRemove={onRemoveOverlay}
+              onMove={onMoveOverlay}
+              onStartRename={(id, label) => {
+                setRenameId(id);
+                setRenameValue(label);
+              }}
+              onCommitRename={() => {
+                if (renameId && renameValue.trim()) {
+                  onRenameOverlay(renameId, renameValue.trim());
+                }
+                setRenameId(null);
+              }}
+              setRenameValue={setRenameValue}
+            />
+          </div>
+        )}
+
+        {activeBox.id === 'gis' && (
+          <div className="mb-3">
+            <BufferPanel
+              hasGeometry={hasDrawn}
+              geometryType={drawnType}
+              loading={bufferLoading}
+              lastDistance={lastBufferDistance}
+              lastArea={lastBufferArea}
+              onApply={onApplyBuffer}
+              onClear={onClearBuffer}
+            />
+          </div>
+        )}
+
+        {activeBox.id === 'navigation' && (
+          <div className="mb-2 flex flex-wrap gap-1">
+            {Object.entries(chrome)
+              .filter(([, on]) => on)
+              .map(([k]) => (
+                <span
+                  key={k}
+                  className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] text-[var(--accent)]"
+                >
+                  {k}
                 </span>
-              </button>
+              ))}
+          </div>
+        )}
 
-              {open && (
-                <div className="space-y-2 px-3 pb-3">
-                  {box.id === 'layers' && (
-                    <LayerManagerBody
-                      layers={managedLayers}
-                      layerOpacity={layerOpacity}
-                      renameId={renameId}
-                      renameValue={renameValue}
-                      onOpacity={onOpacity}
-                      onToggle={onToggleOverlay}
-                      onRemove={onRemoveOverlay}
-                      onMove={onMoveOverlay}
-                      onStartRename={(id, label) => {
-                        setRenameId(id);
-                        setRenameValue(label);
-                      }}
-                      onCommitRename={() => {
-                        if (renameId && renameValue.trim()) {
-                          onRenameOverlay(renameId, renameValue.trim());
-                        }
-                        setRenameId(null);
-                      }}
-                      setRenameValue={setRenameValue}
-                    />
+        <ul className="space-y-1" data-testid="toolbox-tool-list">
+          {activeBox.tools.map((tool) => {
+            const active = activeToolId === tool.id;
+            return (
+              <li key={tool.id}>
+                <button
+                  type="button"
+                  title={tool.hint || tool.label}
+                  disabled={loading}
+                  onClick={() => onTool(tool)}
+                  className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${
+                    active
+                      ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                      : 'border-[var(--line)] bg-white hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
+                  } disabled:opacity-50`}
+                >
+                  <span
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[9px] ${
+                      active
+                        ? 'border-white/80 bg-white/20'
+                        : 'border-[var(--line)] text-[var(--muted)]'
+                    }`}
+                  >
+                    {active ? '✓' : ''}
+                  </span>
+                  <span className="flex-1">{tool.label}</span>
+                  {tool.needsScene && (
+                    <span
+                      className={`rounded px-1 py-0.5 text-[9px] uppercase ${
+                        active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'
+                      }`}
+                    >
+                      EO
+                    </span>
                   )}
-
-                  {box.id === 'gis' && (
-                    <BufferPanel
-                      hasGeometry={hasDrawn}
-                      geometryType={drawnType}
-                      loading={bufferLoading}
-                      lastDistance={lastBufferDistance}
-                      lastArea={lastBufferArea}
-                      onApply={onApplyBuffer}
-                      onClear={onClearBuffer}
-                    />
-                  )}
-
-                  {box.id === 'navigation' && (
-                    <div className="flex flex-wrap gap-1 pb-1">
-                      {Object.entries(mapChrome)
-                        .filter(([, on]) => on)
-                        .map(([k]) => (
-                          <span
-                            key={k}
-                            className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] text-[var(--accent)]"
-                          >
-                            {k}
-                          </span>
-                        ))}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-1">
-                    {box.tools.map((tool) => {
-                      const disabled = Boolean(tool.needsScene && !hasScene) || loading;
-                      const active = activeToolId === tool.id;
-                      return (
-                        <button
-                          key={tool.id}
-                          type="button"
-                          title={
-                            tool.needsScene && !hasScene
-                              ? 'Show a satellite scene first (eye icon)'
-                              : tool.hint || tool.label
-                          }
-                          disabled={disabled}
-                          onClick={() => onTool(tool)}
-                          className={`rounded-lg border px-2 py-1.5 text-left text-[11px] font-medium leading-snug ${
-                            active
-                              ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                              : 'border-[var(--line)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
-                          } disabled:cursor-not-allowed disabled:opacity-45`}
-                        >
-                          {tool.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
       {(lastMessage || lastLegend) && (
@@ -377,5 +415,3 @@ function LayerManagerBody({
     </div>
   );
 }
-
-export type { ToolAction };
