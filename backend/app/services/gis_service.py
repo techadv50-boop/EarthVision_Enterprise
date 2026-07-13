@@ -67,6 +67,11 @@ class GISService:
     def _offline_geocode(self, query: str) -> list[GeocodeResult]:
         """Built-in gazetteer for common locations when Nominatim is unavailable."""
         gazetteer: dict[str, tuple[str, float, float]] = {
+            "lahore": ("Lahore, Punjab, Pakistan", 74.3587, 31.5204),
+            "karachi": ("Karachi, Sindh, Pakistan", 67.0011, 24.8607),
+            "islamabad": ("Islamabad, Pakistan", 73.0479, 33.6844),
+            "rawalpindi": ("Rawalpindi, Pakistan", 73.0479, 33.5651),
+            "faisalabad": ("Faisalabad, Pakistan", 73.1350, 31.4504),
             "paris": ("Paris, France", 2.3522, 48.8566),
             "london": ("London, United Kingdom", -0.1276, 51.5074),
             "new york": ("New York, USA", -74.006, 40.7128),

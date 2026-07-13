@@ -230,56 +230,76 @@ class CopernicusCatalogService:
             return self._demo_results(request)
 
     def _demo_results(self, request: CatalogSearchRequest) -> tuple[list[SceneSummary], int]:
-        """Generate realistic demo scenes for offline / unconfigured environments."""
+        """Generate realistic recent demo scenes (default 20) for offline / unconfigured CDSE."""
         import uuid
+        from datetime import timedelta
 
         bbox = request.bbox or [2.0, 48.5, 2.8, 49.1]
         west, south, east, north = bbox
         clon = (west + east) / 2
         clat = (south + north) / 2
+        collections = list(request.collections or ["SENTINEL-2"])
+        if not collections:
+            collections = ["SENTINEL-2"]
+
+        product_types = {
+            "SENTINEL-1": "GRD",
+            "SENTINEL-2": "L2A",
+            "LANDSAT-8": "L2SP",
+            "LANDSAT-9": "L2SP",
+            "MODIS": "MOD09GA",
+        }
+
+        limit = max(1, min(request.max_results, 20))
+        now = datetime.now(UTC)
         scenes: list[SceneSummary] = []
-        collections = request.collections or ["SENTINEL-2"]
-        for i, collection in enumerate(collections):
-            for j in range(min(8, request.max_results // max(len(collections), 1))):
-                day = 1 + (i * 3 + j) % 28
-                month = 1 + ((i + j) % 12)
-                year = 2024 if j % 2 == 0 else 2025
-                sensing = datetime(year, month, day, 10, 30, tzinfo=UTC)
-                cloud = round((j * 7.3 + i * 2.1) % (request.cloud_cover_max or 30), 1)
-                offset = (j - 3) * 0.05
-                footprint = {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [west + offset, south + offset],
-                            [east + offset, south + offset],
-                            [east + offset, north + offset],
-                            [west + offset, north + offset],
-                            [west + offset, south + offset],
-                        ]
-                    ],
-                }
-                scenes.append(
-                    SceneSummary(
-                        id=str(uuid.uuid4()),
-                        name=(
-                            f"{collection.replace('-', '')}_MSIL2A_"
-                            f"{sensing.strftime('%Y%m%dT%H%M%S')}_N0510_R{100+j:03d}_T31UDQ"
-                        ),
-                        collection=collection,
-                        platform=collection.split("-")[0],
-                        sensing_time=sensing,
-                        cloud_cover=cloud if "SENTINEL-2" in collection or "LANDSAT" in collection else None,
-                        footprint=footprint,
-                        center=[clon + offset, clat + offset],
-                        thumbnail_url=None,
-                        size_bytes=int(850_000_000 + j * 12_000_000 + math.sin(j) * 1_000_000),
-                        content_date=sensing.isoformat(),
-                        product_type="L2A" if "SENTINEL-2" in collection else "GRD",
-                        metadata={"demo": True, "source": "earthvision-demo-catalog"},
-                    )
+        for j in range(limit):
+            collection = collections[j % len(collections)]
+            # Most recent first: every ~5 days back
+            sensing = now - timedelta(days=j * 5, hours=j % 7)
+            cloud_cap = request.cloud_cover_max if request.cloud_cover_max is not None else 80.0
+            cloud = round((j * 4.7) % max(cloud_cap, 1.0), 1)
+            # Slight footprint jitter so overlays are distinguishable
+            ox = ((j % 5) - 2) * 0.02
+            oy = ((j % 3) - 1) * 0.02
+            footprint = {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [west + ox, south + oy],
+                        [east + ox, south + oy],
+                        [east + ox, north + oy],
+                        [west + ox, north + oy],
+                        [west + ox, south + oy],
+                    ]
+                ],
+            }
+            tile = f"T{43 + (j % 3)}R{66 + (j % 9):02d}"
+            scenes.append(
+                SceneSummary(
+                    id=str(uuid.uuid4()),
+                    name=(
+                        f"{collection.replace('-', '')}_{product_types.get(collection, 'L2')}_"
+                        f"{sensing.strftime('%Y%m%dT%H%M%S')}_N0510_R{100 + j:03d}_{tile}"
+                    ),
+                    collection=collection,
+                    platform=collection.split("-")[0],
+                    sensing_time=sensing,
+                    cloud_cover=(
+                        cloud
+                        if collection.startswith("SENTINEL-2") or collection.startswith("LANDSAT")
+                        else None
+                    ),
+                    footprint=footprint,
+                    center=[clon + ox, clat + oy],
+                    thumbnail_url=None,
+                    size_bytes=int(720_000_000 + j * 18_000_000 + abs(math.sin(j)) * 2_000_000),
+                    content_date=sensing.isoformat(),
+                    product_type=product_types.get(collection, "L2"),
+                    metadata={"demo": True, "source": "earthvision-demo-catalog", "rank": j + 1},
                 )
-        return scenes[: request.max_results], len(scenes[: request.max_results])
+            )
+        return scenes, len(scenes)
 
     async def get_download_url(self, scene_id: str) -> str:
         settings = get_settings()

@@ -31,10 +31,10 @@ export function RegisterPage() {
   };
 
   return (
-    <div className="flex min-h-full items-center justify-center overflow-auto p-6">
-      <form onSubmit={onSubmit} className="ev-panel w-full max-w-md animate-fade-up p-6">
-        <h1 className="font-display text-2xl font-semibold">Create account</h1>
-        <p className="mb-5 text-xs text-earth-400">Join EarthVision Enterprise</p>
+    <div className="flex min-h-full items-center justify-center bg-[var(--bg)] p-4">
+      <form onSubmit={onSubmit} className="ev-card w-full max-w-sm p-6">
+        <h1 className="font-display text-xl font-semibold">Create account</h1>
+        <p className="mb-5 text-sm text-[var(--muted)]">Join EarthVision</p>
         {(
           [
             ['full_name', 'Full name', 'text'],
@@ -44,7 +44,7 @@ export function RegisterPage() {
           ] as const
         ).map(([key, label, type]) => (
           <div key={key} className="mb-3">
-            <label className="ev-label">{label}</label>
+            <label className="mb-1 block text-xs font-medium text-[var(--muted)]">{label}</label>
             <input
               className="ev-input"
               type={type}
@@ -56,16 +56,16 @@ export function RegisterPage() {
           </div>
         ))}
         {error && (
-          <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
             {error}
           </div>
         )}
         <button type="submit" className="ev-btn-primary w-full" disabled={loading}>
           {loading ? 'Creating…' : 'Create account'}
         </button>
-        <p className="mt-4 text-center text-xs text-earth-400">
+        <p className="mt-4 text-center text-xs text-[var(--muted)]">
           Already have an account?{' '}
-          <Link to="/login" className="text-orbit-400 hover:underline">
+          <Link to="/login" className="text-[var(--accent)] hover:underline">
             Sign in
           </Link>
         </p>

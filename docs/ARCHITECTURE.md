@@ -8,6 +8,12 @@ EarthVision Enterprise follows clean architecture with clear separation:
 - **Models** (`models/`) — SQLAlchemy ORM entities
 - **Core** (`core/`) — config, security, DI, exceptions
 
-Frontend uses CesiumJS for the globe, Zustand for client state, and Axios for the REST API.
+## Frontend (Light Explorer)
 
-The system is microservice-ready: catalog, analytics, raster, and auth can be extracted behind the same API gateway later.
+The primary UI is a three-step workflow optimized for slow networks:
+
+1. Place selection (search or map click)
+2. Recent satellite scenes (20)
+3. Spectral index analysis on the selected scene
+
+Mapping uses **Leaflet + OSM tiles** instead of CesiumJS to minimize download size and GPU cost.
