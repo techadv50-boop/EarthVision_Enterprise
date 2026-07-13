@@ -77,6 +77,55 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
   return null;
 }
 
+function MapInteractionMode({ mapTool }: { mapTool: MapTool }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const panMode = mapTool === 'navigate';
+    const container = map.getContainer();
+
+    if (panMode) {
+      map.dragging.enable();
+      map.doubleClickZoom.enable();
+      map.scrollWheelZoom.enable();
+      map.boxZoom.enable();
+      map.keyboard.enable();
+      container.style.cursor = 'grab';
+      container.classList.add('ev-pan-mode');
+      container.classList.remove('ev-draw-mode');
+    } else {
+      // Drawing / measure tools: keep map still so clicks register cleanly
+      map.dragging.disable();
+      map.doubleClickZoom.disable();
+      map.boxZoom.disable();
+      container.style.cursor = 'crosshair';
+      container.classList.add('ev-draw-mode');
+      container.classList.remove('ev-pan-mode');
+    }
+
+    return () => {
+      container.style.cursor = '';
+      container.classList.remove('ev-pan-mode', 'ev-draw-mode');
+    };
+  }, [map, mapTool]);
+
+  // Grabbing cursor while actively dragging in Pan mode
+  useMapEvents({
+    dragstart() {
+      if (mapTool === 'navigate') {
+        map.getContainer().style.cursor = 'grabbing';
+      }
+    },
+    dragend() {
+      if (mapTool === 'navigate') {
+        map.getContainer().style.cursor = 'grab';
+      }
+    },
+  });
+
+  return null;
+}
+
 function DrawingHandler({
   mapTool,
   enablePlaceClick,
@@ -92,16 +141,25 @@ function DrawingHandler({
 }) {
   const points = useRef<Array<[number, number]>>([]);
   const rectStart = useRef<[number, number] | null>(null);
+  const suppressClick = useRef(false);
 
   useMapEvents({
+    // Ignore click that follows a pan drag (Leaflet still fires click sometimes)
+    dragstart() {
+      if (mapTool === 'navigate') suppressClick.current = true;
+    },
     click(e) {
-      const lon = e.latlng.lng;
-      const lat = e.latlng.lat;
-
       if (mapTool === 'navigate') {
-        if (enablePlaceClick) onPlaceClick(lon, lat);
+        if (suppressClick.current) {
+          suppressClick.current = false;
+          return;
+        }
+        if (enablePlaceClick) onPlaceClick(e.latlng.lng, e.latlng.lat);
         return;
       }
+
+      const lon = e.latlng.lng;
+      const lat = e.latlng.lat;
 
       if (mapTool === 'measure-line') {
         points.current.push([lon, lat]);
@@ -164,12 +222,14 @@ function DrawingHandler({
     },
     dblclick() {
       points.current = [];
+      suppressClick.current = false;
     },
   });
 
   useEffect(() => {
     points.current = [];
     rectStart.current = null;
+    suppressClick.current = false;
   }, [mapTool]);
 
   return null;
@@ -205,7 +265,6 @@ export function LightMap({
       attributionControl={false}
       className="h-full w-full"
       preferCanvas
-      doubleClickZoom={mapTool === 'navigate'}
     >
       <TileLayer
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -213,6 +272,7 @@ export function LightMap({
         updateWhenIdle
         keepBuffer={1}
       />
+      <MapInteractionMode mapTool={mapTool} />
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={overlays} />
@@ -224,7 +284,13 @@ export function LightMap({
         onMeasure={onMeasure}
       />
 
-      {place && <Marker position={[place.latitude, place.longitude]} icon={markerIcon} />}
+      {place && (
+        <Marker
+          position={[place.latitude, place.longitude]}
+          icon={markerIcon}
+          interactive={false}
+        />
+      )}
 
       {/* Scene eye → collection-specific XYZ tiles + footprint outline (tilted for Landsat/S1). */}
       {overlays.map((overlay) => {
@@ -261,6 +327,7 @@ export function LightMap({
                 url={overlay.url}
                 bounds={leafletBounds}
                 opacity={overlay.opacity}
+                interactive={false}
                 zIndex={
                   overlay.kind === 'change' ? 460 : overlay.kind === 'index' ? 450 : 430
                 }
@@ -269,11 +336,13 @@ export function LightMap({
             {footprintRing && (
               <Polygon
                 positions={footprintRing}
+                interactive={false}
                 pathOptions={{
                   color: overlay.renderMode === 'grayscale' ? '#e5e7eb' : '#f59e0b',
                   weight: 2,
                   fillOpacity: 0,
                   dashArray: '6 4',
+                  interactive: false,
                 }}
               />
             )}

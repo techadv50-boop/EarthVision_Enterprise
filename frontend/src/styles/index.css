@@ -32,6 +32,19 @@ body {
   font: inherit;
 }
 
+.leaflet-container.ev-pan-mode {
+  cursor: grab;
+}
+
+.leaflet-container.ev-pan-mode.leaflet-drag-target,
+.leaflet-container.ev-pan-mode.leaflet-dragging {
+  cursor: grabbing;
+}
+
+.leaflet-container.ev-draw-mode {
+  cursor: crosshair;
+}
+
 .ev-card {
   @apply rounded-xl border border-[var(--line)] bg-white shadow-sm;
 }
