@@ -299,9 +299,18 @@ class AnalyticsService:
         return np.clip(r, 0, 1), np.clip(g, 0, 1), np.clip(b, 0, 1)
 
     def _rgba_overlay(
-        self, array: np.ndarray, cmap: str, vmin: float, vmax: float, *, alpha: int = 200
+        self,
+        array: np.ndarray,
+        cmap: str,
+        vmin: float,
+        vmax: float,
+        *,
+        alpha: int = 200,
+        mask: np.ndarray | None = None,
     ) -> bytes:
         valid = np.isfinite(array)
+        if mask is not None:
+            valid = valid & mask
         norm = np.zeros_like(array, dtype=float)
         norm[valid] = (array[valid] - vmin) / (vmax - vmin + 1e-12)
         r, g, b = self._colormap_rgb(cmap, norm)
@@ -314,6 +323,29 @@ class AnalyticsService:
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         return buf.getvalue()
+
+    def _footprint_mask_grid(
+        self, footprint: dict[str, Any] | None, bounds: list[float], shape: tuple[int, int]
+    ) -> np.ndarray | None:
+        if not footprint:
+            return None
+        try:
+            from shapely.geometry import Point, shape as shp_shape
+
+            geom = shp_shape(footprint)
+        except Exception:  # noqa: BLE001
+            return None
+        h, w = shape
+        west, south, east, north = bounds
+        step = max(1, min(h, w) // 128)
+        ys = np.linspace(north, south, h, endpoint=False) + (south - north) / (2 * h)
+        xs = np.linspace(west, east, w, endpoint=False) + (east - west) / (2 * w)
+        mask = np.zeros((h, w), dtype=bool)
+        for iy in range(0, h, step):
+            for ix in range(0, w, step):
+                inside = geom.contains(Point(float(xs[ix]), float(ys[iy])))
+                mask[iy : iy + step, ix : ix + step] = inside
+        return mask
 
     def _legend(self, index: str, vmin: float, vmax: float) -> LegendInfo:
         meta = INDEX_META[index]
@@ -337,60 +369,142 @@ class AnalyticsService:
         )
 
     def _compute_array(
-        self, index: str, scene_id: str | None, L: float = 0.5, size: int = 256
+        self, index: str, scene_id: str | None, L: float = 0.5, size: int = 512
     ) -> np.ndarray:
+        if scene_id:
+            try:
+                from app.services.scene_imagery_service import SceneImageryService
+
+                imagery = SceneImageryService()
+                real, _bounds, _fp, _layer = imagery.load_analysis_bands(scene_id, size=size)
+                if real:
+                    return self._index_from_bands(index, real, L=L, scene_id=scene_id, size=size)
+            except ValidationError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Real-band index fallback for {}: {}", scene_id, exc)
         bands = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
+        return self._index_from_bands(index, bands, L=L, scene_id=scene_id, size=size)
+
+    def _index_from_bands(
+        self,
+        index: str,
+        bands: dict[str, np.ndarray],
+        *,
+        L: float = 0.5,
+        scene_id: str | None = None,
+        size: int = 512,
+    ) -> np.ndarray:
+        synth = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
+
+        def band(name: str) -> np.ndarray:
+            arr = bands.get(name)
+            if arr is None or not np.isfinite(arr).any():
+                key = "swir" if name == "swir" else name
+                return synth[key if key in synth else "red"]
+            if arr.shape != (size, size):
+                img = Image.fromarray(np.nan_to_num(arr).astype(np.float32), mode="F")
+                arr = np.array(img.resize((size, size), Image.Resampling.BILINEAR), dtype=float)
+            return arr
+
         if index == "NDVI":
-            return self.compute_ndvi(bands["red"], bands["nir"])
+            return self.compute_ndvi(band("red"), band("nir"))
         if index == "NDWI":
-            return self.compute_ndwi(bands["green"], bands["nir"])
+            return self.compute_ndwi(band("green"), band("nir"))
         if index == "NDBI":
-            return self.compute_ndbi(bands["swir"], bands["nir"])
+            return self.compute_ndbi(band("swir"), band("nir"))
         if index == "SAVI":
-            return self.compute_savi(bands["red"], bands["nir"], L)
+            return self.compute_savi(band("red"), band("nir"), L)
         if index == "BSI":
-            return self.compute_bsi(bands["red"], bands["green"], bands["nir"], bands["swir"])
+            return self.compute_bsi(band("red"), band("green"), band("nir"), band("swir"))
         if index == "LST":
-            return self.compute_lst(bands["thermal"])
+            thermal = bands.get("thermal")
+            if thermal is not None and np.isfinite(thermal).any():
+                t = thermal.astype(float)
+                if np.nanmax(t) > 400:
+                    t = t * 0.00341802 + 149.0 - 273.15
+                elif np.nanmax(t) > 200:
+                    t = t - 273.15
+                return t
+            return self.compute_lst(synth["thermal"])
         raise ValidationError(f"Unsupported index: {index}")
 
     def compute_index(self, request: IndexComputeRequest) -> IndexComputeResponse:
         index = request.index
         meta = INDEX_META[index]
-        bands = self._synthetic_bands(seed=hash(request.scene_id or "default") % (2**31))
-        red = self._load_band(request.red_band_path, bands["red"])
-        nir = self._load_band(request.nir_band_path, bands["nir"])
-        green = self._load_band(request.green_band_path, bands["green"])
-        swir = self._load_band(request.swir_band_path, bands["swir"])
-        thermal = self._load_band(request.thermal_band_path, bands["thermal"])
-
-        if index == "NDVI":
-            result = self.compute_ndvi(red, nir)
-        elif index == "NDWI":
-            result = self.compute_ndwi(green, nir)
-        elif index == "NDBI":
-            result = self.compute_ndbi(swir, nir)
-        elif index == "SAVI":
-            result = self.compute_savi(red, nir, request.L)
-        elif index == "BSI":
-            result = self.compute_bsi(red, green, nir, swir)
-        elif index == "LST":
-            result = self.compute_lst(thermal)
-        else:
-            raise ValidationError(f"Unsupported index: {index}")
-
+        size = 512
+        footprint = request.aoi if request.aoi and request.aoi.get("type") == "Polygon" else None
         bounds = self._resolve_bounds(request.bbox, request.aoi)
+        real_bands: dict[str, np.ndarray] = {}
+        layer_meta: dict[str, Any] | None = None
+
+        if request.scene_id:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            imagery = SceneImageryService()
+            layer = imagery.get_layer(request.scene_id)
+            if layer:
+                bounds = [float(x) for x in layer["bounds"]]
+                footprint = layer.get("footprint") or footprint
+                layer_meta = layer
+                if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
+                    raise ValidationError(
+                        "Sentinel-1 SAR does not support optical indices. "
+                        "Use Sentinel-2 or Landsat."
+                    )
+                try:
+                    real_bands, bounds, footprint, layer_meta = imagery.load_analysis_bands(
+                        request.scene_id, size=size
+                    )
+                except ValidationError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Index band load failed, using synthetic: {}", exc)
+
+        if real_bands:
+            result = self._index_from_bands(
+                index, real_bands, L=request.L, scene_id=request.scene_id, size=size
+            )
+            data_source = "scene_bands"
+        else:
+            synth = self._synthetic_bands(
+                size=size, seed=hash(request.scene_id or "default") % (2**31)
+            )
+            packed = {
+                "red": self._load_band(request.red_band_path, synth["red"]),
+                "nir": self._load_band(request.nir_band_path, synth["nir"]),
+                "green": self._load_band(request.green_band_path, synth["green"]),
+                "swir": self._load_band(request.swir_band_path, synth["swir"]),
+                "thermal": self._load_band(request.thermal_band_path, synth["thermal"]),
+            }
+            result = self._index_from_bands(
+                index, packed, L=request.L, scene_id=request.scene_id, size=size
+            )
+            data_source = (
+                "paths"
+                if any(
+                    [
+                        request.red_band_path,
+                        request.nir_band_path,
+                        request.green_band_path,
+                    ]
+                )
+                else "synthetic"
+            )
+
         fixed_min, fixed_max = meta["range"]
-        # Use theoretical range for legend consistency; stretch preview slightly for LST
         if index == "LST":
             valid = result[np.isfinite(result)]
-            vmin = float(np.percentile(valid, 2))
-            vmax = float(np.percentile(valid, 98))
+            vmin = float(np.percentile(valid, 2)) if valid.size else -20.0
+            vmax = float(np.percentile(valid, 98)) if valid.size else 50.0
         else:
             vmin, vmax = fixed_min, fixed_max
 
-        overlay_bytes = self._rgba_overlay(result, meta["cmap"], vmin, vmax)
-        preview_bytes = self._rgba_overlay(result, meta["cmap"], vmin, vmax, alpha=255)
+        fp_mask = self._footprint_mask_grid(footprint, bounds, result.shape)
+        overlay_bytes = self._rgba_overlay(result, meta["cmap"], vmin, vmax, mask=fp_mask)
+        preview_bytes = self._rgba_overlay(
+            result, meta["cmap"], vmin, vmax, alpha=255, mask=fp_mask
+        )
 
         out_dir = self.settings.imagery_dir / "indices"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -400,6 +514,7 @@ class AnalyticsService:
         png_path.write_bytes(overlay_bytes)
 
         stats = self._stats(result)
+        stac_bit = f"  stac={layer_meta.get('stac_id')}" if layer_meta else ""
         return IndexComputeResponse(
             index=index,
             mean=stats["mean"],
@@ -415,27 +530,51 @@ class AnalyticsService:
             overlay_base64=base64.b64encode(overlay_bytes).decode("ascii"),
             bounds=bounds,
             legend=self._legend(index, vmin, vmax),
-            formula=f"{meta['formula']}  [{meta['ref']}]",
+            formula=f"{meta['formula']}  [{meta['ref']}]  source={data_source}{stac_bit}",
             output_path=str(png_path),
         )
 
     def change_detection(self, request: IndexChangeRequest) -> IndexChangeResponse:
-        before = self._compute_array(request.index, request.before_scene_id, request.L)
-        after = self._compute_array(request.index, request.after_scene_id, request.L)
+        size = 512
+        before = self._compute_array(request.index, request.before_scene_id, request.L, size=size)
+        after = self._compute_array(request.index, request.after_scene_id, request.L, size=size)
+        h = min(before.shape[0], after.shape[0])
+        w = min(before.shape[1], after.shape[1])
+        before, after = before[:h, :w], after[:h, :w]
         diff = after - before
         mask = np.abs(diff) > request.threshold
-        bounds = self._resolve_bounds(request.bbox, None)
-        # Symmetric scale for difference
+
+        from app.services.scene_imagery_service import SceneImageryService
+
+        imagery = SceneImageryService()
+        layer = imagery.get_layer(request.after_scene_id) or imagery.get_layer(
+            request.before_scene_id
+        )
+        if layer:
+            bounds = [float(x) for x in layer["bounds"]]
+            footprint = layer.get("footprint")
+        else:
+            bounds = self._resolve_bounds(request.bbox, None)
+            footprint = None
+
         valid = diff[np.isfinite(diff)]
-        vmax = float(max(abs(np.percentile(valid, 2)), abs(np.percentile(valid, 98)), 0.05))
+        vmax = (
+            float(max(abs(np.percentile(valid, 2)), abs(np.percentile(valid, 98)), 0.05))
+            if valid.size
+            else 0.5
+        )
         vmin = -vmax
-        overlay = self._rgba_overlay(diff, "rdbu", vmin, vmax)
+        fp_mask = self._footprint_mask_grid(footprint, bounds, diff.shape)
+        overlay = self._rgba_overlay(diff, "rdbu", vmin, vmax, mask=fp_mask)
         legend = LegendInfo(
             min=vmin,
             max=vmax,
             unit=f"Δ {request.index}",
             label=f"{request.index} change",
-            formula=f"Δ = {request.index}_after − {request.index}_before  (threshold={request.threshold})",
+            formula=(
+                f"Δ = {request.index}_after − {request.index}_before  "
+                f"(threshold={request.threshold})"
+            ),
             stops=[
                 ColormapStop(value=vmin, color="#2166ac"),
                 ColormapStop(value=0.0, color="#f7f7f7"),

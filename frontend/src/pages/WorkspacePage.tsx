@@ -237,15 +237,22 @@ export function WorkspacePage() {
     setLoadingIndex(true);
     setError(null);
     try {
-      const bounds = sceneBounds(focusScene, place);
+      // Prefer the on-map scene layer bounds so NDVI/etc. match the imagery extent
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      const bounds =
+        sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
       const result = await analyticsService.computeIndex(index, focusScene.id, bounds);
       setIndexResult(result);
       if (result.overlay_base64 && result.bounds) {
         upsertOverlay({
           id: `index-${focusScene.id}-${index}`,
           kind: 'index',
+          sceneId: focusScene.id,
           url: analyticsService.toDataUrl(result.overlay_base64),
           bounds: result.bounds as [number, number, number, number],
+          footprint: sceneOverlay?.footprint ?? null,
           opacity: layerOpacity,
           label: index,
         });
@@ -262,7 +269,11 @@ export function WorkspacePage() {
     setLoadingIndex(true);
     setError(null);
     try {
-      const bounds = sceneBounds(focusScene, place);
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      const bounds =
+        sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
       const result = await analyticsService.changeDetection({
         before_scene_id: compareSceneId,
         after_scene_id: focusScene.id,
@@ -274,8 +285,10 @@ export function WorkspacePage() {
       upsertOverlay({
         id: `change-${compareSceneId}-${focusScene.id}`,
         kind: 'change',
+        sceneId: focusScene.id,
         url: analyticsService.toDataUrl(result.overlay_base64),
         bounds: result.bounds as [number, number, number, number],
+        footprint: sceneOverlay?.footprint ?? null,
         opacity: layerOpacity,
         label: `${result.index} change`,
       });

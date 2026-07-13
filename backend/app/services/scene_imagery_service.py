@@ -31,7 +31,7 @@ GDAL_ENV = {
 }
 
 # Registry schema version — bump to invalidate old all-S2 layers
-LAYER_VERSION = 2
+LAYER_VERSION = 3
 
 
 class SceneImageryService:
@@ -232,9 +232,18 @@ class SceneImageryService:
                 feat = scored[0][1]
                 props = feat.get("properties") or {}
                 assets = feat.get("assets") or {}
+                analysis_bands = {
+                    k: assets[k]["href"]
+                    for k in ("red", "green", "blue", "nir", "swir16")
+                    if k in assets and assets[k].get("href")
+                }
+                if "swir16" in analysis_bands:
+                    analysis_bands["swir"] = analysis_bands["swir16"]
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": assets["visual"]["href"],
+                    "analysis_bands": analysis_bands,
+                    "sign": None,
                     "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
                     "footprint": feat.get("geometry"),
                     "datetime": props.get("datetime"),
@@ -341,6 +350,17 @@ class SceneImageryService:
                 feat = scored[0][1]
                 props = feat.get("properties") or {}
                 assets = feat.get("assets") or {}
+                analysis_bands = {
+                    "red": assets["red"]["href"],
+                    "green": assets["green"]["href"],
+                    "blue": assets["blue"]["href"],
+                }
+                if assets.get("nir08", {}).get("href"):
+                    analysis_bands["nir"] = assets["nir08"]["href"]
+                if assets.get("swir16", {}).get("href"):
+                    analysis_bands["swir"] = assets["swir16"]["href"]
+                if assets.get("lwir11", {}).get("href"):
+                    analysis_bands["thermal"] = assets["lwir11"]["href"]
                 return {
                     "stac_id": feat.get("id"),
                     "cog_urls": {
@@ -348,6 +368,7 @@ class SceneImageryService:
                         "green": assets["green"]["href"],
                         "blue": assets["blue"]["href"],
                     },
+                    "analysis_bands": analysis_bands,
                     "sign": "planetary_computer",
                     "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
                     "footprint": feat.get("geometry"),
@@ -402,6 +423,7 @@ class SceneImageryService:
             "label": match["label"],
             "cog_url": match.get("cog_url"),
             "cog_urls": match.get("cog_urls"),
+            "analysis_bands": match.get("analysis_bands") or {},
             "sign": match.get("sign"),
             "stac_id": match.get("stac_id"),
             "bounds": display_bounds,
@@ -649,3 +671,90 @@ class SceneImageryService:
         png = self._to_rgba(rgb, mask, mode)
         cache_path.write_bytes(png)
         return png
+
+    def read_band_grid(
+        self,
+        href: str,
+        bounds: list[float],
+        size: int = 512,
+        *,
+        sign: str | None = None,
+        reflectance_scale: str | None = None,
+    ) -> np.ndarray:
+        """Sample a COG band into a size×size grid covering [west,south,east,north]."""
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.warp import transform_bounds
+        from rasterio.windows import from_bounds
+
+        url = self._s3_to_https(href)
+        if sign == "planetary_computer":
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                url = self._sign_pc(url, client)
+
+        west, south, east, north = (float(v) for v in bounds)
+        env = GDAL_ENV if sign != "planetary_computer" else {}
+        with rasterio.Env(**env):
+            with rasterio.open(url) as src:
+                left, bottom, right, top = transform_bounds(
+                    "EPSG:4326", src.crs, west, south, east, north
+                )
+                window = from_bounds(left, bottom, right, top, transform=src.transform)
+                data = src.read(
+                    1,
+                    out_shape=(size, size),
+                    window=window,
+                    resampling=Resampling.bilinear,
+                    boundless=True,
+                    fill_value=0,
+                ).astype(np.float64)
+
+        if reflectance_scale == "landsat_c2_sr":
+            data = np.clip(data * 0.0000275 - 0.2, 0, 1)
+            data[data <= 0] = np.nan
+        elif reflectance_scale == "sentinel2_l2a":
+            if np.nanmax(data) > 1.5:
+                data = data / 10000.0
+            data[data <= 0] = np.nan
+        else:
+            data[data <= 0] = np.nan
+        return data
+
+    def load_analysis_bands(
+        self, scene_id: str, size: int = 512
+    ) -> tuple[dict[str, np.ndarray], list[float], dict[str, Any] | None, dict[str, Any]]:
+        """Load optical analysis bands for a prepared scene over its full footprint bounds."""
+        layer = self.get_layer(scene_id)
+        if not layer:
+            raise NotFoundError(
+                "Scene imagery is not on the map yet — turn the eye on first, then run indices"
+            )
+        if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
+            raise ValidationError(
+                "Sentinel-1 SAR is grayscale radar and does not support optical indices "
+                "(NDVI, NDWI, NDBI, SAVI, BSI, LST). Use a Sentinel-2 or Landsat scene."
+            )
+
+        bounds = [float(x) for x in layer["bounds"]]
+        analysis = layer.get("analysis_bands") or {}
+        sign = layer.get("sign")
+        scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else "sentinel2_l2a"
+
+        bands: dict[str, np.ndarray] = {}
+        for name in ("red", "green", "blue", "nir", "swir", "thermal"):
+            href = analysis.get(name)
+            if not href:
+                continue
+            try:
+                if name == "thermal" and scale == "landsat_c2_sr":
+                    bands[name] = self.read_band_grid(
+                        href, bounds, size, sign=sign, reflectance_scale=None
+                    )
+                else:
+                    bands[name] = self.read_band_grid(
+                        href, bounds, size, sign=sign, reflectance_scale=scale
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to load analysis band {} for {}: {}", name, scene_id, exc)
+
+        return bands, bounds, layer.get("footprint"), layer
