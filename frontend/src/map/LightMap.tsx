@@ -45,6 +45,17 @@ interface Props {
   bufferGeoJson: GeoJSON.Polygon | null;
   enablePlaceClick: boolean;
   showGrid?: boolean;
+  mapChrome?: {
+    compass?: boolean;
+    scaleBar?: boolean;
+    coordinates?: boolean;
+    miniMap?: boolean;
+    swipe?: boolean;
+    view3d?: boolean;
+    rotate?: boolean;
+    terrainRelief?: boolean;
+  };
+  mapCommand?: { id: number; type: string } | null;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
   onDrawnFeature: (feature: DrawnFeature) => void;
@@ -53,6 +64,99 @@ interface Props {
 
 function toLatLon(pts: LonLat[]): LatLon[] {
   return pts.map(([lon, lat]) => [lat, lon]);
+}
+
+function MapCommandRunner({
+  command,
+}: {
+  command: { id: number; type: string } | null | undefined;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (!command) return;
+    if (command.type === 'zoom-in') map.zoomIn();
+    if (command.type === 'zoom-out') map.zoomOut();
+    if (command.type === 'fullscreen') {
+      const el = map.getContainer().closest('#ev-map-host') as HTMLElement | null;
+      if (!el) return;
+      if (document.fullscreenElement) void document.exitFullscreen();
+      else void el.requestFullscreen?.();
+    }
+  }, [command, map]);
+  return null;
+}
+
+function CursorCoordinates({ enabled }: { enabled: boolean }) {
+  const [pos, setPos] = useState<string>('—');
+  useMapEvents({
+    mousemove(e) {
+      if (!enabled) return;
+      setPos(`${e.latlng.lat.toFixed(5)}°, ${e.latlng.lng.toFixed(5)}°`);
+    },
+  });
+  if (!enabled) return null;
+  return (
+    <div className="pointer-events-none absolute bottom-3 left-1/2 z-[1000] -translate-x-1/2 rounded-full border border-[var(--line)] bg-white/95 px-3 py-1 font-mono text-[11px] shadow">
+      {pos}
+    </div>
+  );
+}
+
+function MiniMapPanel({ enabled }: { enabled: boolean }) {
+  const map = useMap();
+  const [center, setCenter] = useState(() => map.getCenter());
+  useEffect(() => {
+    if (!enabled) return;
+    const sync = () => setCenter(map.getCenter());
+    map.on('moveend', sync);
+    return () => {
+      map.off('moveend', sync);
+    };
+  }, [map, enabled]);
+  if (!enabled) return null;
+  return (
+    <div className="pointer-events-none absolute bottom-14 right-3 z-[1000] h-28 w-36 overflow-hidden rounded-lg border border-[var(--line)] bg-white/95 shadow">
+      <div className="border-b border-[var(--line)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+        Mini map
+      </div>
+      <div className="flex h-[calc(100%-18px)] items-center justify-center bg-[#dce8e2] font-mono text-[10px] text-[var(--muted)]">
+        {center.lat.toFixed(2)}, {center.lng.toFixed(2)}
+      </div>
+    </div>
+  );
+}
+
+function SwipeMask({ enabled, overlays }: { enabled: boolean; overlays: MapOverlay[] }) {
+  const [pct, setPct] = useState(50);
+  if (!enabled) return null;
+  const scenes = overlays.filter((o) => o.kind === 'scene' && o.visible !== false);
+  if (scenes.length < 2) {
+    return (
+      <div className="pointer-events-none absolute top-16 left-1/2 z-[1000] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1 text-[11px] text-[var(--muted)] shadow">
+        Swipe needs 2+ visible scenes
+      </div>
+    );
+  }
+  return (
+    <div className="pointer-events-auto absolute inset-x-0 bottom-20 z-[1000] flex justify-center px-6">
+      <label className="flex w-full max-w-md items-center gap-2 rounded-xl border border-[var(--line)] bg-white/95 px-3 py-2 text-[11px] shadow">
+        Swipe
+        <input
+          type="range"
+          min={5}
+          max={95}
+          value={pct}
+          onChange={(e) => setPct(Number(e.target.value))}
+          className="w-full accent-[var(--accent)]"
+        />
+        <span className="font-mono">{pct}%</span>
+      </label>
+      <div
+        className="pointer-events-none absolute inset-y-0 left-0 border-r-2 border-[var(--accent)]"
+        style={{ width: `${pct}%`, top: '-40vh', height: '80vh' }}
+      />
+    </div>
+  );
 }
 
 function FlyToPlace({ place }: { place: PlaceSelection | null }) {
@@ -491,6 +595,9 @@ function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
   if (kind === 'buffer') {
     return { color: '#7c3aed', weight: 2, fillColor: '#7c3aed', fillOpacity: 0.18 };
   }
+  if (kind === 'detection') {
+    return { color: '#dc2626', weight: 2, fillColor: '#ef4444', fillOpacity: 0.22 };
+  }
   return { color: '#0f766e', weight: 1.5, fillOpacity: 0, opacity: 0.9 };
 }
 
@@ -503,6 +610,8 @@ export function LightMap({
   bufferGeoJson,
   enablePlaceClick,
   showGrid = true,
+  mapChrome,
+  mapCommand,
   onPlaceClick,
   onAoiComplete,
   onDrawnFeature,
@@ -513,6 +622,18 @@ export function LightMap({
     rectStart: null,
     cursor: null,
   });
+
+  const chrome = {
+    compass: true,
+    scaleBar: true,
+    coordinates: true,
+    miniMap: false,
+    swipe: false,
+    view3d: false,
+    rotate: false,
+    terrainRelief: false,
+    ...mapChrome,
+  };
 
   const aoiOutline = useMemo(() => {
     if (!aoiGeoJson || aoiGeoJson.geometry.type !== 'Polygon') return null;
@@ -526,7 +647,21 @@ export function LightMap({
     return bufferGeoJson.coordinates[0].map((c) => [c[1], c[0]] as LatLon);
   }, [bufferGeoJson]);
 
+  const visibleOverlays = useMemo(
+    () => overlays.filter((o) => o.visible !== false),
+    [overlays],
+  );
+
+  const mapStyle = useMemo(() => {
+    const parts: string[] = [];
+    if (chrome.view3d) parts.push('perspective(900px) rotateX(28deg)');
+    if (chrome.rotate) parts.push('rotateZ(-12deg)');
+    if (chrome.terrainRelief) parts.push('contrast(1.08) saturate(1.05)');
+    return parts.length ? { transform: parts.join(' '), transformOrigin: 'center center' } : undefined;
+  }, [chrome.view3d, chrome.rotate, chrome.terrainRelief]);
+
   return (
+    <div className="relative h-full w-full overflow-hidden" style={mapStyle}>
     <MapContainer
       center={[31.52, 74.35]}
       zoom={5}
@@ -544,9 +679,10 @@ export function LightMap({
         keepBuffer={1}
       />
       <MapInteractionMode mapTool={mapTool} />
+      <MapCommandRunner command={mapCommand} />
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
-      <FitOverlay overlays={overlays} />
+      <FitOverlay overlays={visibleOverlays} />
       <DrawingTools
         mapTool={mapTool}
         enablePlaceClick={enablePlaceClick}
@@ -566,7 +702,7 @@ export function LightMap({
         />
       )}
 
-      {overlays.map((overlay) => {
+      {visibleOverlays.map((overlay) => {
         const [west, south, east, north] = overlay.bounds;
         const leafletBounds: [[number, number], [number, number]] = [
           [south, west],
@@ -588,6 +724,8 @@ export function LightMap({
               ? 450
               : overlay.kind === 'terrain'
                 ? 455
+                : overlay.kind === 'detection'
+                  ? 465
                 : overlay.kind === 'buffer'
                   ? 470
                   : 430;
@@ -671,8 +809,12 @@ export function LightMap({
         />
       )}
 
-      <NorthArrow />
-      <ScaleBar />
+      {chrome.compass && <NorthArrow />}
+      {chrome.scaleBar && <ScaleBar />}
+      <CursorCoordinates enabled={Boolean(chrome.coordinates)} />
+      <MiniMapPanel enabled={Boolean(chrome.miniMap)} />
+      <SwipeMask enabled={Boolean(chrome.swipe)} overlays={visibleOverlays} />
     </MapContainer>
+    </div>
   );
 }

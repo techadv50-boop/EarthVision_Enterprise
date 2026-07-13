@@ -39,4 +39,30 @@ export const gisService = {
     );
     return response.data as Blob;
   },
+
+  async spatial(operation: string, geometries: GeoJSON.Geometry[], distance_meters?: number) {
+    const { data } = await api.post('/gis/spatial', {
+      operation,
+      geometries,
+      distance_meters,
+    });
+    return data as {
+      operation: string;
+      geometry?: GeoJSON.Geometry | null;
+      geojson?: GeoJSON.FeatureCollection | null;
+      count?: number;
+      bounds?: number[];
+      message?: string;
+    };
+  },
+
+  async buffer(geometry: GeoJSON.Geometry, distance_meters: number) {
+    const { data } = await api.post('/gis/buffer', { geometry, distance_meters });
+    return data as {
+      geometry: GeoJSON.Geometry;
+      distance_meters: number;
+      area_sq_meters?: number | null;
+      bounds: number[];
+    };
+  },
 };

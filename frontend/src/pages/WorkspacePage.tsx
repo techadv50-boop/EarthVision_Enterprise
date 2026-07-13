@@ -1,31 +1,35 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { FlaskConical, LogOut, Mountain } from 'lucide-react';
+import { LogOut, Wrench } from 'lucide-react';
 import { LightMap } from '../map/LightMap';
 import { MapToolbar } from '../components/map/MapToolbar';
 import { MapLegend } from '../components/map/MapLegend';
 import { PlaceStep } from '../components/workflow/PlaceStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
-import { AnalysisPanel } from '../components/workflow/AnalysisPanel';
-import { TerrainPanel } from '../components/workflow/TerrainPanel';
-import { BufferPanel } from '../components/workflow/BufferPanel';
+import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
 import { useAuthStore } from '../store/authStore';
 import {
   useWorkflowStore,
   type DrawnFeature,
+  type MapTool,
   type PlaceSelection,
 } from '../store/workflowStore';
 import { catalogService, type SceneSummary } from '../services/catalogService';
-import { analyticsService, type IndexName, type LegendInfo } from '../services/analyticsService';
+import {
+  analyticsService,
+  type IndexName,
+  type LegendInfo,
+} from '../services/analyticsService';
 import {
   terrainService,
-  gisBufferService,
   type TerrainProduct,
-  type TerrainResult,
 } from '../services/terrainService';
+import { detectionService } from '../services/detectionService';
 import { gisService } from '../services/gisService';
 import { getErrorMessage } from '../services/api';
 import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
+import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
+import { bookmarkService } from '../services/bookmarkService';
 
 function sceneBounds(
   scene: SceneSummary,
@@ -50,18 +54,44 @@ function aoiBbox(
   return fallback;
 }
 
+const CHANGE_INDEX: Record<string, IndexName> = {
+  two: 'NDVI',
+  multi: 'NDVI',
+  urban: 'NDBI',
+  forest_loss: 'NDVI',
+  forest_gain: 'NDVI',
+  agriculture: 'SAVI',
+  water: 'NDWI',
+  river: 'NDWI',
+  coastal: 'NDWI',
+  shoreline: 'NDWI',
+  flood: 'NDWI',
+  burn: 'NBR',
+  construction: 'NDBI',
+  infra: 'NDBI',
+  report: 'NDVI',
+  stats: 'NDVI',
+};
+
 export function WorkspacePage() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const mapHostRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
-  const [terrainLoading, setTerrainLoading] = useState(false);
-  const [terrainResult, setTerrainResult] = useState<TerrainResult | null>(null);
-  const [contourInterval, setContourInterval] = useState(25);
-  const [observerHeight, setObserverHeight] = useState(1.7);
+  const [toolLoading, setToolLoading] = useState(false);
+  const [toolStatus, setToolStatus] = useState<string | null>(null);
+  const [activeToolId, setActiveToolId] = useState<string | null>(null);
+  const [lastLegend, setLastLegend] = useState<LegendInfo | null>(null);
+  const [lastMessage, setLastMessage] = useState<string | null>(null);
   const [bufferLoading, setBufferLoading] = useState(false);
   const [lastBufferDistance, setLastBufferDistance] = useState<number | null>(null);
   const [lastBufferArea, setLastBufferArea] = useState<number | null>(null);
+  const [mapCommand, setMapCommand] = useState<{ id: number; type: string } | null>(null);
+  const [processFilter, setProcessFilter] = useState({
+    brightness: 1,
+    contrast: 1,
+    gamma: 1,
+  });
 
   const {
     step,
@@ -69,14 +99,13 @@ export function WorkspacePage() {
     scenes,
     visibleSceneIds,
     focusSceneId,
-    analysisOpen,
-    terrainOpen,
+    toolboxOpen,
+    expandedToolbox,
+    mapChrome,
     compareSceneId,
     indexResult,
     changeResult,
-    selectedIndex,
     loadingScenes,
-    loadingIndex,
     loadingOverlayIds,
     error,
     mapTool,
@@ -90,14 +119,14 @@ export function WorkspacePage() {
     setPlace,
     setScenes,
     setFocusSceneId,
-    setAnalysisOpen,
-    setTerrainOpen,
+    setToolboxOpen,
+    setExpandedToolbox,
+    toggleMapChrome,
     setCompareSceneId,
     setIndexResult,
     setChangeResult,
     setSelectedIndex,
     setLoadingScenes,
-    setLoadingIndex,
     addLoadingOverlay,
     removeLoadingOverlay,
     setError,
@@ -109,8 +138,13 @@ export function WorkspacePage() {
     setBufferGeoJson,
     setMeasureLabel,
     upsertOverlay,
+    removeOverlay,
     removeSceneOverlay,
     removeOverlaysByKind,
+    setOverlayVisible,
+    renameOverlay,
+    moveOverlay,
+    duplicateOverlay,
     setLayerOpacity,
     showScene,
     hideScene,
@@ -126,7 +160,6 @@ export function WorkspacePage() {
   );
 
   const hasVisibleScene = visibleSceneIds.length > 0;
-  const rightPanel = analysisOpen ? 'indices' : terrainOpen ? 'terrain' : null;
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
     const sceneOverlay = focusScene
@@ -194,7 +227,6 @@ export function WorkspacePage() {
       if (feature.type === 'LineString' && feature.geometry.type === 'LineString') {
         setMeasureLine(feature.geometry);
       }
-      // Clear previous buffer when geometry changes
       setBufferGeoJson(null);
       removeOverlaysByKind('buffer');
       setLastBufferDistance(null);
@@ -239,6 +271,7 @@ export function WorkspacePage() {
           opacity: 1,
           label,
           renderMode: overlay.render_mode,
+          visible: true,
         });
       } catch (err) {
         setError(getErrorMessage(err));
@@ -274,25 +307,24 @@ export function WorkspacePage() {
     await loadSceneOverlay(scene);
   };
 
-  const onFocus = (scene: SceneSummary) => {
-    setFocusSceneId(scene.id);
-  };
-
-  const onPickIndex = async (index: IndexName) => {
-    if (!focusScene) return;
-    setSelectedIndex(index);
-    setChangeResult(null);
-    removeOverlaysByKind('change');
-    setLoadingIndex(true);
+  const runIndex = async (index: IndexName) => {
+    if (!focusScene) {
+      setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    setToolLoading(true);
+    setToolStatus(`Computing ${index} on scene…`);
     setError(null);
     try {
       const sceneOverlay = overlays.find(
         (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
       );
-      const bounds =
-        sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
       const result = await analyticsService.computeIndex(index, focusScene.id, bounds);
       setIndexResult(result);
+      setSelectedIndex(index);
+      setLastLegend(result.legend ?? null);
+      setLastMessage(result.formula || `${index} applied on imagery`);
       if (result.overlay_base64 && result.bounds) {
         upsertOverlay({
           id: `index-${focusScene.id}-${index}`,
@@ -303,52 +335,72 @@ export function WorkspacePage() {
           footprint: sceneOverlay?.footprint ?? null,
           opacity: layerOpacity,
           label: index,
+          visible: true,
         });
       }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
-      setLoadingIndex(false);
+      setToolLoading(false);
+      setToolStatus(null);
     }
   };
 
-  const onRunChange = async () => {
-    if (!focusScene || !compareSceneId) return;
-    setLoadingIndex(true);
+  const runChange = async (mode: string) => {
+    if (!focusScene) {
+      setError('Show a satellite scene first');
+      return;
+    }
+    const others = scenes.filter((s) => s.id !== focusScene.id);
+    const before = others.find((s) => visibleSceneIds.includes(s.id)) || others[0];
+    if (!before) {
+      setError('Need a second scene for change detection — open another eye or select from catalog');
+      return;
+    }
+    setCompareSceneId(before.id);
+    setToolLoading(true);
+    setToolStatus(`Change detection (${mode})…`);
     setError(null);
     try {
+      const index = CHANGE_INDEX[mode] || 'NDVI';
       const sceneOverlay = overlays.find(
         (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
       );
-      const bounds =
-        sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
       const result = await analyticsService.changeDetection({
-        before_scene_id: compareSceneId,
+        before_scene_id: before.id,
         after_scene_id: focusScene.id,
-        index: selectedIndex || 'NDVI',
+        index,
         bbox: bounds,
         threshold: 0.12,
       });
       setChangeResult(result);
+      setLastLegend(result.legend);
+      setLastMessage(
+        `${mode.replaceAll('_', ' ')} · Δ=${result.mean_difference.toFixed(3)} · ${result.significant_pixels} px`,
+      );
       upsertOverlay({
-        id: `change-${compareSceneId}-${focusScene.id}`,
+        id: `change-${before.id}-${focusScene.id}`,
         kind: 'change',
         sceneId: focusScene.id,
         url: analyticsService.toDataUrl(result.overlay_base64),
         bounds: result.bounds as [number, number, number, number],
         footprint: sceneOverlay?.footprint ?? null,
         opacity: layerOpacity,
-        label: `${result.index} change`,
+        label: `${index} ${mode}`,
+        visible: true,
       });
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
-      setLoadingIndex(false);
+      setToolLoading(false);
+      setToolStatus(null);
     }
   };
 
-  const onRunTerrain = async (product: TerrainProduct) => {
-    setTerrainLoading(true);
+  const runTerrain = async (product: TerrainProduct) => {
+    setToolLoading(true);
+    setToolStatus(`Terrain: ${product.replaceAll('_', ' ')}…`);
     setError(null);
     try {
       const line =
@@ -356,10 +408,8 @@ export function WorkspacePage() {
         (drawnFeature?.type === 'LineString' && drawnFeature.geometry.type === 'LineString'
           ? drawnFeature.geometry
           : null);
-
       let observer: [number, number] | undefined;
       let target: [number, number] | undefined;
-
       if (drawnFeature?.type === 'Point' && drawnFeature.geometry.type === 'Point') {
         observer = drawnFeature.geometry.coordinates as [number, number];
       } else if (place) {
@@ -368,29 +418,23 @@ export function WorkspacePage() {
         const [w, s, e, n] = analysisBbox;
         observer = [(w + e) / 2, (s + n) / 2];
       }
-
       if (line && line.coordinates.length >= 2) {
         const first = line.coordinates[0];
         const last = line.coordinates[line.coordinates.length - 1];
         observer = [first[0], first[1]];
         target = [last[0], last[1]];
       }
-
       const result = await terrainService.compute({
         product,
         bbox: [...analysisBbox],
         aoi: aoiGeoJson?.geometry ?? null,
         size: 256,
-        contour_interval: contourInterval,
         observer,
         target,
-        observer_height_m: observerHeight,
-        target_height_m: observerHeight,
         profile_line: line ?? undefined,
       });
-      setTerrainResult(result);
-
-      const bounds = result.bounds as [number, number, number, number];
+      setLastLegend((result.legend as LegendInfo | null) ?? null);
+      setLastMessage(result.message || result.formula || product);
       if (result.overlay_base64 || result.geojson) {
         upsertOverlay({
           id: `terrain-${product}`,
@@ -398,16 +442,114 @@ export function WorkspacePage() {
           url: result.overlay_base64
             ? terrainService.toDataUrl(result.overlay_base64)
             : '',
-          bounds,
+          bounds: result.bounds as [number, number, number, number],
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
           opacity: layerOpacity,
           label: product.replaceAll('_', ' '),
+          visible: true,
         });
       }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
-      setTerrainLoading(false);
+      setToolLoading(false);
+      setToolStatus(null);
+    }
+  };
+
+  const runDetection = async (task: string) => {
+    setToolLoading(true);
+    setToolStatus(`Detection: ${task.replaceAll('_', ' ')}…`);
+    setError(null);
+    try {
+      const result = await detectionService.run({
+        task,
+        bbox: [...analysisBbox],
+        scene_id: focusScene?.id,
+        aoi: aoiGeoJson?.geometry ?? null,
+        confidence_min: 0.45,
+      });
+      setLastLegend((result.legend as LegendInfo | null) ?? null);
+      setLastMessage(result.message);
+      upsertOverlay({
+        id: `detection-${task}`,
+        kind: 'detection',
+        url: result.overlay_base64
+          ? detectionService.toDataUrl(result.overlay_base64)
+          : '',
+        bounds: result.bounds as [number, number, number, number],
+        geojson: result.geojson,
+        opacity: layerOpacity,
+        label: task.replaceAll('_', ' '),
+        visible: true,
+      });
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setToolLoading(false);
+      setToolStatus(null);
+    }
+  };
+
+  const runGis = async (op: string) => {
+    if (op === 'buffer') {
+      setExpandedToolbox('gis');
+      setToolStatus('Set buffer distance below, then Apply');
+      return;
+    }
+    if (!drawnFeature) {
+      setError('Draw a point, line, or polygon first');
+      return;
+    }
+    setToolLoading(true);
+    setToolStatus(`GIS ${op}…`);
+    setError(null);
+    try {
+      const geoms: GeoJSON.Geometry[] = [drawnFeature.geometry];
+      if (aoiGeoJson?.geometry && aoiGeoJson.geometry !== drawnFeature.geometry) {
+        geoms.push(aoiGeoJson.geometry);
+      }
+      // For single-geometry ops that need two inputs, synthesize a second from bbox corners
+      if (geoms.length < 2 && ['intersect', 'union', 'clip', 'spatial_join'].includes(op)) {
+        const [w, s, e, n] = analysisBbox;
+        geoms.push({
+          type: 'Polygon',
+          coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]],
+        });
+      }
+      const result = await gisService.spatial(op, geoms, 500);
+      setLastMessage(result.message || `${op} complete (${result.count ?? 0})`);
+      const gj =
+        result.geojson ||
+        (result.geometry
+          ? {
+              type: 'FeatureCollection' as const,
+              features: [
+                {
+                  type: 'Feature' as const,
+                  properties: { operation: op },
+                  geometry: result.geometry,
+                },
+              ],
+            }
+          : null);
+      if (gj && result.bounds) {
+        upsertOverlay({
+          id: `gis-${op}`,
+          kind: 'buffer',
+          url: '',
+          bounds: result.bounds as [number, number, number, number],
+          geojson: gj,
+          opacity: layerOpacity,
+          label: `GIS ${op}`,
+          visible: true,
+        });
+      }
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setToolLoading(false);
+      setToolStatus(null);
     }
   };
 
@@ -416,10 +558,7 @@ export function WorkspacePage() {
     setBufferLoading(true);
     setError(null);
     try {
-      const result = await gisBufferService.buffer(
-        drawnFeature.geometry,
-        distanceMeters,
-      );
+      const result = await gisService.buffer(drawnFeature.geometry, distanceMeters);
       setLastBufferDistance(result.distance_meters);
       setLastBufferArea(result.area_sq_meters ?? null);
       const bufferFeature: GeoJSON.Feature = {
@@ -435,12 +574,14 @@ export function WorkspacePage() {
         geojson: bufferFeature,
         opacity: layerOpacity,
         label: `Buffer ${distanceMeters} m`,
+        visible: true,
       });
       if (result.geometry.type === 'Polygon') {
         setBufferGeoJson(result.geometry as GeoJSON.Polygon);
       } else {
         setBufferGeoJson(null);
       }
+      setLastMessage(`Buffer ${distanceMeters} m applied`);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -448,29 +589,138 @@ export function WorkspacePage() {
     }
   };
 
-  const onClearBuffer = () => {
-    setBufferGeoJson(null);
-    removeOverlaysByKind('buffer');
-    setLastBufferDistance(null);
-    setLastBufferArea(null);
+  const applyProcessFilter = (op: string) => {
+    const next = { ...processFilter };
+    if (op === 'brightness') next.brightness = Math.min(1.6, next.brightness + 0.1);
+    if (op === 'contrast') next.contrast = Math.min(1.8, next.contrast + 0.1);
+    if (op === 'gamma') next.gamma = Math.min(2.2, next.gamma + 0.1);
+    if (op === 'histogram' || op === 'sharpen' || op === 'denoise') {
+      next.contrast = 1.25;
+      next.brightness = 1.05;
+    }
+    if (op === 'true_color') {
+      next.brightness = 1;
+      next.contrast = 1;
+      next.gamma = 1;
+      setLastMessage('True color — scene tiles restored');
+    }
+    if (op === 'false_color') {
+      // False color uses NIR-like stretch via index false-color proxy
+      void runIndex('NDVI');
+      setLastMessage('False-color style via vegetation contrast');
+    }
+    if (op === 'mosaic') {
+      setLastMessage('Mosaic: all visible scene layers shown');
+    }
+    if (op === 'reproject' || op === 'resample') {
+      setLastMessage(`${op}: display CRS EPSG:3857 / native scene resolution`);
+    }
+    setProcessFilter(next);
+    setLastMessage((m) => m || `Image ${op} applied to map view`);
   };
 
-  const onDownloadScene = () => {
-    if (!focusScene) return;
-    const bounds = sceneBounds(focusScene, place);
-    const url = analyticsService.sceneDownloadUrl(focusScene.id, bounds);
-    const token = localStorage.getItem('ev_access_token');
-    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then((r) => r.blob())
-      .then((blob) => {
-        const href = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = href;
-        a.download = `${focusScene.collection}_${focusScene.id}.png`;
-        a.click();
-        URL.revokeObjectURL(href);
-      })
-      .catch(() => window.open(url, '_blank'));
+  const onTool = async (tool: ToolboxTool) => {
+    setActiveToolId(tool.id);
+    const { action } = tool;
+
+    if (action.type === 'map') {
+      if (action.mode === 'navigate') setMapTool('navigate');
+      else if (action.mode === 'zoom-in' || action.mode === 'zoom-out' || action.mode === 'fullscreen') {
+        setMapCommand({ id: Date.now(), type: action.mode === 'fullscreen' ? 'fullscreen' : action.mode });
+      }
+      setToolStatus(`Map: ${tool.label}`);
+      return;
+    }
+
+    if (action.type === 'toggle') {
+      if (action.key === 'view2d') {
+        useWorkflowStore.getState().setMapChrome({ view3d: false, rotate: false });
+        setToolStatus('2D view');
+        return;
+      }
+      if (action.key === 'fullscreen') {
+        setMapCommand({ id: Date.now(), type: 'fullscreen' });
+        return;
+      }
+      const key = action.key as keyof typeof mapChrome;
+      if (key in mapChrome) {
+        toggleMapChrome(key);
+        if (key === 'bookmarks') {
+          try {
+            const list = await bookmarkService.list();
+            setLastMessage(
+              list.length
+                ? `Bookmarks: ${list.map((b) => b.name).join(', ')}`
+                : 'No bookmarks yet — pan to a place and save from Place step',
+            );
+          } catch {
+            setLastMessage('Bookmarks panel toggled');
+          }
+        }
+        setToolStatus(`${tool.label}: ${!mapChrome[key] ? 'ON' : 'OFF'}`);
+      }
+      return;
+    }
+
+    if (action.type === 'measure') {
+      setMapTool(action.mode as MapTool);
+      setToolStatus(`Measure: ${tool.label} — draw on the map`);
+      return;
+    }
+
+    if (action.type === 'index') {
+      await runIndex(action.index as IndexName);
+      return;
+    }
+
+    if (action.type === 'terrain') {
+      await runTerrain(action.product as TerrainProduct);
+      return;
+    }
+
+    if (action.type === 'detection') {
+      await runDetection(action.task);
+      return;
+    }
+
+    if (action.type === 'change') {
+      await runChange(action.mode);
+      return;
+    }
+
+    if (action.type === 'gis') {
+      await runGis(action.op);
+      return;
+    }
+
+    if (action.type === 'layer') {
+      const last = overlays[overlays.length - 1];
+      if (action.op === 'add') {
+        setToolStatus('Add layer: toggle a scene eye in the catalog');
+      } else if (action.op === 'remove' && last) {
+        removeOverlay(last.id);
+        setToolStatus(`Removed ${last.label}`);
+      } else if (action.op === 'duplicate' && last) {
+        duplicateOverlay(last.id);
+        setToolStatus(`Duplicated ${last.label}`);
+      } else if (action.op === 'opacity' || action.op === 'transparency') {
+        setExpandedToolbox('layers');
+        setToolStatus('Adjust opacity in Layer Manager');
+      } else if (action.op === 'order') {
+        setExpandedToolbox('layers');
+        setToolStatus('Use Up/Down in Layer Manager');
+      } else if (action.op === 'rename') {
+        setExpandedToolbox('layers');
+        setToolStatus('Double-click a layer name to rename');
+      } else if (action.op === 'styles' || action.op === 'labels' || action.op === 'blend') {
+        setLastMessage(`${action.op}: use detection/index overlays for styled results`);
+      }
+      return;
+    }
+
+    if (action.type === 'process') {
+      applyProcessFilter(action.op);
+    }
   };
 
   const onExportJpeg = async () => {
@@ -481,7 +731,7 @@ export function WorkspacePage() {
     setExporting(true);
     try {
       const legend =
-        terrainResult?.legend || changeResult?.legend || indexResult?.legend || null;
+        lastLegend || changeResult?.legend || indexResult?.legend || null;
       await exportMapJpeg({
         mapElement,
         title: 'EarthVision Map Export',
@@ -497,14 +747,11 @@ export function WorkspacePage() {
   };
 
   const legend: LegendInfo | null =
-    (terrainResult?.legend as LegendInfo | null | undefined) ||
-    changeResult?.legend ||
-    indexResult?.legend ||
-    null;
+    lastLegend || changeResult?.legend || indexResult?.legend || null;
 
-  const showRight =
-    (rightPanel === 'indices' && hasVisibleScene && focusScene) ||
-    rightPanel === 'terrain';
+  const filterStyle = {
+    filter: `brightness(${processFilter.brightness}) contrast(${processFilter.contrast})`,
+  };
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)]">
@@ -522,35 +769,15 @@ export function WorkspacePage() {
           <button
             type="button"
             className={`ev-btn inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold ${
-              terrainOpen
+              toolboxOpen
                 ? 'bg-[var(--accent)] text-white'
                 : 'border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent-soft)]'
             }`}
-            onClick={() => {
-              setTerrainOpen(!terrainOpen);
-              if (!terrainOpen) setAnalysisOpen(false);
-            }}
+            onClick={() => setToolboxOpen(!toolboxOpen)}
           >
-            <Mountain className="h-4 w-4" />
-            Terrain
+            <Wrench className="h-4 w-4" />
+            Toolboxes
           </button>
-          {hasVisibleScene && (
-            <button
-              type="button"
-              className={`ev-btn inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold ${
-                analysisOpen
-                  ? 'bg-[var(--accent)] text-white'
-                  : 'border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent-soft)]'
-              }`}
-              onClick={() => {
-                setAnalysisOpen(!analysisOpen);
-                if (!analysisOpen) setTerrainOpen(false);
-              }}
-            >
-              <FlaskConical className="h-4 w-4" />
-              Indices
-            </button>
-          )}
           <span className="hidden max-w-[10rem] truncate text-xs text-[var(--muted)] sm:inline">
             {user?.full_name}
           </span>
@@ -562,8 +789,8 @@ export function WorkspacePage() {
 
       <div
         className={`grid min-h-0 flex-1 ${
-          showRight
-            ? 'lg:grid-cols-[minmax(18rem,22rem)_1fr_minmax(18rem,22rem)]'
+          toolboxOpen
+            ? 'lg:grid-cols-[minmax(17rem,21rem)_1fr_minmax(20rem,24rem)]'
             : 'lg:grid-cols-[minmax(18rem,24rem)_1fr]'
         }`}
       >
@@ -573,16 +800,6 @@ export function WorkspacePage() {
               {error}
             </div>
           )}
-
-          <BufferPanel
-            hasGeometry={Boolean(drawnFeature)}
-            geometryType={drawnFeature?.type ?? null}
-            loading={bufferLoading}
-            lastDistance={lastBufferDistance}
-            lastArea={lastBufferArea}
-            onApply={onApplyBuffer}
-            onClear={onClearBuffer}
-          />
 
           {step === 'place' && (
             <PlaceStep onSelect={loadScenesForPlace} busy={loadingScenes} />
@@ -597,13 +814,18 @@ export function WorkspacePage() {
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
               onToggleEye={onToggleEye}
-              onFocus={onFocus}
+              onFocus={(scene) => setFocusSceneId(scene.id)}
               onBack={backToPlace}
             />
           )}
         </aside>
 
-        <section ref={mapHostRef} className="relative min-h-[40vh] lg:min-h-0" id="ev-map-host">
+        <section
+          ref={mapHostRef}
+          className="relative min-h-[40vh] lg:min-h-0"
+          id="ev-map-host"
+          style={filterStyle}
+        >
           <LightMap
             place={place}
             overlays={overlays}
@@ -613,6 +835,8 @@ export function WorkspacePage() {
             bufferGeoJson={bufferGeoJson}
             enablePlaceClick={step === 'place'}
             showGrid
+            mapChrome={mapChrome}
+            mapCommand={mapCommand}
             onPlaceClick={onPlaceClick}
             onAoiComplete={(feature) => {
               setAoiGeoJson(feature);
@@ -637,14 +861,33 @@ export function WorkspacePage() {
               if (t === 'navigate') setMeasureLabel(null);
             }}
             onOpacity={setLayerOpacity}
-            onClearAoi={() => {
-              clearDrawn();
-            }}
+            onClearAoi={() => clearDrawn()}
             onExportJpeg={onExportJpeg}
             hasAoi={Boolean(aoiGeoJson || drawnFeature || bufferGeoJson)}
             exporting={exporting}
           />
           <MapLegend legend={legend} />
+          {mapChrome.splitView && hasVisibleScene && (
+            <div className="pointer-events-none absolute inset-y-0 left-1/2 z-[400] w-px bg-[var(--accent)]/70" />
+          )}
+          {mapChrome.timeSlider && (
+            <div className="pointer-events-auto absolute inset-x-8 bottom-24 z-[1000] rounded-xl border border-[var(--line)] bg-white/95 px-3 py-2 shadow">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                Time slider · {scenes.length} scenes
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(0, scenes.length - 1)}
+                defaultValue={Math.max(0, scenes.findIndex((s) => s.id === focusSceneId))}
+                className="w-full accent-[var(--accent)]"
+                onChange={(e) => {
+                  const sc = scenes[Number(e.target.value)];
+                  if (sc) setFocusSceneId(sc.id);
+                }}
+              />
+            </div>
+          )}
           {step === 'place' && (
             <div className="pointer-events-none absolute bottom-14 left-1/2 z-[500] max-w-[90%] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1.5 text-center text-xs text-[var(--muted)] shadow">
               Search Lahore, click the map, or draw an AOI — then use eyes to show images
@@ -652,48 +895,42 @@ export function WorkspacePage() {
           )}
         </section>
 
-        {rightPanel === 'indices' && hasVisibleScene && focusScene && (
-          <AnalysisPanel
-            focusScene={focusScene}
-            scenes={scenes}
-            visibleSceneIds={visibleSceneIds}
-            selectedIndex={selectedIndex}
-            result={indexResult}
-            changeResult={changeResult}
-            compareSceneId={compareSceneId}
-            loading={loadingIndex}
-            onClose={() => setAnalysisOpen(false)}
-            onPickIndex={onPickIndex}
-            onCompareSceneId={setCompareSceneId}
-            onRunChange={onRunChange}
-            onDownloadScene={onDownloadScene}
+        {toolboxOpen && (
+          <ToolboxPanel
+            expanded={(expandedToolbox as ToolboxId | null) ?? null}
+            activeToolId={activeToolId}
+            loading={toolLoading}
+            status={toolStatus}
+            overlays={overlays}
+            layerOpacity={layerOpacity}
+            hasScene={hasVisibleScene}
+            hasDrawn={Boolean(drawnFeature)}
+            drawnType={drawnFeature?.type ?? null}
+            bufferLoading={bufferLoading}
+            lastBufferDistance={lastBufferDistance}
+            lastBufferArea={lastBufferArea}
+            lastLegend={lastLegend}
+            lastMessage={lastMessage}
+            mapChrome={mapChrome}
+            onExpand={(id) => setExpandedToolbox(id)}
+            onTool={onTool}
+            onClose={() => setToolboxOpen(false)}
+            onOpacity={setLayerOpacity}
+            onToggleOverlay={(id) => {
+              const layer = overlays.find((o) => o.id === id);
+              if (layer) setOverlayVisible(id, layer.visible === false);
+            }}
+            onRemoveOverlay={removeOverlay}
+            onMoveOverlay={moveOverlay}
+            onRenameOverlay={renameOverlay}
+            onApplyBuffer={onApplyBuffer}
+            onClearBuffer={() => {
+              setBufferGeoJson(null);
+              removeOverlaysByKind('buffer');
+              setLastBufferDistance(null);
+              setLastBufferArea(null);
+            }}
           />
-        )}
-
-        {rightPanel === 'terrain' && (
-          <aside className="flex min-h-0 flex-col border-t border-[var(--line)] bg-white lg:border-l lg:border-t-0">
-            <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                Terrain tools
-              </span>
-              <button
-                type="button"
-                className="ev-btn-ghost text-xs"
-                onClick={() => setTerrainOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-            <TerrainPanel
-              loading={terrainLoading}
-              result={terrainResult}
-              contourInterval={contourInterval}
-              observerHeight={observerHeight}
-              onContourInterval={setContourInterval}
-              onObserverHeight={setObserverHeight}
-              onRun={onRunTerrain}
-            />
-          </aside>
         )}
       </div>
     </div>

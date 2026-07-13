@@ -20,7 +20,7 @@ export interface PlaceSelection {
 
 export interface MapOverlay {
   id: string;
-  kind: 'scene' | 'index' | 'change' | 'terrain' | 'buffer';
+  kind: 'scene' | 'index' | 'change' | 'terrain' | 'buffer' | 'detection';
   sceneId?: string;
   /** Static image URL (indices / change / terrain). Empty when using tileUrl or geojson-only. */
   url: string;
@@ -33,6 +33,8 @@ export interface MapOverlay {
   geojson?: GeoJSON.GeoJsonObject | null;
   opacity: number;
   label: string;
+  visible?: boolean;
+  blendMode?: string;
   renderMode?: 'rgb' | 'grayscale';
 }
 
@@ -51,6 +53,23 @@ interface WorkflowState {
   focusSceneId: string | null;
   analysisOpen: boolean;
   terrainOpen: boolean;
+  toolboxOpen: boolean;
+  expandedToolbox: string | null;
+  mapChrome: {
+    compass: boolean;
+    scaleBar: boolean;
+    coordinates: boolean;
+    miniMap: boolean;
+    swipe: boolean;
+    splitView: boolean;
+    syncMaps: boolean;
+    rotate: boolean;
+    view3d: boolean;
+    terrainRelief: boolean;
+    timeSlider: boolean;
+    bookmarks: boolean;
+    manualVerify: boolean;
+  };
   compareSceneId: string | null;
   indexResult: IndexResult | null;
   changeResult: ChangeResult | null;
@@ -73,6 +92,10 @@ interface WorkflowState {
   setFocusSceneId: (id: string | null) => void;
   setAnalysisOpen: (open: boolean) => void;
   setTerrainOpen: (open: boolean) => void;
+  setToolboxOpen: (open: boolean) => void;
+  setExpandedToolbox: (id: string | null) => void;
+  setMapChrome: (patch: Partial<WorkflowState['mapChrome']>) => void;
+  toggleMapChrome: (key: keyof WorkflowState['mapChrome']) => void;
   setCompareSceneId: (id: string | null) => void;
   setIndexResult: (result: IndexResult | null) => void;
   setChangeResult: (result: ChangeResult | null) => void;
@@ -92,6 +115,10 @@ interface WorkflowState {
   removeOverlay: (id: string) => void;
   removeOverlaysByKind: (kind: MapOverlay['kind']) => void;
   removeSceneOverlay: (sceneId: string) => void;
+  setOverlayVisible: (id: string, visible: boolean) => void;
+  renameOverlay: (id: string, label: string) => void;
+  moveOverlay: (id: string, dir: 'up' | 'down') => void;
+  duplicateOverlay: (id: string) => void;
   setLayerOpacity: (opacity: number) => void;
   showScene: (sceneId: string) => void;
   hideScene: (sceneId: string) => void;
@@ -109,6 +136,23 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   focusSceneId: null,
   analysisOpen: false,
   terrainOpen: false,
+  toolboxOpen: true,
+  expandedToolbox: 'image',
+  mapChrome: {
+    compass: true,
+    scaleBar: true,
+    coordinates: true,
+    miniMap: false,
+    swipe: false,
+    splitView: false,
+    syncMaps: false,
+    rotate: false,
+    view3d: false,
+    terrainRelief: false,
+    timeSlider: false,
+    bookmarks: false,
+    manualVerify: false,
+  },
   compareSceneId: null,
   indexResult: null,
   changeResult: null,
@@ -132,6 +176,11 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   setFocusSceneId: (focusSceneId) => set({ focusSceneId }),
   setAnalysisOpen: (analysisOpen) => set({ analysisOpen }),
   setTerrainOpen: (terrainOpen) => set({ terrainOpen }),
+  setToolboxOpen: (toolboxOpen) => set({ toolboxOpen }),
+  setExpandedToolbox: (expandedToolbox) => set({ expandedToolbox }),
+  setMapChrome: (patch) => set((s) => ({ mapChrome: { ...s.mapChrome, ...patch } })),
+  toggleMapChrome: (key) =>
+    set((s) => ({ mapChrome: { ...s.mapChrome, [key]: !s.mapChrome[key] } })),
   setCompareSceneId: (compareSceneId) => set({ compareSceneId }),
   setIndexResult: (indexResult) => set({ indexResult }),
   setChangeResult: (changeResult) => set({ changeResult }),
@@ -157,7 +206,12 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   upsertOverlay: (overlay) =>
     set((state) => {
       let next = state.overlays.filter((o) => o.id !== overlay.id);
-      if (overlay.kind === 'index' || overlay.kind === 'change' || overlay.kind === 'terrain') {
+      if (
+        overlay.kind === 'index' ||
+        overlay.kind === 'change' ||
+        overlay.kind === 'terrain' ||
+        overlay.kind === 'detection'
+      ) {
         next = next.filter((o) => o.kind !== overlay.kind);
       }
       if (overlay.kind === 'buffer') {
@@ -166,7 +220,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       if (overlay.kind === 'scene' && overlay.sceneId) {
         next = next.filter((o) => !(o.kind === 'scene' && o.sceneId === overlay.sceneId));
       }
-      return { overlays: [...next, overlay] };
+      return { overlays: [...next, { visible: true, ...overlay }] };
     }),
 
   removeOverlay: (id) =>
@@ -182,10 +236,46 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       ),
     })),
 
+  setOverlayVisible: (id, visible) =>
+    set((state) => ({
+      overlays: state.overlays.map((o) => (o.id === id ? { ...o, visible } : o)),
+    })),
+
+  renameOverlay: (id, label) =>
+    set((state) => ({
+      overlays: state.overlays.map((o) => (o.id === id ? { ...o, label } : o)),
+    })),
+
+  moveOverlay: (id, dir) =>
+    set((state) => {
+      const idx = state.overlays.findIndex((o) => o.id === id);
+      if (idx < 0) return state;
+      const target = dir === 'up' ? idx + 1 : idx - 1;
+      if (target < 0 || target >= state.overlays.length) return state;
+      const next = [...state.overlays];
+      const [item] = next.splice(idx, 1);
+      next.splice(target, 0, item);
+      return { overlays: next };
+    }),
+
+  duplicateOverlay: (id) =>
+    set((state) => {
+      const src = state.overlays.find((o) => o.id === id);
+      if (!src) return state;
+      const copy: MapOverlay = {
+        ...src,
+        id: `${src.id}-copy-${Date.now()}`,
+        label: `${src.label} (copy)`,
+      };
+      return { overlays: [...state.overlays, copy] };
+    }),
+
   setLayerOpacity: (layerOpacity) =>
     set((state) => ({
       layerOpacity,
-      overlays: state.overlays.map((o) => ({ ...o, opacity: layerOpacity })),
+      overlays: state.overlays.map((o) =>
+        o.kind === 'scene' ? o : { ...o, opacity: layerOpacity },
+      ),
     })),
 
   showScene: (sceneId) =>
@@ -250,6 +340,8 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       focusSceneId: null,
       analysisOpen: false,
       terrainOpen: false,
+      toolboxOpen: true,
+      expandedToolbox: 'image',
       compareSceneId: null,
       indexResult: null,
       changeResult: null,
@@ -269,6 +361,8 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       focusSceneId: null,
       analysisOpen: false,
       terrainOpen: false,
+      toolboxOpen: true,
+      expandedToolbox: 'image',
       compareSceneId: null,
       indexResult: null,
       changeResult: null,

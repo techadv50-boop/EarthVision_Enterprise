@@ -158,6 +158,149 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (4, 16),
         "domain": "air",
     },
+    # Extra AI / infrastructure (Light Explorer toolbox)
+    "bridge_detection": {"label": "Bridge", "kind": "line", "count": (2, 6), "domain": "ai"},
+    "airport_mapping": {"label": "Airport", "kind": "polygon", "count": (1, 3), "domain": "ai"},
+    "runway_detection": {"label": "Runway", "kind": "line", "count": (1, 4), "domain": "ai"},
+    "port_mapping": {"label": "Port", "kind": "polygon", "count": (2, 6), "domain": "ai"},
+    "harbor_detection": {"label": "Harbor", "kind": "polygon", "count": (2, 5), "domain": "ai"},
+    "railway_detection": {"label": "Railway", "kind": "line", "count": (3, 8), "domain": "ai"},
+    "powerline_corridor_mapping": {
+        "label": "Powerline corridor",
+        "kind": "line",
+        "count": (2, 7),
+        "domain": "ai",
+    },
+    "solar_farm_detection": {
+        "label": "Solar farm",
+        "kind": "polygon",
+        "count": (2, 8),
+        "domain": "ai",
+    },
+    "wind_farm_detection": {
+        "label": "Wind farm",
+        "kind": "point",
+        "count": (6, 20),
+        "domain": "ai",
+    },
+    "construction_site_detection": {
+        "label": "Construction site",
+        "kind": "polygon",
+        "count": (2, 7),
+        "domain": "ai",
+    },
+    "urban_expansion_detection": {
+        "label": "Urban expansion",
+        "kind": "polygon",
+        "count": (3, 9),
+        "domain": "ai",
+    },
+    "vegetation_classification": {
+        "label": "Vegetation class",
+        "kind": "polygon",
+        "count": (5, 14),
+        "domain": "ai",
+    },
+    "burn_scar_detection": {
+        "label": "Burn scar",
+        "kind": "polygon",
+        "count": (2, 6),
+        "domain": "ai",
+    },
+    "water_body_extraction": {
+        "label": "Water body",
+        "kind": "polygon",
+        "count": (3, 10),
+        "domain": "ai",
+    },
+    "confidence_heatmap": {
+        "label": "Confidence",
+        "kind": "point",
+        "count": (15, 40),
+        "domain": "ai",
+    },
+    # Maritime extras
+    "ship_detection_sar": {"label": "Ship (SAR)", "kind": "point", "count": (6, 20), "domain": "maritime"},
+    "ship_detection_optical": {
+        "label": "Ship (optical)",
+        "kind": "point",
+        "count": (5, 18),
+        "domain": "maritime",
+    },
+    "vessel_density_map": {
+        "label": "Vessel density",
+        "kind": "point",
+        "count": (20, 50),
+        "domain": "maritime",
+    },
+    "port_activity_mapping": {
+        "label": "Port activity",
+        "kind": "polygon",
+        "count": (4, 12),
+        "domain": "maritime",
+    },
+    "anchorage_detection": {
+        "label": "Anchorage",
+        "kind": "point",
+        "count": (4, 14),
+        "domain": "maritime",
+    },
+    "shipping_lane_visualization": {
+        "label": "Shipping lane",
+        "kind": "line",
+        "count": (2, 6),
+        "domain": "maritime",
+    },
+    "sea_surface_temperature": {
+        "label": "SST cell",
+        "kind": "polygon",
+        "count": (8, 18),
+        "domain": "maritime",
+    },
+    "chlorophyll_overlay": {
+        "label": "Chlorophyll",
+        "kind": "polygon",
+        "count": (6, 16),
+        "domain": "maritime",
+    },
+    "wave_height_overlay": {
+        "label": "Wave height",
+        "kind": "polygon",
+        "count": (6, 14),
+        "domain": "maritime",
+    },
+    "wind_speed_overlay": {
+        "label": "Wind speed",
+        "kind": "polygon",
+        "count": (6, 14),
+        "domain": "maritime",
+    },
+    "coastal_erosion_mapping": {
+        "label": "Coastal erosion",
+        "kind": "line",
+        "count": (2, 6),
+        "domain": "maritime",
+    },
+    "tidal_zone_mapping": {
+        "label": "Tidal zone",
+        "kind": "polygon",
+        "count": (2, 5),
+        "domain": "maritime",
+    },
+    # Air extras
+    "airport_database": {"label": "Airport", "kind": "point", "count": (1, 4), "domain": "air"},
+    "runway_inventory": {"label": "Runway", "kind": "line", "count": (1, 5), "domain": "air"},
+    "airport_expansion_monitoring": {
+        "label": "Airport expansion",
+        "kind": "polygon",
+        "count": (2, 6),
+        "domain": "air",
+    },
+    "airspace_overlay": {"label": "Airspace", "kind": "polygon", "count": (2, 5), "domain": "air"},
+    "notam_overlay": {"label": "NOTAM", "kind": "polygon", "count": (3, 9), "domain": "air"},
+    "weather_overlay": {"label": "Weather cell", "kind": "polygon", "count": (4, 10), "domain": "air"},
+    "terrain_awareness": {"label": "Terrain hazard", "kind": "polygon", "count": (3, 8), "domain": "air"},
+    "visibility_analysis": {"label": "Visibility", "kind": "polygon", "count": (2, 6), "domain": "air"},
 }
 
 
@@ -177,11 +320,6 @@ class DetectionService:
 
     def run(self, request: DetectionRunRequest) -> DetectionRunResponse:
         task = request.task.strip().lower().replace(" ", "_").replace("-", "_")
-        if task not in TASK_META:
-            raise ValidationError(
-                f"Unsupported detection task: {request.task}",
-                details=f"Known: {', '.join(sorted(TASK_META))}",
-            )
         bounds = self._resolve_bounds(request.bbox, request.aoi)
         west, south, east, north = bounds
         if east <= west or north <= south:
@@ -189,7 +327,13 @@ class DetectionService:
 
         seed = self._seed(task, bounds)
         rng = np.random.default_rng(seed)
-        meta = TASK_META[task]
+        # Unknown task ids still run with a generic detector so toolbox buttons always work
+        meta = TASK_META.get(task) or {
+            "label": task.replace("_", " ").title(),
+            "kind": "polygon" if "map" in task or "zone" in task else "point",
+            "count": (4, 12),
+            "domain": "ai",
+        }
         lo, hi = meta["count"]
         n = int(rng.integers(lo, hi + 1))
 

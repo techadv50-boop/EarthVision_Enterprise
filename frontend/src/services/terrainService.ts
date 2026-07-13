@@ -10,7 +10,11 @@ export type TerrainProduct =
   | 'watershed'
   | 'viewshed'
   | 'profile'
-  | 'line_of_sight';
+  | 'line_of_sight'
+  | 'flow_direction'
+  | 'flow_accumulation'
+  | 'ruggedness'
+  | 'cut_fill';
 
 export interface TerrainResult {
   product: TerrainProduct;

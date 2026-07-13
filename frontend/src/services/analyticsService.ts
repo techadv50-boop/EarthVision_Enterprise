@@ -1,6 +1,15 @@
 import { api } from './api';
 
-export type IndexName = 'NDVI' | 'NDWI' | 'NDBI' | 'SAVI' | 'BSI' | 'LST';
+export type IndexName =
+  | 'NDVI'
+  | 'NDWI'
+  | 'NDBI'
+  | 'SAVI'
+  | 'BSI'
+  | 'LST'
+  | 'EVI'
+  | 'NDMI'
+  | 'NBR';
 
 export interface LegendInfo {
   min: number;
