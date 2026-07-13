@@ -470,6 +470,110 @@ class AnalyticsService:
         stretched = (band.astype(np.float64) - lo) / (hi - lo)
         return np.clip(stretched, 0.0, 1.0)
 
+    @staticmethod
+    def _joint_rgb_stretch(red: np.ndarray, green: np.ndarray, blue: np.ndarray) -> np.ndarray:
+        """Shared 2–98% stretch across RGB so channel balance stays natural."""
+        stacked = np.stack(
+            [red.astype(np.float64), green.astype(np.float64), blue.astype(np.float64)],
+            axis=-1,
+        )
+        valid = stacked[np.isfinite(stacked)]
+        if valid.size == 0:
+            return np.zeros((*red.shape, 3), dtype=np.float64)
+        lo = float(np.percentile(valid, 2))
+        hi = float(np.percentile(valid, 98))
+        if hi <= lo:
+            hi = lo + 1e-6
+        return np.clip((stacked - lo) / (hi - lo), 0.0, 1.0)
+
+    def _lonlat_to_tile(self, lon: float, lat: float, zoom: int) -> tuple[float, float]:
+        """Web Mercator fractional tile coordinates."""
+        lat = max(min(lat, 85.05112878), -85.05112878)
+        n = 2.0**zoom
+        x = (lon + 180.0) / 360.0 * n
+        lat_rad = np.radians(lat)
+        y = (1.0 - np.log(np.tan(lat_rad) + 1.0 / np.cos(lat_rad)) / np.pi) / 2.0 * n
+        return float(x), float(y)
+
+    def _mosaic_esri_imagery(self, bbox: list[float], out_size: int = 512) -> Image.Image | None:
+        """Mosaic Esri World Imagery tiles → true-color optical RGB for the bbox."""
+        import math
+
+        import httpx
+
+        west, south, east, north = (float(v) for v in bbox)
+        if east <= west or north <= south:
+            return None
+
+        lat_mid = (south + north) / 2.0
+        width_m = (east - west) * 111_320.0 * math.cos(math.radians(lat_mid))
+        height_m = (north - south) * 110_540.0
+        meters = max(width_m, height_m, 1.0)
+        zoom = int(
+            math.floor(
+                math.log2(156_543.03392 * math.cos(math.radians(lat_mid)) * out_size / meters)
+            )
+        )
+        zoom = max(12, min(zoom, 18))
+
+        def tile_range(z: int) -> tuple[float, float, float, float, int, int, int, int]:
+            x0, y1 = self._lonlat_to_tile(west, south, z)
+            x1, y0 = self._lonlat_to_tile(east, north, z)
+            tx0, tx1 = int(math.floor(x0)), int(math.floor(x1))
+            ty0, ty1 = int(math.floor(y0)), int(math.floor(y1))
+            return x0, y0, x1, y1, tx0, ty0, tx1, ty1
+
+        x0, y0, x1, y1, tx0, ty0, tx1, ty1 = tile_range(zoom)
+        while (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 64 and zoom > 12:
+            zoom -= 1
+            x0, y0, x1, y1, tx0, ty0, tx1, ty1 = tile_range(zoom)
+
+        tile_size = 256
+        mosaic_w = (tx1 - tx0 + 1) * tile_size
+        mosaic_h = (ty1 - ty0 + 1) * tile_size
+        mosaic = Image.new("RGB", (mosaic_w, mosaic_h))
+        url_tmpl = (
+            "https://server.arcgisonline.com/ArcGIS/rest/services/"
+            "World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        )
+        fetched = 0
+        try:
+            with httpx.Client(timeout=25.0, follow_redirects=True) as client:
+                for ty in range(ty0, ty1 + 1):
+                    for tx in range(tx0, tx1 + 1):
+                        url = url_tmpl.format(z=zoom, y=ty, x=tx)
+                        resp = client.get(url)
+                        if resp.status_code != 200:
+                            logger.warning("Imagery tile miss {} → {}", url, resp.status_code)
+                            continue
+                        tile = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                        mosaic.paste(tile, ((tx - tx0) * tile_size, (ty - ty0) * tile_size))
+                        fetched += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Esri imagery mosaic failed: {}", exc)
+            return None
+
+        if fetched == 0:
+            return None
+
+        left = int((x0 - tx0) * tile_size)
+        right = int((x1 - tx0) * tile_size)
+        top = int((y0 - ty0) * tile_size)
+        bottom = int((y1 - ty0) * tile_size)
+        left = max(0, min(left, mosaic_w - 1))
+        right = max(left + 1, min(right, mosaic_w))
+        top = max(0, min(top, mosaic_h - 1))
+        bottom = max(top + 1, min(bottom, mosaic_h))
+        cropped = mosaic.crop((left, top, right, bottom))
+        return cropped.resize((out_size, out_size), Image.Resampling.LANCZOS)
+
+    def _natural_rgb_fallback(self, scene_id: str, size: int) -> Image.Image:
+        """Natural-looking RGB when tiles/bands are unavailable (joint stretch)."""
+        bands = self._synthetic_bands(size=size, seed=hash(scene_id) % (2**31))
+        rgb = self._joint_rgb_stretch(bands["red"], bands["green"], bands["blue"])
+        rgb = np.power(rgb, 0.9)
+        return Image.fromarray((rgb * 255.0).astype(np.uint8), mode="RGB")
+
     def truecolor_overlay(
         self,
         scene_id: str,
@@ -483,41 +587,60 @@ class AnalyticsService:
         """
         True-color (natural color) RGB composite for map overlay.
 
-        Band mapping (optical):
-          R ← Red band
-          G ← Green band
-          B ← Blue band
+        Priority:
+        1. Real Red/Green/Blue GeoTIFF bands when paths are provided
+        2. Esri World Imagery mosaic clipped to the scene bbox (optical RGB)
+        3. Natural-looking synthetic fallback with joint stretch
         """
-        bands = self._synthetic_bands(size=size, seed=hash(scene_id) % (2**31))
-        red = self._load_band(red_band_path, bands["red"])
-        green = self._load_band(green_band_path, bands["green"])
-        blue = self._load_band(blue_band_path, bands["blue"])
+        bounds = self._resolve_bounds(bbox, footprint)
+        source = "synthetic_natural"
+        has_real = bool(red_band_path and green_band_path and blue_band_path)
 
-        # Match spatial shape if loaded bands differ
-        h = min(red.shape[0], green.shape[0], blue.shape[0])
-        w = min(red.shape[1], green.shape[1], blue.shape[1])
-        red, green, blue = red[:h, :w], green[:h, :w], blue[:h, :w]
+        if has_real:
+            bands = self._synthetic_bands(size=size, seed=hash(scene_id) % (2**31))
+            red = self._load_band(red_band_path, bands["red"])
+            green = self._load_band(green_band_path, bands["green"])
+            blue = self._load_band(blue_band_path, bands["blue"])
+            # Only treat as real if at least one path existed on disk
+            used_disk = any(
+                p and Path(p).exists() for p in (red_band_path, green_band_path, blue_band_path)
+            )
+            if used_disk:
+                h = min(red.shape[0], green.shape[0], blue.shape[0])
+                w = min(red.shape[1], green.shape[1], blue.shape[1])
+                rgb = self._joint_rgb_stretch(red[:h, :w], green[:h, :w], blue[:h, :w])
+                img = Image.fromarray((rgb * 255.0).astype(np.uint8), mode="RGB")
+                img = img.resize((size, size), Image.Resampling.LANCZOS)
+                source = "scene_bands"
+            else:
+                img = self._mosaic_esri_imagery(bounds, out_size=size)
+                if img is not None:
+                    source = "world_imagery"
+                else:
+                    img = self._natural_rgb_fallback(scene_id, size)
+        else:
+            img = self._mosaic_esri_imagery(bounds, out_size=size)
+            if img is not None:
+                source = "world_imagery"
+            else:
+                img = self._natural_rgb_fallback(scene_id, size)
 
-        r = self._percentile_stretch(red)
-        g = self._percentile_stretch(green)
-        b = self._percentile_stretch(blue)
-        rgb = np.stack([r, g, b], axis=-1)
-        img = Image.fromarray((rgb * 255.0).astype(np.uint8), mode="RGB")
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
-        bounds = self._resolve_bounds(bbox, footprint)
+        png = buf.getvalue()
         out = self.settings.imagery_dir / "overlays"
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"truecolor_rgb_{scene_id}.png"
-        path.write_bytes(buf.getvalue())
+        path.write_bytes(png)
         return {
             "scene_id": scene_id,
-            "overlay_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+            "overlay_base64": base64.b64encode(png).decode("ascii"),
             "bounds": bounds,
             "download_url": f"/api/v1/catalog/scenes/{scene_id}/overlay.png",
             "content_type": "image/png",
             "local_path": str(path),
             "composite": "true_color_RGB",
+            "source": source,
             "bands": {"R": "Red", "G": "Green", "B": "Blue"},
         }
 
