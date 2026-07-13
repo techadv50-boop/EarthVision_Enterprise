@@ -2,6 +2,15 @@ import { api } from './api';
 
 export type IndexName = 'NDVI' | 'NDWI' | 'NDBI' | 'SAVI' | 'BSI' | 'LST';
 
+export interface LegendInfo {
+  min: number;
+  max: number;
+  unit: string;
+  label: string;
+  formula: string;
+  stops: Array<{ value: number; color: string }>;
+}
+
 export interface IndexResult {
   index: IndexName;
   mean: number;
@@ -14,37 +23,103 @@ export interface IndexResult {
   valid_pixels: number;
   histogram: { counts: number[]; edges: number[] };
   preview_base64?: string | null;
+  overlay_base64?: string | null;
+  bounds?: number[] | null;
+  legend?: LegendInfo | null;
+  formula?: string | null;
   output_path?: string | null;
 }
 
+export interface ChangeResult {
+  index: IndexName;
+  before_scene_id: string;
+  after_scene_id: string;
+  mean_before: number;
+  mean_after: number;
+  mean_difference: number;
+  change_ratio: number;
+  significant_pixels: number;
+  overlay_base64: string;
+  bounds: number[];
+  legend: LegendInfo;
+  formula: string;
+}
+
+export interface SceneOverlay {
+  scene_id: string;
+  overlay_base64: string;
+  bounds: number[];
+  download_url: string;
+  local_path?: string;
+}
+
+function toDataUrl(b64: string): string {
+  return `data:image/png;base64,${b64}`;
+}
+
 export const analyticsService = {
+  toDataUrl,
+
   async listIndices() {
     const { data } = await api.get('/analytics/indices');
-    return data as Array<{ id: string; name: string; formula: string }>;
+    return data as Array<{ id: string; name: string; formula: string; reference?: string }>;
   },
 
-  async computeIndex(index: IndexName, sceneId?: string): Promise<IndexResult> {
+  async computeIndex(
+    index: IndexName,
+    sceneId?: string,
+    bbox?: number[],
+  ): Promise<IndexResult> {
     const { data } = await api.post<IndexResult>('/analytics/index', {
       index,
       scene_id: sceneId,
+      bbox,
     });
     return data;
   },
 
-  async timeSeries(index: IndexName, sceneIds: string[]) {
-    const { data } = await api.post('/analytics/timeseries', {
-      index,
-      scene_ids: sceneIds,
+  async changeDetection(payload: {
+    before_scene_id: string;
+    after_scene_id: string;
+    index?: IndexName;
+    bbox?: number[];
+    threshold?: number;
+  }): Promise<ChangeResult> {
+    const { data } = await api.post<ChangeResult>('/analytics/change', {
+      index: 'NDVI',
+      threshold: 0.12,
+      ...payload,
     });
     return data;
   },
 
-  async inspectPixel(longitude: number, latitude: number, sceneId?: string) {
-    const { data } = await api.post('/analytics/pixel', {
-      longitude,
-      latitude,
-      scene_id: sceneId,
-    });
+  async sceneOverlay(payload: {
+    scene_id: string;
+    collection?: string;
+    bbox?: number[];
+    footprint?: GeoJSON.Geometry | null;
+  }): Promise<SceneOverlay> {
+    const { data } = await api.post<SceneOverlay>('/catalog/scenes/overlay', payload);
     return data;
+  },
+
+  exportIndexPngUrl(index: IndexName, sceneId: string, bbox: number[]): string {
+    const base = import.meta.env.VITE_API_URL || '/api/v1';
+    const [west, south, east, north] = bbox;
+    return `${base}/analytics/export/index.png?index=${index}&scene_id=${encodeURIComponent(sceneId)}&west=${west}&south=${south}&east=${east}&north=${north}`;
+  },
+
+  exportIndexCsvUrl(index: IndexName, sceneId: string): string {
+    const base = import.meta.env.VITE_API_URL || '/api/v1';
+    return `${base}/analytics/export/index.csv?index=${index}&scene_id=${encodeURIComponent(sceneId)}`;
+  },
+
+  sceneDownloadUrl(sceneId: string, bbox?: number[]): string {
+    const base = import.meta.env.VITE_API_URL || '/api/v1';
+    if (bbox && bbox.length === 4) {
+      const [west, south, east, north] = bbox;
+      return `${base}/catalog/scenes/${sceneId}/overlay.png?west=${west}&south=${south}&east=${east}&north=${north}`;
+    }
+    return `${base}/catalog/scenes/${sceneId}/overlay.png`;
   },
 };

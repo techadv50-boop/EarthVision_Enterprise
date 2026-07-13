@@ -52,6 +52,14 @@ docker compose up --build
 
 The UI uses **Leaflet** (not Cesium) so it stays usable on slow connections.
 
+### Map tools
+- **Measure** distance / area
+- **AOI** rectangle & polygon selection
+- Selected scene **renders on the map** with **download**
+- Indices render as **map overlays** with **legend** + **PNG/CSV export**
+- **Layer opacity** slider
+- **Change detection** between two scenes
+
 ## Features
 
 - JWT auth, RBAC, admin panel, subscriptions, API keys

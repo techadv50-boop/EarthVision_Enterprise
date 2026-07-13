@@ -14,6 +14,9 @@ from app.schemas.catalog import (
 )
 from app.services.copernicus_service import CopernicusCatalogService
 from app.services.scene_service import SceneService
+from app.services.analytics_service import AnalyticsService
+from pydantic import BaseModel, Field
+from typing import Any
 
 router = APIRouter(prefix="/catalog", tags=["Catalog"])
 
@@ -87,3 +90,45 @@ async def scene_preview(scene_id: str, db: DbSession, user: CurrentUser) -> Resp
         pass
     png = service.get_preview_placeholder(scene_id)
     return Response(content=png, media_type="image/png")
+
+
+
+class SceneOverlayBody(BaseModel):
+    scene_id: str
+    collection: str | None = None
+    bbox: list[float] | None = None
+    footprint: dict[str, Any] | None = None
+
+
+@router.post("/scenes/overlay")
+async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
+    """Return a georeferenced true-color PNG for Leaflet ImageOverlay."""
+    service = AnalyticsService()
+    return service.truecolor_overlay(
+        data.scene_id,
+        bbox=data.bbox,
+        footprint=data.footprint,
+    )
+
+
+@router.get("/scenes/{scene_id}/overlay.png")
+async def scene_overlay_png(
+    scene_id: str,
+    user: CurrentUser,
+    west: float | None = None,
+    south: float | None = None,
+    east: float | None = None,
+    north: float | None = None,
+) -> Response:
+    service = AnalyticsService()
+    bbox = None
+    if None not in (west, south, east, north):
+        bbox = [west, south, east, north]  # type: ignore[list-item]
+    result = service.truecolor_overlay(scene_id, bbox=bbox)
+    import base64
+
+    return Response(
+        content=base64.b64decode(result["overlay_base64"]),
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="scene_{scene_id}.png"'},
+    )

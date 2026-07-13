@@ -10,6 +10,20 @@ from pydantic import BaseModel, Field
 IndexName = Literal["NDVI", "NDWI", "NDBI", "SAVI", "BSI", "LST"]
 
 
+class ColormapStop(BaseModel):
+    value: float
+    color: str  # #RRGGBB
+
+
+class LegendInfo(BaseModel):
+    min: float
+    max: float
+    unit: str
+    label: str
+    formula: str
+    stops: list[ColormapStop]
+
+
 class IndexComputeRequest(BaseModel):
     index: IndexName
     red_band_path: str | None = None
@@ -19,7 +33,10 @@ class IndexComputeRequest(BaseModel):
     thermal_band_path: str | None = None
     scene_id: str | None = None
     aoi: dict[str, Any] | None = None
-    L: float = Field(default=0.5, description="SAVI soil brightness factor")
+    bbox: list[float] | None = Field(
+        default=None, description="[west, south, east, north] for map overlay"
+    )
+    L: float = Field(default=0.5, description="SAVI soil-brightness factor (Huete 1988)")
 
 
 class IndexComputeResponse(BaseModel):
@@ -34,7 +51,35 @@ class IndexComputeResponse(BaseModel):
     valid_pixels: int
     histogram: dict[str, list[float]]
     preview_base64: str | None = None
+    overlay_base64: str | None = None
+    bounds: list[float] | None = None  # [west, south, east, north]
+    legend: LegendInfo | None = None
+    formula: str | None = None
     output_path: str | None = None
+
+
+class IndexChangeRequest(BaseModel):
+    before_scene_id: str
+    after_scene_id: str
+    index: IndexName = "NDVI"
+    bbox: list[float] | None = None
+    threshold: float = Field(default=0.15, ge=0.0, le=1.0)
+    L: float = 0.5
+
+
+class IndexChangeResponse(BaseModel):
+    index: IndexName
+    before_scene_id: str
+    after_scene_id: str
+    mean_before: float
+    mean_after: float
+    mean_difference: float
+    change_ratio: float
+    significant_pixels: int
+    overlay_base64: str
+    bounds: list[float]
+    legend: LegendInfo
+    formula: str
 
 
 class TimeSeriesRequest(BaseModel):
@@ -69,3 +114,10 @@ class PixelInspectResponse(BaseModel):
     latitude: float
     values: dict[str, float]
     indices: dict[str, float] | None = None
+
+
+class SceneOverlayRequest(BaseModel):
+    scene_id: str
+    collection: str | None = None
+    bbox: list[float] | None = None
+    footprint: dict[str, Any] | None = None

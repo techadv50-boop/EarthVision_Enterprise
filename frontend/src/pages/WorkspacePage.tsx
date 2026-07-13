@@ -1,6 +1,8 @@
 import { useCallback } from 'react';
 import { LogOut } from 'lucide-react';
 import { LightMap } from '../map/LightMap';
+import { MapToolbar } from '../components/map/MapToolbar';
+import { MapLegend } from '../components/map/MapLegend';
 import { PlaceStep } from '../components/workflow/PlaceStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { AnalyzeStep } from '../components/workflow/AnalyzeStep';
@@ -13,8 +15,19 @@ import { catalogService, type SceneSummary } from '../services/catalogService';
 import { analyticsService, type IndexName } from '../services/analyticsService';
 import { gisService } from '../services/gisService';
 import { getErrorMessage } from '../services/api';
+import { footprintBbox } from '../utils/geoMath';
 
 const STEP_LABELS = ['Place', 'Images', 'Analyze'] as const;
+
+function sceneBounds(
+  scene: SceneSummary,
+  place: PlaceSelection | null,
+): [number, number, number, number] {
+  return (
+    footprintBbox(scene.footprint as GeoJSON.Geometry | null, place?.bbox) ??
+    place?.bbox ?? [74.15, 31.35, 74.55, 31.7]
+  );
+}
 
 export function WorkspacePage() {
   const user = useAuthStore((s) => s.user);
@@ -24,20 +37,36 @@ export function WorkspacePage() {
     place,
     scenes,
     selectedScene,
+    compareScene,
     indexResult,
+    changeResult,
     selectedIndex,
     loadingScenes,
     loadingIndex,
+    loadingOverlay,
     error,
+    mapTool,
+    aoiGeoJson,
+    measureLabel,
+    overlays,
+    layerOpacity,
     setPlace,
     setScenes,
     setSelectedScene,
+    setCompareScene,
     setIndexResult,
+    setChangeResult,
     setSelectedIndex,
     setLoadingScenes,
     setLoadingIndex,
+    setLoadingOverlay,
     setError,
     setStep,
+    setMapTool,
+    setAoiGeoJson,
+    setMeasureLabel,
+    upsertOverlay,
+    setLayerOpacity,
     resetFromPlace,
     backToScenes,
     backToPlace,
@@ -50,15 +79,27 @@ export function WorkspacePage() {
       setLoadingScenes(true);
       setError(null);
       try {
+        const bbox = aoiGeoJson?.geometry.type === 'Polygon'
+          ? (() => {
+              const ring = aoiGeoJson.geometry.coordinates[0];
+              const lons = ring.map((c) => c[0]);
+              const lats = ring.map((c) => c[1]);
+              return [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)] as [
+                number,
+                number,
+                number,
+                number,
+              ];
+            })()
+          : selected.bbox;
+
         const result = await catalogService.search({
           collections: ['SENTINEL-1', 'SENTINEL-2', 'LANDSAT-8', 'LANDSAT-9', 'MODIS'],
           cloud_cover_max: 80,
-          bbox: [...selected.bbox],
+          bbox: [...bbox],
           max_results: 20,
         });
-        // Prefer newest first (API already orders; keep top 20)
-        const items = result.items.slice(0, 20);
-        setScenes(items);
+        setScenes(result.items.slice(0, 20));
         setStep('scenes');
       } catch (err) {
         setError(getErrorMessage(err));
@@ -68,6 +109,7 @@ export function WorkspacePage() {
       }
     },
     [
+      aoiGeoJson,
       resetFromPlace,
       setError,
       setLoadingScenes,
@@ -77,22 +119,22 @@ export function WorkspacePage() {
     ],
   );
 
-  const onMapClick = useCallback(
+  const onPlaceClick = useCallback(
     async (lon: number, lat: number) => {
       if (step !== 'place' && step !== 'scenes') return;
+      if (mapTool !== 'navigate') return;
       setLoadingScenes(true);
       setError(null);
       try {
         const reverse = await gisService.reverseGeocode(lon, lat);
         const pad = 0.18;
-        const selected: PlaceSelection = {
+        await loadScenesForPlace({
           name: reverse.display_name || `Point ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
           longitude: lon,
           latitude: lat,
           bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
-        };
-        await loadScenesForPlace(selected);
-      } catch (err) {
+        });
+      } catch {
         const pad = 0.18;
         await loadScenesForPlace({
           name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
@@ -100,27 +142,70 @@ export function WorkspacePage() {
           latitude: lat,
           bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
         });
-        if (err) setError(getErrorMessage(err));
       }
     },
-    [loadScenesForPlace, setError, setLoadingScenes, step],
+    [loadScenesForPlace, mapTool, setError, setLoadingScenes, step],
   );
 
-  const onSelectScene = (scene: SceneSummary) => {
+  const populateSceneOnMap = useCallback(
+    async (scene: SceneSummary) => {
+      setLoadingOverlay(true);
+      setError(null);
+      try {
+        const bounds = sceneBounds(scene, place);
+        const overlay = await analyticsService.sceneOverlay({
+          scene_id: scene.id,
+          collection: scene.collection,
+          bbox: bounds,
+          footprint: scene.footprint ?? null,
+        });
+        upsertOverlay({
+          id: `scene-${scene.id}`,
+          kind: 'scene',
+          url: analyticsService.toDataUrl(overlay.overlay_base64),
+          bounds: overlay.bounds as [number, number, number, number],
+          opacity: layerOpacity,
+          label: scene.name,
+        });
+      } catch (err) {
+        setError(getErrorMessage(err));
+      } finally {
+        setLoadingOverlay(false);
+      }
+    },
+    [layerOpacity, place, setError, setLoadingOverlay, upsertOverlay],
+  );
+
+  const onSelectScene = async (scene: SceneSummary) => {
     setSelectedScene(scene);
+    setCompareScene(null);
     setIndexResult(null);
+    setChangeResult(null);
     setSelectedIndex(null);
     setStep('analyze');
+    await populateSceneOnMap(scene);
   };
 
   const onPickIndex = async (index: IndexName) => {
     if (!selectedScene) return;
     setSelectedIndex(index);
+    setChangeResult(null);
     setLoadingIndex(true);
     setError(null);
     try {
-      const result = await analyticsService.computeIndex(index, selectedScene.id);
+      const bounds = sceneBounds(selectedScene, place);
+      const result = await analyticsService.computeIndex(index, selectedScene.id, bounds);
       setIndexResult(result);
+      if (result.overlay_base64 && result.bounds) {
+        upsertOverlay({
+          id: `index-${selectedScene.id}-${index}`,
+          kind: 'index',
+          url: analyticsService.toDataUrl(result.overlay_base64),
+          bounds: result.bounds as [number, number, number, number],
+          opacity: layerOpacity,
+          label: index,
+        });
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -128,7 +213,58 @@ export function WorkspacePage() {
     }
   };
 
+  const onRunChange = async () => {
+    if (!selectedScene || !compareScene) return;
+    setLoadingIndex(true);
+    setError(null);
+    try {
+      const bounds = sceneBounds(selectedScene, place);
+      const result = await analyticsService.changeDetection({
+        before_scene_id: compareScene.id,
+        after_scene_id: selectedScene.id,
+        index: selectedIndex || 'NDVI',
+        bbox: bounds,
+        threshold: 0.12,
+      });
+      setChangeResult(result);
+      upsertOverlay({
+        id: `change-${compareScene.id}-${selectedScene.id}`,
+        kind: 'change',
+        url: analyticsService.toDataUrl(result.overlay_base64),
+        bounds: result.bounds as [number, number, number, number],
+        opacity: layerOpacity,
+        label: `${result.index} change`,
+      });
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoadingIndex(false);
+    }
+  };
+
+  const onDownloadScene = () => {
+    if (!selectedScene) return;
+    const bounds = sceneBounds(selectedScene, place);
+    const url = analyticsService.sceneDownloadUrl(selectedScene.id, bounds);
+    const token = localStorage.getItem('ev_access_token');
+    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = `${selectedScene.collection}_${selectedScene.id}.png`;
+        a.click();
+        URL.revokeObjectURL(href);
+      })
+      .catch(() => window.open(url, '_blank'));
+  };
+
   const stepIndex = step === 'place' ? 0 : step === 'scenes' ? 1 : 2;
+  const legend =
+    changeResult?.legend ||
+    indexResult?.legend ||
+    null;
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)]">
@@ -180,9 +316,15 @@ export function WorkspacePage() {
 
       <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(20rem,26rem)_1fr]">
         <aside className="flex min-h-0 flex-col border-b border-[var(--line)] bg-white p-3 sm:p-4 lg:border-b-0 lg:border-r">
-          {error && (
-            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              {error}
+          {(error || loadingOverlay) && (
+            <div
+              className={`mb-3 rounded-lg px-3 py-2 text-xs ${
+                error
+                  ? 'border border-red-200 bg-red-50 text-red-700'
+                  : 'border border-[var(--line)] bg-[var(--accent-soft)] text-[var(--accent)]'
+              }`}
+            >
+              {error || 'Loading imagery on map…'}
             </div>
           )}
 
@@ -203,11 +345,17 @@ export function WorkspacePage() {
           {step === 'analyze' && selectedScene && (
             <AnalyzeStep
               scene={selectedScene}
+              scenes={scenes}
               selectedIndex={selectedIndex}
               result={indexResult}
+              changeResult={changeResult}
+              compareScene={compareScene}
               loading={loadingIndex}
               onPickIndex={onPickIndex}
+              onCompareScene={setCompareScene}
+              onRunChange={onRunChange}
               onBack={backToScenes}
+              onDownloadScene={onDownloadScene}
             />
           )}
         </aside>
@@ -217,11 +365,33 @@ export function WorkspacePage() {
             place={place}
             scenes={scenes}
             selectedScene={selectedScene}
-            onMapClick={onMapClick}
+            overlays={overlays}
+            mapTool={mapTool}
+            aoiGeoJson={aoiGeoJson}
+            enablePlaceClick={step === 'place' || step === 'scenes'}
+            onPlaceClick={onPlaceClick}
+            onAoiComplete={(feature) => {
+              setAoiGeoJson(feature);
+              setMapTool('navigate');
+            }}
+            onMeasure={setMeasureLabel}
           />
-          {step === 'place' && (
+          <MapToolbar
+            tool={mapTool}
+            measureLabel={measureLabel}
+            layerOpacity={layerOpacity}
+            onTool={setMapTool}
+            onOpacity={setLayerOpacity}
+            onClearAoi={() => {
+              setAoiGeoJson(null);
+              setMeasureLabel(null);
+            }}
+            hasAoi={Boolean(aoiGeoJson)}
+          />
+          <MapLegend legend={legend} />
+          {step === 'place' && mapTool === 'navigate' && (
             <div className="pointer-events-none absolute bottom-3 left-1/2 z-[500] max-w-[90%] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1.5 text-center text-xs text-[var(--muted)] shadow">
-              Click the map to pick an area — or search Lahore on the left
+              Search Lahore, click the map, or use AOI / measure tools above
             </div>
           )}
         </section>
