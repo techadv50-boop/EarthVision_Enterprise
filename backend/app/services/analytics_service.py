@@ -165,14 +165,22 @@ class AnalyticsService:
         water = ((x - size * 0.28) ** 2 + (y - size * 0.72) ** 2 < (size * 0.13) ** 2).astype(float)
         soil = ((x < size * 0.35) & (y < size * 0.35)).astype(float) * 0.55
 
-        red = np.clip(
-            0.12 + 0.12 * (1 - veg) + 0.28 * urban + 0.22 * soil - 0.1 * water
-            + rng.normal(0, 0.015, (size, size)),
+        # Optical reflectance bands (0–1), including Blue for true-color RGB
+        blue = np.clip(
+            0.10 + 0.08 * (1 - veg) + 0.18 * urban + 0.12 * soil - 0.02 * water
+            + 0.05 * (1 - soil)
+            + rng.normal(0, 0.012, (size, size)),
             0,
             1,
         )
         green = np.clip(
-            0.16 + 0.18 * veg + 0.12 * urban + 0.14 * soil - 0.04 * water
+            0.14 + 0.20 * veg + 0.12 * urban + 0.14 * soil - 0.04 * water
+            + rng.normal(0, 0.015, (size, size)),
+            0,
+            1,
+        )
+        red = np.clip(
+            0.12 + 0.12 * (1 - veg) + 0.28 * urban + 0.22 * soil - 0.1 * water
             + rng.normal(0, 0.015, (size, size)),
             0,
             1,
@@ -196,7 +204,14 @@ class AnalyticsService:
             20000,
             45000,
         )
-        return {"red": red, "green": green, "nir": nir, "swir": swir, "thermal": thermal}
+        return {
+            "blue": blue,
+            "green": green,
+            "red": red,
+            "nir": nir,
+            "swir": swir,
+            "thermal": thermal,
+        }
 
     def _load_band(self, path: str | None, fallback: np.ndarray) -> np.ndarray:
         if not path:
@@ -442,27 +457,58 @@ class AnalyticsService:
             formula=legend.formula,
         )
 
+    @staticmethod
+    def _percentile_stretch(band: np.ndarray, p_low: float = 2.0, p_high: float = 98.0) -> np.ndarray:
+        """Standard remote-sensing display stretch to [0, 1]."""
+        valid = band[np.isfinite(band)]
+        if valid.size == 0:
+            return np.zeros_like(band, dtype=np.float64)
+        lo = float(np.percentile(valid, p_low))
+        hi = float(np.percentile(valid, p_high))
+        if hi <= lo:
+            hi = lo + 1e-6
+        stretched = (band.astype(np.float64) - lo) / (hi - lo)
+        return np.clip(stretched, 0.0, 1.0)
+
     def truecolor_overlay(
         self,
         scene_id: str,
         bbox: list[float] | None = None,
         footprint: dict[str, Any] | None = None,
-        size: int = 384,
+        size: int = 512,
+        red_band_path: str | None = None,
+        green_band_path: str | None = None,
+        blue_band_path: str | None = None,
     ) -> dict[str, Any]:
-        """Generate a georeferenced true-color PNG for map ImageOverlay."""
+        """
+        True-color (natural color) RGB composite for map overlay.
+
+        Band mapping (optical):
+          R ← Red band
+          G ← Green band
+          B ← Blue band
+        """
         bands = self._synthetic_bands(size=size, seed=hash(scene_id) % (2**31))
-        # Simple atmospheric stretch + NIR vegetation boost into green for readability
-        r = np.clip(bands["red"] * 1.35, 0, 1)
-        g = np.clip(bands["green"] * 1.25 + 0.15 * bands["nir"], 0, 1)
-        b = np.clip((bands["green"] * 0.35 + bands["red"] * 0.15) * 1.1, 0, 1)
+        red = self._load_band(red_band_path, bands["red"])
+        green = self._load_band(green_band_path, bands["green"])
+        blue = self._load_band(blue_band_path, bands["blue"])
+
+        # Match spatial shape if loaded bands differ
+        h = min(red.shape[0], green.shape[0], blue.shape[0])
+        w = min(red.shape[1], green.shape[1], blue.shape[1])
+        red, green, blue = red[:h, :w], green[:h, :w], blue[:h, :w]
+
+        r = self._percentile_stretch(red)
+        g = self._percentile_stretch(green)
+        b = self._percentile_stretch(blue)
         rgb = np.stack([r, g, b], axis=-1)
-        img = Image.fromarray((rgb * 255).astype(np.uint8), mode="RGB")
+        img = Image.fromarray((rgb * 255.0).astype(np.uint8), mode="RGB")
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         bounds = self._resolve_bounds(bbox, footprint)
         out = self.settings.imagery_dir / "overlays"
         out.mkdir(parents=True, exist_ok=True)
-        path = out / f"truecolor_{scene_id}.png"
+        path = out / f"truecolor_rgb_{scene_id}.png"
         path.write_bytes(buf.getvalue())
         return {
             "scene_id": scene_id,
@@ -471,6 +517,8 @@ class AnalyticsService:
             "download_url": f"/api/v1/catalog/scenes/{scene_id}/overlay.png",
             "content_type": "image/png",
             "local_path": str(path),
+            "composite": "true_color_RGB",
+            "bands": {"R": "Red", "G": "Green", "B": "Blue"},
         }
 
     def time_series(self, request: TimeSeriesRequest) -> TimeSeriesResponse:

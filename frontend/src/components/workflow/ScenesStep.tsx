@@ -46,7 +46,7 @@ export function ScenesStep({
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
-          {' — '}use the eye to show/hide on the map
+          {' — '}eye shows true-color RGB (Red+Green+Blue) on the map
         </p>
       </div>
 

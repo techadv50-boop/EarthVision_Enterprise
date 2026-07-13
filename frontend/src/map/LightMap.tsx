@@ -3,7 +3,6 @@ import {
   MapContainer,
   TileLayer,
   Marker,
-  Polygon,
   Polyline,
   ImageOverlay,
   useMap,
@@ -11,7 +10,6 @@ import {
 } from 'react-leaflet';
 import L from 'leaflet';
 import type { PlaceSelection, MapTool, MapOverlay } from '../store/workflowStore';
-import type { SceneSummary } from '../services/catalogService';
 import {
   formatArea,
   formatDistance,
@@ -33,8 +31,6 @@ const markerIcon = L.icon({
 
 interface Props {
   place: PlaceSelection | null;
-  scenes: SceneSummary[];
-  focusSceneId: string | null;
   overlays: MapOverlay[];
   mapTool: MapTool;
   aoiGeoJson: GeoJSON.Feature | null;
@@ -78,12 +74,6 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
     );
   }, [overlays, map]);
   return null;
-}
-
-function footprintPositions(scene: SceneSummary): [number, number][] | null {
-  const fp = scene.footprint as GeoJSON.Polygon | undefined;
-  if (!fp || fp.type !== 'Polygon' || !fp.coordinates?.[0]?.length) return null;
-  return fp.coordinates[0].map((c) => [c[1], c[0]] as [number, number]);
 }
 
 function DrawingHandler({
@@ -186,8 +176,6 @@ function DrawingHandler({
 
 export function LightMap({
   place,
-  scenes,
-  focusSceneId,
   overlays,
   mapTool,
   aoiGeoJson,
@@ -197,22 +185,14 @@ export function LightMap({
   onAoiComplete,
   onMeasure,
 }: Props) {
-  const footprints = useMemo(() => {
-    return scenes
-      .map((scene) => {
-        const positions = footprintPositions(scene);
-        if (!positions) return null;
-        return { scene, positions };
-      })
-      .filter(Boolean) as Array<{ scene: SceneSummary; positions: [number, number][] }>;
-  }, [scenes]);
-
-  const aoiPositions = useMemo(() => {
+  const aoiOutline = useMemo(() => {
     if (!aoiGeoJson || aoiGeoJson.geometry.type !== 'Polygon') return null;
+    // Only show outline while an AOI draw tool is active — never filled boxes
+    if (mapTool === 'navigate') return null;
     return aoiGeoJson.geometry.coordinates[0].map(
       (c) => [c[1], c[0]] as [number, number],
     );
-  }, [aoiGeoJson]);
+  }, [aoiGeoJson, mapTool]);
 
   return (
     <MapContainer
@@ -245,25 +225,7 @@ export function LightMap({
 
       {place && <Marker position={[place.latitude, place.longitude]} icon={markerIcon} />}
 
-      {footprints.map(({ scene, positions }) => {
-        const focused = focusSceneId === scene.id;
-        const hasSceneOverlay = overlays.some(
-          (o) => o.kind === 'scene' && o.sceneId === scene.id,
-        );
-        return (
-          <Polygon
-            key={scene.id}
-            positions={positions}
-            pathOptions={{
-              color: focused ? '#0d9488' : '#64748b',
-              weight: focused ? 2 : 1,
-              fillColor: focused ? '#14b8a6' : '#94a3b8',
-              fillOpacity: hasSceneOverlay ? 0.02 : focused ? 0.15 : 0.06,
-            }}
-          />
-        );
-      })}
-
+      {/* Eye toggle → true-color RGB ImageOverlay only (no footprint boxes) */}
       {overlays.map((overlay) => {
         const [west, south, east, north] = overlay.bounds;
         return (
@@ -274,7 +236,7 @@ export function LightMap({
               [south, west],
               [north, east],
             ]}
-            opacity={overlay.opacity}
+            opacity={overlay.kind === 'scene' ? 1 : overlay.opacity}
             zIndex={
               overlay.kind === 'change' ? 460 : overlay.kind === 'index' ? 450 : 430
             }
@@ -282,23 +244,11 @@ export function LightMap({
         );
       })}
 
-      {aoiPositions && (
-        <>
-          <Polygon
-            positions={aoiPositions}
-            pathOptions={{
-              color: '#b45309',
-              weight: 2,
-              fillColor: '#f59e0b',
-              fillOpacity: 0.12,
-              dashArray: '6 4',
-            }}
-          />
-          <Polyline
-            positions={aoiPositions}
-            pathOptions={{ color: '#b45309', weight: 2, dashArray: '4 4' }}
-          />
-        </>
+      {aoiOutline && (
+        <Polyline
+          positions={aoiOutline}
+          pathOptions={{ color: '#b45309', weight: 2, dashArray: '4 4' }}
+        />
       )}
 
       <NorthArrow />

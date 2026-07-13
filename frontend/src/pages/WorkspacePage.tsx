@@ -171,8 +171,8 @@ export function WorkspacePage() {
           sceneId: scene.id,
           url: analyticsService.toDataUrl(overlay.overlay_base64),
           bounds: overlay.bounds as [number, number, number, number],
-          opacity: layerOpacity,
-          label: scene.name,
+          opacity: 1,
+          label: `${scene.collection} true-color RGB`,
         });
       } catch (err) {
         setError(getErrorMessage(err));
@@ -184,7 +184,6 @@ export function WorkspacePage() {
     [
       addLoadingOverlay,
       hideScene,
-      layerOpacity,
       place,
       removeLoadingOverlay,
       setError,
@@ -383,8 +382,6 @@ export function WorkspacePage() {
         <section ref={mapHostRef} className="relative min-h-[40vh] lg:min-h-0" id="ev-map-host">
           <LightMap
             place={place}
-            scenes={scenes}
-            focusSceneId={focusSceneId}
             overlays={overlays}
             mapTool={mapTool}
             aoiGeoJson={aoiGeoJson}
