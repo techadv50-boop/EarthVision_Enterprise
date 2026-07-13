@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ev-bg: #0b211a;
+  --ev-panel: rgba(15, 42, 34, 0.92);
+  --ev-border: rgba(91, 167, 138, 0.28);
+  --ev-accent: #3ba3c7;
+  --ev-accent-warm: #c4a574;
+  --ev-text: #e8f2ed;
+  --ev-muted: #8bb5a3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  background:
+    radial-gradient(ellipse 120% 80% at 10% -10%, rgba(59, 163, 199, 0.18), transparent 50%),
+    radial-gradient(ellipse 80% 60% at 100% 0%, rgba(196, 165, 116, 0.12), transparent 45%),
+    linear-gradient(165deg, #071612 0%, #0b211a 40%, #0f2a22 100%);
+  color: var(--ev-text);
+}
+
+@layer components {
+  .ev-panel {
+    @apply rounded-xl border border-earth-700/50 bg-earth-900/90 backdrop-blur-md shadow-panel;
+  }
+
+  .ev-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+      transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .ev-btn-primary {
+    @apply ev-btn bg-orbit-500 text-earth-950 hover:bg-orbit-400 active:scale-[0.98];
+  }
+
+  .ev-btn-secondary {
+    @apply ev-btn bg-earth-800 text-earth-100 hover:bg-earth-700 border border-earth-600/50;
+  }
+
+  .ev-btn-ghost {
+    @apply ev-btn bg-transparent text-earth-200 hover:bg-earth-800/80;
+  }
+
+  .ev-input {
+    @apply w-full rounded-lg border border-earth-700/60 bg-earth-950/70 px-3 py-2 text-sm
+      text-earth-50 placeholder:text-earth-500 outline-none
+      focus:border-orbit-500 focus:ring-1 focus:ring-orbit-500/40;
+  }
+
+  .ev-label {
+    @apply mb-1 block text-xs font-medium uppercase tracking-wider text-earth-400;
+  }
+
+  .cesium-viewer-bottom,
+  .cesium-viewer-toolbar,
+  .cesium-viewer-animationContainer,
+  .cesium-viewer-timelineContainer,
+  .cesium-credit-logoContainer,
+  .cesium-credit-expand-link {
+    display: none !important;
+  }
+
+  .cesium-viewer-fullscreenContainer {
+    display: none !important;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(91, 167, 138, 0.4);
+  border-radius: 3px;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(59, 163, 199, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(59, 163, 199, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 163, 199, 0);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.55s ease-out both;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2.2s ease-out infinite;
+}
