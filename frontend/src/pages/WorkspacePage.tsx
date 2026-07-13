@@ -318,13 +318,16 @@ export function WorkspacePage() {
   };
 
   const onExportJpeg = async () => {
-    const el = mapHostRef.current;
-    if (!el) return;
+    const host = mapHostRef.current;
+    if (!host) return;
+    // Capture the Leaflet map pane only (not the floating toolbar)
+    const mapElement =
+      (host.querySelector('.leaflet-container') as HTMLElement | null) || host;
     setExporting(true);
     try {
       const legend = changeResult?.legend || indexResult?.legend || null;
       await exportMapJpeg({
-        mapElement: el,
+        mapElement,
         title: 'EarthVision Map Export',
         placeName: place?.name,
         legend,
@@ -427,7 +430,10 @@ export function WorkspacePage() {
             tool={mapTool}
             measureLabel={measureLabel}
             layerOpacity={layerOpacity}
-            onTool={setMapTool}
+            onTool={(t) => {
+              setMapTool(t);
+              if (t === 'navigate') setMeasureLabel(null);
+            }}
             onOpacity={setLayerOpacity}
             onClearAoi={() => {
               setAoiGeoJson(null);

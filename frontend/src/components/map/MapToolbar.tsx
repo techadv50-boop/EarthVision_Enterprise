@@ -11,10 +11,30 @@ import type { MapTool } from '../../store/workflowStore';
 
 const TOOLS: Array<{ id: MapTool; icon: typeof Ruler; label: string; hint: string }> = [
   { id: 'navigate', icon: MousePointer2, label: 'Pan', hint: 'Drag to pan · scroll to zoom' },
-  { id: 'measure-line', icon: Ruler, label: 'Distance', hint: 'Click points' },
-  { id: 'measure-area', icon: CircleDashed, label: 'Area', hint: 'Click 3+ vertices' },
-  { id: 'aoi-rect', icon: Square, label: 'Rect AOI', hint: 'Two corners' },
-  { id: 'aoi-poly', icon: Pentagon, label: 'Poly AOI', hint: 'Click vertices' },
+  {
+    id: 'measure-line',
+    icon: Ruler,
+    label: 'Distance',
+    hint: 'Click points along a path · double-click to reset',
+  },
+  {
+    id: 'measure-area',
+    icon: CircleDashed,
+    label: 'Area',
+    hint: 'Click 3+ vertices · double-click to finish',
+  },
+  {
+    id: 'aoi-rect',
+    icon: Square,
+    label: 'Rect AOI',
+    hint: 'Click two opposite corners',
+  },
+  {
+    id: 'aoi-poly',
+    icon: Pentagon,
+    label: 'Poly AOI',
+    hint: 'Click vertices · double-click to finish',
+  },
 ];
 
 interface Props {

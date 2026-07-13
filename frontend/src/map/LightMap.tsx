@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, Fragment } from 'react';
+import { useEffect, useMemo, useRef, useState, Fragment, type Dispatch, type SetStateAction } from 'react';
 import {
   MapContainer,
   TileLayer,
   Marker,
+  CircleMarker,
   Polyline,
   Polygon,
+  Rectangle,
   ImageOverlay,
   useMap,
   useMapEvents,
@@ -19,6 +21,9 @@ import {
 } from '../utils/geoMath';
 import { LatLngGrid, NorthArrow, ScaleBar } from '../components/map/MapDecorations';
 import 'leaflet/dist/leaflet.css';
+
+type LonLat = [number, number]; // [lon, lat]
+type LatLon = [number, number]; // [lat, lon] for Leaflet
 
 const markerIcon = L.icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -39,7 +44,11 @@ interface Props {
   showGrid?: boolean;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
-  onMeasure: (label: string) => void;
+  onMeasure: (label: string | null) => void;
+}
+
+function toLatLon(pts: LonLat[]): LatLon[] {
+  return pts.map(([lon, lat]) => [lat, lon]);
 }
 
 function FlyToPlace({ place }: { place: PlaceSelection | null }) {
@@ -94,10 +103,11 @@ function MapInteractionMode({ mapTool }: { mapTool: MapTool }) {
       container.classList.add('ev-pan-mode');
       container.classList.remove('ev-draw-mode');
     } else {
-      // Drawing / measure tools: keep map still so clicks register cleanly
       map.dragging.disable();
       map.doubleClickZoom.disable();
       map.boxZoom.disable();
+      // Keep scroll zoom for convenience while measuring
+      map.scrollWheelZoom.enable();
       container.style.cursor = 'crosshair';
       container.classList.add('ev-draw-mode');
       container.classList.remove('ev-pan-mode');
@@ -109,100 +119,147 @@ function MapInteractionMode({ mapTool }: { mapTool: MapTool }) {
     };
   }, [map, mapTool]);
 
-  // Grabbing cursor while actively dragging in Pan mode
   useMapEvents({
     dragstart() {
-      if (mapTool === 'navigate') {
-        map.getContainer().style.cursor = 'grabbing';
-      }
+      if (mapTool === 'navigate') map.getContainer().style.cursor = 'grabbing';
     },
     dragend() {
-      if (mapTool === 'navigate') {
-        map.getContainer().style.cursor = 'grab';
-      }
+      if (mapTool === 'navigate') map.getContainer().style.cursor = 'grab';
     },
   });
 
   return null;
 }
 
-function DrawingHandler({
+interface DraftState {
+  points: LonLat[];
+  rectStart: LonLat | null;
+  cursor: LonLat | null;
+}
+
+function DrawingTools({
   mapTool,
   enablePlaceClick,
   onPlaceClick,
   onAoiComplete,
   onMeasure,
+  draft,
+  setDraft,
 }: {
   mapTool: MapTool;
   enablePlaceClick: boolean;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
-  onMeasure: (label: string) => void;
+  onMeasure: (label: string | null) => void;
+  draft: DraftState;
+  setDraft: Dispatch<SetStateAction<DraftState>>;
 }) {
-  const points = useRef<Array<[number, number]>>([]);
-  const rectStart = useRef<[number, number] | null>(null);
+  const pointsRef = useRef<LonLat[]>([]);
+  const rectStartRef = useRef<LonLat | null>(null);
   const suppressClick = useRef(false);
+  const toolRef = useRef(mapTool);
+  toolRef.current = mapTool;
+
+  const syncDraft = (pts: LonLat[], rectStart: LonLat | null, cursor: LonLat | null = null) => {
+    pointsRef.current = pts;
+    rectStartRef.current = rectStart;
+    setDraft({ points: pts, rectStart, cursor });
+  };
+
+  const finishPolygon = (pts: LonLat[], kind: 'polygon' | 'area') => {
+    if (pts.length < 3) return;
+    const ring = [...pts, pts[0]];
+    const areaLabel = formatArea(polygonAreaSqMeters(ring));
+    if (kind === 'polygon') {
+      onAoiComplete({
+        type: 'Feature',
+        properties: { kind: 'polygon', name: 'AOI' },
+        geometry: { type: 'Polygon', coordinates: [ring] },
+      });
+      onMeasure(`AOI area: ${areaLabel}`);
+    } else {
+      onMeasure(`Area: ${areaLabel}`);
+    }
+    syncDraft([], null, null);
+  };
 
   useMapEvents({
-    // Ignore click that follows a pan drag (Leaflet still fires click sometimes)
     dragstart() {
-      if (mapTool === 'navigate') suppressClick.current = true;
+      if (toolRef.current === 'navigate') suppressClick.current = true;
+    },
+    mousemove(e) {
+      const tool = toolRef.current;
+      if (tool === 'navigate') return;
+      const cursor: LonLat = [e.latlng.lng, e.latlng.lat];
+      setDraft((prev) => ({ ...prev, cursor }));
     },
     click(e) {
-      if (mapTool === 'navigate') {
+      const tool = toolRef.current;
+      const lon = e.latlng.lng;
+      const lat = e.latlng.lat;
+      const pt: LonLat = [lon, lat];
+
+      if (tool === 'navigate') {
         if (suppressClick.current) {
           suppressClick.current = false;
           return;
         }
-        if (enablePlaceClick) onPlaceClick(e.latlng.lng, e.latlng.lat);
+        if (enablePlaceClick) onPlaceClick(lon, lat);
         return;
       }
 
-      const lon = e.latlng.lng;
-      const lat = e.latlng.lat;
-
-      if (mapTool === 'measure-line') {
-        points.current.push([lon, lat]);
-        if (points.current.length >= 2) {
-          onMeasure(`Distance: ${formatDistance(pathLengthMeters(points.current))}`);
-        }
-        return;
-      }
-
-      if (mapTool === 'measure-area') {
-        points.current.push([lon, lat]);
-        if (points.current.length >= 3) {
-          const ring = [...points.current, points.current[0]];
-          onMeasure(`Area: ${formatArea(polygonAreaSqMeters(ring))}`);
-        }
-        return;
-      }
-
-      if (mapTool === 'aoi-poly') {
-        points.current.push([lon, lat]);
-        if (points.current.length >= 3) {
-          const ring = [...points.current, points.current[0]];
-          onAoiComplete({
-            type: 'Feature',
-            properties: { kind: 'polygon', name: 'AOI' },
-            geometry: { type: 'Polygon', coordinates: [ring] },
-          });
-          onMeasure(`AOI area: ${formatArea(polygonAreaSqMeters(ring))}`);
-        }
-        return;
-      }
-
-      if (mapTool === 'aoi-rect') {
-        if (!rectStart.current) {
-          rectStart.current = [lon, lat];
-          onMeasure('Click opposite corner to finish rectangle');
+      if (tool === 'measure-line') {
+        const pts = [...pointsRef.current, pt];
+        syncDraft(pts, null, pt);
+        if (pts.length === 1) {
+          onMeasure('Distance: click next point (double-click to reset)');
         } else {
-          const [lon0, lat0] = rectStart.current;
+          onMeasure(`Distance: ${formatDistance(pathLengthMeters(pts))}`);
+        }
+        return;
+      }
+
+      if (tool === 'measure-area') {
+        const pts = [...pointsRef.current, pt];
+        syncDraft(pts, null, pt);
+        if (pts.length < 3) {
+          onMeasure(`Area: ${pts.length}/3+ vertices · double-click to finish`);
+        } else {
+          const ring = [...pts, pts[0]];
+          onMeasure(`Area: ${formatArea(polygonAreaSqMeters(ring))} · double-click to finish`);
+        }
+        return;
+      }
+
+      if (tool === 'aoi-poly') {
+        const pts = [...pointsRef.current, pt];
+        syncDraft(pts, null, pt);
+        if (pts.length < 3) {
+          onMeasure(`AOI: ${pts.length}/3+ vertices · double-click to finish`);
+        } else {
+          const ring = [...pts, pts[0]];
+          onMeasure(
+            `AOI: ${formatArea(polygonAreaSqMeters(ring))} · double-click to finish`,
+          );
+        }
+        return;
+      }
+
+      if (tool === 'aoi-rect') {
+        if (!rectStartRef.current) {
+          syncDraft([pt], pt, pt);
+          onMeasure('Rect AOI: click opposite corner');
+        } else {
+          const [lon0, lat0] = rectStartRef.current;
           const west = Math.min(lon0, lon);
           const east = Math.max(lon0, lon);
           const south = Math.min(lat0, lat);
           const north = Math.max(lat0, lat);
-          const ring: Array<[number, number]> = [
+          if (east - west < 1e-8 || north - south < 1e-8) {
+            onMeasure('Rect AOI: drag farther apart, click opposite corner');
+            return;
+          }
+          const ring: LonLat[] = [
             [west, south],
             [east, south],
             [east, north],
@@ -215,24 +272,153 @@ function DrawingHandler({
             geometry: { type: 'Polygon', coordinates: [ring] },
           });
           onMeasure(`AOI area: ${formatArea(polygonAreaSqMeters(ring))}`);
-          rectStart.current = null;
-          points.current = [];
+          syncDraft([], null, null);
         }
       }
     },
-    dblclick() {
-      points.current = [];
+    dblclick(e) {
+      if (e.originalEvent) {
+        L.DomEvent.stop(e.originalEvent);
+      }
+      const tool = toolRef.current;
       suppressClick.current = false;
+
+      if (tool === 'measure-line') {
+        if (pointsRef.current.length >= 2) {
+          onMeasure(`Distance: ${formatDistance(pathLengthMeters(pointsRef.current))}`);
+        }
+        syncDraft([], null, null);
+        return;
+      }
+
+      if (tool === 'measure-area' || tool === 'aoi-poly') {
+        // Drop the vertex added by the first click of the double-click pair
+        const pts =
+          pointsRef.current.length > 0
+            ? pointsRef.current.slice(0, -1)
+            : pointsRef.current;
+        finishPolygon(pts, tool === 'aoi-poly' ? 'polygon' : 'area');
+        return;
+      }
+
+      if (tool === 'aoi-rect') {
+        syncDraft([], null, null);
+        onMeasure(null);
+      }
     },
   });
 
   useEffect(() => {
-    points.current = [];
-    rectStart.current = null;
+    syncDraft([], null, null);
     suppressClick.current = false;
+    if (mapTool === 'measure-line') onMeasure('Distance: click points on the map');
+    else if (mapTool === 'measure-area') onMeasure('Area: click 3+ vertices, double-click to finish');
+    else if (mapTool === 'aoi-rect') onMeasure('Rect AOI: click two opposite corners');
+    else if (mapTool === 'aoi-poly') onMeasure('Poly AOI: click vertices, double-click to finish');
+    else onMeasure(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapTool]);
 
   return null;
+}
+
+function DraftGraphics({
+  mapTool,
+  draft,
+}: {
+  mapTool: MapTool;
+  draft: DraftState;
+}) {
+  const { points, rectStart, cursor } = draft;
+  const color =
+    mapTool === 'measure-line' || mapTool === 'measure-area' ? '#0ea5e9' : '#b45309';
+
+  const previewLine = useMemo(() => {
+    if (!cursor || points.length === 0) return null;
+    if (mapTool === 'measure-line' || mapTool === 'aoi-poly' || mapTool === 'measure-area') {
+      return toLatLon([points[points.length - 1], cursor]);
+    }
+    return null;
+  }, [cursor, points, mapTool]);
+
+  const rectBounds = useMemo(() => {
+    if (mapTool !== 'aoi-rect' || !rectStart || !cursor) return null;
+    const [lon0, lat0] = rectStart;
+    const [lon1, lat1] = cursor;
+    return [
+      [Math.min(lat0, lat1), Math.min(lon0, lon1)],
+      [Math.max(lat0, lat1), Math.max(lon0, lon1)],
+    ] as [[number, number], [number, number]];
+  }, [mapTool, rectStart, cursor]);
+
+  const closedRing = useMemo(() => {
+    if (
+      (mapTool === 'measure-area' || mapTool === 'aoi-poly') &&
+      points.length >= 2
+    ) {
+      return toLatLon([...points, points[0]]);
+    }
+    return null;
+  }, [mapTool, points]);
+
+  return (
+    <>
+      {points.length >= 2 && (
+        <Polyline
+          positions={toLatLon(points)}
+          interactive={false}
+          pathOptions={{ color, weight: 2.5, opacity: 0.95 }}
+        />
+      )}
+      {previewLine && (
+        <Polyline
+          positions={previewLine}
+          interactive={false}
+          pathOptions={{ color, weight: 2, dashArray: '6 4', opacity: 0.7 }}
+        />
+      )}
+      {closedRing && points.length >= 3 && (
+        <Polygon
+          positions={closedRing}
+          interactive={false}
+          pathOptions={{
+            color,
+            weight: 2,
+            fillColor: color,
+            fillOpacity: 0.12,
+            dashArray: '4 3',
+          }}
+        />
+      )}
+      {rectBounds && (
+        <Rectangle
+          bounds={rectBounds}
+          interactive={false}
+          pathOptions={{
+            color: '#b45309',
+            weight: 2,
+            fillColor: '#b45309',
+            fillOpacity: 0.12,
+            dashArray: '6 4',
+          }}
+        />
+      )}
+      {points.map(([lon, lat], i) => (
+        <CircleMarker
+          key={`v-${i}`}
+          center={[lat, lon]}
+          radius={5}
+          interactive={false}
+          pathOptions={{
+            color: '#fff',
+            weight: 2,
+            fillColor: color,
+            fillOpacity: 1,
+          }}
+        />
+      ))}
+    </>
+  );
 }
 
 export function LightMap({
@@ -246,14 +432,18 @@ export function LightMap({
   onAoiComplete,
   onMeasure,
 }: Props) {
+  const [draft, setDraft] = useState<DraftState>({
+    points: [],
+    rectStart: null,
+    cursor: null,
+  });
+
   const aoiOutline = useMemo(() => {
     if (!aoiGeoJson || aoiGeoJson.geometry.type !== 'Polygon') return null;
-    // Only show outline while an AOI draw tool is active — never filled boxes
-    if (mapTool === 'navigate') return null;
     return aoiGeoJson.geometry.coordinates[0].map(
-      (c) => [c[1], c[0]] as [number, number],
+      (c) => [c[1], c[0]] as LatLon,
     );
-  }, [aoiGeoJson, mapTool]);
+  }, [aoiGeoJson]);
 
   return (
     <MapContainer
@@ -276,12 +466,14 @@ export function LightMap({
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={overlays} />
-      <DrawingHandler
+      <DrawingTools
         mapTool={mapTool}
         enablePlaceClick={enablePlaceClick}
         onPlaceClick={onPlaceClick}
         onAoiComplete={onAoiComplete}
         onMeasure={onMeasure}
+        draft={draft}
+        setDraft={setDraft}
       />
 
       {place && (
@@ -292,7 +484,6 @@ export function LightMap({
         />
       )}
 
-      {/* Scene eye → collection-specific XYZ tiles + footprint outline (tilted for Landsat/S1). */}
       {overlays.map((overlay) => {
         const [west, south, east, north] = overlay.bounds;
         const leafletBounds: [[number, number], [number, number]] = [
@@ -304,7 +495,7 @@ export function LightMap({
           overlay.footprint?.type === 'Polygon' &&
           overlay.footprint.coordinates?.[0]
             ? overlay.footprint.coordinates[0].map(
-                (c) => [c[1], c[0]] as [number, number],
+                (c) => [c[1], c[0]] as LatLon,
               )
             : null;
 
@@ -350,10 +541,19 @@ export function LightMap({
         );
       })}
 
+      <DraftGraphics mapTool={mapTool} draft={draft} />
+
       {aoiOutline && (
-        <Polyline
+        <Polygon
           positions={aoiOutline}
-          pathOptions={{ color: '#b45309', weight: 2, dashArray: '4 4' }}
+          interactive={false}
+          pathOptions={{
+            color: '#b45309',
+            weight: 2.5,
+            fillColor: '#b45309',
+            fillOpacity: 0.08,
+            dashArray: '6 4',
+          }}
         />
       )}
 
