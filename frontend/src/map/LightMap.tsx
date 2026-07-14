@@ -21,6 +21,7 @@ import {
   polygonAreaSqMeters,
 } from '../utils/geoMath';
 import { LatLngGrid, NorthArrow, ScaleBar } from '../components/map/MapDecorations';
+import { DemTerrainLayer } from './DemTerrainLayer';
 import 'leaflet/dist/leaflet.css';
 
 type LonLat = [number, number]; // [lon, lat]
@@ -665,13 +666,30 @@ export function LightMap({
     [overlays],
   );
 
+  const demBaseOverlay = useMemo(
+    () =>
+      visibleOverlays.find(
+        (o) => o.kind === 'terrain' && o.terrainRole === 'base' && o.demGrid?.length,
+      ) ?? null,
+    [visibleOverlays],
+  );
+
   const mapStyle = useMemo(() => {
     const parts: string[] = [];
-    if (chrome.view3d) parts.push('perspective(900px) rotateX(28deg)');
+    // Stronger perspective when DEM base height is active under imagery
+    if (chrome.view3d) {
+      parts.push(
+        demBaseOverlay
+          ? 'perspective(780px) rotateX(38deg) scale(1.08)'
+          : 'perspective(900px) rotateX(28deg)',
+      );
+    }
     if (chrome.rotate) parts.push('rotateZ(-12deg)');
-    if (chrome.terrainRelief) parts.push('contrast(1.08) saturate(1.05)');
-    return parts.length ? { transform: parts.join(' '), transformOrigin: 'center center' } : undefined;
-  }, [chrome.view3d, chrome.rotate, chrome.terrainRelief]);
+    if (chrome.terrainRelief) parts.push('contrast(1.1) saturate(1.08)');
+    return parts.length
+      ? { transform: parts.join(' '), transformOrigin: 'center center' }
+      : undefined;
+  }, [chrome.view3d, chrome.rotate, chrome.terrainRelief, demBaseOverlay]);
 
   return (
     <div className="relative h-full w-full overflow-hidden" style={mapStyle}>
@@ -696,6 +714,7 @@ export function LightMap({
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
+      <DemTerrainLayer overlay={demBaseOverlay} enabled={Boolean(demBaseOverlay)} />
       <DrawingTools
         mapTool={mapTool}
         enablePlaceClick={enablePlaceClick}
@@ -730,18 +749,26 @@ export function LightMap({
               )
             : null;
 
+        // DEM base sits UNDER Eye-On satellite (scene @ 430)
         const zIndex =
           overlay.kind === 'change'
             ? 460
             : overlay.kind === 'index'
               ? 450
-              : overlay.kind === 'terrain'
-                ? 455
-                : overlay.kind === 'detection'
-                  ? 465
-                : overlay.kind === 'buffer'
-                  ? 470
-                  : 430;
+              : overlay.kind === 'terrain' && overlay.terrainRole === 'base'
+                ? 415
+                : overlay.kind === 'terrain'
+                  ? 455
+                  : overlay.kind === 'detection'
+                    ? 465
+                    : overlay.kind === 'buffer'
+                      ? 470
+                      : 430;
+
+        const sceneOpacity =
+          overlay.kind === 'scene' && demBaseOverlay
+            ? Math.min(overlay.opacity, 0.78)
+            : overlay.opacity;
 
         return (
           <Fragment key={overlay.id}>
@@ -749,7 +776,7 @@ export function LightMap({
               <TileLayer
                 url={overlay.tileUrl}
                 bounds={leafletBounds}
-                opacity={overlay.opacity}
+                opacity={sceneOpacity}
                 maxNativeZoom={16}
                 maxZoom={18}
                 zIndex={430}
@@ -761,7 +788,11 @@ export function LightMap({
               <ImageOverlay
                 url={overlay.url}
                 bounds={leafletBounds}
-                opacity={overlay.opacity}
+                opacity={
+                  overlay.kind === 'terrain' && overlay.terrainRole === 'base'
+                    ? Math.min(overlay.opacity, 0.55)
+                    : overlay.opacity
+                }
                 interactive={false}
                 zIndex={zIndex}
               />

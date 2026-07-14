@@ -307,6 +307,15 @@ export function WorkspacePage() {
             : scene.collection.startsWith('LANDSAT')
               ? `${scene.collection} true-color`
               : `${scene.collection} true-color (TCI)`);
+        const hasDemBase = useWorkflowStore
+          .getState()
+          .overlays.some(
+            (o) =>
+              o.kind === 'terrain' &&
+              o.terrainRole === 'base' &&
+              o.visible !== false &&
+              o.demGrid,
+          );
         upsertOverlay({
           id: `scene-${scene.id}`,
           kind: 'scene',
@@ -317,7 +326,8 @@ export function WorkspacePage() {
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,
-          opacity: 1,
+          // Soft-drape over DEM base height when DEM 3D is active
+          opacity: hasDemBase ? 0.78 : 1,
           label,
           renderMode: overlay.render_mode,
           visible: true,
@@ -484,19 +494,50 @@ export function WorkspacePage() {
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(result.message || result.formula || product);
-      if (result.overlay_base64 || result.geojson) {
+
+      const isDem = product === 'dem';
+      if (result.overlay_base64 || result.geojson || (isDem && result.dem_grid)) {
         upsertOverlay({
-          id: `terrain-${product}`,
+          id: isDem ? 'terrain-dem-base' : `terrain-${product}`,
           kind: 'terrain',
           url: result.overlay_base64
             ? terrainService.toDataUrl(result.overlay_base64)
             : '',
           bounds: result.bounds as [number, number, number, number],
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          opacity: layerOpacity,
-          label: product.replaceAll('_', ' '),
+          // DEM base stays translucent under Eye-On satellite imagery
+          opacity: isDem ? 0.55 : layerOpacity,
+          label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
           visible: true,
+          demGrid: isDem ? result.dem_grid ?? null : null,
+          demStats: isDem ? result.dem_stats ?? null : null,
+          exaggeration: isDem ? 3.4 : undefined,
+          terrainRole: isDem ? 'base' : 'analysis',
         });
+      }
+
+      if (isDem) {
+        // Oblique 3D view + soft-drape satellite over DEM base height
+        useWorkflowStore.getState().setMapChrome({
+          view3d: true,
+          terrainRelief: true,
+        });
+        const state = useWorkflowStore.getState();
+        for (const o of state.overlays) {
+          if (o.kind === 'scene' && o.visible !== false) {
+            state.upsertOverlay({ ...o, opacity: 0.78 });
+          }
+        }
+        const relief = result.dem_stats?.relief_m;
+        setLastMessage(
+          [
+            result.message || 'DEM under imagery',
+            relief != null ? `relief ${Math.round(relief)} m` : null,
+            '3D base height on',
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        );
       }
     } catch (err) {
       setError(getErrorMessage(err));
@@ -808,8 +849,21 @@ export function WorkspacePage() {
         setLastLegend(null);
       }
       if (action.type === 'terrain') {
+        const wasDem = action.product === 'dem';
         removeOverlaysByKind('terrain');
         setLastLegend(null);
+        if (wasDem) {
+          useWorkflowStore.getState().setMapChrome({
+            view3d: false,
+            terrainRelief: false,
+          });
+          const state = useWorkflowStore.getState();
+          for (const o of state.overlays) {
+            if (o.kind === 'scene') {
+              state.upsertOverlay({ ...o, opacity: 1 });
+            }
+          }
+        }
       }
       if (action.type === 'detection') {
         removeOverlaysByKind('detection');

@@ -109,19 +109,22 @@ class TerrainService:
         yy, xx = np.mgrid[0:size, 0:size]
         fx = xx / max(size - 1, 1)
         fy = yy / max(size - 1, 1)
-        # Base elevation rises toward NW + ridges
+        # Strong multi-ridge relief so 3D DEM under imagery has clear base height
         dem = (
-            180
-            + 420 * (1 - fx) * 0.35
-            + 280 * (1 - fy) * 0.25
-            + 90 * np.sin(fx * 7.2) * np.cos(fy * 5.1)
-            + 55 * np.sin(fx * 18.0 + fy * 11.0)
-            + 30 * np.cos(fx * 31.0 - fy * 22.0)
+            220
+            + 860 * (1 - fx) * 0.48
+            + 640 * (1 - fy) * 0.38
+            + 210 * np.sin(fx * 6.4) * np.cos(fy * 4.8)
+            + 140 * np.sin(fx * 14.0 + fy * 9.5)
+            + 85 * np.cos(fx * 27.0 - fy * 18.0)
+            + 45 * np.sin(fx * 41.0) * np.sin(fy * 33.0)
         )
-        # Gentle river valley
+        # Deeper river valley for visible relief contrast
         valley = np.exp(-((fx - 0.42) ** 2) / 0.01 - ((fy - 0.55) ** 2) / 0.08)
-        dem -= 120 * valley
-        dem += rng.normal(0, 2.5, dem.shape)
+        dem -= 260 * valley
+        peak = np.exp(-((fx - 0.68) ** 2) / 0.018 - ((fy - 0.28) ** 2) / 0.022)
+        dem += 320 * peak
+        dem += rng.normal(0, 3.5, dem.shape)
         return dem.astype(np.float64)
 
     def _pixel_size_m(self, bounds: list[float], size: int) -> tuple[float, float]:
@@ -232,10 +235,12 @@ class TerrainService:
 
     def _product_dem(self, dem: np.ndarray, bounds: list[float]) -> TerrainComputeResponse:
         vmin, vmax = float(np.nanmin(dem)), float(np.nanmax(dem))
-        png = self._rgba(dem, "elev", vmin, vmax)
-        # Downsample grid for 3D client (max 96)
-        step = max(1, dem.shape[0] // 96)
+        # Elevation tint used as base under satellite (semi-transparent on client)
+        png = self._rgba(dem, "elev", vmin, vmax, alpha=160)
+        # Dense enough mesh for 3D under imagery (~48–64 cells)
+        step = max(1, dem.shape[0] // 56)
         grid = dem[::step, ::step]
+        relief = float(vmax - vmin)
         return TerrainComputeResponse(
             product="dem",
             bounds=bounds,
@@ -247,9 +252,13 @@ class TerrainService:
                 "max": vmax,
                 "mean": float(np.nanmean(dem)),
                 "std": float(np.nanstd(dem)),
+                "relief_m": relief,
             },
             formula="Synthetic DEM (demo) — upload GeoTIFF DEM for production",
-            message="3D surface ready — open DEM Visualization",
+            message=(
+                f"DEM base placed under imagery · relief {relief:.0f} m · "
+                "3D view enabled"
+            ),
         )
 
     def _product_raster(

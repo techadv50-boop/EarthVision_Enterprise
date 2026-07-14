@@ -36,6 +36,13 @@ export interface MapOverlay {
   visible?: boolean;
   blendMode?: string;
   renderMode?: 'rgb' | 'grayscale';
+  /** Elevation grid for DEM 3D mesh (row-major, north→south) */
+  demGrid?: number[][] | null;
+  demStats?: Record<string, number> | null;
+  /** Vertical exaggeration for DEM mesh under imagery */
+  exaggeration?: number;
+  /** DEM base sits under satellite; other terrain products are analysis overlays */
+  terrainRole?: 'base' | 'analysis';
 }
 
 /** Drawn feature available for buffer / profile / LOS */
