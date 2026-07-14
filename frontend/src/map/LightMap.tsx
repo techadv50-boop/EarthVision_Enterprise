@@ -744,24 +744,30 @@ export function LightMap({
   );
 
   const demZ = demBaseOverlay
-    ? overlayZIndex.get(demBaseOverlay.id) ?? 415
+    ? Math.max(overlayZIndex.get(demBaseOverlay.id) ?? 415, 520)
     : 415;
 
+  // When ArcScene DEM is on, drape owns the visual — flatten scene tiles so they don't fight the mesh
+  const arcSceneActive = Boolean(demBaseOverlay && chrome.view3d);
+
+  const sceneTextureUrl = useMemo(() => {
+    if (demBaseOverlay?.textureUrl) return demBaseOverlay.textureUrl;
+    const scene = visibleOverlays.find((o) => o.kind === 'scene' && o.url);
+    return scene?.url || null;
+  }, [demBaseOverlay, visibleOverlays]);
+
   const mapStyle = useMemo(() => {
-    const parts: string[] = [];
-    // Mild oblique tilt so DEM base height reads under imagery (not extreme)
-    if (chrome.view3d) {
-      parts.push(
-        demBaseOverlay
-          ? 'perspective(1000px) rotateX(22deg) scale(1.04)'
-          : 'perspective(900px) rotateX(28deg)',
-      );
+    // Mesh does its own yaw/pitch — keep container transform mild so controls stay usable
+    if (!chrome.view3d || demBaseOverlay) {
+      if (chrome.rotate && !demBaseOverlay) {
+        return { transform: 'rotateZ(-12deg)', transformOrigin: 'center center' };
+      }
+      return undefined;
     }
+    const parts: string[] = ['perspective(900px) rotateX(28deg)'];
     if (chrome.rotate) parts.push('rotateZ(-12deg)');
     if (chrome.terrainRelief) parts.push('contrast(1.06) saturate(1.05)');
-    return parts.length
-      ? { transform: parts.join(' '), transformOrigin: 'center center' }
-      : undefined;
+    return { transform: parts.join(' '), transformOrigin: 'center center' };
   }, [chrome.view3d, chrome.rotate, chrome.terrainRelief, demBaseOverlay]);
 
   return (
@@ -793,6 +799,7 @@ export function LightMap({
         overlay={demBaseOverlay}
         enabled={Boolean(demBaseOverlay)}
         zIndex={demZ}
+        sceneTextureUrl={sceneTextureUrl}
       />
       <DrawingTools
         mapTool={mapTool}
@@ -814,6 +821,14 @@ export function LightMap({
       )}
 
       {visibleOverlays.map((overlay) => {
+        // DEM mesh renders separately; skip flat DEM image when ArcScene mesh is active
+        if (
+          arcSceneActive &&
+          overlay.kind === 'terrain' &&
+          overlay.terrainRole === 'base'
+        ) {
+          return null;
+        }
         const [west, south, east, north] = overlay.bounds;
         const leafletBounds: [[number, number], [number, number]] = [
           [south, west],
@@ -840,13 +855,19 @@ export function LightMap({
           },
         };
 
+        // Fade flat scene tiles so draped mesh is the ArcScene surface
+        const opacity =
+          arcSceneActive && overlay.kind === 'scene'
+            ? Math.min(overlay.opacity, 0.12)
+            : overlay.opacity;
+
         return (
           <Fragment key={`${overlay.id}-z${zIndex}`}>
             {overlay.kind === 'scene' && overlay.tileUrl ? (
               <TileLayer
                 url={overlay.tileUrl}
                 bounds={leafletBounds}
-                opacity={overlay.opacity}
+                opacity={opacity}
                 maxNativeZoom={16}
                 maxZoom={18}
                 pane="evStackPane"
@@ -860,7 +881,7 @@ export function LightMap({
               <ImageOverlay
                 url={overlay.url}
                 bounds={leafletBounds}
-                opacity={overlay.opacity}
+                opacity={opacity}
                 interactive={false}
                 pane="evStackPane"
                 zIndex={zIndex}

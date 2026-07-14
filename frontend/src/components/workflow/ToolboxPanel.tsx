@@ -447,26 +447,30 @@ function DemBaseHeightPanel({
   if (!dem) {
     return (
       <p className="mb-2 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1.5 text-[10px] text-[var(--muted)]">
-        Run <strong>DEM 3D</strong> to enable base height control. Drag layers in Layer Manager to
-        stack DEM under or over imagery.
+        Run <strong>DEM 3D</strong> to enable ArcScene-style draped view. Eye-On a scene first so
+        imagery drapes onto the elevation mesh.
       </p>
     );
   }
-  const baseH = dem.exaggeration ?? 1.2;
+  const baseH = dem.exaggeration ?? 2.2;
+  const yaw = dem.demYaw ?? 32;
+  const pitch = dem.demPitch ?? 55;
   const relief = dem.demStats?.relief_m;
   return (
     <div className="mb-3 space-y-1.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/40 p-2">
-      <div className="text-[11px] font-semibold text-[var(--accent)]">DEM base height</div>
+      <div className="text-[11px] font-semibold text-[var(--accent)]">
+        DEM 3D · ArcScene view
+      </div>
       <p className="text-[10px] text-[var(--muted)]">
-        Vertical scale of the elevation surface under the satellite image
-        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}.
+        Satellite draped on elevation mesh
+        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}. Adjust height, tilt & rotate.
       </p>
       <label className="flex items-center gap-2 text-[10px]">
-        <span className="shrink-0 font-medium">Base height</span>
+        <span className="w-14 shrink-0 font-medium">Height</span>
         <input
           type="range"
-          min={5}
-          max={30}
+          min={8}
+          max={50}
           step={1}
           value={Math.round(baseH * 10)}
           onChange={(e) => onPatch(dem.id, { exaggeration: Number(e.target.value) / 10 })}
@@ -474,19 +478,45 @@ function DemBaseHeightPanel({
         />
         <span className="w-10 font-mono">{baseH.toFixed(1)}×</span>
       </label>
-      <div className="flex gap-1">
-        {[0.8, 1.2, 1.8, 2.5].map((v) => (
+      <label className="flex items-center gap-2 text-[10px]">
+        <span className="w-14 shrink-0 font-medium">Tilt</span>
+        <input
+          type="range"
+          min={25}
+          max={85}
+          step={1}
+          value={pitch}
+          onChange={(e) => onPatch(dem.id, { demPitch: Number(e.target.value) })}
+          className="w-full accent-[var(--accent)]"
+        />
+        <span className="w-10 font-mono">{pitch}°</span>
+      </label>
+      <label className="flex items-center gap-2 text-[10px]">
+        <span className="w-14 shrink-0 font-medium">Rotate</span>
+        <input
+          type="range"
+          min={0}
+          max={360}
+          step={2}
+          value={yaw}
+          onChange={(e) => onPatch(dem.id, { demYaw: Number(e.target.value) })}
+          className="w-full accent-[var(--accent)]"
+        />
+        <span className="w-10 font-mono">{yaw}°</span>
+      </label>
+      <div className="flex flex-wrap gap-1">
+        {[
+          { label: 'Oblique', patch: { exaggeration: 2.2, demPitch: 55, demYaw: 32 } },
+          { label: 'Steep', patch: { exaggeration: 3.5, demPitch: 42, demYaw: 48 } },
+          { label: 'Top', patch: { exaggeration: 1.5, demPitch: 82, demYaw: 0 } },
+        ].map(({ label, patch }) => (
           <button
-            key={v}
+            key={label}
             type="button"
-            className={`rounded border px-1.5 py-0.5 text-[10px] ${
-              Math.abs(baseH - v) < 0.05
-                ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                : 'border-[var(--line)] bg-white'
-            }`}
-            onClick={() => onPatch(dem.id, { exaggeration: v })}
+            className="rounded border border-[var(--line)] bg-white px-1.5 py-0.5 text-[10px] hover:border-[var(--accent)]"
+            onClick={() => onPatch(dem.id, patch)}
           >
-            {v}×
+            {label}
           </button>
         ))}
       </div>
@@ -570,7 +600,9 @@ function LayerManagerBody({
       )}
       {layers.map((layer, idx) => {
         const isDem = Boolean(layer.demGrid?.length);
-        const baseH = layer.exaggeration ?? 1.2;
+        const baseH = layer.exaggeration ?? 2.2;
+        const yaw = layer.demYaw ?? 32;
+        const pitch = layer.demPitch ?? 55;
         return (
           <div
             key={layer.id}
@@ -643,22 +675,50 @@ function LayerManagerBody({
             </div>
 
             {isDem && (
-              <label className="mt-1.5 flex items-center gap-2 text-[10px] text-[var(--muted)]">
-                <span className="shrink-0 font-semibold text-[var(--ink)]">Base height</span>
-                <input
-                  type="range"
-                  min={5}
-                  max={30}
-                  step={1}
-                  value={Math.round(baseH * 10)}
-                  onChange={(e) =>
-                    onPatch(layer.id, { exaggeration: Number(e.target.value) / 10 })
-                  }
-                  className="w-full accent-[var(--accent)]"
-                  title="DEM vertical scale / base height"
-                />
-                <span className="w-9 font-mono text-[var(--ink)]">{baseH.toFixed(1)}×</span>
-              </label>
+              <div className="mt-1.5 space-y-1">
+                <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
+                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Height</span>
+                  <input
+                    type="range"
+                    min={8}
+                    max={50}
+                    step={1}
+                    value={Math.round(baseH * 10)}
+                    onChange={(e) =>
+                      onPatch(layer.id, { exaggeration: Number(e.target.value) / 10 })
+                    }
+                    className="w-full accent-[var(--accent)]"
+                    title="DEM vertical exaggeration"
+                  />
+                  <span className="w-9 font-mono text-[var(--ink)]">{baseH.toFixed(1)}×</span>
+                </label>
+                <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
+                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Tilt</span>
+                  <input
+                    type="range"
+                    min={25}
+                    max={85}
+                    step={1}
+                    value={pitch}
+                    onChange={(e) => onPatch(layer.id, { demPitch: Number(e.target.value) })}
+                    className="w-full accent-[var(--accent)]"
+                  />
+                  <span className="w-9 font-mono text-[var(--ink)]">{pitch}°</span>
+                </label>
+                <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
+                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Rotate</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={360}
+                    step={2}
+                    value={yaw}
+                    onChange={(e) => onPatch(layer.id, { demYaw: Number(e.target.value) })}
+                    className="w-full accent-[var(--accent)]"
+                  />
+                  <span className="w-9 font-mono text-[var(--ink)]">{yaw}°</span>
+                </label>
+              </div>
             )}
 
             <div className="mt-1 flex gap-1">

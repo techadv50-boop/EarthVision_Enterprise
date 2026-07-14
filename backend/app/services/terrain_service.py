@@ -249,7 +249,7 @@ class TerrainService:
         vmin, vmax = float(np.nanmin(dem)), float(np.nanmax(dem))
         # Strong elev tint as visible BASE under the satellite overlay
         png = self._rgba(dem, "elev", vmin, vmax, alpha=210)
-        step = max(1, dem.shape[0] // 48)
+        step = max(1, dem.shape[0] // 64)
         grid = dem[::step, ::step]
         relief = float(vmax - vmin)
         hs = self._hillshade(dem, bounds, azimuth, altitude)
@@ -286,8 +286,8 @@ class TerrainService:
                 logger.warning("DEM drape texture failed for {}: {}", scene_id, exc)
 
         msg = (
-            f"DEM base under satellite · plains relief {relief:.0f} m · "
-            "image overlaid on elevation · 3D view enabled"
+            f"ArcScene DEM · imagery draped on elevation · plains relief {relief:.0f} m · "
+            "use Height / Tilt / Rotate in Terrain toolbox"
         )
         return TerrainComputeResponse(
             product="dem",

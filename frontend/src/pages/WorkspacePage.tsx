@@ -519,7 +519,13 @@ export function WorkspacePage() {
         observer,
         target,
         profile_line: line ?? undefined,
-        scene_id: product === 'dem' ? focusScene?.id : undefined,
+        scene_id:
+          product === 'dem'
+            ? focusScene?.id ||
+              useWorkflowStore.getState().overlays.find((o) => o.kind === 'scene' && o.visible !== false)
+                ?.sceneId ||
+              undefined
+            : undefined,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(result.message || result.formula || product);
@@ -528,6 +534,13 @@ export function WorkspacePage() {
       const drapeUrl =
         isDem && result.drape_base64
           ? terrainService.toDataUrl(result.drape_base64)
+          : null;
+      // Prefer true-color scene still if drape missing
+      const sceneStill =
+        !drapeUrl && focusScene
+          ? useWorkflowStore
+              .getState()
+              .overlays.find((o) => o.sceneId === focusScene.id && o.url)?.url ?? null
           : null;
       if (result.overlay_base64 || result.geojson || (isDem && result.dem_grid)) {
         upsertOverlay({
@@ -538,15 +551,16 @@ export function WorkspacePage() {
             : '',
           bounds: result.bounds as [number, number, number, number],
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          // Visible elev color base under the Eye-On satellite
-          opacity: isDem ? 0.7 : layerOpacity,
-          label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
+          opacity: isDem ? 1 : layerOpacity,
+          label: isDem ? 'DEM 3D (ArcScene drape)' : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 1.2 : undefined,
+          exaggeration: isDem ? 2.2 : undefined,
+          demYaw: isDem ? 32 : undefined,
+          demPitch: isDem ? 55 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
-          textureUrl: drapeUrl,
+          textureUrl: drapeUrl || sceneStill,
         });
       }
 
@@ -558,16 +572,16 @@ export function WorkspacePage() {
         const state = useWorkflowStore.getState();
         for (const o of state.overlays) {
           if (o.kind === 'scene' && o.visible !== false) {
-            // Keep satellite clearly on top of DEM base
-            state.upsertOverlay({ ...o, opacity: Math.max(o.opacity, 0.85) });
+            // Flat tiles fade — draped mesh shows the ArcScene surface
+            state.upsertOverlay({ ...o, opacity: 0.1 });
           }
         }
         const relief = result.dem_stats?.relief_m;
         setLastMessage(
           [
-            result.message || 'DEM base under satellite',
+            result.message || 'ArcScene DEM · imagery draped on elevation',
             relief != null ? `relief ${Math.round(relief)} m` : null,
-            'image overlaid on elevation',
+            'use Height / Tilt / Rotate in Terrain toolbox',
           ]
             .filter(Boolean)
             .join(' · '),

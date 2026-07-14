@@ -41,6 +41,10 @@ export interface MapOverlay {
   demStats?: Record<string, number> | null;
   /** Vertical exaggeration for DEM mesh under imagery */
   exaggeration?: number;
+  /** ArcScene-style orbit yaw in degrees */
+  demYaw?: number;
+  /** ArcScene-style pitch in degrees (higher = more top-down) */
+  demPitch?: number;
   /** DEM base sits under satellite; other terrain products are analysis overlays */
   terrainRole?: 'base' | 'analysis';
   /** Satellite×hillshade texture draped onto DEM mesh */
