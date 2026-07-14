@@ -650,7 +650,82 @@ export function WorkspacePage() {
     setLastMessage((m) => m || `Image ${op} applied to map view`);
   };
 
+  const deactivateTool = useCallback(
+    (tool: ToolboxTool) => {
+      setActiveToolId(null);
+      setToolStatus(null);
+      setLastMessage(`${tool.label} turned off`);
+      const { action } = tool;
+
+      if (action.type === 'measure' || action.type === 'map') {
+        setMapTool('navigate');
+        setMeasureLabel(null);
+      }
+
+      if (action.type === 'toggle') {
+        const key = action.key as keyof typeof mapChrome;
+        if (key in mapChrome && mapChrome[key]) {
+          toggleMapChrome(key);
+        }
+        if (action.key === 'view2d') {
+          useWorkflowStore.getState().setMapChrome({ view3d: false, rotate: false });
+        }
+      }
+
+      if (action.type === 'index') {
+        removeOverlaysByKind('index');
+        setIndexResult(null);
+        setSelectedIndex(null);
+        setLastLegend(null);
+      }
+      if (action.type === 'change') {
+        removeOverlaysByKind('change');
+        setChangeResult(null);
+        setLastLegend(null);
+      }
+      if (action.type === 'terrain') {
+        removeOverlaysByKind('terrain');
+        setLastLegend(null);
+      }
+      if (action.type === 'detection') {
+        removeOverlaysByKind('detection');
+        setLastLegend(null);
+      }
+      if (action.type === 'gis') {
+        if (action.op === 'buffer') {
+          setBufferGeoJson(null);
+          removeOverlaysByKind('buffer');
+          setLastBufferDistance(null);
+          setLastBufferArea(null);
+        } else {
+          removeOverlay(`gis-${action.op}`);
+        }
+      }
+      if (action.type === 'process') {
+        setProcessFilter({ brightness: 1, contrast: 1, gamma: 1 });
+      }
+    },
+    [
+      mapChrome,
+      removeOverlay,
+      removeOverlaysByKind,
+      setBufferGeoJson,
+      setChangeResult,
+      setIndexResult,
+      setMapTool,
+      setMeasureLabel,
+      setSelectedIndex,
+      toggleMapChrome,
+    ],
+  );
+
   const onTool = async (tool: ToolboxTool) => {
+    // Clicking the active tool again turns it off
+    if (activeToolId === tool.id) {
+      deactivateTool(tool);
+      return;
+    }
+
     setActiveToolId(tool.id);
     const { action } = tool;
 
@@ -658,6 +733,8 @@ export function WorkspacePage() {
       if (action.mode === 'navigate') setMapTool('navigate');
       else if (action.mode === 'zoom-in' || action.mode === 'zoom-out' || action.mode === 'fullscreen') {
         setMapCommand({ id: Date.now(), type: action.mode === 'fullscreen' ? 'fullscreen' : action.mode });
+        // One-shot commands should not stay selected
+        setActiveToolId(null);
       }
       setToolStatus(`Map: ${tool.label}`);
       return;
@@ -671,11 +748,18 @@ export function WorkspacePage() {
       }
       if (action.key === 'fullscreen') {
         setMapCommand({ id: Date.now(), type: 'fullscreen' });
+        setActiveToolId(null);
         return;
       }
       const key = action.key as keyof typeof mapChrome;
       if (key in mapChrome) {
+        const turningOn = !mapChrome[key];
         toggleMapChrome(key);
+        if (!turningOn) {
+          setActiveToolId(null);
+          setToolStatus(`${tool.label}: OFF`);
+          return;
+        }
         if (key === 'bookmarks') {
           try {
             const list = await bookmarkService.list();
@@ -688,7 +772,7 @@ export function WorkspacePage() {
             setLastMessage('Bookmarks panel toggled');
           }
         }
-        setToolStatus(`${tool.label}: ${!mapChrome[key] ? 'ON' : 'OFF'}`);
+        setToolStatus(`${tool.label}: ON`);
       }
       return;
     }
@@ -731,20 +815,26 @@ export function WorkspacePage() {
       } else if (action.op === 'remove' && last) {
         removeOverlay(last.id);
         setToolStatus(`Removed ${last.label}`);
+        setActiveToolId(null);
       } else if (action.op === 'duplicate' && last) {
         duplicateOverlay(last.id);
         setToolStatus(`Duplicated ${last.label}`);
+        setActiveToolId(null);
       } else if (action.op === 'opacity' || action.op === 'transparency') {
         setExpandedToolbox('layers');
         setToolStatus('Adjust opacity in Layer Manager');
+        setActiveToolId(null);
       } else if (action.op === 'order') {
         setExpandedToolbox('layers');
         setToolStatus('Use Up/Down in Layer Manager');
+        setActiveToolId(null);
       } else if (action.op === 'rename') {
         setExpandedToolbox('layers');
         setToolStatus('Double-click a layer name to rename');
+        setActiveToolId(null);
       } else if (action.op === 'styles' || action.op === 'labels' || action.op === 'blend') {
         setLastMessage(`${action.op}: use detection/index overlays for styled results`);
+        setActiveToolId(null);
       }
       return;
     }
@@ -882,6 +972,13 @@ export function WorkspacePage() {
             measureLabel={measureLabel}
             layerOpacity={layerOpacity}
             onTool={(t) => {
+              // Clicking the active map tool again returns to Pan
+              if (t === mapTool && t !== 'navigate') {
+                setMapTool('navigate');
+                setMeasureLabel(null);
+                setActiveToolId(null);
+                return;
+              }
               setMapTool(t);
               if (t === 'navigate') setMeasureLabel(null);
             }}

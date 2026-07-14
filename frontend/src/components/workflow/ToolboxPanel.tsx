@@ -235,9 +235,13 @@ export function ToolboxPanel({
             const active = activeToolId === tool.id;
             return (
               <li key={tool.id}>
-                <button
+                  <button
                   type="button"
-                  title={tool.hint || tool.label}
+                  title={
+                    active
+                      ? `${tool.label} (click again to turn off)`
+                      : tool.hint || tool.label
+                  }
                   disabled={loading}
                   onClick={() => onTool(tool)}
                   className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${

@@ -74,7 +74,11 @@ export function MapToolbar({
           <button
             key={id}
             type="button"
-            title={hint}
+            title={
+              tool === id && id !== 'navigate'
+                ? `${hint} · click again to turn off`
+                : hint
+            }
             onClick={() => onTool(id)}
             className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium ${
               tool === id
