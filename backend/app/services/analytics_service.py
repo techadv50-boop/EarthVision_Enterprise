@@ -351,9 +351,57 @@ class AnalyticsService:
             r = np.where(t < 0.5, 0.2 + 0.6 * (t / 0.5), 0.85 + 0.15 * ((t - 0.5) / 0.5))
             g = np.where(t < 0.5, 0.35 + 0.5 * (t / 0.5), 0.85 - 0.7 * ((t - 0.5) / 0.5))
             b = np.where(t < 0.5, 0.85 - 0.2 * (t / 0.5), 0.65 - 0.55 * ((t - 0.5) / 0.5))
+        elif name == "viridis":
+            r = np.clip(0.267 + 0.004 * t + 0.329 * t + 0.4 * t**2, 0, 1)
+            g = np.clip(0.005 + 1.1 * t - 0.35 * t**2, 0, 1)
+            b = np.clip(0.329 + 0.9 * (1 - t) * 0.7 + 0.1 * t, 0, 1)
+        elif name == "magma":
+            r = np.clip(0.05 + 1.1 * t, 0, 1)
+            g = np.clip(0.0 + 0.35 * t + 0.9 * t**2.5, 0, 1)
+            b = np.clip(0.15 + 1.2 * t * (1 - t) + 0.75 * t**3, 0, 1)
+        elif name == "turbo":
+            r = np.clip(0.2 + 2.2 * t - 2.4 * (t - 0.5).clip(0) ** 2, 0, 1)
+            g = np.clip(0.1 + 1.8 * t - 1.6 * t**2, 0, 1)
+            b = np.clip(0.9 - 1.5 * t + 0.8 * t**2, 0, 1)
+        elif name == "brbg":
+            r = np.where(t < 0.5, 0.65 - 0.45 * (t / 0.5), 0.2 + 0.55 * ((t - 0.5) / 0.5))
+            g = np.where(t < 0.5, 0.35 + 0.45 * (t / 0.5), 0.8 - 0.15 * ((t - 0.5) / 0.5))
+            b = np.where(t < 0.5, 0.2 + 0.4 * (t / 0.5), 0.65 - 0.45 * ((t - 0.5) / 0.5))
         else:
             r = g = b = t
         return np.clip(r, 0, 1), np.clip(g, 0, 1), np.clip(b, 0, 1)
+
+    COLORMAP_CATALOG: list[dict[str, str]] = [
+        {"id": "rdylgn", "label": "Red–Yellow–Green (vegetation)"},
+        {"id": "blues", "label": "Blues (water / moisture)"},
+        {"id": "ylorbr", "label": "Yellow–Orange–Brown (built-up)"},
+        {"id": "soil", "label": "Soil browns (bare soil)"},
+        {"id": "thermal", "label": "Thermal (blue→red)"},
+        {"id": "rdbu", "label": "Red–Blue diverging"},
+        {"id": "viridis", "label": "Viridis"},
+        {"id": "magma", "label": "Magma"},
+        {"id": "turbo", "label": "Turbo"},
+        {"id": "brbg", "label": "Brown–Blue–Green"},
+        {"id": "gray", "label": "Grayscale"},
+    ]
+
+    def list_colormaps(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for item in self.COLORMAP_CATALOG:
+            stops = []
+            for i in range(6):
+                t = i / 5
+                r, g, b = self._colormap_rgb(item["id"], np.array([t]))
+                stops.append(
+                    {
+                        "value": round(t, 2),
+                        "color": "#{:02x}{:02x}{:02x}".format(
+                            int(r[0] * 255), int(g[0] * 255), int(b[0] * 255)
+                        ),
+                    }
+                )
+            out.append({**item, "stops": stops})
+        return out
 
     def _rgba_overlay(
         self,
@@ -404,14 +452,16 @@ class AnalyticsService:
                 mask[iy : iy + step, ix : ix + step] = inside
         return mask
 
-    def _legend(self, index: str, vmin: float, vmax: float) -> LegendInfo:
+    def _legend(
+        self, index: str, vmin: float, vmax: float, cmap: str | None = None
+    ) -> LegendInfo:
         meta = INDEX_META[index]
-        cmap = meta["cmap"]
+        cmap_name = cmap or meta["cmap"]
         stops: list[ColormapStop] = []
         for i in range(6):
             t = i / 5
             val = vmin + t * (vmax - vmin)
-            r, g, b = self._colormap_rgb(cmap, np.array([t]))
+            r, g, b = self._colormap_rgb(cmap_name, np.array([t]))
             color = "#{:02x}{:02x}{:02x}".format(
                 int(r[0] * 255), int(g[0] * 255), int(b[0] * 255)
             )
@@ -423,6 +473,7 @@ class AnalyticsService:
             label=meta["label"],
             formula=f"{meta['formula']}  [{meta['ref']}]",
             stops=stops,
+            colormap=cmap_name,
         )
 
     def _compute_array(
@@ -570,9 +621,10 @@ class AnalyticsService:
             vmin, vmax = fixed_min, fixed_max
 
         fp_mask = self._footprint_mask_grid(footprint, bounds, result.shape)
-        overlay_bytes = self._rgba_overlay(result, meta["cmap"], vmin, vmax, mask=fp_mask)
+        cmap = request.colormap or meta["cmap"]
+        overlay_bytes = self._rgba_overlay(result, cmap, vmin, vmax, mask=fp_mask)
         preview_bytes = self._rgba_overlay(
-            result, meta["cmap"], vmin, vmax, alpha=255, mask=fp_mask
+            result, cmap, vmin, vmax, alpha=255, mask=fp_mask
         )
 
         out_dir = self.settings.imagery_dir / "indices"
@@ -598,9 +650,10 @@ class AnalyticsService:
             preview_base64=base64.b64encode(preview_bytes).decode("ascii"),
             overlay_base64=base64.b64encode(overlay_bytes).decode("ascii"),
             bounds=bounds,
-            legend=self._legend(index, vmin, vmax),
+            legend=self._legend(index, vmin, vmax, cmap),
             formula=f"{meta['formula']}  [{meta['ref']}]  source={data_source}{stac_bit}",
             output_path=str(png_path),
+            colormap=cmap,
         )
 
     def change_detection(self, request: IndexChangeRequest) -> IndexChangeResponse:

@@ -43,6 +43,8 @@ export interface MapOverlay {
   exaggeration?: number;
   /** DEM base sits under satellite; other terrain products are analysis overlays */
   terrainRole?: 'base' | 'analysis';
+  /** Satellite×hillshade texture draped onto DEM mesh */
+  textureUrl?: string | null;
 }
 
 /** Drawn feature available for buffer / profile / LOS */

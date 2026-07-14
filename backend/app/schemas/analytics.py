@@ -9,6 +9,20 @@ from pydantic import BaseModel, Field
 
 IndexName = Literal["NDVI", "NDWI", "NDBI", "SAVI", "BSI", "LST", "EVI", "NDMI", "NBR"]
 
+ColormapName = Literal[
+    "rdylgn",
+    "blues",
+    "ylorbr",
+    "soil",
+    "thermal",
+    "rdbu",
+    "viridis",
+    "magma",
+    "turbo",
+    "gray",
+    "brbg",
+]
+
 
 class ColormapStop(BaseModel):
     value: float
@@ -22,6 +36,7 @@ class LegendInfo(BaseModel):
     label: str
     formula: str
     stops: list[ColormapStop]
+    colormap: str | None = None
 
 
 class IndexComputeRequest(BaseModel):
@@ -37,6 +52,9 @@ class IndexComputeRequest(BaseModel):
         default=None, description="[west, south, east, north] for map overlay"
     )
     L: float = Field(default=0.5, description="SAVI soil-brightness factor (Huete 1988)")
+    colormap: ColormapName | None = Field(
+        default=None, description="Optional color ramp override (default = index thematic ramp)"
+    )
 
 
 class IndexComputeResponse(BaseModel):
@@ -56,6 +74,7 @@ class IndexComputeResponse(BaseModel):
     legend: LegendInfo | None = None
     formula: str | None = None
     output_path: str | None = None
+    colormap: str | None = None
 
 
 class IndexChangeRequest(BaseModel):

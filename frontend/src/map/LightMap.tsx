@@ -766,9 +766,11 @@ export function LightMap({
                       : 430;
 
         const sceneOpacity =
-          overlay.kind === 'scene' && demBaseOverlay
-            ? Math.min(overlay.opacity, 0.78)
-            : overlay.opacity;
+          overlay.kind === 'scene' && demBaseOverlay?.textureUrl
+            ? Math.min(overlay.opacity, 0.08)
+            : overlay.kind === 'scene' && demBaseOverlay
+              ? Math.min(overlay.opacity, 0.72)
+              : overlay.opacity;
 
         return (
           <Fragment key={overlay.id}>

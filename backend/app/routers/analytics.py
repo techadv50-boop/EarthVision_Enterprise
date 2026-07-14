@@ -62,9 +62,16 @@ async def list_indices(user: CurrentUser) -> list[dict]:
             "formula": meta["formula"],
             "reference": meta["ref"],
             "unit": meta["unit"],
+            "default_colormap": meta.get("cmap"),
         }
         for key, meta in INDEX_META.items()
     ]
+
+
+@router.get("/colormaps")
+async def list_colormaps(user: CurrentUser) -> list[dict]:
+    """Available color ramps for spectral index overlays."""
+    return AnalyticsService().list_colormaps()
 
 
 @router.get("/export/index.png")
@@ -76,6 +83,7 @@ async def export_index_png(
     south: float = 31.35,
     east: float = 74.55,
     north: float = 31.7,
+    colormap: str | None = None,
 ) -> Response:
     service = AnalyticsService()
     result = service.compute_index(
@@ -83,6 +91,7 @@ async def export_index_png(
             index=index,  # type: ignore[arg-type]
             scene_id=scene_id,
             bbox=[west, south, east, north],
+            colormap=colormap,  # type: ignore[arg-type]
         )
     )
     assert result.overlay_base64

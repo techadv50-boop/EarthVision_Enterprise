@@ -19,7 +19,7 @@ import {
   type ToolboxTool,
 } from '../../toolbox/catalog';
 import type { MapOverlay } from '../../store/workflowStore';
-import type { LegendInfo, IndexName, IndexResult } from '../../services/analyticsService';
+import type { LegendInfo, IndexName, IndexResult, ColormapName } from '../../services/analyticsService';
 import type {
   CompositePreset,
   CompositeResult,
@@ -86,8 +86,10 @@ interface Props {
     brightness: number;
     contrast: number;
   };
+  colormap?: ColormapName | string | null;
   onComposite?: (preset: CompositePreset) => void;
   onIndexTool?: (index: IndexName) => void;
+  onColormapChange?: (cmap: ColormapName) => void;
   onStretch?: () => void;
   onStretchParams?: (patch: Record<string, number>) => void;
   onEnhance?: (op: 'brightness' | 'contrast' | 'gamma' | 'sharpen' | 'denoise') => void;
@@ -128,8 +130,10 @@ export function ToolboxPanel({
   compositeResult = null,
   stretchResult = null,
   stretchParams = { p_low: 2, p_high: 98, gamma: 1, brightness: 1, contrast: 1 },
+  colormap = null,
   onComposite,
   onIndexTool,
+  onColormapChange,
   onStretch,
   onStretchParams,
   onEnhance,
@@ -256,8 +260,10 @@ export function ToolboxPanel({
             compositeResult={compositeResult}
             stretchResult={stretchResult}
             stretchParams={stretchParams}
+            colormap={colormap}
             onComposite={onComposite}
             onIndex={onIndexTool}
+            onColormapChange={onColormapChange}
             onStretch={onStretch}
             onStretchParams={(patch) => onStretchParams?.(patch)}
             onEnhance={(op) => onEnhance?.(op)}

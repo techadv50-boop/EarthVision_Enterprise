@@ -27,7 +27,13 @@ class TerrainService:
         product = request.product
 
         if product == "dem":
-            return self._product_dem(dem, bounds)
+            return self._product_dem(
+                dem,
+                bounds,
+                scene_id=request.scene_id,
+                azimuth=request.azimuth_deg,
+                altitude=request.altitude_deg,
+            )
         if product == "slope":
             return self._product_raster(
                 self._slope_deg(dem, bounds),
@@ -233,14 +239,60 @@ class TerrainService:
         Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=True)
         return buf.getvalue()
 
-    def _product_dem(self, dem: np.ndarray, bounds: list[float]) -> TerrainComputeResponse:
+    def _product_dem(
+        self,
+        dem: np.ndarray,
+        bounds: list[float],
+        scene_id: str | None = None,
+        azimuth: float = 315.0,
+        altitude: float = 45.0,
+    ) -> TerrainComputeResponse:
         vmin, vmax = float(np.nanmin(dem)), float(np.nanmax(dem))
-        # Elevation tint used as base under satellite (semi-transparent on client)
-        png = self._rgba(dem, "elev", vmin, vmax, alpha=160)
+        # Elevation tint used as faint base under satellite when no drape
+        png = self._rgba(dem, "elev", vmin, vmax, alpha=140)
         # Dense enough mesh for 3D under imagery (~48–64 cells)
         step = max(1, dem.shape[0] // 56)
         grid = dem[::step, ::step]
         relief = float(vmax - vmin)
+        hs = self._hillshade(dem, bounds, azimuth, altitude)
+        hs_n = np.clip(hs / 255.0, 0, 1)
+
+        drape_b64: str | None = None
+        if scene_id:
+            try:
+                from app.services.scene_imagery_service import SceneImageryService
+
+                bands, _b, _fp, _layer = SceneImageryService().load_analysis_bands(
+                    scene_id, size=dem.shape[0]
+                )
+                if bands and bands.get("red") is not None:
+                    r = np.asarray(bands["red"], dtype=np.float32)
+                    g = np.asarray(bands.get("green", bands["red"]), dtype=np.float32)
+                    b = np.asarray(bands.get("blue", bands["red"]), dtype=np.float32)
+                    stack = np.stack([r, g, b], axis=0)
+                    # Percentile stretch then multiply by hillshade so height shows on imagery
+                    draped = np.zeros((dem.shape[0], dem.shape[1], 4), dtype=np.uint8)
+                    for i in range(3):
+                        band = stack[i]
+                        valid = np.isfinite(band)
+                        if not valid.any():
+                            continue
+                        lo, hi = np.nanpercentile(band[valid], [2, 98])
+                        norm = np.clip((band - lo) / (hi - lo + 1e-6), 0, 1)
+                        lit = norm * (0.28 + 0.72 * hs_n)
+                        draped[..., i] = (lit * 255).astype(np.uint8)
+                    draped[..., 3] = 255
+                    buf = io.BytesIO()
+                    Image.fromarray(draped, mode="RGBA").save(buf, format="PNG", optimize=True)
+                    drape_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("DEM drape texture failed for {}: {}", scene_id, exc)
+
+        msg = (
+            f"DEM under imagery · relief {relief:.0f} m · "
+            + ("satellite draped with height shading · " if drape_b64 else "")
+            + "3D view enabled"
+        )
         return TerrainComputeResponse(
             product="dem",
             bounds=bounds,
@@ -254,11 +306,9 @@ class TerrainService:
                 "std": float(np.nanstd(dem)),
                 "relief_m": relief,
             },
+            drape_base64=drape_b64,
             formula="Synthetic DEM (demo) — upload GeoTIFF DEM for production",
-            message=(
-                f"DEM base placed under imagery · relief {relief:.0f} m · "
-                "3D view enabled"
-            ),
+            message=msg,
         )
 
     def _product_raster(

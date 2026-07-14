@@ -18,6 +18,26 @@ export interface LegendInfo {
   label: string;
   formula: string;
   stops: Array<{ value: number; color: string }>;
+  colormap?: string | null;
+}
+
+export type ColormapName =
+  | 'rdylgn'
+  | 'blues'
+  | 'ylorbr'
+  | 'soil'
+  | 'thermal'
+  | 'rdbu'
+  | 'viridis'
+  | 'magma'
+  | 'turbo'
+  | 'gray'
+  | 'brbg';
+
+export interface ColormapInfo {
+  id: ColormapName;
+  label: string;
+  stops: Array<{ value: number; color: string }>;
 }
 
 export interface IndexResult {
@@ -37,6 +57,7 @@ export interface IndexResult {
   legend?: LegendInfo | null;
   formula?: string | null;
   output_path?: string | null;
+  colormap?: string | null;
 }
 
 export interface ChangeResult {
@@ -84,18 +105,31 @@ export const analyticsService = {
 
   async listIndices() {
     const { data } = await api.get('/analytics/indices');
-    return data as Array<{ id: string; name: string; formula: string; reference?: string }>;
+    return data as Array<{
+      id: string;
+      name: string;
+      formula: string;
+      reference?: string;
+      default_colormap?: string;
+    }>;
+  },
+
+  async listColormaps() {
+    const { data } = await api.get('/analytics/colormaps');
+    return data as ColormapInfo[];
   },
 
   async computeIndex(
     index: IndexName,
     sceneId?: string,
     bbox?: number[],
+    colormap?: ColormapName | string | null,
   ): Promise<IndexResult> {
     const { data } = await api.post<IndexResult>('/analytics/index', {
       index,
       scene_id: sceneId,
       bbox,
+      colormap: colormap || undefined,
     });
     return data;
   },

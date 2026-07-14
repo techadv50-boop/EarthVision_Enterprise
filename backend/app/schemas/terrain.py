@@ -51,6 +51,8 @@ class TerrainComputeRequest(BaseModel):
     # Hillshade
     azimuth_deg: float = Field(default=315.0)
     altitude_deg: float = Field(default=45.0)
+    # Optional scene for satellite-on-DEM draping
+    scene_id: str | None = None
 
 
 class TerrainComputeResponse(BaseModel):
@@ -63,6 +65,8 @@ class TerrainComputeResponse(BaseModel):
     # 3D DEM grid (row-major elevations, north→south)
     dem_grid: list[list[float]] | None = None
     dem_stats: dict[str, float] | None = None
+    # Satellite RGB × hillshade texture for draping onto DEM mesh
+    drape_base64: str | None = None
     # Profile / LOS
     profile: list[dict[str, float]] | None = None
     line_of_sight: dict[str, Any] | None = None

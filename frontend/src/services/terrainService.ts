@@ -24,6 +24,7 @@ export interface TerrainResult {
   geojson?: GeoJSON.FeatureCollection | null;
   dem_grid?: number[][] | null;
   dem_stats?: Record<string, number> | null;
+  drape_base64?: string | null;
   profile?: Array<Record<string, number>> | null;
   line_of_sight?: {
     visible: boolean;
@@ -67,6 +68,7 @@ export const terrainService = {
     profile_line?: GeoJSON.Geometry;
     azimuth_deg?: number;
     altitude_deg?: number;
+    scene_id?: string;
   }): Promise<TerrainResult> {
     const { data } = await api.post<TerrainResult>('/terrain/compute', payload);
     return data;

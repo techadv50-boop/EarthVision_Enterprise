@@ -8,18 +8,19 @@ import type {
   StretchResult,
 } from '../../services/compositeService';
 import { compositeService } from '../../services/compositeService';
-import type { IndexName, IndexResult, LegendInfo } from '../../services/analyticsService';
+import type { IndexName, IndexResult, ColormapInfo, ColormapName } from '../../services/analyticsService';
+import { analyticsService } from '../../services/analyticsService';
 
-const INDEX_LIST: Array<{ id: IndexName; label: string }> = [
-  { id: 'NDVI', label: 'NDVI' },
-  { id: 'NDWI', label: 'NDWI' },
-  { id: 'NDBI', label: 'NDBI' },
-  { id: 'SAVI', label: 'SAVI' },
-  { id: 'BSI', label: 'BSI' },
-  { id: 'EVI', label: 'EVI' },
-  { id: 'NDMI', label: 'NDMI' },
-  { id: 'NBR', label: 'Burn Index (NBR)' },
-  { id: 'LST', label: 'LST' },
+const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapName }> = [
+  { id: 'NDVI', label: 'NDVI', defaultRamp: 'rdylgn' },
+  { id: 'NDWI', label: 'NDWI', defaultRamp: 'blues' },
+  { id: 'NDBI', label: 'NDBI', defaultRamp: 'ylorbr' },
+  { id: 'SAVI', label: 'SAVI', defaultRamp: 'rdylgn' },
+  { id: 'BSI', label: 'BSI', defaultRamp: 'soil' },
+  { id: 'EVI', label: 'EVI', defaultRamp: 'rdylgn' },
+  { id: 'NDMI', label: 'NDMI', defaultRamp: 'brbg' },
+  { id: 'NBR', label: 'Burn Index (NBR)', defaultRamp: 'rdbu' },
+  { id: 'LST', label: 'LST', defaultRamp: 'thermal' },
 ];
 
 interface Props {
@@ -30,8 +31,10 @@ interface Props {
   compositeResult: CompositeResult | null;
   stretchResult: StretchResult | null;
   stretchParams: { p_low: number; p_high: number; gamma: number; brightness: number; contrast: number };
+  colormap?: ColormapName | string | null;
   onComposite: (preset: CompositePreset) => void;
   onIndex: (index: IndexName) => void;
+  onColormapChange?: (cmap: ColormapName) => void;
   onStretch: () => void;
   onStretchParams: (patch: Partial<Props['stretchParams']>) => void;
   onEnhance: (op: 'brightness' | 'contrast' | 'gamma' | 'sharpen' | 'denoise') => void;
@@ -115,8 +118,10 @@ export function ImageProcessingPanel({
   compositeResult,
   stretchResult,
   stretchParams,
+  colormap = null,
   onComposite,
   onIndex,
+  onColormapChange,
   onStretch,
   onStretchParams,
   onEnhance,
@@ -128,13 +133,22 @@ export function ImageProcessingPanel({
 }: Props) {
   const [presets, setPresets] = useState<CompositePresetInfo[]>([]);
   const [thematic, setThematic] = useState<IndexThematicInfo[]>([]);
+  const [ramps, setRamps] = useState<ColormapInfo[]>([]);
 
   useEffect(() => {
     void compositeService.listPresets().then(setPresets).catch(() => setPresets([]));
     void compositeService.listIndexThematic().then(setThematic).catch(() => setThematic([]));
+    void analyticsService.listColormaps().then(setRamps).catch(() => setRamps([]));
   }, []);
 
   const activeThematic = thematic.find((t) => t.id === indexResult?.index);
+  const activeIndexMeta = INDEX_LIST.find((i) => i.id === indexResult?.index);
+  const selectedRamp =
+    (colormap as ColormapName | null) ||
+    (indexResult?.colormap as ColormapName | undefined) ||
+    activeIndexMeta?.defaultRamp ||
+    'rdylgn';
+  const selectedRampInfo = ramps.find((r) => r.id === selectedRamp);
   const hist =
     stretchResult?.histogram ||
     compositeResult?.histogram ||
@@ -233,6 +247,58 @@ export function ImageProcessingPanel({
             );
           })}
         </div>
+        <div className="mt-2 space-y-1.5 rounded border border-[var(--line)] bg-white p-2 text-[10px]">
+          <div className="font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Color ramp
+          </div>
+          <div className="grid grid-cols-1 gap-1">
+            {(ramps.length
+              ? ramps
+              : INDEX_LIST.map((i) => ({
+                  id: i.defaultRamp,
+                  label: i.defaultRamp,
+                  stops: [] as ColormapInfo['stops'],
+                }))
+            ).map((ramp) => {
+              const on = selectedRamp === ramp.id;
+              const grad =
+                ramp.stops?.length > 0
+                  ? ramp.stops.map((s) => s.color).join(', ')
+                  : '#888, #ccc';
+              return (
+                <button
+                  key={ramp.id}
+                  type="button"
+                  disabled={loading}
+                  title={ramp.label}
+                  onClick={() => onColormapChange?.(ramp.id as ColormapName)}
+                  className={`flex items-center gap-2 rounded border px-2 py-1 text-left ${
+                    on
+                      ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                      : 'border-[var(--line)] hover:border-[var(--accent)]'
+                  }`}
+                >
+                  <span
+                    className="h-2.5 w-16 shrink-0 rounded-full border border-[var(--line)]"
+                    style={{ background: `linear-gradient(90deg, ${grad})` }}
+                  />
+                  <span className="truncate font-medium">{ramp.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          {selectedRampInfo && (
+            <div
+              className="mt-1 h-2 w-full rounded"
+              style={{
+                background: `linear-gradient(90deg, ${selectedRampInfo.stops.map((s) => s.color).join(', ')})`,
+              }}
+            />
+          )}
+          <p className="text-[9px] text-[var(--muted)]">
+            Pick a ramp, then click an index (or re-click the active one) to apply.
+          </p>
+        </div>
         {(activeThematic || indexResult) && (
           <div className="mt-2 space-y-1 rounded border border-[var(--line)] bg-white p-2 text-[10px]">
             <div className="font-semibold">{indexResult?.index} formula</div>
@@ -249,12 +315,12 @@ export function ImageProcessingPanel({
                   <span className="font-semibold">Suggested RGB: </span>
                   {activeThematic.thematic_rgb}
                 </div>
-                <div>
-                  <span className="font-semibold">Colormap: </span>
-                  {activeThematic.colormap}
-                </div>
               </>
             )}
+            <div>
+              <span className="font-semibold">Color ramp: </span>
+              {selectedRampInfo?.label || selectedRamp}
+            </div>
             {indexResult && (
               <div className="grid grid-cols-2 gap-1 pt-1 font-mono text-[var(--muted)]">
                 <span>mean {indexResult.mean.toFixed(3)}</span>
@@ -407,5 +473,3 @@ export function ImageProcessingPanel({
     </div>
   );
 }
-
-export type { LegendInfo };

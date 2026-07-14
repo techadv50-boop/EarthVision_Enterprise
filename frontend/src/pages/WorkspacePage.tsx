@@ -18,6 +18,7 @@ import {
   analyticsService,
   type IndexName,
   type LegendInfo,
+  type ColormapName,
 } from '../services/analyticsService';
 import {
   compositeService,
@@ -108,6 +109,7 @@ export function WorkspacePage() {
     contrast: 1,
     gamma: 1,
   });
+  const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
 
   const {
     step,
@@ -366,7 +368,7 @@ export function WorkspacePage() {
     await loadSceneOverlay(scene);
   };
 
-  const runIndex = async (index: IndexName) => {
+  const runIndex = async (index: IndexName, colormap?: ColormapName | null) => {
     if (!focusScene) {
       setError('Show a satellite scene first (eye icon)');
       return;
@@ -379,11 +381,22 @@ export function WorkspacePage() {
         (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
       );
       const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
-      const result = await analyticsService.computeIndex(index, focusScene.id, bounds);
+      const ramp = colormap ?? selectedColormap;
+      const result = await analyticsService.computeIndex(
+        index,
+        focusScene.id,
+        bounds,
+        ramp,
+      );
       setIndexResult(result);
       setSelectedIndex(index);
+      if (result.colormap) {
+        setSelectedColormap(result.colormap as ColormapName);
+      }
       setLastLegend(result.legend ?? null);
-      setLastMessage(result.formula || `${index} applied on imagery`);
+      setLastMessage(
+        `${result.formula || index} · ramp ${result.colormap || ramp || 'default'}`,
+      );
       if (result.overlay_base64 && result.bounds) {
         upsertOverlay({
           id: `index-${focusScene.id}-${index}`,
@@ -393,7 +406,7 @@ export function WorkspacePage() {
           bounds: result.bounds as [number, number, number, number],
           footprint: sceneOverlay?.footprint ?? null,
           opacity: layerOpacity,
-          label: index,
+          label: `${index}${result.colormap ? ` (${result.colormap})` : ''}`,
           visible: true,
         });
       }
@@ -491,11 +504,16 @@ export function WorkspacePage() {
         observer,
         target,
         profile_line: line ?? undefined,
+        scene_id: product === 'dem' ? focusScene?.id : undefined,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(result.message || result.formula || product);
 
       const isDem = product === 'dem';
+      const drapeUrl =
+        isDem && result.drape_base64
+          ? terrainService.toDataUrl(result.drape_base64)
+          : null;
       if (result.overlay_base64 || result.geojson || (isDem && result.dem_grid)) {
         upsertOverlay({
           id: isDem ? 'terrain-dem-base' : `terrain-${product}`,
@@ -505,19 +523,24 @@ export function WorkspacePage() {
             : '',
           bounds: result.bounds as [number, number, number, number],
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          // DEM base stays translucent under Eye-On satellite imagery
-          opacity: isDem ? 0.55 : layerOpacity,
-          label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
+          // Elev tint stays faint under draped mesh; analysis overlays use layer opacity
+          opacity: isDem ? (drapeUrl ? 0.2 : 0.45) : layerOpacity,
+          label: isDem
+            ? drapeUrl
+              ? 'DEM + draped satellite'
+              : 'DEM base (under imagery)'
+            : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 3.4 : undefined,
+          exaggeration: isDem ? 3.6 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
+          textureUrl: drapeUrl,
         });
       }
 
       if (isDem) {
-        // Oblique 3D view + soft-drape satellite over DEM base height
+        // Oblique 3D + hide flat scene tiles so draped mesh shows height on imagery
         useWorkflowStore.getState().setMapChrome({
           view3d: true,
           terrainRelief: true,
@@ -525,7 +548,8 @@ export function WorkspacePage() {
         const state = useWorkflowStore.getState();
         for (const o of state.overlays) {
           if (o.kind === 'scene' && o.visible !== false) {
-            state.upsertOverlay({ ...o, opacity: 0.78 });
+            // Flat tiles hidden while draped DEM mesh carries the satellite texture
+            state.upsertOverlay({ ...o, opacity: drapeUrl ? 0.08 : 0.72 });
           }
         }
         const relief = result.dem_stats?.relief_m;
@@ -533,7 +557,7 @@ export function WorkspacePage() {
           [
             result.message || 'DEM under imagery',
             relief != null ? `relief ${Math.round(relief)} m` : null,
-            '3D base height on',
+            drapeUrl ? 'height shaded on satellite' : '3D base height on',
           ]
             .filter(Boolean)
             .join(' · '),
@@ -1235,8 +1259,15 @@ export function WorkspacePage() {
               compositeResult={compositeResult}
               stretchResult={stretchResult}
               stretchParams={stretchParams}
+              colormap={selectedColormap}
               onComposite={(preset) => void runComposite(preset)}
               onIndexTool={(index) => void runIndex(index)}
+              onColormapChange={(cmap) => {
+                setSelectedColormap(cmap);
+                if (indexResult?.index) {
+                  void runIndex(indexResult.index as IndexName, cmap);
+                }
+              }}
               onStretch={() => void runStretch()}
               onStretchParams={(patch) =>
                 setStretchParams((s) => ({ ...s, ...patch }))
