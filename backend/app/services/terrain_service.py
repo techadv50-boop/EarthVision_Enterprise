@@ -106,7 +106,10 @@ class TerrainService:
         return [74.15, 31.35, 74.55, 31.7]
 
     def _synthetic_dem(self, bounds: list[float], size: int) -> np.ndarray:
-        """Multi-octave elevation surface (metres) for the AOI — demo DEM when no file uploaded."""
+        """Gentle plains DEM (metres ASL) — Indus-plain scale relief, not alpine peaks.
+
+        Lahore / Punjab plains are ~200–250 m with only tens of metres of local relief.
+        """
         west, south, east, north = bounds
         seed = abs(hash((round(west, 3), round(south, 3), round(east, 3), round(north, 3)))) % (
             2**31
@@ -115,22 +118,17 @@ class TerrainService:
         yy, xx = np.mgrid[0:size, 0:size]
         fx = xx / max(size - 1, 1)
         fy = yy / max(size - 1, 1)
-        # Strong multi-ridge relief so 3D DEM under imagery has clear base height
-        dem = (
-            220
-            + 860 * (1 - fx) * 0.48
-            + 640 * (1 - fy) * 0.38
-            + 210 * np.sin(fx * 6.4) * np.cos(fy * 4.8)
-            + 140 * np.sin(fx * 14.0 + fy * 9.5)
-            + 85 * np.cos(fx * 27.0 - fy * 18.0)
-            + 45 * np.sin(fx * 41.0) * np.sin(fy * 33.0)
-        )
-        # Deeper river valley for visible relief contrast
-        valley = np.exp(-((fx - 0.42) ** 2) / 0.01 - ((fy - 0.55) ** 2) / 0.08)
-        dem -= 260 * valley
-        peak = np.exp(-((fx - 0.68) ** 2) / 0.018 - ((fy - 0.28) ** 2) / 0.022)
-        dem += 320 * peak
-        dem += rng.normal(0, 3.5, dem.shape)
+        # Regional base ~215 m with mild NW→SE tilt (~25 m across AOI)
+        dem = 215.0 + 18.0 * (1.0 - fx) + 12.0 * (1.0 - fy)
+        # Broad, low undulations (a few metres) — plains, not mountains
+        dem += 6.0 * np.sin(fx * 3.2) * np.cos(fy * 2.6)
+        dem += 3.5 * np.sin(fx * 8.0 + fy * 5.5)
+        dem += 2.0 * np.cos(fx * 14.0 - fy * 9.0)
+        # Shallow river / drainage depression (~8 m)
+        valley = np.exp(-((fx - 0.45) ** 2) / 0.04 - ((fy - 0.52) ** 2) / 0.12)
+        dem -= 8.0 * valley
+        # Tiny micro-relief
+        dem += rng.normal(0, 0.8, dem.shape)
         return dem.astype(np.float64)
 
     def _pixel_size_m(self, bounds: list[float], size: int) -> tuple[float, float]:
@@ -191,9 +189,10 @@ class TerrainService:
             g = (np.sin(t * 40 + 2) * 0.5 + 0.5) * 0.7 + 0.15
             b = (np.sin(t * 40 + 4) * 0.5 + 0.5) * 0.7 + 0.15
         elif name == "elev":
-            r = np.clip(0.15 + 0.85 * t, 0, 1)
-            g = np.clip(0.45 + 0.4 * (1 - abs(t - 0.45) * 2), 0, 1)
-            b = np.clip(0.35 + 0.5 * (1 - t), 0, 1)
+            # Explicit blue (low) → cyan → yellow → red (high) to match map legend
+            r = np.clip(0.05 + 0.25 * t + 0.85 * t**1.4, 0, 1)
+            g = np.clip(0.55 + 0.45 * t - 1.15 * np.maximum(t - 0.5, 0), 0, 1)
+            b = np.clip(0.95 - 0.9 * t, 0, 1)
         elif name == "flow":
             r = 0.05 + 0.15 * t
             g = 0.25 + 0.55 * t
@@ -248,15 +247,15 @@ class TerrainService:
         altitude: float = 45.0,
     ) -> TerrainComputeResponse:
         vmin, vmax = float(np.nanmin(dem)), float(np.nanmax(dem))
-        # Elevation tint used as faint base under satellite when no drape
-        png = self._rgba(dem, "elev", vmin, vmax, alpha=140)
-        # Dense enough mesh for 3D under imagery (~48–64 cells)
-        step = max(1, dem.shape[0] // 56)
+        # Strong elev tint as visible BASE under the satellite overlay
+        png = self._rgba(dem, "elev", vmin, vmax, alpha=210)
+        step = max(1, dem.shape[0] // 48)
         grid = dem[::step, ::step]
         relief = float(vmax - vmin)
         hs = self._hillshade(dem, bounds, azimuth, altitude)
         hs_n = np.clip(hs / 255.0, 0, 1)
 
+        # Bright satellite texture for optional soft blend on mesh (NOT a dark multiply)
         drape_b64: str | None = None
         if scene_id:
             try:
@@ -269,17 +268,15 @@ class TerrainService:
                     r = np.asarray(bands["red"], dtype=np.float32)
                     g = np.asarray(bands.get("green", bands["red"]), dtype=np.float32)
                     b = np.asarray(bands.get("blue", bands["red"]), dtype=np.float32)
-                    stack = np.stack([r, g, b], axis=0)
-                    # Percentile stretch then multiply by hillshade so height shows on imagery
                     draped = np.zeros((dem.shape[0], dem.shape[1], 4), dtype=np.uint8)
-                    for i in range(3):
-                        band = stack[i]
+                    for i, band in enumerate((r, g, b)):
                         valid = np.isfinite(band)
                         if not valid.any():
                             continue
                         lo, hi = np.nanpercentile(band[valid], [2, 98])
                         norm = np.clip((band - lo) / (hi - lo + 1e-6), 0, 1)
-                        lit = norm * (0.28 + 0.72 * hs_n)
+                        # Soft shade only — keep imagery bright and readable
+                        lit = norm * (0.78 + 0.22 * hs_n)
                         draped[..., i] = (lit * 255).astype(np.uint8)
                     draped[..., 3] = 255
                     buf = io.BytesIO()
@@ -289,9 +286,8 @@ class TerrainService:
                 logger.warning("DEM drape texture failed for {}: {}", scene_id, exc)
 
         msg = (
-            f"DEM under imagery · relief {relief:.0f} m · "
-            + ("satellite draped with height shading · " if drape_b64 else "")
-            + "3D view enabled"
+            f"DEM base under satellite · plains relief {relief:.0f} m · "
+            "image overlaid on elevation · 3D view enabled"
         )
         return TerrainComputeResponse(
             product="dem",
@@ -307,7 +303,7 @@ class TerrainService:
                 "relief_m": relief,
             },
             drape_base64=drape_b64,
-            formula="Synthetic DEM (demo) — upload GeoTIFF DEM for production",
+            formula="Plains-scale synthetic DEM (demo) — upload GeoTIFF DEM for production",
             message=msg,
         )
 

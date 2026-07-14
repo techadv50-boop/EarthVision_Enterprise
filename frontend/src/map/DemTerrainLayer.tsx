@@ -3,10 +3,22 @@ import { useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { MapOverlay } from '../store/workflowStore';
 
+/** Blue → cyan → yellow → red, matching backend elev legend. */
+function elevRgb(t: number, lit: number): [number, number, number] {
+  const x = Math.max(0, Math.min(1, t));
+  const r = Math.min(255, Math.round((0.05 + 0.25 * x + 0.85 * x ** 1.4) * 255 * lit));
+  const g = Math.min(
+    255,
+    Math.round((0.55 + 0.45 * x - 1.15 * Math.max(x - 0.5, 0)) * 255 * lit),
+  );
+  const b = Math.min(255, Math.round((0.95 - 0.9 * x) * 255 * lit));
+  return [r, g, b];
+}
+
 /**
- * Georeferenced 2.5D DEM mesh.
- * When a satellite drape texture is present, samples imagery onto elevated cells
- * so heightwise variation appears ON the satellite surface under Eye-On imagery.
+ * DEM as a base height surface UNDER satellite tiles.
+ * Mesh uses the elevation color ramp; optional soft satellite blend;
+ * gentle extrusion so plains stay plains (not alpine spikes).
  */
 export function DemTerrainLayer({
   overlay,
@@ -25,12 +37,10 @@ export function DemTerrainLayer({
     let pane = map.getPane(paneName);
     if (!pane) {
       pane = map.createPane(paneName);
-      // Above OSM; when draped, also above flat scene tiles (hidden) so mesh is the image
-      pane.style.zIndex = overlay.textureUrl ? '435' : '415';
       pane.style.pointerEvents = 'none';
-    } else {
-      pane.style.zIndex = overlay.textureUrl ? '435' : '415';
     }
+    // Always UNDER Eye-On satellite (scene @ 430)
+    pane.style.zIndex = '415';
 
     const canvas = L.DomUtil.create('canvas', 'ev-dem-mesh') as HTMLCanvasElement;
     canvas.style.position = 'absolute';
@@ -53,8 +63,9 @@ export function DemTerrainLayer({
       }
     }
     const span = Math.max(zmax - zmin, 1);
-    const exaggeration = overlay.exaggeration ?? 3.4;
-    const maxPx = Math.max(64, Math.min(160, span * exaggeration * 0.14));
+    // Gentle exaggeration — plains relief stays subtle but readable
+    const exaggeration = overlay.exaggeration ?? 1.6;
+    const maxPx = Math.min(32, Math.max(10, (span / 35) * 20 * exaggeration));
 
     const elevAt = (r: number, c: number) => {
       const rr = Math.max(0, Math.min(rows - 1, r));
@@ -71,18 +82,18 @@ export function DemTerrainLayer({
       return L.point(pt.x, pt.y - h);
     };
 
+    // Soft lighting only — never crush to black
     const litAt = (r: number, c: number) => {
       const z0 = elevAt(r, c);
       const zx = elevAt(r, c + 1);
       const zy = elevAt(r + 1, c);
-      return 0.45 + 0.55 * Math.tanh(((zx - z0) + (zy - z0)) / (span * 0.08 + 1e-6));
+      const slope = Math.tanh(((zx - z0) + (zy - z0)) / (span * 0.25 + 1e-6));
+      return 0.82 + 0.18 * slope;
     };
 
-    let texture: HTMLImageElement | null = null;
-    // Precomputed RGB per cell from drape texture (avoids getImageData each frame)
-    let cellRgb: Array<Array<[number, number, number] | null>> | null = null;
+    let cellSat: Array<Array<[number, number, number] | null>> | null = null;
 
-    const buildCellColors = (img: HTMLImageElement) => {
+    const buildSatColors = (img: HTMLImageElement) => {
       const off = document.createElement('canvas');
       off.width = img.naturalWidth || img.width;
       off.height = img.naturalHeight || img.height;
@@ -90,7 +101,7 @@ export function DemTerrainLayer({
       if (!octx) return;
       octx.drawImage(img, 0, 0);
       const data = octx.getImageData(0, 0, off.width, off.height).data;
-      cellRgb = [];
+      cellSat = [];
       for (let r = 0; r < rows; r++) {
         const row: Array<[number, number, number] | null> = [];
         for (let c = 0; c < cols; c++) {
@@ -101,17 +112,8 @@ export function DemTerrainLayer({
           const i = (y * off.width + x) * 4;
           row.push([data[i], data[i + 1], data[i + 2]]);
         }
-        cellRgb.push(row);
+        cellSat.push(row);
       }
-    };
-
-    const elevFill = (r: number, c: number) => {
-      const t = (elevAt(r, c) - zmin) / span;
-      const lit = litAt(r, c);
-      const rCol = Math.floor(55 + 150 * t * lit);
-      const gCol = Math.floor(95 + 90 * (1 - Math.abs(t - 0.45)) * lit);
-      const bCol = Math.floor(55 + 35 * (1 - t) * lit);
-      return `rgba(${rCol},${gCol},${bCol},0.9)`;
     };
 
     const draw = () => {
@@ -140,19 +142,22 @@ export function DemTerrainLayer({
           ctx.lineTo(p3.x, p3.y);
           ctx.closePath();
 
-          const rgb = cellRgb?.[r]?.[c] ?? null;
-          if (rgb) {
-            const lit = litAt(r, c);
-            const rr = Math.min(255, Math.round(rgb[0] * lit));
-            const gg = Math.min(255, Math.round(rgb[1] * lit));
-            const bb = Math.min(255, Math.round(rgb[2] * lit));
+          const t = (elevAt(r, c) - zmin) / span;
+          const lit = litAt(r, c);
+          const [er, eg, eb] = elevRgb(t, lit);
+          const sat = cellSat?.[r]?.[c];
+          if (sat) {
+            // Elev color base + bright satellite blend (DEM under, image on top of base)
+            const rr = Math.round(er * 0.38 + sat[0] * 0.62);
+            const gg = Math.round(eg * 0.38 + sat[1] * 0.62);
+            const bb = Math.round(eb * 0.38 + sat[2] * 0.62);
             ctx.fillStyle = `rgb(${rr},${gg},${bb})`;
           } else {
-            ctx.fillStyle = elevFill(r, c);
+            ctx.fillStyle = `rgb(${er},${eg},${eb})`;
           }
           ctx.fill();
-          ctx.strokeStyle = 'rgba(10,20,15,0.12)';
-          ctx.lineWidth = 0.35;
+          ctx.strokeStyle = 'rgba(20,40,60,0.08)';
+          ctx.lineWidth = 0.3;
           ctx.stroke();
         }
       }
@@ -165,10 +170,10 @@ export function DemTerrainLayer({
     };
 
     if (overlay.textureUrl) {
-      texture = new Image();
+      const texture = new Image();
       texture.crossOrigin = 'anonymous';
       texture.onload = () => {
-        buildCellColors(texture!);
+        buildSatColors(texture);
         start();
       };
       texture.onerror = () => start();

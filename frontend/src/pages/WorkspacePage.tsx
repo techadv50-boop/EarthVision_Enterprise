@@ -328,7 +328,7 @@ export function WorkspacePage() {
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,
-          // Soft-drape over DEM base height when DEM 3D is active
+          // Soft-drape: satellite stays on top of DEM base
           opacity: hasDemBase ? 0.78 : 1,
           label,
           renderMode: overlay.render_mode,
@@ -523,24 +523,19 @@ export function WorkspacePage() {
             : '',
           bounds: result.bounds as [number, number, number, number],
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          // Elev tint stays faint under draped mesh; analysis overlays use layer opacity
-          opacity: isDem ? (drapeUrl ? 0.2 : 0.45) : layerOpacity,
-          label: isDem
-            ? drapeUrl
-              ? 'DEM + draped satellite'
-              : 'DEM base (under imagery)'
-            : product.replaceAll('_', ' '),
+          // Visible elev color base under the Eye-On satellite
+          opacity: isDem ? 0.7 : layerOpacity,
+          label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 3.6 : undefined,
+          exaggeration: isDem ? 1.6 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
           textureUrl: drapeUrl,
         });
       }
 
       if (isDem) {
-        // Oblique 3D + hide flat scene tiles so draped mesh shows height on imagery
         useWorkflowStore.getState().setMapChrome({
           view3d: true,
           terrainRelief: true,
@@ -548,16 +543,16 @@ export function WorkspacePage() {
         const state = useWorkflowStore.getState();
         for (const o of state.overlays) {
           if (o.kind === 'scene' && o.visible !== false) {
-            // Flat tiles hidden while draped DEM mesh carries the satellite texture
-            state.upsertOverlay({ ...o, opacity: drapeUrl ? 0.08 : 0.72 });
+            // Satellite ON TOP of DEM base — keep imagery readable
+            state.upsertOverlay({ ...o, opacity: 0.78 });
           }
         }
         const relief = result.dem_stats?.relief_m;
         setLastMessage(
           [
-            result.message || 'DEM under imagery',
+            result.message || 'DEM base under satellite',
             relief != null ? `relief ${Math.round(relief)} m` : null,
-            drapeUrl ? 'height shaded on satellite' : '3D base height on',
+            'image overlaid on elevation',
           ]
             .filter(Boolean)
             .join(' · '),

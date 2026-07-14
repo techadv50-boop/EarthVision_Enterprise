@@ -676,16 +676,16 @@ export function LightMap({
 
   const mapStyle = useMemo(() => {
     const parts: string[] = [];
-    // Stronger perspective when DEM base height is active under imagery
+    // Mild oblique tilt so DEM base height reads under imagery (not extreme)
     if (chrome.view3d) {
       parts.push(
         demBaseOverlay
-          ? 'perspective(780px) rotateX(38deg) scale(1.08)'
+          ? 'perspective(1000px) rotateX(22deg) scale(1.04)'
           : 'perspective(900px) rotateX(28deg)',
       );
     }
     if (chrome.rotate) parts.push('rotateZ(-12deg)');
-    if (chrome.terrainRelief) parts.push('contrast(1.1) saturate(1.08)');
+    if (chrome.terrainRelief) parts.push('contrast(1.06) saturate(1.05)');
     return parts.length
       ? { transform: parts.join(' '), transformOrigin: 'center center' }
       : undefined;
@@ -749,7 +749,7 @@ export function LightMap({
               )
             : null;
 
-        // DEM base sits UNDER Eye-On satellite (scene @ 430)
+        // DEM base UNDER Eye-On satellite (scene @ 430)
         const zIndex =
           overlay.kind === 'change'
             ? 460
@@ -765,12 +765,11 @@ export function LightMap({
                       ? 470
                       : 430;
 
+        // Satellite stays clearly on top of DEM base
         const sceneOpacity =
-          overlay.kind === 'scene' && demBaseOverlay?.textureUrl
-            ? Math.min(overlay.opacity, 0.08)
-            : overlay.kind === 'scene' && demBaseOverlay
-              ? Math.min(overlay.opacity, 0.72)
-              : overlay.opacity;
+          overlay.kind === 'scene' && demBaseOverlay
+            ? Math.min(Math.max(overlay.opacity, 0.72), 0.85)
+            : overlay.opacity;
 
         return (
           <Fragment key={overlay.id}>
@@ -792,7 +791,7 @@ export function LightMap({
                 bounds={leafletBounds}
                 opacity={
                   overlay.kind === 'terrain' && overlay.terrainRole === 'base'
-                    ? Math.min(overlay.opacity, 0.55)
+                    ? Math.max(overlay.opacity, 0.65)
                     : overlay.opacity
                 }
                 interactive={false}
