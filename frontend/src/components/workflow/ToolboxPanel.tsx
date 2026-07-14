@@ -459,11 +459,11 @@ function DemBaseHeightPanel({
   return (
     <div className="mb-3 space-y-1.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/40 p-2">
       <div className="text-[11px] font-semibold text-[var(--accent)]">
-        DEM 3D · ArcScene view
+        DEM base · under imagery
       </div>
       <p className="text-[10px] text-[var(--muted)]">
-        Satellite draped on elevation mesh
-        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}. Adjust height, tilt & rotate.
+        Always behind image layers — elevation shows on the draped satellite
+        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}.
       </p>
       <label className="flex items-center gap-2 text-[10px]">
         <span className="w-14 shrink-0 font-medium">Height</span>
@@ -725,7 +725,8 @@ function LayerManagerBody({
               <button
                 type="button"
                 className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
-                disabled={idx === 0}
+                disabled={idx === 0 || isDem}
+                title={isDem ? 'DEM stays under imagery' : undefined}
                 onClick={() => onMove(layer.id, 'up')}
               >
                 Up

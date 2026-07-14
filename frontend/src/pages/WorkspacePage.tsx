@@ -343,12 +343,23 @@ export function WorkspacePage() {
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,
-          // Soft-drape: satellite stays on top of DEM base
-          opacity: hasDemBase ? 0.78 : 1,
+          // Flat tiles are hidden on the map while DEM drapes this imagery
+          opacity: 1,
           label,
           renderMode: overlay.render_mode,
           visible: true,
         });
+        // If DEM is already active, refresh its drape texture from this scene still
+        if (hasDemBase && overlay.overlay_base64) {
+          const dem = useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.terrainRole === 'base');
+          if (dem && !dem.textureUrl) {
+            useWorkflowStore.getState().patchOverlay(dem.id, {
+              textureUrl: analyticsService.toDataUrl(overlay.overlay_base64),
+            });
+          }
+        }
       } catch (err) {
         setError(getErrorMessage(err));
         hideScene(scene.id);
@@ -552,13 +563,13 @@ export function WorkspacePage() {
           bounds: result.bounds as [number, number, number, number],
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
           opacity: isDem ? 1 : layerOpacity,
-          label: isDem ? 'DEM 3D (ArcScene drape)' : product.replaceAll('_', ' '),
+          label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 2.2 : undefined,
-          demYaw: isDem ? 32 : undefined,
-          demPitch: isDem ? 55 : undefined,
+          exaggeration: isDem ? 2.4 : undefined,
+          demYaw: isDem ? 28 : undefined,
+          demPitch: isDem ? 48 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
           textureUrl: drapeUrl || sceneStill,
         });
@@ -569,19 +580,14 @@ export function WorkspacePage() {
           view3d: true,
           terrainRelief: true,
         });
-        const state = useWorkflowStore.getState();
-        for (const o of state.overlays) {
-          if (o.kind === 'scene' && o.visible !== false) {
-            // Flat tiles fade — draped mesh shows the ArcScene surface
-            state.upsertOverlay({ ...o, opacity: 0.1 });
-          }
-        }
+        // Keep scene opacities as-is — LightMap hides flat scene tiles while DEM
+        // drapes imagery on the elevation mesh (DEM stays behind the image texture).
         const relief = result.dem_stats?.relief_m;
         setLastMessage(
           [
-            result.message || 'ArcScene DEM · imagery draped on elevation',
+            result.message || 'DEM under imagery · elevation on the image',
             relief != null ? `relief ${Math.round(relief)} m` : null,
-            'use Height / Tilt / Rotate in Terrain toolbox',
+            'DEM locked at back · Height / Tilt / Rotate in Terrain',
           ]
             .filter(Boolean)
             .join(' · '),

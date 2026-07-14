@@ -743,12 +743,11 @@ export function LightMap({
     [visibleOverlays],
   );
 
-  const demZ = demBaseOverlay
-    ? Math.max(overlayZIndex.get(demBaseOverlay.id) ?? 415, 520)
-    : 415;
+  // DEM stays at the back of the stack (lowest z). Imagery is textured onto the mesh
+  // so elevation reads on the image without DEM covering it.
+  const demZ = demBaseOverlay ? overlayZIndex.get(demBaseOverlay.id) ?? 410 : 410;
 
-  // When ArcScene DEM is on, drape owns the visual — flatten scene tiles so they don't fight the mesh
-  const arcSceneActive = Boolean(demBaseOverlay && chrome.view3d);
+  const demActive = Boolean(demBaseOverlay);
 
   const sceneTextureUrl = useMemo(() => {
     if (demBaseOverlay?.textureUrl) return demBaseOverlay.textureUrl;
@@ -757,17 +756,16 @@ export function LightMap({
   }, [demBaseOverlay, visibleOverlays]);
 
   const mapStyle = useMemo(() => {
-    // Mesh does its own yaw/pitch — keep container transform mild so controls stay usable
-    if (!chrome.view3d || demBaseOverlay) {
-      if (chrome.rotate && !demBaseOverlay) {
-        return { transform: 'rotateZ(-12deg)', transformOrigin: 'center center' };
-      }
-      return undefined;
-    }
-    const parts: string[] = ['perspective(900px) rotateX(28deg)'];
+    // Mesh applies its own yaw/pitch — avoid double-tilting the whole map
+    if (demBaseOverlay) return undefined;
+    if (!chrome.view3d && !chrome.rotate) return undefined;
+    const parts: string[] = [];
+    if (chrome.view3d) parts.push('perspective(900px) rotateX(28deg)');
     if (chrome.rotate) parts.push('rotateZ(-12deg)');
     if (chrome.terrainRelief) parts.push('contrast(1.06) saturate(1.05)');
-    return { transform: parts.join(' '), transformOrigin: 'center center' };
+    return parts.length
+      ? { transform: parts.join(' '), transformOrigin: 'center center' }
+      : undefined;
   }, [chrome.view3d, chrome.rotate, chrome.terrainRelief, demBaseOverlay]);
 
   return (
@@ -795,6 +793,7 @@ export function LightMap({
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
+      {/* DEM mesh first (behind): satellite is draped on it so elevation shows on the image */}
       <DemTerrainLayer
         overlay={demBaseOverlay}
         enabled={Boolean(demBaseOverlay)}
@@ -821,12 +820,8 @@ export function LightMap({
       )}
 
       {visibleOverlays.map((overlay) => {
-        // DEM mesh renders separately; skip flat DEM image when ArcScene mesh is active
-        if (
-          arcSceneActive &&
-          overlay.kind === 'terrain' &&
-          overlay.terrainRole === 'base'
-        ) {
+        // Flat DEM raster stays off — mesh is the DEM surface behind imagery texture
+        if (overlay.kind === 'terrain' && overlay.terrainRole === 'base') {
           return null;
         }
         const [west, south, east, north] = overlay.bounds;
@@ -855,11 +850,10 @@ export function LightMap({
           },
         };
 
-        // Fade flat scene tiles so draped mesh is the ArcScene surface
+        // Flat scene tiles stay transparent while DEM drapes the same imagery in 3D behind
+        // analysis layers. Clients see elevation on the image, DEM never covers it.
         const opacity =
-          arcSceneActive && overlay.kind === 'scene'
-            ? Math.min(overlay.opacity, 0.12)
-            : overlay.opacity;
+          demActive && overlay.kind === 'scene' ? 0 : overlay.opacity;
 
         return (
           <Fragment key={`${overlay.id}-z${zIndex}`}>

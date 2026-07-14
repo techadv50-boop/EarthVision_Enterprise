@@ -86,8 +86,9 @@ export function DemTerrainLayer({
       const z0 = elevAt(r, c);
       const zx = elevAt(r, c + 1);
       const zy = elevAt(r + 1, c);
-      const slope = Math.tanh(((zx - z0) + (zy - z0)) / (span * 0.28 + 1e-6));
-      return 0.7 + 0.3 * slope;
+      // Stronger NW lighting so elevation variations read clearly on draped imagery
+      const slope = Math.tanh(((zx - z0) * 1.1 + (zy - z0) * 0.9) / (span * 0.22 + 1e-6));
+      return 0.62 + 0.38 * slope;
     };
 
     const buildTexGrid = (img: HTMLImageElement): RGB[][] => {
