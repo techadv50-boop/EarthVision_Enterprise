@@ -437,13 +437,13 @@ function DemBaseHeightPanel({
       </p>
     );
   }
-  const baseH = dem.exaggeration ?? 1.6;
+  const baseH = dem.exaggeration ?? 1.2;
   const relief = dem.demStats?.relief_m;
   return (
     <div className="mb-3 space-y-1.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/40 p-2">
       <div className="text-[11px] font-semibold text-[var(--accent)]">DEM base height</div>
       <p className="text-[10px] text-[var(--muted)]">
-        Vertical scale of the elevation surface under / with the satellite image
+        Vertical scale of the elevation surface under the satellite image
         {relief != null ? ` · relief ${Math.round(relief)} m` : ''}.
       </p>
       <label className="flex items-center gap-2 text-[10px]">
@@ -451,7 +451,7 @@ function DemBaseHeightPanel({
         <input
           type="range"
           min={5}
-          max={50}
+          max={30}
           step={1}
           value={Math.round(baseH * 10)}
           onChange={(e) => onPatch(dem.id, { exaggeration: Number(e.target.value) / 10 })}
@@ -460,7 +460,7 @@ function DemBaseHeightPanel({
         <span className="w-10 font-mono">{baseH.toFixed(1)}×</span>
       </label>
       <div className="flex gap-1">
-        {[1, 1.6, 2.5, 4].map((v) => (
+        {[0.8, 1.2, 1.8, 2.5].map((v) => (
           <button
             key={v}
             type="button"
@@ -555,7 +555,7 @@ function LayerManagerBody({
       )}
       {layers.map((layer, idx) => {
         const isDem = Boolean(layer.demGrid?.length);
-        const baseH = layer.exaggeration ?? 1.6;
+        const baseH = layer.exaggeration ?? 1.2;
         return (
           <div
             key={layer.id}
@@ -633,7 +633,7 @@ function LayerManagerBody({
                 <input
                   type="range"
                   min={5}
-                  max={50}
+                  max={30}
                   step={1}
                   value={Math.round(baseH * 10)}
                   onChange={(e) =>

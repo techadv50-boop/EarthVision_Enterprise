@@ -531,7 +531,7 @@ export function WorkspacePage() {
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 1.6 : undefined,
+          exaggeration: isDem ? 1.2 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
           textureUrl: drapeUrl,
         });
@@ -545,8 +545,8 @@ export function WorkspacePage() {
         const state = useWorkflowStore.getState();
         for (const o of state.overlays) {
           if (o.kind === 'scene' && o.visible !== false) {
-            // Satellite ON TOP of DEM base — keep imagery readable
-            state.upsertOverlay({ ...o, opacity: 0.78 });
+            // Keep satellite clearly on top of DEM base
+            state.upsertOverlay({ ...o, opacity: Math.max(o.opacity, 0.85) });
           }
         }
         const relief = result.dem_stats?.relief_m;

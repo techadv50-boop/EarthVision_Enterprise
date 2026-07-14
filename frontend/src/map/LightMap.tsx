@@ -603,6 +603,55 @@ function EnsureStackPane() {
   return null;
 }
 
+/** Re-append stack pane children bottom→top so Layer Manager order always wins. */
+function EnforceStackOrder({
+  overlays,
+  zIndexById,
+}: {
+  overlays: MapOverlay[];
+  zIndexById: Map<string, number>;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    const pane = map.getPane('evStackPane');
+    if (!pane) return;
+
+    const apply = () => {
+      // Store order is bottom → top; appendChild moves node to end (= top)
+      for (const o of overlays) {
+        if (o.visible === false) continue;
+        const z = String(zIndexById.get(o.id) ?? 410);
+        pane.querySelectorAll(`[data-ev-id="${CSS.escape(o.id)}"]`).forEach((node) => {
+          const el = node as HTMLElement;
+          el.style.zIndex = z;
+          pane.appendChild(el);
+        });
+      }
+    };
+
+    apply();
+    const onAdd = () => {
+      // Tag newly added leaflet layers if missing data-ev-id (fallback)
+      window.requestAnimationFrame(apply);
+    };
+    map.on('layeradd', onAdd);
+    map.on('zoomend moveend', apply);
+    return () => {
+      map.off('layeradd', onAdd);
+      map.off('zoomend moveend', apply);
+    };
+  }, [map, overlays, zIndexById]);
+
+  return null;
+}
+
+function tagOverlayElement(el: HTMLElement | undefined | null, id: string, zIndex: number) {
+  if (!el) return;
+  el.dataset.evId = id;
+  el.style.zIndex = String(zIndex);
+}
+
 function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
   if (kind === 'buffer') {
     return { color: '#7c3aed', weight: 2, fillColor: '#7c3aed', fillOpacity: 0.18 };
@@ -736,6 +785,7 @@ export function LightMap({
       <MapInteractionMode mapTool={mapTool} />
       <MapCommandRunner command={mapCommand} />
       <EnsureStackPane />
+      <EnforceStackOrder overlays={overlays} zIndexById={overlayZIndex} />
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
@@ -778,8 +828,17 @@ export function LightMap({
               )
             : null;
 
-        // Stacking follows Layer Manager order (drag to change) — all in evStackPane
         const zIndex = overlayZIndex.get(overlay.id) ?? 430;
+        const tagHandlers = {
+          add: (e: { target: L.Layer & { getContainer?: () => HTMLElement; getElement?: () => HTMLElement } }) => {
+            const el =
+              e.target.getContainer?.() ||
+              e.target.getElement?.() ||
+              (e.target as unknown as { _container?: HTMLElement; _image?: HTMLElement })._container ||
+              (e.target as unknown as { _image?: HTMLElement })._image;
+            tagOverlayElement(el ?? null, overlay.id, zIndex);
+          },
+        };
 
         return (
           <Fragment key={`${overlay.id}-z${zIndex}`}>
@@ -795,6 +854,7 @@ export function LightMap({
                 updateWhenZooming={false}
                 updateWhenIdle
                 keepBuffer={2}
+                eventHandlers={tagHandlers}
               />
             ) : overlay.url ? (
               <ImageOverlay
@@ -804,6 +864,7 @@ export function LightMap({
                 interactive={false}
                 pane="evStackPane"
                 zIndex={zIndex}
+                eventHandlers={tagHandlers}
               />
             ) : null}
             {overlay.geojson && (
@@ -816,6 +877,7 @@ export function LightMap({
                   overlay.kind === 'detection' ? detectionPointToLayer : undefined
                 }
                 pane="evStackPane"
+                eventHandlers={tagHandlers}
               />
             )}
             {footprintRing && (
