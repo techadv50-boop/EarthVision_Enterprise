@@ -562,14 +562,16 @@ export function WorkspacePage() {
             : '',
           bounds: result.bounds as [number, number, number, number],
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          opacity: isDem ? 1 : layerOpacity,
+          opacity: isDem ? 0.92 : layerOpacity,
           label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 2.4 : undefined,
-          demYaw: isDem ? 28 : undefined,
-          demPitch: isDem ? 48 : undefined,
+          exaggeration: isDem ? 2.0 : undefined,
+          demYaw: isDem ? 18 : undefined,
+          demPitch: isDem ? 72 : undefined,
+          demColormap: isDem ? 'elev' : undefined,
+          demTextureMix: isDem ? 0.15 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
           textureUrl: drapeUrl || sceneStill,
         });
@@ -580,14 +582,21 @@ export function WorkspacePage() {
           view3d: true,
           terrainRelief: true,
         });
-        // Keep scene opacities as-is — LightMap hides flat scene tiles while DEM
-        // drapes imagery on the elevation mesh (DEM stays behind the image texture).
+        useWorkflowStore.getState().setExpandedToolbox('layers');
+        useWorkflowStore.getState().setToolboxOpen(true);
+        // Soften satellite so elev color themes show through (DEM stays behind)
+        const state = useWorkflowStore.getState();
+        for (const o of state.overlays) {
+          if (o.kind === 'scene' && o.visible !== false && o.opacity > 0.75) {
+            state.patchOverlay(o.id, { opacity: 0.7 });
+          }
+        }
         const relief = result.dem_stats?.relief_m;
         setLastMessage(
           [
-            result.message || 'DEM under imagery · elevation on the image',
+            result.message || 'DEM under imagery · elev color theme behind satellite',
             relief != null ? `relief ${Math.round(relief)} m` : null,
-            'DEM locked at back · Height / Tilt / Rotate in Terrain',
+            'pick a DEM color theme · reorder all layers in Layer Manager',
           ]
             .filter(Boolean)
             .join(' · '),

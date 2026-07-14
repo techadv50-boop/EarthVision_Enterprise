@@ -68,7 +68,7 @@ export const TOOLBOXES: ToolboxDef[] = [
   {
     id: 'layers',
     title: 'Layer Manager',
-    blurb: 'Drag to reorder · DEM base height · scene & analytics layers',
+    blurb: 'Unified priority list for every map layer',
     tools: [
       { id: 'add_layer', label: 'Add Layer', action: { type: 'layer', op: 'add' } },
       { id: 'remove_layer', label: 'Remove Layer', action: { type: 'layer', op: 'remove' } },

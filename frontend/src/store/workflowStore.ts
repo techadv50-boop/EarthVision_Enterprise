@@ -47,8 +47,12 @@ export interface MapOverlay {
   demPitch?: number;
   /** DEM base sits under satellite; other terrain products are analysis overlays */
   terrainRole?: 'base' | 'analysis';
-  /** Satellite×hillshade texture draped onto DEM mesh */
+  /** Satellite×hillshade texture (optional soft mix into elev colors) */
   textureUrl?: string | null;
+  /** Elevation color theme for DEM mesh */
+  demColormap?: string | null;
+  /** 0–0.5 how much satellite texture tints the elev theme */
+  demTextureMix?: number;
 }
 
 /** Drawn feature available for buffer / profile / LOS */
@@ -58,7 +62,7 @@ export interface DrawnFeature {
   label: string;
 }
 
-/** DEM base always stays under every image / analysis overlay. */
+/** DEM base defaults under imagery; users may still reorder freely in Layer Manager. */
 function pinDemBaseToBack(overlays: MapOverlay[]): MapOverlay[] {
   const dems = overlays.filter((o) => o.terrainRole === 'base');
   if (!dems.length) return overlays;
@@ -253,7 +257,11 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       }
       const item = { visible: true, ...overlay };
       next = [...next, item];
-      return { overlays: pinDemBaseToBack(next) };
+      // New DEM base starts at the back; later Layer Manager reorder is free
+      if (overlay.terrainRole === 'base') {
+        return { overlays: pinDemBaseToBack(next) };
+      }
+      return { overlays: next };
     }),
 
   removeOverlay: (id) =>
@@ -281,7 +289,6 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   moveOverlay: (id, dir) =>
     set((state) => {
-      // Layer Manager shows overlays reversed (top of list = top of map = end of array).
       const display = [...state.overlays].reverse();
       const idx = display.findIndex((o) => o.id === id);
       if (idx < 0) return state;
@@ -289,7 +296,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       if (target < 0 || target >= display.length) return state;
       const moving = display[idx];
       const swapWith = display[target];
-      // DEM base must stay behind every image / analysis layer
+      // DEM base stays under imagery in the unified stack
       if (moving.terrainRole === 'base' && dir === 'up') return state;
       if (swapWith.terrainRole === 'base' && dir === 'down') return state;
       const nextDisplay = [...display];
@@ -310,7 +317,6 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         }
       }
       for (const o of byId.values()) ordered.push(o);
-      // displayIds are top→bottom; store is bottom→top — then pin DEM under all imagery
       return { overlays: pinDemBaseToBack(ordered.reverse()) };
     }),
 

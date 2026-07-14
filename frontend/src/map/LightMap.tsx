@@ -594,11 +594,20 @@ function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
 
 function EnsureStackPane() {
   const map = useMap();
-  // Create synchronously so child TileLayer/ImageOverlay can mount into it
+  // DEM pane under imagery; stack pane for scenes / analysis
+  if (!map.getPane('evDemPane')) {
+    const dem = map.createPane('evDemPane');
+    dem.style.zIndex = '440';
+    dem.style.pointerEvents = 'none';
+  } else {
+    map.getPane('evDemPane')!.style.zIndex = '440';
+  }
   if (!map.getPane('evStackPane')) {
     const pane = map.createPane('evStackPane');
     pane.style.zIndex = '450';
     pane.style.pointerEvents = 'none';
+  } else {
+    map.getPane('evStackPane')!.style.zIndex = '450';
   }
   return null;
 }
@@ -743,20 +752,10 @@ export function LightMap({
     [visibleOverlays],
   );
 
-  // DEM stays at the back of the stack (lowest z). Imagery is textured onto the mesh
-  // so elevation reads on the image without DEM covering it.
-  const demZ = demBaseOverlay ? overlayZIndex.get(demBaseOverlay.id) ?? 410 : 410;
-
-  const demActive = Boolean(demBaseOverlay);
-
-  const sceneTextureUrl = useMemo(() => {
-    if (demBaseOverlay?.textureUrl) return demBaseOverlay.textureUrl;
-    const scene = visibleOverlays.find((o) => o.kind === 'scene' && o.url);
-    return scene?.url || null;
-  }, [demBaseOverlay, visibleOverlays]);
+  // DEM mesh lives in evDemPane (z 440) — always behind imagery in evStackPane (z 450)
+  const demZ = 405;
 
   const mapStyle = useMemo(() => {
-    // Mesh applies its own yaw/pitch — avoid double-tilting the whole map
     if (demBaseOverlay) return undefined;
     if (!chrome.view3d && !chrome.rotate) return undefined;
     const parts: string[] = [];
@@ -793,12 +792,11 @@ export function LightMap({
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
-      {/* DEM mesh first (behind): satellite is draped on it so elevation shows on the image */}
+      {/* DEM always in lower pane — satellite stays on top in evStackPane */}
       <DemTerrainLayer
         overlay={demBaseOverlay}
         enabled={Boolean(demBaseOverlay)}
         zIndex={demZ}
-        sceneTextureUrl={sceneTextureUrl}
       />
       <DrawingTools
         mapTool={mapTool}
@@ -820,7 +818,7 @@ export function LightMap({
       )}
 
       {visibleOverlays.map((overlay) => {
-        // Flat DEM raster stays off — mesh is the DEM surface behind imagery texture
+        // DEM mesh is drawn in evDemPane; skip flat DEM raster in the imagery stack
         if (overlay.kind === 'terrain' && overlay.terrainRole === 'base') {
           return null;
         }
@@ -850,10 +848,9 @@ export function LightMap({
           },
         };
 
-        // Flat scene tiles stay transparent while DEM drapes the same imagery in 3D behind
-        // analysis layers. Clients see elevation on the image, DEM never covers it.
-        const opacity =
-          demActive && overlay.kind === 'scene' ? 0 : overlay.opacity;
+        // Satellite stays in front of DEM pane. Use layer opacity (softened on DEM apply)
+        // so elev color themes show through the image.
+        const opacity = overlay.opacity;
 
         return (
           <Fragment key={`${overlay.id}-z${zIndex}`}>
