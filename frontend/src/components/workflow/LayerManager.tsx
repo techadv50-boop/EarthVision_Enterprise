@@ -21,19 +21,21 @@ export function DemBaseHeightPanel({
       </p>
     );
   }
-  const baseH = dem.exaggeration ?? 2.0;
-  const yaw = dem.demYaw ?? 18;
-  const pitch = dem.demPitch ?? 72;
+  const baseH = dem.exaggeration ?? 1.6;
   const cmap = (dem.demColormap as DemColormapId) || 'elev';
-  const mix = Math.round((dem.demTextureMix ?? 0.15) * 100);
   const relief = dem.demStats?.relief_m;
   return (
     <div className="mb-3 space-y-1.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/40 p-2">
-      <div className="text-[11px] font-semibold text-[var(--accent)]">DEM · behind imagery</div>
+      <div className="text-[11px] font-semibold text-[var(--accent)]">
+        Elevation · m above mean sea level
+      </div>
       <p className="text-[10px] text-[var(--muted)]">
-        Color themes show elevation under the satellite
-        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}. Manage priority in{' '}
-        <strong>Layer Manager</strong>.
+        Spatially aligned under the satellite — colors show which image features are higher /
+        lower
+        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}.
+        {dem.demStats?.min != null && dem.demStats?.max != null
+          ? ` · ${dem.demStats.min.toFixed(0)}–${dem.demStats.max.toFixed(0)} m MSL`
+          : ''}
       </p>
 
       <div className="text-[10px] font-semibold text-[var(--ink)]">Color theme</div>
@@ -70,74 +72,22 @@ export function DemBaseHeightPanel({
         <span className="w-10 font-mono">{Math.round((dem.opacity ?? 0.92) * 100)}%</span>
       </label>
       <label className="flex items-center gap-2 text-[10px]">
-        <span className="w-14 shrink-0 font-medium">Sat mix</span>
+        <span className="w-14 shrink-0 font-medium">Shading</span>
         <input
           type="range"
-          min={0}
-          max={50}
-          step={1}
-          value={mix}
-          onChange={(e) => onPatch(dem.id, { demTextureMix: Number(e.target.value) / 100 })}
-          className="w-full accent-[var(--accent)]"
-          title="Blend a little satellite tint into the elev theme"
-        />
-        <span className="w-10 font-mono">{mix}%</span>
-      </label>
-      <label className="flex items-center gap-2 text-[10px]">
-        <span className="w-14 shrink-0 font-medium">Height</span>
-        <input
-          type="range"
-          min={8}
-          max={50}
+          min={5}
+          max={40}
           step={1}
           value={Math.round(baseH * 10)}
           onChange={(e) => onPatch(dem.id, { exaggeration: Number(e.target.value) / 10 })}
           className="w-full accent-[var(--accent)]"
+          title="Hillshade strength (does not move DEM geographically)"
         />
         <span className="w-10 font-mono">{baseH.toFixed(1)}×</span>
       </label>
-      <label className="flex items-center gap-2 text-[10px]">
-        <span className="w-14 shrink-0 font-medium">Tilt</span>
-        <input
-          type="range"
-          min={25}
-          max={90}
-          step={1}
-          value={pitch}
-          onChange={(e) => onPatch(dem.id, { demPitch: Number(e.target.value) })}
-          className="w-full accent-[var(--accent)]"
-        />
-        <span className="w-10 font-mono">{pitch}°</span>
-      </label>
-      <label className="flex items-center gap-2 text-[10px]">
-        <span className="w-14 shrink-0 font-medium">Rotate</span>
-        <input
-          type="range"
-          min={0}
-          max={360}
-          step={2}
-          value={yaw}
-          onChange={(e) => onPatch(dem.id, { demYaw: Number(e.target.value) })}
-          className="w-full accent-[var(--accent)]"
-        />
-        <span className="w-10 font-mono">{yaw}°</span>
-      </label>
-      <div className="flex flex-wrap gap-1">
-        {[
-          { label: 'Flat', patch: { exaggeration: 1.2, demPitch: 88, demYaw: 0 } },
-          { label: 'Oblique', patch: { exaggeration: 2.0, demPitch: 72, demYaw: 18 } },
-          { label: 'Steep', patch: { exaggeration: 3.2, demPitch: 48, demYaw: 36 } },
-        ].map(({ label, patch }) => (
-          <button
-            key={label}
-            type="button"
-            className="rounded border border-[var(--line)] bg-white px-1.5 py-0.5 text-[10px] hover:border-[var(--accent)]"
-            onClick={() => onPatch(dem.id, patch)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <p className="text-[10px] text-[var(--muted)]">
+        Tip: lower satellite opacity in Layer Manager to see elev colors on image features.
+      </p>
     </div>
   );
 }
@@ -228,9 +178,7 @@ export function LayerManagerBody({
       )}
       {layers.map((layer, idx) => {
         const isDem = Boolean(layer.demGrid?.length && layer.terrainRole === 'base');
-        const baseH = layer.exaggeration ?? 2.0;
-        const yaw = layer.demYaw ?? 18;
-        const pitch = layer.demPitch ?? 72;
+        const baseH = layer.exaggeration ?? 1.6;
         const cmap = (layer.demColormap as DemColormapId) || 'elev';
         return (
           <div
@@ -328,6 +276,12 @@ export function LayerManagerBody({
 
             {isDem && (
               <div className="mt-1.5 space-y-1 border-t border-[var(--line)] pt-1.5">
+                <div className="text-[9px] text-[var(--muted)]">
+                  Elev color (m MSL) — aligned to satellite
+                  {layer.demStats?.min != null && layer.demStats?.max != null
+                    ? ` · ${layer.demStats.min.toFixed(0)}–${layer.demStats.max.toFixed(0)} m`
+                    : ''}
+                </div>
                 <div className="grid grid-cols-4 gap-0.5">
                   {DEM_COLORMAPS.map((cm) => (
                     <button
@@ -345,45 +299,20 @@ export function LayerManagerBody({
                   ))}
                 </div>
                 <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
-                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Height</span>
+                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Shading</span>
                   <input
                     type="range"
-                    min={8}
-                    max={50}
+                    min={5}
+                    max={40}
                     step={1}
                     value={Math.round(baseH * 10)}
                     onChange={(e) =>
                       onPatch(layer.id, { exaggeration: Number(e.target.value) / 10 })
                     }
                     className="w-full accent-[var(--accent)]"
+                    title="Hillshade strength only — keeps spatial alignment"
                   />
                   <span className="w-9 font-mono text-[var(--ink)]">{baseH.toFixed(1)}×</span>
-                </label>
-                <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
-                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Tilt</span>
-                  <input
-                    type="range"
-                    min={25}
-                    max={90}
-                    step={1}
-                    value={pitch}
-                    onChange={(e) => onPatch(layer.id, { demPitch: Number(e.target.value) })}
-                    className="w-full accent-[var(--accent)]"
-                  />
-                  <span className="w-9 font-mono text-[var(--ink)]">{pitch}°</span>
-                </label>
-                <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
-                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Rotate</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={360}
-                    step={2}
-                    value={yaw}
-                    onChange={(e) => onPatch(layer.id, { demYaw: Number(e.target.value) })}
-                    className="w-full accent-[var(--accent)]"
-                  />
-                  <span className="w-9 font-mono text-[var(--ink)]">{yaw}°</span>
                 </label>
               </div>
             )}

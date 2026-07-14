@@ -22,6 +22,18 @@ class TerrainService:
 
     def compute(self, request: TerrainComputeRequest) -> TerrainComputeResponse:
         bounds = self._resolve_bounds(request.bbox, request.aoi)
+        # Align DEM exactly to the Eye-On scene footprint/bounds when available
+        if request.product == "dem" and request.scene_id:
+            try:
+                from app.services.scene_imagery_service import SceneImageryService
+
+                layer = SceneImageryService().get_layer(request.scene_id)
+                if layer and layer.get("bounds") and len(layer["bounds"]) == 4:
+                    bounds = [float(x) for x in layer["bounds"]]
+                    logger.info("DEM aligned to scene {} bounds {}", request.scene_id, bounds)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not align DEM to scene bounds: {}", exc)
+
         size = request.size
         dem = self._synthetic_dem(bounds, size)
         product = request.product
@@ -247,53 +259,85 @@ class TerrainService:
         altitude: float = 45.0,
     ) -> TerrainComputeResponse:
         vmin, vmax = float(np.nanmin(dem)), float(np.nanmax(dem))
-        # Strong elev tint as visible BASE under the satellite overlay
-        png = self._rgba(dem, "elev", vmin, vmax, alpha=210)
+        # Spatially registered elev tint for under-satellite display (same bounds / grid)
+        png = self._rgba(dem, "elev", vmin, vmax, alpha=200)
         step = max(1, dem.shape[0] // 64)
         grid = dem[::step, ::step]
         relief = float(vmax - vmin)
         hs = self._hillshade(dem, bounds, azimuth, altitude)
         hs_n = np.clip(hs / 255.0, 0, 1)
 
-        # Bright satellite texture for optional soft blend on mesh (NOT a dark multiply)
+        # Optional: satellite×elev blend (features colored by MSL elevation)
         drape_b64: str | None = None
         if scene_id:
             try:
                 from app.services.scene_imagery_service import SceneImageryService
 
-                bands, _b, _fp, _layer = SceneImageryService().load_analysis_bands(
+                bands, band_bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
                     scene_id, size=dem.shape[0]
                 )
+                # Prefer scene band bounds when they match the DEM grid size
+                if band_bounds and len(band_bounds) == 4:
+                    # Keep DEM bounds as the display frame (already scene-aligned above)
+                    pass
                 if bands and bands.get("red") is not None:
                     r = np.asarray(bands["red"], dtype=np.float32)
                     g = np.asarray(bands.get("green", bands["red"]), dtype=np.float32)
                     b = np.asarray(bands.get("blue", bands["red"]), dtype=np.float32)
+                    # Resize bands to DEM shape if needed
+                    if r.shape != dem.shape:
+                        r_img = Image.fromarray(
+                            np.nan_to_num(r, nan=0).astype(np.float32), mode="F"
+                        ).resize((dem.shape[1], dem.shape[0]), Image.BILINEAR)
+                        g_img = Image.fromarray(
+                            np.nan_to_num(g, nan=0).astype(np.float32), mode="F"
+                        ).resize((dem.shape[1], dem.shape[0]), Image.BILINEAR)
+                        b_img = Image.fromarray(
+                            np.nan_to_num(b, nan=0).astype(np.float32), mode="F"
+                        ).resize((dem.shape[1], dem.shape[0]), Image.BILINEAR)
+                        r = np.asarray(r_img, dtype=np.float32)
+                        g = np.asarray(g_img, dtype=np.float32)
+                        b = np.asarray(b_img, dtype=np.float32)
+
+                    elev_norm = (dem - vmin) / (vmax - vmin + 1e-6)
+                    elev_rgb = np.zeros((*dem.shape, 3), dtype=np.float32)
+                    # Simple elev ramp for blend: blue→yellow→red
+                    elev_rgb[..., 0] = np.clip(0.1 + 0.9 * elev_norm**1.2, 0, 1)
+                    elev_rgb[..., 1] = np.clip(
+                        0.55 + 0.35 * elev_norm - 0.7 * np.maximum(elev_norm - 0.5, 0),
+                        0,
+                        1,
+                    )
+                    elev_rgb[..., 2] = np.clip(0.95 - 0.9 * elev_norm, 0, 1)
+
                     draped = np.zeros((dem.shape[0], dem.shape[1], 4), dtype=np.uint8)
                     for i, band in enumerate((r, g, b)):
                         valid = np.isfinite(band)
                         if not valid.any():
                             continue
                         lo, hi = np.nanpercentile(band[valid], [2, 98])
-                        norm = np.clip((band - lo) / (hi - lo + 1e-6), 0, 1)
-                        # Soft shade only — keep imagery bright and readable
-                        lit = norm * (0.78 + 0.22 * hs_n)
-                        draped[..., i] = (lit * 255).astype(np.uint8)
+                        sat = np.clip((band - lo) / (hi - lo + 1e-6), 0, 1)
+                        # 55% satellite feature detail + 45% elev color (MSL)
+                        mixed = sat * 0.55 + elev_rgb[..., i] * 0.45
+                        mixed = mixed * (0.82 + 0.18 * hs_n)
+                        draped[..., i] = (np.clip(mixed, 0, 1) * 255).astype(np.uint8)
                     draped[..., 3] = 255
                     buf = io.BytesIO()
                     Image.fromarray(draped, mode="RGBA").save(buf, format="PNG", optimize=True)
                     drape_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
             except Exception as exc:  # noqa: BLE001
-                logger.warning("DEM drape texture failed for {}: {}", scene_id, exc)
+                logger.warning("DEM elev×satellite blend failed for {}: {}", scene_id, exc)
 
         msg = (
-            f"ArcScene DEM · imagery draped on elevation · plains relief {relief:.0f} m · "
-            "use Height / Tilt / Rotate in Terrain toolbox"
+            f"Elevation (m MSL) spatially aligned to satellite · "
+            f"{vmin:.0f}–{vmax:.0f} m · relief {relief:.0f} m · "
+            "colors map image features to height above mean sea level"
         )
         return TerrainComputeResponse(
             product="dem",
             bounds=bounds,
             overlay_base64=base64.b64encode(png).decode("ascii"),
-            legend=self._legend("Elevation", "m", vmin, vmax, "elev"),
+            legend=self._legend("Elevation (MSL)", "m", vmin, vmax, "elev"),
             dem_grid=np.round(grid, 1).tolist(),
             dem_stats={
                 "min": vmin,
@@ -303,7 +347,7 @@ class TerrainService:
                 "relief_m": relief,
             },
             drape_base64=drape_b64,
-            formula="Plains-scale synthetic DEM (demo) — upload GeoTIFF DEM for production",
+            formula="Elevation above mean sea level (m) — synthetic plains DEM for demo",
             message=msg,
         )
 

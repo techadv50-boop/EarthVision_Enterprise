@@ -522,81 +522,98 @@ export function WorkspacePage() {
         observer = [first[0], first[1]];
         target = [last[0], last[1]];
       }
+      const sceneForDem =
+        product === 'dem'
+          ? focusScene ||
+            (() => {
+              const sid = useWorkflowStore
+                .getState()
+                .overlays.find((o) => o.kind === 'scene' && o.visible !== false)?.sceneId;
+              return sid ? scenes.find((s) => s.id === sid) ?? null : null;
+            })()
+          : null;
+      const sceneOverlayForDem = sceneForDem
+        ? useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.kind === 'scene' && o.sceneId === sceneForDem.id)
+        : null;
+      // DEM must use the same geographic frame as the Eye-On satellite
+      const demBbox = (sceneOverlayForDem?.bounds ?? analysisBbox) as [
+        number,
+        number,
+        number,
+        number,
+      ];
+
       const result = await terrainService.compute({
         product,
-        bbox: [...analysisBbox],
-        aoi: aoiGeoJson?.geometry ?? null,
+        bbox: product === 'dem' ? [...demBbox] : [...analysisBbox],
+        aoi: product === 'dem' ? null : aoiGeoJson?.geometry ?? null,
         size: 256,
         observer,
         target,
         profile_line: line ?? undefined,
-        scene_id:
-          product === 'dem'
-            ? focusScene?.id ||
-              useWorkflowStore.getState().overlays.find((o) => o.kind === 'scene' && o.visible !== false)
-                ?.sceneId ||
-              undefined
-            : undefined,
+        scene_id: product === 'dem' ? sceneForDem?.id : undefined,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(result.message || result.formula || product);
 
       const isDem = product === 'dem';
-      const drapeUrl =
-        isDem && result.drape_base64
-          ? terrainService.toDataUrl(result.drape_base64)
-          : null;
-      // Prefer true-color scene still if drape missing
-      const sceneStill =
-        !drapeUrl && focusScene
-          ? useWorkflowStore
-              .getState()
-              .overlays.find((o) => o.sceneId === focusScene.id && o.url)?.url ?? null
-          : null;
       if (result.overlay_base64 || result.geojson || (isDem && result.dem_grid)) {
+        // Force DEM bounds to match the satellite overlay exactly
+        const alignedBounds = (sceneOverlayForDem?.bounds ??
+          (result.bounds as [number, number, number, number])) as [
+          number,
+          number,
+          number,
+          number,
+        ];
         upsertOverlay({
           id: isDem ? 'terrain-dem-base' : `terrain-${product}`,
           kind: 'terrain',
           url: result.overlay_base64
             ? terrainService.toDataUrl(result.overlay_base64)
             : '',
-          bounds: result.bounds as [number, number, number, number],
+          bounds: isDem ? alignedBounds : (result.bounds as [number, number, number, number]),
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          opacity: isDem ? 0.92 : layerOpacity,
-          label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
+          opacity: isDem ? 0.85 : layerOpacity,
+          label: isDem ? 'Elevation (m MSL)' : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 2.0 : undefined,
-          demYaw: isDem ? 18 : undefined,
-          demPitch: isDem ? 72 : undefined,
+          exaggeration: isDem ? 1.6 : undefined,
+          demYaw: isDem ? 0 : undefined,
+          demPitch: isDem ? 90 : undefined,
           demColormap: isDem ? 'elev' : undefined,
-          demTextureMix: isDem ? 0.15 : undefined,
+          demTextureMix: isDem ? 0 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
-          textureUrl: drapeUrl || sceneStill,
+          textureUrl: null,
         });
       }
 
       if (isDem) {
         useWorkflowStore.getState().setMapChrome({
-          view3d: true,
+          view3d: false,
           terrainRelief: true,
         });
         useWorkflowStore.getState().setExpandedToolbox('layers');
         useWorkflowStore.getState().setToolboxOpen(true);
-        // Soften satellite so elev color themes show through (DEM stays behind)
+        // Satellite on top, see-through so elev colors map to image features
         const state = useWorkflowStore.getState();
         for (const o of state.overlays) {
-          if (o.kind === 'scene' && o.visible !== false && o.opacity > 0.75) {
-            state.patchOverlay(o.id, { opacity: 0.7 });
+          if (o.kind === 'scene' && o.visible !== false) {
+            state.patchOverlay(o.id, { opacity: 0.55 });
           }
         }
-        const relief = result.dem_stats?.relief_m;
+        const vmin = result.dem_stats?.min;
+        const vmax = result.dem_stats?.max;
         setLastMessage(
           [
-            result.message || 'DEM under imagery · elev color theme behind satellite',
-            relief != null ? `relief ${Math.round(relief)} m` : null,
-            'pick a DEM color theme · reorder all layers in Layer Manager',
+            result.message || 'Elevation (m MSL) aligned to satellite',
+            vmin != null && vmax != null
+              ? `${vmin.toFixed(0)}–${vmax.toFixed(0)} m above mean sea level`
+              : null,
+            'adjust DEM / scene opacity in Layer Manager',
           ]
             .filter(Boolean)
             .join(' · '),

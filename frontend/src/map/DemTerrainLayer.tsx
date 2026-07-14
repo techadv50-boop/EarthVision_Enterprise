@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { MapOverlay } from '../store/workflowStore';
@@ -18,7 +18,6 @@ export type DemColormapId =
 export const DEM_COLORMAPS: Array<{
   id: DemColormapId;
   label: string;
-  /** CSS gradient preview */
   gradient: string;
 }> = [
   {
@@ -75,7 +74,6 @@ function lerpRgb(a: RGB, b: RGB, t: number): RGB {
   ];
 }
 
-/** Piecewise colormap stops in 0–1 → RGB */
 const STOPS: Record<DemColormapId, Array<[number, RGB]>> = {
   elev: [
     [0, [8, 48, 107]],
@@ -142,8 +140,9 @@ export function sampleDemColormap(id: DemColormapId, t: number, lit = 1): RGB {
 }
 
 /**
- * DEM elevation mesh rendered in a dedicated lower pane (behind imagery).
- * Uses selectable elevation color themes so relief reads under the satellite.
+ * Spatially aligned DEM elev surface.
+ * Each cell is drawn at its true lat/lon (same CRS as satellite tiles) — no yaw/pitch warp.
+ * Color = elevation above mean sea level (m). Satellite sits on top so features map to elev.
  */
 export function DemTerrainLayer({
   overlay,
@@ -155,14 +154,11 @@ export function DemTerrainLayer({
   zIndex?: number;
 }) {
   const map = useMap();
-  const texGridRef = useRef<RGB[][] | null>(null);
-  const texKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const grid = overlay?.demGrid;
     if (!enabled || !overlay || !grid?.length || !grid[0]?.length) return;
 
-    // Dedicated DEM pane BELOW imagery stack — guarantees DEM stays behind satellite
     const paneName = 'evDemPane';
     let pane = map.getPane(paneName);
     if (!pane) {
@@ -170,7 +166,6 @@ export function DemTerrainLayer({
       pane.style.zIndex = '440';
       pane.style.pointerEvents = 'none';
     }
-    // Imagery stack must sit above DEM pane
     let stack = map.getPane('evStackPane');
     if (!stack) {
       stack = map.createPane('evStackPane');
@@ -203,15 +198,14 @@ export function DemTerrainLayer({
         }
       }
     }
+    // Prefer declared MSL stats when present
+    if (overlay.demStats?.min != null) zmin = overlay.demStats.min;
+    if (overlay.demStats?.max != null) zmax = overlay.demStats.max;
     const span = Math.max(zmax - zmin, 1);
-    const exaggeration = Math.min(Math.max(overlay.exaggeration ?? 2.0, 0.4), 5.0);
-    const yaw = ((overlay.demYaw ?? 18) * Math.PI) / 180;
-    const pitchDeg = overlay.demPitch ?? 72;
-    const pitch = Math.max(0.35, Math.min(0.98, pitchDeg / 90));
     const cmap = (overlay.demColormap as DemColormapId) || 'elev';
-    // How much satellite texture tints the elev colors (0 = pure elev theme)
-    const texMix = Math.min(Math.max(overlay.demTextureMix ?? 0.15, 0), 0.5);
-    const meshOpacity = Math.min(Math.max(overlay.opacity ?? 0.92, 0.2), 1);
+    // Relief lighting intensity (does NOT move cells geographically)
+    const reliefLit = Math.min(Math.max(overlay.exaggeration ?? 1.6, 0.5), 4.0);
+    const meshOpacity = Math.min(Math.max(overlay.opacity ?? 0.88, 0.15), 1);
 
     const elevAt = (r: number, c: number) => {
       const rr = Math.max(0, Math.min(rows - 1, r));
@@ -223,28 +217,17 @@ export function DemTerrainLayer({
       const z0 = elevAt(r, c);
       const zx = elevAt(r, c + 1);
       const zy = elevAt(r + 1, c);
-      const slope = Math.tanh(((zx - z0) * 1.15 + (zy - z0) * 0.95) / (span * 0.2 + 1e-6));
-      return 0.58 + 0.42 * slope;
+      const slope = Math.tanh(
+        ((zx - z0) * 1.2 + (zy - z0)) / (span * (0.35 / reliefLit) + 1e-6),
+      );
+      return 0.68 + 0.32 * slope;
     };
 
-    const buildTexGrid = (img: HTMLImageElement): RGB[][] => {
-      const off = document.createElement('canvas');
-      off.width = cols;
-      off.height = rows;
-      const ctx = off.getContext('2d', { willReadFrequently: true });
-      if (!ctx) return [];
-      ctx.drawImage(img, 0, 0, cols, rows);
-      const data = ctx.getImageData(0, 0, cols, rows).data;
-      const out: RGB[][] = [];
-      for (let r = 0; r < rows; r++) {
-        const row: RGB[] = [];
-        for (let c = 0; c < cols; c++) {
-          const i = (r * cols + c) * 4;
-          row.push([data[i], data[i + 1], data[i + 2]]);
-        }
-        out.push(row);
-      }
-      return out;
+    /** Strict geographic projection — identical frame to satellite ImageOverlay / tiles */
+    const project = (r: number, c: number) => {
+      const lon = west + (c / Math.max(cols - 1, 1)) * (east - west);
+      const lat = north - (r / Math.max(rows - 1, 1)) * (north - south);
+      return map.latLngToLayerPoint([lat, lon]);
     };
 
     const draw = () => {
@@ -263,121 +246,30 @@ export function DemTerrainLayer({
       ctx.translate(-topLeft.x, -topLeft.y);
       ctx.globalAlpha = meshOpacity;
 
-      const midLat = (south + north) / 2;
-      const midLon = (west + east) / 2;
-      const pivot = map.latLngToLayerPoint([midLat, midLon]);
-      const sw = map.latLngToLayerPoint([south, west]);
-      const ne = map.latLngToLayerPoint([north, east]);
-      const footprintW = Math.max(48, Math.hypot(ne.x - sw.x, ne.y - sw.y));
-      const maxH = Math.min(footprintW * 0.48, 200) * (exaggeration / 2.2);
-
-      const cosY = Math.cos(yaw);
-      const sinY = Math.sin(yaw);
-      const texGrid = texGridRef.current;
-
-      type Pt = { x: number; y: number; depth: number };
-      const project = (r: number, c: number): Pt => {
-        const lon = west + (c / Math.max(cols - 1, 1)) * (east - west);
-        const lat = north - (r / Math.max(rows - 1, 1)) * (north - south);
-        const raw = map.latLngToLayerPoint([lat, lon]);
-        const lx = raw.x - pivot.x;
-        const ly = raw.y - pivot.y;
-        const rx = lx * cosY - ly * sinY;
-        const ry = lx * sinY + ly * cosY;
-        const z = elevAt(r, c);
-        const h = ((z - zmin) / span) * maxH;
-        return {
-          x: pivot.x + rx,
-          y: pivot.y + ry * pitch - h,
-          depth: ry * pitch - h * 0.1,
-        };
-      };
-
-      type Cell = {
-        p0: Pt;
-        p1: Pt;
-        p2: Pt;
-        p3: Pt;
-        depth: number;
-        r: number;
-        c: number;
-      };
-      const cells: Cell[] = [];
       for (let r = 0; r < rows - 1; r++) {
         for (let c = 0; c < cols - 1; c++) {
           const p0 = project(r, c);
           const p1 = project(r, c + 1);
           const p2 = project(r + 1, c + 1);
           const p3 = project(r + 1, c);
-          cells.push({
-            p0,
-            p1,
-            p2,
-            p3,
-            depth: (p0.depth + p1.depth + p2.depth + p3.depth) * 0.25,
-            r,
-            c,
-          });
-        }
-      }
-      cells.sort((a, b) => a.depth - b.depth);
+          const t = (elevAt(r, c) - zmin) / span;
+          const [er, eg, eb] = sampleDemColormap(cmap, t, litAt(r, c));
 
-      for (const cell of cells) {
-        const { p0, p1, p2, p3, r, c } = cell;
-        const lit = litAt(r, c);
-        const t = (elevAt(r, c) - zmin) / span;
-        let [er, eg, eb] = sampleDemColormap(cmap, t, lit);
-        const sampled = texGrid?.[r]?.[c];
-        if (sampled && texMix > 0) {
-          er = Math.round(er * (1 - texMix) + sampled[0] * lit * texMix);
-          eg = Math.round(eg * (1 - texMix) + sampled[1] * lit * texMix);
-          eb = Math.round(eb * (1 - texMix) + sampled[2] * lit * texMix);
+          ctx.beginPath();
+          ctx.moveTo(p0.x, p0.y);
+          ctx.lineTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.lineTo(p3.x, p3.y);
+          ctx.closePath();
+          ctx.fillStyle = `rgb(${er},${eg},${eb})`;
+          ctx.fill();
         }
-
-        ctx.beginPath();
-        ctx.moveTo(p0.x, p0.y);
-        ctx.lineTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.lineTo(p3.x, p3.y);
-        ctx.closePath();
-        ctx.fillStyle = `rgb(${er},${eg},${eb})`;
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(8,18,28,0.06)';
-        ctx.lineWidth = 0.25;
-        ctx.stroke();
       }
 
       ctx.restore();
     };
 
-    const texSrc = overlay.textureUrl || null;
-    const start = () => {
-      if (!texSrc || texMix <= 0) {
-        texGridRef.current = null;
-        texKeyRef.current = null;
-        draw();
-        return;
-      }
-      if (texKeyRef.current === texSrc && texGridRef.current) {
-        draw();
-        return;
-      }
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        texGridRef.current = buildTexGrid(img);
-        texKeyRef.current = texSrc;
-        draw();
-      };
-      img.onerror = () => {
-        texGridRef.current = null;
-        texKeyRef.current = null;
-        draw();
-      };
-      img.src = texSrc;
-    };
-
-    start();
+    draw();
     map.on('move zoom moveend zoomend viewreset', draw);
     return () => {
       map.off('move zoom moveend zoomend viewreset', draw);
