@@ -128,6 +128,9 @@ interface WorkflowState {
   setOverlayVisible: (id: string, visible: boolean) => void;
   renameOverlay: (id: string, label: string) => void;
   moveOverlay: (id: string, dir: 'up' | 'down') => void;
+  /** Reorder overlays from Layer Manager display order (top of list = top of map). */
+  reorderOverlaysDisplay: (displayIds: string[]) => void;
+  patchOverlay: (id: string, patch: Partial<MapOverlay>) => void;
   duplicateOverlay: (id: string) => void;
   setLayerOpacity: (opacity: number) => void;
   showScene: (sceneId: string) => void;
@@ -231,7 +234,18 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       if (overlay.kind === 'scene' && overlay.sceneId) {
         next = next.filter((o) => !(o.kind === 'scene' && o.sceneId === overlay.sceneId));
       }
-      return { overlays: [...next, { visible: true, ...overlay }] };
+      const item = { visible: true, ...overlay };
+      // DEM base starts under satellite; user can drag it up in Layer Manager
+      if (overlay.terrainRole === 'base') {
+        const sceneIdx = next.findIndex((o) => o.kind === 'scene');
+        if (sceneIdx >= 0) {
+          next = [...next.slice(0, sceneIdx), item, ...next.slice(sceneIdx)];
+        } else {
+          next = [item, ...next];
+        }
+        return { overlays: next };
+      }
+      return { overlays: [...next, item] };
     }),
 
   removeOverlay: (id) =>
@@ -259,15 +273,40 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   moveOverlay: (id, dir) =>
     set((state) => {
-      const idx = state.overlays.findIndex((o) => o.id === id);
+      // Layer Manager shows overlays reversed (top of list = top of map = end of array).
+      // "up" in the UI = toward top of map = higher index in store.
+      const display = [...state.overlays].reverse();
+      const idx = display.findIndex((o) => o.id === id);
       if (idx < 0) return state;
-      const target = dir === 'up' ? idx + 1 : idx - 1;
-      if (target < 0 || target >= state.overlays.length) return state;
-      const next = [...state.overlays];
-      const [item] = next.splice(idx, 1);
-      next.splice(target, 0, item);
-      return { overlays: next };
+      const target = dir === 'up' ? idx - 1 : idx + 1;
+      if (target < 0 || target >= display.length) return state;
+      const nextDisplay = [...display];
+      const [item] = nextDisplay.splice(idx, 1);
+      nextDisplay.splice(target, 0, item);
+      return { overlays: nextDisplay.reverse() };
     }),
+
+  reorderOverlaysDisplay: (displayIds) =>
+    set((state) => {
+      const byId = new Map(state.overlays.map((o) => [o.id, o]));
+      const ordered: MapOverlay[] = [];
+      for (const id of displayIds) {
+        const o = byId.get(id);
+        if (o) {
+          ordered.push(o);
+          byId.delete(id);
+        }
+      }
+      // Append any missing (shouldn't happen)
+      for (const o of byId.values()) ordered.push(o);
+      // displayIds are top→bottom; store is bottom→top
+      return { overlays: ordered.reverse() };
+    }),
+
+  patchOverlay: (id, patch) =>
+    set((state) => ({
+      overlays: state.overlays.map((o) => (o.id === id ? { ...o, ...patch } : o)),
+    })),
 
   duplicateOverlay: (id) =>
     set((state) => {

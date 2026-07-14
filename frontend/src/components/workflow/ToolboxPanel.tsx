@@ -72,6 +72,8 @@ interface Props {
   onToggleOverlay: (id: string) => void;
   onRemoveOverlay: (id: string) => void;
   onMoveOverlay: (id: string, dir: 'up' | 'down') => void;
+  onReorderOverlays?: (displayIds: string[]) => void;
+  onPatchOverlay?: (id: string, patch: Partial<MapOverlay>) => void;
   onRenameOverlay: (id: string, label: string) => void;
   onApplyBuffer: (distance: number) => void;
   onClearBuffer: () => void;
@@ -123,6 +125,8 @@ export function ToolboxPanel({
   onToggleOverlay,
   onRemoveOverlay,
   onMoveOverlay,
+  onReorderOverlays,
+  onPatchOverlay,
   onRenameOverlay,
   onApplyBuffer,
   onClearBuffer,
@@ -286,6 +290,8 @@ export function ToolboxPanel({
               onToggle={onToggleOverlay}
               onRemove={onRemoveOverlay}
               onMove={onMoveOverlay}
+              onReorder={(ids) => onReorderOverlays?.(ids)}
+              onPatch={(id, patch) => onPatchOverlay?.(id, patch)}
               onStartRename={(id, label) => {
                 setRenameId(id);
                 setRenameValue(label);
@@ -328,6 +334,13 @@ export function ToolboxPanel({
                 </span>
               ))}
           </div>
+        )}
+
+        {activeBox.id === 'terrain' && (
+          <DemBaseHeightPanel
+            overlays={overlays}
+            onPatch={(id, patch) => onPatchOverlay?.(id, patch)}
+          />
         )}
 
         {activeBox.id !== 'image' && (
@@ -408,6 +421,64 @@ export function ToolboxPanel({
   );
 }
 
+function DemBaseHeightPanel({
+  overlays,
+  onPatch,
+}: {
+  overlays: MapOverlay[];
+  onPatch: (id: string, patch: Partial<MapOverlay>) => void;
+}) {
+  const dem = overlays.find((o) => o.demGrid?.length && o.terrainRole === 'base');
+  if (!dem) {
+    return (
+      <p className="mb-2 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1.5 text-[10px] text-[var(--muted)]">
+        Run <strong>DEM 3D</strong> to enable base height control. Drag layers in Layer Manager to
+        stack DEM under or over imagery.
+      </p>
+    );
+  }
+  const baseH = dem.exaggeration ?? 1.6;
+  const relief = dem.demStats?.relief_m;
+  return (
+    <div className="mb-3 space-y-1.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/40 p-2">
+      <div className="text-[11px] font-semibold text-[var(--accent)]">DEM base height</div>
+      <p className="text-[10px] text-[var(--muted)]">
+        Vertical scale of the elevation surface under / with the satellite image
+        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}.
+      </p>
+      <label className="flex items-center gap-2 text-[10px]">
+        <span className="shrink-0 font-medium">Base height</span>
+        <input
+          type="range"
+          min={5}
+          max={50}
+          step={1}
+          value={Math.round(baseH * 10)}
+          onChange={(e) => onPatch(dem.id, { exaggeration: Number(e.target.value) / 10 })}
+          className="w-full accent-[var(--accent)]"
+        />
+        <span className="w-10 font-mono">{baseH.toFixed(1)}×</span>
+      </label>
+      <div className="flex gap-1">
+        {[1, 1.6, 2.5, 4].map((v) => (
+          <button
+            key={v}
+            type="button"
+            className={`rounded border px-1.5 py-0.5 text-[10px] ${
+              Math.abs(baseH - v) < 0.05
+                ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                : 'border-[var(--line)] bg-white'
+            }`}
+            onClick={() => onPatch(dem.id, { exaggeration: v })}
+          >
+            {v}×
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function LayerManagerBody({
   layers,
   layerOpacity,
@@ -417,6 +488,8 @@ function LayerManagerBody({
   onToggle,
   onRemove,
   onMove,
+  onReorder,
+  onPatch,
   onStartRename,
   onCommitRename,
   setRenameValue,
@@ -429,12 +502,42 @@ function LayerManagerBody({
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
   onMove: (id: string, dir: 'up' | 'down') => void;
+  onReorder: (displayIds: string[]) => void;
+  onPatch: (id: string, patch: Partial<MapOverlay>) => void;
   onStartRename: (id: string, label: string) => void;
   onCommitRename: () => void;
   setRenameValue: (v: string) => void;
 }) {
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+
+  const applyDrop = (targetId: string) => {
+    if (!dragId || dragId === targetId) {
+      setDragId(null);
+      setOverId(null);
+      return;
+    }
+    const ids = layers.map((l) => l.id);
+    const from = ids.indexOf(dragId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) {
+      setDragId(null);
+      setOverId(null);
+      return;
+    }
+    const next = [...ids];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    onReorder(next);
+    setDragId(null);
+    setOverId(null);
+  };
+
   return (
     <div className="space-y-2 rounded-lg border border-[var(--line)] bg-[var(--bg)] p-2">
+      <p className="text-[10px] text-[var(--muted)]">
+        Drag layers to reorder — top of list draws on top of the map.
+      </p>
       <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
         Opacity
         <input
@@ -450,75 +553,134 @@ function LayerManagerBody({
       {layers.length === 0 && (
         <div className="text-[11px] text-[var(--muted)]">No layers yet — open a scene eye.</div>
       )}
-      {layers.map((layer, idx) => (
-        <div
-          key={layer.id}
-          className="rounded border border-[var(--line)] bg-white px-2 py-1.5 text-[11px]"
-        >
-          <div className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={layer.visible !== false}
-              onChange={() => onToggle(layer.id)}
-              title="Visibility"
-            />
-            {renameId === layer.id ? (
+      {layers.map((layer, idx) => {
+        const isDem = Boolean(layer.demGrid?.length);
+        const baseH = layer.exaggeration ?? 1.6;
+        return (
+          <div
+            key={layer.id}
+            draggable
+            onDragStart={(e) => {
+              setDragId(layer.id);
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', layer.id);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              if (overId !== layer.id) setOverId(layer.id);
+            }}
+            onDragLeave={() => {
+              if (overId === layer.id) setOverId(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              applyDrop(layer.id);
+            }}
+            onDragEnd={() => {
+              setDragId(null);
+              setOverId(null);
+            }}
+            className={`rounded border bg-white px-2 py-1.5 text-[11px] ${
+              dragId === layer.id
+                ? 'border-[var(--accent)] opacity-60'
+                : overId === layer.id
+                  ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                  : 'border-[var(--line)]'
+            }`}
+          >
+            <div className="flex items-center gap-1">
+              <span
+                className="cursor-grab select-none px-0.5 font-mono text-[12px] text-[var(--muted)] active:cursor-grabbing"
+                title="Drag to reorder"
+                aria-hidden
+              >
+                ⋮⋮
+              </span>
               <input
-                className="ev-input flex-1 py-0.5 text-[11px]"
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onBlur={onCommitRename}
-                onKeyDown={(e) => e.key === 'Enter' && onCommitRename()}
-                autoFocus
+                type="checkbox"
+                checked={layer.visible !== false}
+                onChange={() => onToggle(layer.id)}
+                title="Visibility"
               />
-            ) : (
+              {renameId === layer.id ? (
+                <input
+                  className="ev-input flex-1 py-0.5 text-[11px]"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={onCommitRename}
+                  onKeyDown={(e) => e.key === 'Enter' && onCommitRename()}
+                  autoFocus
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="flex-1 truncate text-left font-medium"
+                  onDoubleClick={() => onStartRename(layer.id, layer.label)}
+                  title="Double-click to rename"
+                >
+                  {layer.label}
+                </button>
+              )}
+              <span className="rounded bg-[var(--accent-soft)] px-1 text-[9px] uppercase text-[var(--accent)]">
+                {layer.kind}
+              </span>
+            </div>
+
+            {isDem && (
+              <label className="mt-1.5 flex items-center gap-2 text-[10px] text-[var(--muted)]">
+                <span className="shrink-0 font-semibold text-[var(--ink)]">Base height</span>
+                <input
+                  type="range"
+                  min={5}
+                  max={50}
+                  step={1}
+                  value={Math.round(baseH * 10)}
+                  onChange={(e) =>
+                    onPatch(layer.id, { exaggeration: Number(e.target.value) / 10 })
+                  }
+                  className="w-full accent-[var(--accent)]"
+                  title="DEM vertical scale / base height"
+                />
+                <span className="w-9 font-mono text-[var(--ink)]">{baseH.toFixed(1)}×</span>
+              </label>
+            )}
+
+            <div className="mt-1 flex gap-1">
               <button
                 type="button"
-                className="flex-1 truncate text-left font-medium"
-                onDoubleClick={() => onStartRename(layer.id, layer.label)}
-                title="Double-click to rename"
+                className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
+                disabled={idx === 0}
+                onClick={() => onMove(layer.id, 'up')}
               >
-                {layer.label}
+                Up
               </button>
-            )}
-            <span className="rounded bg-[var(--accent-soft)] px-1 text-[9px] uppercase text-[var(--accent)]">
-              {layer.kind}
-            </span>
+              <button
+                type="button"
+                className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
+                disabled={idx === layers.length - 1}
+                onClick={() => onMove(layer.id, 'down')}
+              >
+                Down
+              </button>
+              <button
+                type="button"
+                className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
+                onClick={() => onStartRename(layer.id, layer.label)}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                className="ev-btn-ghost px-1.5 py-0.5 text-[10px] text-red-600"
+                onClick={() => onRemove(layer.id)}
+              >
+                Remove
+              </button>
+            </div>
           </div>
-          <div className="mt-1 flex gap-1">
-            <button
-              type="button"
-              className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
-              disabled={idx === 0}
-              onClick={() => onMove(layer.id, 'up')}
-            >
-              Up
-            </button>
-            <button
-              type="button"
-              className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
-              disabled={idx === layers.length - 1}
-              onClick={() => onMove(layer.id, 'down')}
-            >
-              Down
-            </button>
-            <button
-              type="button"
-              className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
-              onClick={() => onStartRename(layer.id, layer.label)}
-            >
-              Rename
-            </button>
-            <button
-              type="button"
-              className="ev-btn-ghost px-1.5 py-0.5 text-[10px] text-red-600"
-              onClick={() => onRemove(layer.id)}
-            >
-              Remove
-            </button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

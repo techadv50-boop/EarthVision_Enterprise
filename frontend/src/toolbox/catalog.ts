@@ -68,7 +68,7 @@ export const TOOLBOXES: ToolboxDef[] = [
   {
     id: 'layers',
     title: 'Layer Manager',
-    blurb: 'Manage scene, index, terrain & detection layers',
+    blurb: 'Drag to reorder · DEM base height · scene & analytics layers',
     tools: [
       { id: 'add_layer', label: 'Add Layer', action: { type: 'layer', op: 'add' } },
       { id: 'remove_layer', label: 'Remove Layer', action: { type: 'layer', op: 'remove' } },

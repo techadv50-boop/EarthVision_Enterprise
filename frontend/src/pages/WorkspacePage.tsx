@@ -162,6 +162,8 @@ export function WorkspacePage() {
     setOverlayVisible,
     renameOverlay,
     moveOverlay,
+    reorderOverlaysDisplay,
+    patchOverlay,
     duplicateOverlay,
     setLayerOpacity,
     showScene,
@@ -1242,6 +1244,8 @@ export function WorkspacePage() {
               }}
               onRemoveOverlay={removeOverlay}
               onMoveOverlay={moveOverlay}
+              onReorderOverlays={reorderOverlaysDisplay}
+              onPatchOverlay={patchOverlay}
               onRenameOverlay={renameOverlay}
               onApplyBuffer={onApplyBuffer}
               onClearBuffer={() => {

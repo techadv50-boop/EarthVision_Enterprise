@@ -23,9 +23,11 @@ function elevRgb(t: number, lit: number): [number, number, number] {
 export function DemTerrainLayer({
   overlay,
   enabled = true,
+  zIndex = 415,
 }: {
   overlay: MapOverlay | null;
   enabled?: boolean;
+  zIndex?: number;
 }) {
   const map = useMap();
 
@@ -39,8 +41,7 @@ export function DemTerrainLayer({
       pane = map.createPane(paneName);
       pane.style.pointerEvents = 'none';
     }
-    // Always UNDER Eye-On satellite (scene @ 430)
-    pane.style.zIndex = '415';
+    pane.style.zIndex = String(zIndex);
 
     const canvas = L.DomUtil.create('canvas', 'ev-dem-mesh') as HTMLCanvasElement;
     canvas.style.position = 'absolute';
@@ -186,7 +187,7 @@ export function DemTerrainLayer({
       map.off('move zoom moveend zoomend viewreset', draw);
       canvas.remove();
     };
-  }, [map, overlay, enabled]);
+  }, [map, overlay, enabled, zIndex]);
 
   return null;
 }

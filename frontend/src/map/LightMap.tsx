@@ -666,6 +666,15 @@ export function LightMap({
     [overlays],
   );
 
+  const overlayZIndex = useMemo(() => {
+    // Store order is bottom→top; map later entries higher
+    const map = new Map<string, number>();
+    overlays.forEach((o, i) => {
+      map.set(o.id, 410 + i * 5);
+    });
+    return map;
+  }, [overlays]);
+
   const demBaseOverlay = useMemo(
     () =>
       visibleOverlays.find(
@@ -673,6 +682,10 @@ export function LightMap({
       ) ?? null,
     [visibleOverlays],
   );
+
+  const demZ = demBaseOverlay
+    ? overlayZIndex.get(demBaseOverlay.id) ?? 415
+    : 415;
 
   const mapStyle = useMemo(() => {
     const parts: string[] = [];
@@ -714,7 +727,11 @@ export function LightMap({
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
-      <DemTerrainLayer overlay={demBaseOverlay} enabled={Boolean(demBaseOverlay)} />
+      <DemTerrainLayer
+        overlay={demBaseOverlay}
+        enabled={Boolean(demBaseOverlay)}
+        zIndex={demZ}
+      />
       <DrawingTools
         mapTool={mapTool}
         enablePlaceClick={enablePlaceClick}
@@ -749,27 +766,10 @@ export function LightMap({
               )
             : null;
 
-        // DEM base UNDER Eye-On satellite (scene @ 430)
-        const zIndex =
-          overlay.kind === 'change'
-            ? 460
-            : overlay.kind === 'index'
-              ? 450
-              : overlay.kind === 'terrain' && overlay.terrainRole === 'base'
-                ? 415
-                : overlay.kind === 'terrain'
-                  ? 455
-                  : overlay.kind === 'detection'
-                    ? 465
-                    : overlay.kind === 'buffer'
-                      ? 470
-                      : 430;
+        // Stacking follows Layer Manager order (drag to change)
+        const zIndex = overlayZIndex.get(overlay.id) ?? 430;
 
-        // Satellite stays clearly on top of DEM base
-        const sceneOpacity =
-          overlay.kind === 'scene' && demBaseOverlay
-            ? Math.min(Math.max(overlay.opacity, 0.72), 0.85)
-            : overlay.opacity;
+        const sceneOpacity = overlay.opacity;
 
         return (
           <Fragment key={overlay.id}>
@@ -780,7 +780,7 @@ export function LightMap({
                 opacity={sceneOpacity}
                 maxNativeZoom={16}
                 maxZoom={18}
-                zIndex={430}
+                zIndex={zIndex}
                 updateWhenZooming={false}
                 updateWhenIdle
                 keepBuffer={2}
@@ -789,11 +789,7 @@ export function LightMap({
               <ImageOverlay
                 url={overlay.url}
                 bounds={leafletBounds}
-                opacity={
-                  overlay.kind === 'terrain' && overlay.terrainRole === 'base'
-                    ? Math.max(overlay.opacity, 0.65)
-                    : overlay.opacity
-                }
+                opacity={overlay.opacity}
                 interactive={false}
                 zIndex={zIndex}
               />
