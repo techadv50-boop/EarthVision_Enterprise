@@ -49,6 +49,19 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+def _ensure_sqlite_columns(sync_conn) -> None:
+    """Add columns introduced after initial create_all (SQLite has no auto-alter)."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("users")}
+    if "allowed_tools" not in columns:
+        sync_conn.execute(text("ALTER TABLE users ADD COLUMN allowed_tools JSON"))
+        logger.info("Added users.allowed_tools column")
+
+
 async def init_db() -> None:
     """Create database tables and seed bootstrap data."""
     from app.models import (  # noqa: F401
@@ -62,6 +75,8 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if settings.database_url.startswith("sqlite"):
+            await conn.run_sync(_ensure_sqlite_columns)
     logger.info("Database tables initialized")
 
     from app.services.bootstrap import bootstrap_admin

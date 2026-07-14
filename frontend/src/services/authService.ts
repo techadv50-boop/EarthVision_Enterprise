@@ -9,6 +9,8 @@ export interface User {
   is_verified: boolean;
   organization?: string | null;
   avatar_url?: string | null;
+  /** null = all toolboxes; list = only those toolbox ids */
+  allowed_tools?: string[] | null;
 }
 
 export interface TokenResponse {

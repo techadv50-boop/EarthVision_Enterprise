@@ -39,6 +39,7 @@ class UserResponse(BaseModel):
     is_verified: bool
     organization: str | None = None
     avatar_url: str | None = None
+    allowed_tools: list[str] | None = None
 
     model_config = {"from_attributes": True}
 

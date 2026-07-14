@@ -42,6 +42,7 @@ class UserService:
             full_name=data.full_name,
             role=data.role,
             organization=data.organization,
+            allowed_tools=data.allowed_tools,
             is_active=True,
             is_verified=False,
         )

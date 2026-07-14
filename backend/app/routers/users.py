@@ -8,13 +8,23 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.core.exceptions import ForbiddenError, NotFoundError
-from app.models.user import User, UserRole
+from app.models.user import TOOLBOX_IDS, User, UserRole
 from app.schemas.user import UserCreate, UserDetail, UserListResponse, UserUpdate
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
 AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
+
+
+@router.get("/toolboxes")
+async def list_toolboxes(_: AdminUser) -> dict:
+    """Catalog of toolbox ids admins can assign to clients."""
+    return {
+        "items": [
+            {"id": tid, "label": tid.replace("_", " ").title()} for tid in TOOLBOX_IDS
+        ]
+    }
 
 
 @router.get("", response_model=UserListResponse)
@@ -71,6 +81,8 @@ async def update_user(
     if current.role != UserRole.ADMIN:
         data.role = None
         data.is_active = None
+        data.allowed_tools = None
     service = UserService(db)
     user = await service.update(user_id, data)
     return UserDetail.model_validate(user)
+

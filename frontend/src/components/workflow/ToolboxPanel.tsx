@@ -65,6 +65,8 @@ interface Props {
   lastLegend?: LegendInfo | null;
   lastMessage?: string | null;
   mapChrome?: Record<string, boolean> | null;
+  /** null/undefined = all toolboxes; otherwise filter to these ids */
+  allowedTools?: string[] | null;
   onExpand: (id: ToolboxId) => void;
   onTool: (tool: ToolboxTool) => void;
   onClose: () => void;
@@ -118,6 +120,7 @@ export function ToolboxPanel({
   lastLegend,
   lastMessage,
   mapChrome,
+  allowedTools = null,
   onExpand,
   onTool,
   onClose,
@@ -151,16 +154,27 @@ export function ToolboxPanel({
   const [renameValue, setRenameValue] = useState('');
   const [algoByTask, setAlgoByTask] = useState<Record<string, string>>({});
 
-  const activeId = expanded || 'image';
-  const activeBox = TOOLBOXES.find((b) => b.id === activeId) || TOOLBOXES[2];
+  const visibleToolboxes = useMemo(() => {
+    if (allowedTools == null) return TOOLBOXES;
+    const allowed = new Set(allowedTools);
+    return TOOLBOXES.filter((b) => allowed.has(b.id));
+  }, [allowedTools]);
+
+  const activeId = (expanded && visibleToolboxes.some((b) => b.id === expanded)
+    ? expanded
+    : visibleToolboxes[0]?.id) || 'image';
+  const activeBox = visibleToolboxes.find((b) => b.id === activeId) || visibleToolboxes[0] || TOOLBOXES[2];
   const chrome = mapChrome || DEFAULT_CHROME;
 
   const managedLayers = useMemo(() => [...overlays].reverse(), [overlays]);
 
-  // Ensure a category is always selected
+  // Ensure a category is always selected from the allowed set
   useEffect(() => {
-    if (!expanded) onExpand('image');
-  }, [expanded, onExpand]);
+    if (!visibleToolboxes.length) return;
+    if (!expanded || !visibleToolboxes.some((b) => b.id === expanded)) {
+      onExpand(visibleToolboxes[0].id);
+    }
+  }, [expanded, onExpand, visibleToolboxes]);
 
   // Load algorithm labels for AI / maritime / aviation detection tools
   useEffect(() => {
@@ -195,7 +209,8 @@ export function ToolboxPanel({
             Toolboxes
           </h2>
           <p className="text-[11px] text-[var(--muted)]">
-            {TOOLBOXES.length} categories · {TOOLBOXES.reduce((n, b) => n + b.tools.length, 0)} tools
+            {visibleToolboxes.length} categories ·{' '}
+            {visibleToolboxes.reduce((n, b) => n + b.tools.length, 0)} tools
           </p>
         </div>
         <button type="button" className="ev-btn-ghost p-1" onClick={onClose} title="Close">
@@ -206,7 +221,7 @@ export function ToolboxPanel({
       {/* Category tabs — always visible */}
       <div className="shrink-0 border-b border-[var(--line)] bg-white px-2 py-2">
         <div className="grid grid-cols-5 gap-1">
-          {TOOLBOXES.map((box) => {
+          {visibleToolboxes.map((box) => {
             const Icon = ICONS[box.id];
             const on = activeId === box.id;
             return (

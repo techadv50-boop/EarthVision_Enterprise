@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Enum, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import JSON
 
 from app.database.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
@@ -24,6 +25,21 @@ class UserRole(str, enum.Enum):
     BILLING = "billing"
 
 
+# Toolbox category ids clients can be granted (matches frontend toolbox catalog).
+TOOLBOX_IDS: tuple[str, ...] = (
+    "navigation",
+    "layers",
+    "image",
+    "ai",
+    "change",
+    "maritime",
+    "aviation",
+    "terrain",
+    "gis",
+    "measure",
+)
+
+
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -38,6 +54,28 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     organization: Mapped[str | None] = mapped_column(String(255), nullable=True)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # null = all toolboxes; list = only those toolbox ids
+    allowed_tools: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
+
+    projects: Mapped[list[Project]] = relationship(
+        "Project", back_populates="owner", cascade="all, delete-orphan"
+    )
+    bookmarks: Mapped[list[Bookmark]] = relationship(
+        "Bookmark", back_populates="user", cascade="all, delete-orphan"
+    )
+    api_keys: Mapped[list[ApiKey]] = relationship(
+        "ApiKey", back_populates="user", cascade="all, delete-orphan"
+    )
+    subscription: Mapped[Subscription | None] = relationship(
+        "Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+
+    def can_use_toolbox(self, toolbox_id: str) -> bool:
+        if self.role == UserRole.ADMIN:
+            return True
+        if self.allowed_tools is None:
+            return True
+        return toolbox_id in self.allowed_tools
 
     projects: Mapped[list[Project]] = relationship(
         "Project", back_populates="owner", cascade="all, delete-orphan"

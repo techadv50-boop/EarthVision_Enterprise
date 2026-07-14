@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LogOut, Wrench } from 'lucide-react';
+import { LogOut, Shield, Wrench } from 'lucide-react';
 import { LightMap } from '../map/LightMap';
 import { MapToolbar } from '../components/map/MapToolbar';
 import { MapLegend } from '../components/map/MapLegend';
 import { PlaceStep } from '../components/workflow/PlaceStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
+import { AdminPanel } from '../components/admin/AdminPanel';
 import { useAuthStore } from '../store/authStore';
 import {
   useWorkflowStore,
@@ -110,6 +111,18 @@ export function WorkspacePage() {
     gamma: 1,
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
+
+  const isAdmin = user?.role === 'admin';
+  const allowedTools =
+    isAdmin || user?.allowed_tools == null ? null : user.allowed_tools;
+  const toolCount = useMemo(() => {
+    const boxes =
+      allowedTools == null
+        ? TOOLBOXES
+        : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
+    return boxes.reduce((n, b) => n + b.tools.length, 0);
+  }, [allowedTools]);
 
   const {
     step,
@@ -1086,6 +1099,17 @@ export function WorkspacePage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              type="button"
+              className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[var(--bg)]"
+              onClick={() => setAdminOpen(true)}
+              title="Manage client accounts"
+            >
+              <Shield className="h-4 w-4 text-[var(--accent)]" />
+              <span className="hidden sm:inline">Admin</span>
+            </button>
+          )}
           <button
             type="button"
             className={`ev-btn inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold ${
@@ -1096,7 +1120,7 @@ export function WorkspacePage() {
             onClick={() => setToolboxOpen(!toolboxOpen)}
           >
             <Wrench className="h-4 w-4" />
-            Toolboxes ({TOOLBOXES.reduce((n, b) => n + b.tools.length, 0)})
+            Toolboxes ({toolCount})
           </button>
           <span className="hidden max-w-[10rem] truncate text-xs text-[var(--muted)] sm:inline">
             {user?.full_name}
@@ -1106,6 +1130,8 @@ export function WorkspacePage() {
           </button>
         </div>
       </header>
+
+      {adminOpen && isAdmin && <AdminPanel onClose={() => setAdminOpen(false)} />}
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[min(21rem,100%)] shrink-0 flex-col gap-3 overflow-y-auto border-r border-[var(--line)] bg-white p-3 sm:p-4">
@@ -1234,6 +1260,7 @@ export function WorkspacePage() {
               lastLegend={lastLegend}
               lastMessage={lastMessage}
               mapChrome={mapChrome}
+              allowedTools={allowedTools}
               onExpand={(id) => setExpandedToolbox(id)}
               onTool={onTool}
               onClose={() => setToolboxOpen(false)}
