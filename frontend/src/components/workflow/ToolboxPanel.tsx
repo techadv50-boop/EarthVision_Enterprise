@@ -27,6 +27,7 @@ import type {
 } from '../../services/compositeService';
 import { BufferPanel } from './BufferPanel';
 import { ImageProcessingPanel } from './ImageProcessingPanel';
+import { detectionService } from '../../services/detectionService';
 
 const ICONS: Record<ToolboxId, typeof Compass> = {
   navigation: Compass,
@@ -45,6 +46,7 @@ const DEFAULT_CHROME: Record<string, boolean> = {
   compass: true,
   scaleBar: true,
   coordinates: true,
+  grid: true,
 };
 
 interface Props {
@@ -139,6 +141,7 @@ export function ToolboxPanel({
 }: Props) {
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [algoByTask, setAlgoByTask] = useState<Record<string, string>>({});
 
   const activeId = expanded || 'image';
   const activeBox = TOOLBOXES.find((b) => b.id === activeId) || TOOLBOXES[2];
@@ -150,6 +153,28 @@ export function ToolboxPanel({
   useEffect(() => {
     if (!expanded) onExpand('image');
   }, [expanded, onExpand]);
+
+  // Load algorithm labels for AI / maritime / aviation detection tools
+  useEffect(() => {
+    if (!['ai', 'maritime', 'aviation'].includes(activeId)) return;
+    let cancelled = false;
+    detectionService
+      .listTasks()
+      .then((tasks) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const t of tasks) {
+          if (t.algorithm) map[t.id] = t.algorithm;
+        }
+        setAlgoByTask(map);
+      })
+      .catch(() => {
+        /* offline / unauth — keep empty */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId]);
 
   return (
     <aside
@@ -209,6 +234,12 @@ export function ToolboxPanel({
         <div className="mb-2">
           <div className="font-display text-sm font-semibold">{activeBox.title}</div>
           <p className="text-[11px] text-[var(--muted)]">{activeBox.blurb}</p>
+          {['ai', 'maritime', 'aviation'].includes(activeBox.id) && (
+            <p className="mt-1 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10px] text-[var(--muted)]">
+              Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its
+              formula. Detections show legend, scale bar, north arrow, and grid on the map.
+            </p>
+          )}
           {!hasScene && activeBox.tools.some((t) => t.needsScene) && (
             <p className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
               Tip: open a place and toggle a scene eye for best imagery results. Tools still run on the map AOI.
@@ -297,15 +328,17 @@ export function ToolboxPanel({
           <div className="grid grid-cols-2 gap-1" data-testid="toolbox-tool-list">
             {activeBox.tools.map((tool) => {
               const active = activeToolId === tool.id;
+              const taskId =
+                tool.action.type === 'detection' ? tool.action.task : undefined;
+              const algo = taskId ? algoByTask[taskId] : undefined;
+              const tip = active
+                ? `${tool.label} (click again to turn off)`
+                : algo || tool.hint || tool.label;
               return (
                 <button
                   key={tool.id}
                   type="button"
-                  title={
-                    active
-                      ? `${tool.label} (click again to turn off)`
-                      : tool.hint || tool.label
-                  }
+                  title={tip}
                   disabled={loading}
                   onClick={() => onTool(tool)}
                   className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${

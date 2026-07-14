@@ -21,7 +21,23 @@ export const detectionService = {
 
   async listTasks() {
     const { data } = await api.get('/detection/tasks');
-    return data as Array<{ id: string; name: string; domain: string; geometry: string }>;
+    return data as Array<{
+      id: string;
+      name: string;
+      domain: string;
+      geometry: string;
+      algorithm?: string;
+    }>;
+  },
+
+  async meta() {
+    const { data } = await api.get('/detection/meta');
+    return data as {
+      tasks: string[];
+      algorithms: Record<string, string>;
+      formula: string;
+      map_chrome: string[];
+    };
   },
 
   async run(payload: {

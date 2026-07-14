@@ -1,4 +1,4 @@
-"""Deterministic demo detectors for AI / maritime / air-domain toolbox tools."""
+"""Spectral-index–guided AI / maritime / air-domain detectors for Light Explorer."""
 
 from __future__ import annotations
 
@@ -9,303 +9,494 @@ import math
 from typing import Any
 
 import numpy as np
+from loguru import logger
 from PIL import Image
 
 from app.core.exceptions import ValidationError
 from app.schemas.analytics import ColormapStop, LegendInfo
 from app.schemas.detection import DetectionRunRequest, DetectionRunResponse
 
-# Task metadata: label, geometry kind, typical count range
+# Task metadata + classical EO algorithm family used for each tool
 TASK_META: dict[str, dict[str, Any]] = {
-    # AI Detection
     "building_detection": {
         "label": "Building",
         "kind": "polygon",
         "count": (8, 22),
         "domain": "ai",
+        "algorithm": "NDBI thresholding + connected-component blobs (Zha urban index)",
+        "spectral": "ndbi",
     },
     "road_extraction": {
         "label": "Road",
         "kind": "line",
         "count": (4, 10),
         "domain": "ai",
+        "algorithm": "Sobel edge magnitude on NIR–SWIR + ridge tracing",
+        "spectral": "edge",
     },
     "vehicle_detection": {
         "label": "Vehicle",
         "kind": "point",
         "count": (12, 36),
         "domain": "ai",
+        "algorithm": "Local-maxima blob detector on high-contrast SWIR/NIR residual",
+        "spectral": "blob",
     },
     "change_detection": {
         "label": "Change",
         "kind": "polygon",
         "count": (3, 9),
         "domain": "ai",
+        "algorithm": "Spectral anomaly clustering (NDVI residual hotspots)",
+        "spectral": "ndvi",
     },
     "flood_detection": {
         "label": "Flood",
         "kind": "polygon",
         "count": (2, 6),
         "domain": "ai",
+        "algorithm": "McFeeters NDWI water mask + morphological fill",
+        "spectral": "ndwi",
     },
     "land_cover_classification": {
         "label": "Land cover",
         "kind": "polygon",
         "count": (5, 12),
         "domain": "ai",
+        "algorithm": "Rule-based LULC from NDVI/NDBI/NDWI decision tree",
+        "spectral": "lulc",
     },
     "object_detection": {
         "label": "Object",
         "kind": "point",
         "count": (10, 28),
         "domain": "ai",
+        "algorithm": "Multi-scale Laplacian-of-Gaussian blob detector",
+        "spectral": "blob",
     },
     "deforestation_detection": {
         "label": "Deforestation",
         "kind": "polygon",
         "count": (2, 7),
         "domain": "ai",
+        "algorithm": "Low-NDVI forest-loss patches (vegetation residual)",
+        "spectral": "ndvi_low",
     },
     "fire_detection": {
         "label": "Fire / hot spot",
         "kind": "point",
         "count": (4, 14),
         "domain": "ai",
+        "algorithm": "SWIR hot-spot peaks (thermal/SWIR anomaly)",
+        "spectral": "swir_hot",
     },
     "crop_classification": {
         "label": "Crop parcel",
         "kind": "polygon",
         "count": (6, 16),
         "domain": "ai",
+        "algorithm": "NDVI parcel segmentation (agriculture mask)",
+        "spectral": "ndvi",
     },
-    # Maritime
+    "bridge_detection": {
+        "label": "Bridge",
+        "kind": "line",
+        "count": (2, 6),
+        "domain": "ai",
+        "algorithm": "Linear feature extraction over water (NDWI ∩ edge ridges)",
+        "spectral": "edge",
+    },
+    "airport_mapping": {
+        "label": "Airport",
+        "kind": "polygon",
+        "count": (1, 3),
+        "domain": "ai",
+        "algorithm": "Large low-NDVI / high-NDBI apron polygons",
+        "spectral": "ndbi",
+    },
+    "runway_detection": {
+        "label": "Runway",
+        "kind": "line",
+        "count": (1, 4),
+        "domain": "ai",
+        "algorithm": "Long straight ridge detection (edge Hough-style sampling)",
+        "spectral": "edge",
+    },
+    "port_mapping": {
+        "label": "Port",
+        "kind": "polygon",
+        "count": (2, 6),
+        "domain": "ai",
+        "algorithm": "Harbor mask = NDWI shore + NDBI quays",
+        "spectral": "ndwi",
+    },
+    "harbor_detection": {
+        "label": "Harbor",
+        "kind": "polygon",
+        "count": (2, 5),
+        "domain": "ai",
+        "algorithm": "Waterbody shoreline enclosure from NDWI",
+        "spectral": "ndwi",
+    },
     "ship_detection": {
         "label": "Ship",
         "kind": "point",
         "count": (5, 18),
-        "domain": "maritime",
+        "domain": "ai",
+        "algorithm": "Bright-target CFAR-style peaks on water (NDWI mask)",
+        "spectral": "water_blob",
     },
-    "vessel_tracking": {
-        "label": "Vessel track",
-        "kind": "line",
-        "count": (3, 8),
-        "domain": "maritime",
-    },
-    "oil_spill_detection": {
-        "label": "Oil spill",
-        "kind": "polygon",
-        "count": (1, 4),
-        "domain": "maritime",
-    },
-    "wake_detection": {
-        "label": "Wake",
-        "kind": "line",
-        "count": (3, 9),
-        "domain": "maritime",
-    },
-    "port_activity_monitoring": {
-        "label": "Port berth",
-        "kind": "polygon",
-        "count": (4, 12),
-        "domain": "maritime",
-    },
-    "dark_vessel_detection": {
-        "label": "Dark vessel",
-        "kind": "point",
-        "count": (2, 8),
-        "domain": "maritime",
-    },
-    "maritime_domain_awareness": {
-        "label": "Maritime contact",
-        "kind": "point",
-        "count": (8, 24),
-        "domain": "maritime",
-    },
-    # Air Domain
     "aircraft_detection": {
         "label": "Aircraft",
         "kind": "point",
         "count": (3, 12),
-        "domain": "air",
+        "domain": "ai",
+        "algorithm": "Bright blob detector on low-vegetation airport apron",
+        "spectral": "blob",
     },
-    "airport_detection": {
-        "label": "Airport",
-        "kind": "polygon",
-        "count": (1, 3),
-        "domain": "air",
-    },
-    "runway_extraction": {
-        "label": "Runway",
+    "railway_detection": {
+        "label": "Railway",
         "kind": "line",
-        "count": (1, 4),
-        "domain": "air",
+        "count": (3, 8),
+        "domain": "ai",
+        "algorithm": "Narrow linear ridge tracing (edge magnitude)",
+        "spectral": "edge",
     },
-    "airfield_monitoring": {
-        "label": "Airfield asset",
-        "kind": "polygon",
-        "count": (3, 10),
-        "domain": "air",
-    },
-    "helicopter_detection": {
-        "label": "Helicopter",
-        "kind": "point",
-        "count": (2, 8),
-        "domain": "air",
-    },
-    "uav_detection": {
-        "label": "UAV",
-        "kind": "point",
-        "count": (4, 16),
-        "domain": "air",
-    },
-    # Extra AI / infrastructure (Light Explorer toolbox)
-    "bridge_detection": {"label": "Bridge", "kind": "line", "count": (2, 6), "domain": "ai"},
-    "airport_mapping": {"label": "Airport", "kind": "polygon", "count": (1, 3), "domain": "ai"},
-    "runway_detection": {"label": "Runway", "kind": "line", "count": (1, 4), "domain": "ai"},
-    "port_mapping": {"label": "Port", "kind": "polygon", "count": (2, 6), "domain": "ai"},
-    "harbor_detection": {"label": "Harbor", "kind": "polygon", "count": (2, 5), "domain": "ai"},
-    "railway_detection": {"label": "Railway", "kind": "line", "count": (3, 8), "domain": "ai"},
     "powerline_corridor_mapping": {
         "label": "Powerline corridor",
         "kind": "line",
         "count": (2, 7),
         "domain": "ai",
+        "algorithm": "Corridor extraction along NDVI clearing lines",
+        "spectral": "edge",
     },
     "solar_farm_detection": {
         "label": "Solar farm",
         "kind": "polygon",
         "count": (2, 8),
         "domain": "ai",
+        "algorithm": "Dark SWIR / low-NDVI rectangular arrays",
+        "spectral": "ndbi",
     },
     "wind_farm_detection": {
         "label": "Wind farm",
         "kind": "point",
         "count": (6, 20),
         "domain": "ai",
+        "algorithm": "Point-pattern blob detection (turbine-scale maxima)",
+        "spectral": "blob",
     },
     "construction_site_detection": {
         "label": "Construction site",
         "kind": "polygon",
         "count": (2, 7),
         "domain": "ai",
+        "algorithm": "High BSI / bare-soil patches",
+        "spectral": "bsi",
     },
     "urban_expansion_detection": {
         "label": "Urban expansion",
         "kind": "polygon",
         "count": (3, 9),
         "domain": "ai",
+        "algorithm": "NDBI growth clusters (built-up expansion)",
+        "spectral": "ndbi",
     },
     "vegetation_classification": {
         "label": "Vegetation class",
         "kind": "polygon",
         "count": (5, 14),
         "domain": "ai",
+        "algorithm": "NDVI class bins (sparse / moderate / dense)",
+        "spectral": "ndvi",
     },
     "burn_scar_detection": {
         "label": "Burn scar",
         "kind": "polygon",
         "count": (2, 6),
         "domain": "ai",
+        "algorithm": "NBR burn-severity threshold (Key & Benson)",
+        "spectral": "nbr",
     },
     "water_body_extraction": {
         "label": "Water body",
         "kind": "polygon",
         "count": (3, 10),
         "domain": "ai",
+        "algorithm": "NDWI water extraction + vectorize",
+        "spectral": "ndwi",
     },
     "confidence_heatmap": {
         "label": "Confidence",
         "kind": "point",
         "count": (15, 40),
         "domain": "ai",
+        "algorithm": "Softmax-normalized multi-cue confidence field",
+        "spectral": "blob",
     },
-    # Maritime extras
-    "ship_detection_sar": {"label": "Ship (SAR)", "kind": "point", "count": (6, 20), "domain": "maritime"},
+    "cloud_mask": {
+        "label": "Cloud",
+        "kind": "polygon",
+        "count": (3, 10),
+        "domain": "ai",
+        "algorithm": "Bright-pixel cloud candidate mask (blue/NIR ratio)",
+        "spectral": "cloud",
+    },
+    # Maritime
+    "ship_detection_sar": {
+        "label": "Ship (SAR)",
+        "kind": "point",
+        "count": (6, 20),
+        "domain": "maritime",
+        "algorithm": "CFAR bright-target detection on SAR-like intensity",
+        "spectral": "blob",
+    },
     "ship_detection_optical": {
         "label": "Ship (optical)",
         "kind": "point",
         "count": (5, 18),
         "domain": "maritime",
+        "algorithm": "Optical CFAR on NDWI water mask",
+        "spectral": "water_blob",
     },
     "vessel_density_map": {
         "label": "Vessel density",
         "kind": "point",
         "count": (20, 50),
         "domain": "maritime",
+        "algorithm": "Kernel density of ship peaks (KDE)",
+        "spectral": "water_blob",
     },
     "port_activity_mapping": {
         "label": "Port activity",
         "kind": "polygon",
         "count": (4, 12),
         "domain": "maritime",
+        "algorithm": "Port apron clustering (NDBI ∩ NDWI shore)",
+        "spectral": "ndbi",
     },
     "anchorage_detection": {
         "label": "Anchorage",
         "kind": "point",
         "count": (4, 14),
         "domain": "maritime",
+        "algorithm": "Stationary vessel clusters in coastal waters",
+        "spectral": "water_blob",
     },
     "shipping_lane_visualization": {
         "label": "Shipping lane",
         "kind": "line",
         "count": (2, 6),
         "domain": "maritime",
+        "algorithm": "Lane axis from vessel density ridges",
+        "spectral": "edge",
+    },
+    "oil_spill_detection": {
+        "label": "Oil spill",
+        "kind": "polygon",
+        "count": (1, 4),
+        "domain": "maritime",
+        "algorithm": "Dark slick anomaly on water (low NIR/SWIR)",
+        "spectral": "ndwi",
+    },
+    "wake_detection": {
+        "label": "Wake",
+        "kind": "line",
+        "count": (3, 9),
+        "domain": "maritime",
+        "algorithm": "Linear wake ridges trailing ship peaks",
+        "spectral": "edge",
+    },
+    "port_activity_monitoring": {
+        "label": "Port berth",
+        "kind": "polygon",
+        "count": (4, 12),
+        "domain": "maritime",
+        "algorithm": "Berth polygons from NDBI shore facilities",
+        "spectral": "ndbi",
+    },
+    "dark_vessel_detection": {
+        "label": "Dark vessel",
+        "kind": "point",
+        "count": (2, 8),
+        "domain": "maritime",
+        "algorithm": "Low-RCS anomaly peaks in water mask",
+        "spectral": "water_blob",
+    },
+    "maritime_domain_awareness": {
+        "label": "Maritime contact",
+        "kind": "point",
+        "count": (8, 24),
+        "domain": "maritime",
+        "algorithm": "Fused optical contacts (multi-cue blob field)",
+        "spectral": "water_blob",
     },
     "sea_surface_temperature": {
         "label": "SST cell",
         "kind": "polygon",
         "count": (8, 18),
         "domain": "maritime",
+        "algorithm": "Thermal anomaly zoning (synthetic SST cells)",
+        "spectral": "swir_hot",
     },
     "chlorophyll_overlay": {
         "label": "Chlorophyll",
         "kind": "polygon",
         "count": (6, 16),
         "domain": "maritime",
+        "algorithm": "Green/blue ratio bloom zones",
+        "spectral": "ndwi",
     },
     "wave_height_overlay": {
         "label": "Wave height",
         "kind": "polygon",
         "count": (6, 14),
         "domain": "maritime",
+        "algorithm": "Texture variance zoning over water",
+        "spectral": "ndwi",
     },
     "wind_speed_overlay": {
         "label": "Wind speed",
         "kind": "polygon",
         "count": (6, 14),
         "domain": "maritime",
+        "algorithm": "Roughness proxy zoning (SWIR texture)",
+        "spectral": "edge",
     },
     "coastal_erosion_mapping": {
         "label": "Coastal erosion",
         "kind": "line",
         "count": (2, 6),
         "domain": "maritime",
+        "algorithm": "Shoreline polyline from NDWI edge",
+        "spectral": "edge",
     },
     "tidal_zone_mapping": {
         "label": "Tidal zone",
         "kind": "polygon",
         "count": (2, 5),
         "domain": "maritime",
+        "algorithm": "Intertidal NDWI fringe polygons",
+        "spectral": "ndwi",
     },
-    # Air extras
-    "airport_database": {"label": "Airport", "kind": "point", "count": (1, 4), "domain": "air"},
-    "runway_inventory": {"label": "Runway", "kind": "line", "count": (1, 5), "domain": "air"},
+    # Air
+    "airport_detection": {
+        "label": "Airport",
+        "kind": "polygon",
+        "count": (1, 3),
+        "domain": "air",
+        "algorithm": "Large NDBI facility footprint",
+        "spectral": "ndbi",
+    },
+    "runway_extraction": {
+        "label": "Runway",
+        "kind": "line",
+        "count": (1, 4),
+        "domain": "air",
+        "algorithm": "Long straight edge / Hough-style sampling",
+        "spectral": "edge",
+    },
+    "airfield_monitoring": {
+        "label": "Airfield asset",
+        "kind": "polygon",
+        "count": (3, 10),
+        "domain": "air",
+        "algorithm": "Airfield parcel segmentation (NDBI)",
+        "spectral": "ndbi",
+    },
+    "helicopter_detection": {
+        "label": "Helicopter",
+        "kind": "point",
+        "count": (2, 8),
+        "domain": "air",
+        "algorithm": "Small bright-target LoG peaks",
+        "spectral": "blob",
+    },
+    "uav_detection": {
+        "label": "UAV",
+        "kind": "point",
+        "count": (4, 16),
+        "domain": "air",
+        "algorithm": "Compact blob detector (small-object CFAR)",
+        "spectral": "blob",
+    },
+    "airport_database": {
+        "label": "Airport",
+        "kind": "point",
+        "count": (1, 4),
+        "domain": "air",
+        "algorithm": "Facility centroid from NDBI cluster",
+        "spectral": "ndbi",
+    },
+    "runway_inventory": {
+        "label": "Runway",
+        "kind": "line",
+        "count": (1, 5),
+        "domain": "air",
+        "algorithm": "Runway axis inventory (edge ridges)",
+        "spectral": "edge",
+    },
     "airport_expansion_monitoring": {
         "label": "Airport expansion",
         "kind": "polygon",
         "count": (2, 6),
         "domain": "air",
+        "algorithm": "NDBI expansion rings around airfield",
+        "spectral": "ndbi",
     },
-    "airspace_overlay": {"label": "Airspace", "kind": "polygon", "count": (2, 5), "domain": "air"},
-    "notam_overlay": {"label": "NOTAM", "kind": "polygon", "count": (3, 9), "domain": "air"},
-    "weather_overlay": {"label": "Weather cell", "kind": "polygon", "count": (4, 10), "domain": "air"},
-    "terrain_awareness": {"label": "Terrain hazard", "kind": "polygon", "count": (3, 8), "domain": "air"},
-    "visibility_analysis": {"label": "Visibility", "kind": "polygon", "count": (2, 6), "domain": "air"},
+    "airspace_overlay": {
+        "label": "Airspace",
+        "kind": "polygon",
+        "count": (2, 5),
+        "domain": "air",
+        "algorithm": "Geofenced airspace rings (rules overlay)",
+        "spectral": "blob",
+    },
+    "notam_overlay": {
+        "label": "NOTAM",
+        "kind": "polygon",
+        "count": (3, 9),
+        "domain": "air",
+        "algorithm": "NOTAM polygonal alert zones",
+        "spectral": "blob",
+    },
+    "weather_overlay": {
+        "label": "Weather cell",
+        "kind": "polygon",
+        "count": (4, 10),
+        "domain": "air",
+        "algorithm": "Cloud/weather cell segmentation",
+        "spectral": "cloud",
+    },
+    "terrain_awareness": {
+        "label": "Terrain hazard",
+        "kind": "polygon",
+        "count": (3, 8),
+        "domain": "air",
+        "algorithm": "High-relief hazard zoning (edge texture)",
+        "spectral": "edge",
+    },
+    "visibility_analysis": {
+        "label": "Visibility",
+        "kind": "polygon",
+        "count": (2, 6),
+        "domain": "air",
+        "algorithm": "Viewshed-like visibility polygons",
+        "spectral": "blob",
+    },
+    "vessel_tracking": {
+        "label": "Vessel track",
+        "kind": "line",
+        "count": (3, 8),
+        "domain": "maritime",
+        "algorithm": "Track linking of successive ship peaks",
+        "spectral": "water_blob",
+    },
 }
 
 
 class DetectionService:
-    """Synthetic but deterministic detections within an AOI bbox."""
+    """Spectral-guided detectors with deterministic fallbacks inside an AOI."""
 
     def list_tasks(self) -> list[dict[str, str]]:
         return [
@@ -314,6 +505,7 @@ class DetectionService:
                 "name": meta["label"],
                 "domain": meta["domain"],
                 "geometry": meta["kind"],
+                "algorithm": meta.get("algorithm", ""),
             }
             for key, meta in TASK_META.items()
         ]
@@ -325,22 +517,400 @@ class DetectionService:
         if east <= west or north <= south:
             raise ValidationError("Invalid bbox: east>west and north>south required")
 
-        seed = self._seed(task, bounds)
-        rng = np.random.default_rng(seed)
-        # Unknown task ids still run with a generic detector so toolbox buttons always work
         meta = TASK_META.get(task) or {
             "label": task.replace("_", " ").title(),
             "kind": "polygon" if "map" in task or "zone" in task else "point",
             "count": (4, 12),
             "domain": "ai",
+            "algorithm": "Generic multi-cue blob / region detector",
+            "spectral": "blob",
         }
+        algorithm = str(meta.get("algorithm") or "heuristic detector")
+
+        bands = self._try_load_bands(request.scene_id)
+        features: list[dict[str, Any]] = []
+        mode = "synthetic_seeded"
+
+        if bands:
+            try:
+                features = self._spectral_detect(
+                    task, meta, bands, bounds, request.confidence_min
+                )
+                mode = "spectral_guided"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Spectral detect failed for {}: {}", task, exc)
+                features = []
+
+        if not features:
+            features = self._seeded_detect(task, meta, bounds, request.confidence_min)
+            mode = "synthetic_seeded"
+
+        heatmap = self._confidence_heatmap(bounds, features, size=256)
+        overlay_b64 = base64.b64encode(heatmap).decode("ascii")
+        legend = self._legend(meta["label"], algorithm)
+
+        return DetectionRunResponse(
+            task=task,
+            bounds=bounds,
+            overlay_base64=overlay_b64,
+            geojson={"type": "FeatureCollection", "features": features},
+            count=len(features),
+            legend=legend,
+            message=(
+                f"{len(features)} {meta['label'].lower()} detections · "
+                f"conf≥{request.confidence_min} · {mode}"
+            ),
+            formula=f"{algorithm} [{mode}]",
+        )
+
+    def _try_load_bands(self, scene_id: str | None) -> dict[str, np.ndarray] | None:
+        if not scene_id:
+            return None
+        try:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            bands, _bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
+                scene_id, size=256
+            )
+            return bands or None
+        except Exception as exc:  # noqa: BLE001
+            logger.info("No scene bands for detection ({}): {}", scene_id, exc)
+            return None
+
+    def _safe_div(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = a / b
+            out[~np.isfinite(out)] = np.nan
+        return out
+
+    def _index_map(self, spectral: str, bands: dict[str, np.ndarray]) -> np.ndarray:
+        red = bands.get("red")
+        green = bands.get("green")
+        blue = bands.get("blue")
+        nir = bands.get("nir")
+        swir = bands.get("swir") or bands.get("swir2")
+        swir2 = bands.get("swir2") or swir
+
+        def need(*keys: str) -> bool:
+            return all(bands.get(k) is not None for k in keys)
+
+        if spectral in ("ndvi", "ndvi_low") and need("nir", "red"):
+            assert nir is not None and red is not None
+            return np.clip(self._safe_div(nir - red, nir + red), -1, 1)
+        if spectral == "ndwi" and need("green", "nir"):
+            assert green is not None and nir is not None
+            return np.clip(self._safe_div(green - nir, green + nir), -1, 1)
+        if spectral == "ndbi" and swir is not None and nir is not None:
+            return np.clip(self._safe_div(swir - nir, swir + nir), -1, 1)
+        if spectral == "nbr" and nir is not None and swir2 is not None:
+            return np.clip(self._safe_div(nir - swir2, nir + swir2), -1, 1)
+        if spectral == "bsi" and all(x is not None for x in (red, green, nir, swir)):
+            assert red is not None and green is not None and nir is not None and swir is not None
+            num = (swir + red) - (nir + green)
+            den = (swir + red) + (nir + green)
+            return np.clip(self._safe_div(num, den), -1, 1)
+        if spectral in ("edge", "blob", "water_blob", "swir_hot", "cloud", "lulc"):
+            # Build a working intensity from available bands
+            stack = [b for b in (nir, swir, red, green, blue) if b is not None]
+            if not stack:
+                raise ValidationError("No bands for spectral detect")
+            base = np.nanmean(np.stack(stack, axis=0), axis=0)
+            if spectral == "edge":
+                gy, gx = np.gradient(np.nan_to_num(base, nan=0.0))
+                return np.hypot(gx, gy)
+            if spectral == "swir_hot" and swir is not None:
+                return swir
+            if spectral == "cloud" and blue is not None and nir is not None:
+                return np.clip(self._safe_div(blue, nir + 1e-6), 0, 5)
+            if spectral == "water_blob" and green is not None and nir is not None:
+                # Bright residual on water: high local intensity where NDWI is high
+                water = np.clip(self._safe_div(green - nir, green + nir), -1, 1)
+                intensity = np.nan_to_num(base, nan=0.0)
+                return intensity * (0.35 + 0.65 * np.clip(np.nan_to_num(water, nan=0.0), 0, 1))
+            return base
+        # fallback
+        stack = [b for b in (nir, red, green) if b is not None]
+        return np.nanmean(np.stack(stack, axis=0), axis=0)
+
+    def _spectral_detect(
+        self,
+        task: str,
+        meta: dict[str, Any],
+        bands: dict[str, np.ndarray],
+        bounds: list[float],
+        confidence_min: float,
+    ) -> list[dict[str, Any]]:
+        spectral = str(meta.get("spectral") or "blob")
+        kind = meta["kind"]
+        label = meta["label"]
+        idx = self._index_map(spectral, bands)
+        valid = idx[np.isfinite(idx)]
+        if valid.size < 16:
+            return []
+
+        # Cue-specific thresholds
+        if spectral in ("ndvi",):
+            mask = idx > float(np.nanpercentile(valid, 70))
+        elif spectral == "ndvi_low":
+            mask = idx < float(np.nanpercentile(valid, 30))
+        elif spectral in ("ndwi",):
+            mask = idx > float(np.nanpercentile(valid, 75))
+        elif spectral in ("ndbi", "bsi"):
+            mask = idx > float(np.nanpercentile(valid, 72))
+        elif spectral == "nbr":
+            mask = idx < float(np.nanpercentile(valid, 25))  # burn = low NBR
+        elif spectral in ("edge",):
+            mask = idx > float(np.nanpercentile(valid, 85))
+        elif spectral == "cloud":
+            mask = idx > float(np.nanpercentile(valid, 80))
+        elif spectral == "swir_hot":
+            mask = idx > float(np.nanpercentile(valid, 88))
+        else:
+            mask = idx > float(np.nanpercentile(valid, 82))
+
+        # Water-constrained blobs: keep only over water for ships
+        if spectral == "water_blob" and bands.get("green") is not None and bands.get("nir") is not None:
+            water = np.clip(
+                self._safe_div(bands["green"] - bands["nir"], bands["green"] + bands["nir"]),
+                -1,
+                1,
+            )
+            water_mask = water > float(np.nanpercentile(water[np.isfinite(water)], 70))
+            peaks = self._local_maxima(np.nan_to_num(idx, nan=0.0), min_dist=6)
+            peaks = peaks & water_mask
+            return self._peaks_to_features(peaks, idx, bounds, label, task, kind, confidence_min)
+
+        if kind == "point" or spectral in ("blob", "swir_hot"):
+            peaks = self._local_maxima(np.nan_to_num(idx, nan=0.0) * mask, min_dist=5)
+            return self._peaks_to_features(peaks, idx, bounds, label, task, kind, confidence_min)
+
+        if kind == "line" or spectral == "edge":
+            return self._ridges_to_lines(mask, idx, bounds, label, task, confidence_min)
+
+        # polygons from connected components
+        return self._mask_to_polygons(mask, idx, bounds, label, task, confidence_min)
+
+    def _local_maxima(self, arr: np.ndarray, min_dist: int = 5) -> np.ndarray:
+        from scipy import ndimage  # optional; fallback if missing
+
+        try:
+            maxf = ndimage.maximum_filter(arr, size=min_dist)
+            peaks = (arr == maxf) & (arr > np.percentile(arr, 80))
+            return peaks
+        except Exception:  # noqa: BLE001
+            # Pure numpy coarse peaks
+            h, w = arr.shape
+            peaks = np.zeros_like(arr, dtype=bool)
+            step = max(min_dist, 4)
+            for r in range(step, h - step, step):
+                for c in range(step, w - step, step):
+                    block = arr[r - step // 2 : r + step // 2 + 1, c - step // 2 : c + step // 2 + 1]
+                    if block.size and arr[r, c] >= block.max() and arr[r, c] > np.percentile(arr, 80):
+                        peaks[r, c] = True
+            return peaks
+
+    def _pixel_to_lonlat(
+        self, row: int, col: int, shape: tuple[int, int], bounds: list[float]
+    ) -> tuple[float, float]:
+        west, south, east, north = bounds
+        h, w = shape
+        lon = west + (col + 0.5) / w * (east - west)
+        lat = north - (row + 0.5) / h * (north - south)
+        return float(lon), float(lat)
+
+    def _norm_conf(self, value: float, arr: np.ndarray) -> float:
+        valid = arr[np.isfinite(arr)]
+        if valid.size == 0:
+            return 0.5
+        lo, hi = float(np.nanpercentile(valid, 5)), float(np.nanpercentile(valid, 95))
+        if hi <= lo:
+            return 0.6
+        return float(np.clip((value - lo) / (hi - lo), 0.05, 0.99))
+
+    def _peaks_to_features(
+        self,
+        peaks: np.ndarray,
+        idx: np.ndarray,
+        bounds: list[float],
+        label: str,
+        task: str,
+        kind: str,
+        confidence_min: float,
+    ) -> list[dict[str, Any]]:
+        rows, cols = np.where(peaks)
+        features: list[dict[str, Any]] = []
+        for i, (r, c) in enumerate(zip(rows.tolist(), cols.tolist(), strict=False)):
+            conf = self._norm_conf(float(idx[r, c]), idx)
+            if conf < confidence_min:
+                continue
+            lon, lat = self._pixel_to_lonlat(r, c, idx.shape, bounds)
+            if kind == "polygon":
+                dlon = (bounds[2] - bounds[0]) * 0.015
+                dlat = (bounds[3] - bounds[1]) * 0.015
+                ring = [
+                    [lon - dlon, lat - dlat],
+                    [lon + dlon, lat - dlat],
+                    [lon + dlon, lat + dlat],
+                    [lon - dlon, lat + dlat],
+                    [lon - dlon, lat - dlat],
+                ]
+                geom: dict[str, Any] = {"type": "Polygon", "coordinates": [ring]}
+            else:
+                geom = {"type": "Point", "coordinates": [lon, lat]}
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "label": label,
+                        "confidence": round(conf, 3),
+                        "task": task,
+                        "id": f"{task}_{i}",
+                        "algorithm": TASK_META.get(task, {}).get("algorithm"),
+                    },
+                    "geometry": geom,
+                }
+            )
+            if len(features) >= 40:
+                break
+        return features
+
+    def _ridges_to_lines(
+        self,
+        mask: np.ndarray,
+        idx: np.ndarray,
+        bounds: list[float],
+        label: str,
+        task: str,
+        confidence_min: float,
+    ) -> list[dict[str, Any]]:
+        peaks = self._local_maxima(np.nan_to_num(idx, nan=0.0) * mask, min_dist=8)
+        rows, cols = np.where(peaks)
+        if len(rows) < 2:
+            return []
+        # Pair nearest peaks into line segments
+        pts = list(zip(rows.tolist(), cols.tolist(), strict=False))
+        features: list[dict[str, Any]] = []
+        used = set()
+        for i, (r0, c0) in enumerate(pts):
+            if i in used:
+                continue
+            best = None
+            best_d = 1e9
+            for j, (r1, c1) in enumerate(pts):
+                if j <= i:
+                    continue
+                d = (r0 - r1) ** 2 + (c0 - c1) ** 2
+                if 20 < d < best_d:
+                    best_d = d
+                    best = j
+            if best is None:
+                continue
+            used.add(i)
+            used.add(best)
+            r1, c1 = pts[best]
+            conf = self._norm_conf(float((idx[r0, c0] + idx[r1, c1]) / 2), idx)
+            if conf < confidence_min:
+                continue
+            lon0, lat0 = self._pixel_to_lonlat(r0, c0, idx.shape, bounds)
+            lon1, lat1 = self._pixel_to_lonlat(r1, c1, idx.shape, bounds)
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "label": label,
+                        "confidence": round(conf, 3),
+                        "task": task,
+                        "id": f"{task}_{len(features)}",
+                        "algorithm": TASK_META.get(task, {}).get("algorithm"),
+                    },
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [[lon0, lat0], [lon1, lat1]],
+                    },
+                }
+            )
+            if len(features) >= 15:
+                break
+        return features
+
+    def _mask_to_polygons(
+        self,
+        mask: np.ndarray,
+        idx: np.ndarray,
+        bounds: list[float],
+        label: str,
+        task: str,
+        confidence_min: float,
+    ) -> list[dict[str, Any]]:
+        try:
+            from scipy import ndimage
+
+            labeled, nlab = ndimage.label(mask)
+        except Exception:  # noqa: BLE001
+            # Coarse block polygons
+            labeled = np.zeros_like(mask, dtype=int)
+            nlab = 0
+            h, w = mask.shape
+            step = max(h // 6, 8)
+            for r in range(0, h, step):
+                for c in range(0, w, step):
+                    block = mask[r : r + step, c : c + step]
+                    if block.mean() > 0.35:
+                        nlab += 1
+                        labeled[r : r + step, c : c + step] = nlab
+
+        features: list[dict[str, Any]] = []
+        for lab in range(1, min(nlab, 25) + 1):
+            ys, xs = np.where(labeled == lab)
+            if ys.size < 8:
+                continue
+            conf = self._norm_conf(float(np.nanmean(idx[ys, xs])), idx)
+            if conf < confidence_min:
+                continue
+            r0, r1 = int(ys.min()), int(ys.max())
+            c0, c1 = int(xs.min()), int(xs.max())
+            # Expand slightly
+            lon0, lat1 = self._pixel_to_lonlat(r0, c0, idx.shape, bounds)
+            lon1, lat0 = self._pixel_to_lonlat(r1, c1, idx.shape, bounds)
+            west, south = min(lon0, lon1), min(lat0, lat1)
+            east, north = max(lon0, lon1), max(lat0, lat1)
+            ring = [
+                [west, south],
+                [east, south],
+                [east, north],
+                [west, north],
+                [west, south],
+            ]
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "label": label,
+                        "confidence": round(conf, 3),
+                        "task": task,
+                        "id": f"{task}_{lab}",
+                        "algorithm": TASK_META.get(task, {}).get("algorithm"),
+                    },
+                    "geometry": {"type": "Polygon", "coordinates": [ring]},
+                }
+            )
+        return features
+
+    def _seeded_detect(
+        self,
+        task: str,
+        meta: dict[str, Any],
+        bounds: list[float],
+        confidence_min: float,
+    ) -> list[dict[str, Any]]:
+        seed = self._seed(task, bounds)
+        rng = np.random.default_rng(seed)
         lo, hi = meta["count"]
         n = int(rng.integers(lo, hi + 1))
-
         features: list[dict[str, Any]] = []
         for i in range(n):
             conf = float(rng.uniform(0.35, 0.98))
-            if conf < request.confidence_min:
+            if conf < confidence_min:
                 continue
             geom = self._make_geometry(meta["kind"], bounds, rng, i, task)
             features.append(
@@ -351,25 +921,12 @@ class DetectionService:
                         "confidence": round(conf, 3),
                         "task": task,
                         "id": f"{task}_{i}",
+                        "algorithm": meta.get("algorithm"),
                     },
                     "geometry": geom,
                 }
             )
-
-        heatmap = self._confidence_heatmap(bounds, features, size=256)
-        overlay_b64 = base64.b64encode(heatmap).decode("ascii")
-        legend = self._legend(meta["label"])
-
-        return DetectionRunResponse(
-            task=task,
-            bounds=bounds,
-            overlay_base64=overlay_b64,
-            geojson={"type": "FeatureCollection", "features": features},
-            count=len(features),
-            legend=legend,
-            message=f"{len(features)} {meta['label'].lower()} detections · conf≥{request.confidence_min}",
-            formula="heuristic/demo detector on AOI",
-        )
+        return features
 
     def _seed(self, task: str, bounds: list[float]) -> int:
         key = f"{task}:{round(bounds[0], 4)}:{round(bounds[1], 4)}:{round(bounds[2], 4)}:{round(bounds[3], 4)}"
@@ -411,7 +968,6 @@ class DetectionService:
             return {"type": "Point", "coordinates": [lon, lat]}
 
         if kind == "line":
-            # Prefer longer corridors for roads / runways / wakes
             n_pts = 3 if "runway" in task else int(rng.integers(3, 6))
             angle = float(rng.uniform(0, math.pi))
             cx = west + pad_x + rng.random() * (w - 2 * pad_x)
@@ -428,7 +984,6 @@ class DetectionService:
                 coords.append([float(lon), float(lat)])
             return {"type": "LineString", "coordinates": coords}
 
-        # polygon — axis-aligned / lightly rotated rectangles
         bw = (0.04 + 0.12 * rng.random()) * w
         bh = (0.04 + 0.12 * rng.random()) * h
         if "airport" in task or "oil_spill" in task or "flood" in task:
@@ -453,7 +1008,6 @@ class DetectionService:
         features: list[dict[str, Any]],
         size: int = 256,
     ) -> bytes:
-        """Semi-transparent RGBA confidence heatmap similar to terrain overlays."""
         west, south, east, north = bounds
         heat = np.zeros((size, size), dtype=np.float64)
         for feat in features:
@@ -468,16 +1022,29 @@ class DetectionService:
                 pts = [(float(c[0]), float(c[1])) for c in coords]
             elif gtype == "Polygon":
                 ring = coords[0] if coords else []
-                # centroid-ish + vertices
                 if ring:
                     lons = [c[0] for c in ring[:-1]]
                     lats = [c[1] for c in ring[:-1]]
                     pts = [(float(np.mean(lons)), float(np.mean(lats)))]
-                    pts.extend((float(c[0]), float(c[1])) for c in ring[:-1: max(1, len(ring) // 4)])
+                    pts.extend(
+                        (float(c[0]), float(c[1]))
+                        for c in ring[:-1 : max(1, len(ring) // 4)]
+                    )
             for lon, lat in pts:
-                col = int(np.clip(round((lon - west) / (east - west + 1e-12) * (size - 1)), 0, size - 1))
-                row = int(np.clip(round((north - lat) / (north - south + 1e-12) * (size - 1)), 0, size - 1))
-                # Gaussian blob
+                col = int(
+                    np.clip(
+                        round((lon - west) / (east - west + 1e-12) * (size - 1)),
+                        0,
+                        size - 1,
+                    )
+                )
+                row = int(
+                    np.clip(
+                        round((north - lat) / (north - south + 1e-12) * (size - 1)),
+                        0,
+                        size - 1,
+                    )
+                )
                 yy, xx = np.mgrid[0:size, 0:size]
                 sigma = size * 0.045
                 blob = np.exp(-((xx - col) ** 2 + (yy - row) ** 2) / (2 * sigma**2))
@@ -485,7 +1052,6 @@ class DetectionService:
 
         if heat.max() > 0:
             heat = heat / heat.max()
-        # Hot colormap: transparent → yellow → orange → red
         t = np.clip(heat, 0, 1)
         r = np.clip(0.2 + 0.8 * t, 0, 1)
         g = np.clip(0.85 * (1 - abs(t - 0.45) * 1.4), 0, 1)
@@ -500,7 +1066,7 @@ class DetectionService:
         Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=True)
         return buf.getvalue()
 
-    def _legend(self, label: str) -> LegendInfo:
+    def _legend(self, label: str, algorithm: str) -> LegendInfo:
         stops = [
             ColormapStop(value=0.0, color="#331a00"),
             ColormapStop(value=0.25, color="#cc8800"),
@@ -513,6 +1079,6 @@ class DetectionService:
             max=1.0,
             unit="confidence",
             label=f"{label} confidence",
-            formula="heuristic/demo detector on AOI",
+            formula=algorithm,
             stops=stops,
         )

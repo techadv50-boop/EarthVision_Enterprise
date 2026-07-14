@@ -27,5 +27,13 @@ async def run_detection(
 async def detection_meta(user: CurrentUser) -> dict:
     return {
         "tasks": list(TASK_META.keys()),
-        "formula": "heuristic/demo detector on AOI",
+        "algorithms": {
+            key: meta.get("algorithm", "") for key, meta in TASK_META.items()
+        },
+        "formula": (
+            "Spectral-index–guided classical EO detectors "
+            "(NDVI/NDWI/NDBI/NBR/BSI, Sobel edges, LoG/CFAR blobs) "
+            "with deterministic seeded fallback when scene bands are unavailable"
+        ),
+        "map_chrome": ["legend", "scale_bar", "north_arrow", "grid"],
     }

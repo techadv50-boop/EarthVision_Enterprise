@@ -59,6 +59,7 @@ interface WorkflowState {
     compass: boolean;
     scaleBar: boolean;
     coordinates: boolean;
+    grid: boolean;
     miniMap: boolean;
     swipe: boolean;
     splitView: boolean;
@@ -142,6 +143,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
     compass: true,
     scaleBar: true,
     coordinates: true,
+    grid: true,
     miniMap: false,
     swipe: false,
     splitView: false,

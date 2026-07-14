@@ -56,4 +56,4 @@ class DetectionRunResponse(BaseModel):
     count: int
     legend: LegendInfo | None = None
     message: str
-    formula: str = "heuristic/demo detector on AOI"
+    formula: str = "spectral-index–guided EO detector"

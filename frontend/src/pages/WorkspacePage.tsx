@@ -181,6 +181,7 @@ export function WorkspacePage() {
         compass: true,
         scaleBar: true,
         coordinates: true,
+        grid: true,
         miniMap: false,
         swipe: false,
         splitView: false,
@@ -192,6 +193,8 @@ export function WorkspacePage() {
         bookmarks: false,
         manualVerify: false,
       };
+    } else if (typeof (state.mapChrome as { grid?: boolean }).grid !== 'boolean') {
+      patch.mapChrome = { ...state.mapChrome, grid: true };
     }
     // Always reopen toolboxes after login so the new UI is visible
     if (state.toolboxOpen === false) patch.toolboxOpen = true;
@@ -516,7 +519,18 @@ export function WorkspacePage() {
         confidence_min: 0.45,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(result.message);
+      setLastMessage(
+        result.formula
+          ? `${result.message} · ${result.formula}`
+          : result.message,
+      );
+      // Force map cartography chrome whenever objects are detected
+      useWorkflowStore.getState().setMapChrome({
+        compass: true,
+        scaleBar: true,
+        coordinates: true,
+        grid: true,
+      });
       upsertOverlay({
         id: `detection-${task}`,
         kind: 'detection',
@@ -1059,7 +1073,7 @@ export function WorkspacePage() {
             drawnFeature={drawnFeature}
             bufferGeoJson={bufferGeoJson}
             enablePlaceClick={step === 'place'}
-            showGrid
+            showGrid={mapChrome.grid !== false}
             mapChrome={mapChrome}
             mapCommand={mapCommand}
             onPlaceClick={onPlaceClick}
