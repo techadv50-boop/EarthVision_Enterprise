@@ -35,19 +35,21 @@ export function DemTerrainLayer({
     const grid = overlay?.demGrid;
     if (!enabled || !overlay || !grid?.length || !grid[0]?.length) return;
 
-    const paneName = 'evDemMeshPane';
+    const paneName = 'evStackPane';
     let pane = map.getPane(paneName);
     if (!pane) {
       pane = map.createPane(paneName);
+      pane.style.zIndex = '450';
       pane.style.pointerEvents = 'none';
     }
-    pane.style.zIndex = String(zIndex);
 
     const canvas = L.DomUtil.create('canvas', 'ev-dem-mesh') as HTMLCanvasElement;
     canvas.style.position = 'absolute';
     canvas.style.left = '0';
     canvas.style.top = '0';
     canvas.style.pointerEvents = 'none';
+    // Stack with Layer Manager order inside the shared pane (not a separate pane)
+    canvas.style.zIndex = String(zIndex);
     pane.appendChild(canvas);
 
     const [west, south, east, north] = overlay.bounds;

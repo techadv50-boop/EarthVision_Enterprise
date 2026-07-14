@@ -592,6 +592,17 @@ function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
   return null;
 }
 
+function EnsureStackPane() {
+  const map = useMap();
+  // Create synchronously so child TileLayer/ImageOverlay can mount into it
+  if (!map.getPane('evStackPane')) {
+    const pane = map.createPane('evStackPane');
+    pane.style.zIndex = '450';
+    pane.style.pointerEvents = 'none';
+  }
+  return null;
+}
+
 function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
   if (kind === 'buffer') {
     return { color: '#7c3aed', weight: 2, fillColor: '#7c3aed', fillOpacity: 0.18 };
@@ -724,6 +735,7 @@ export function LightMap({
       />
       <MapInteractionMode mapTool={mapTool} />
       <MapCommandRunner command={mapCommand} />
+      <EnsureStackPane />
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
@@ -766,20 +778,19 @@ export function LightMap({
               )
             : null;
 
-        // Stacking follows Layer Manager order (drag to change)
+        // Stacking follows Layer Manager order (drag to change) — all in evStackPane
         const zIndex = overlayZIndex.get(overlay.id) ?? 430;
 
-        const sceneOpacity = overlay.opacity;
-
         return (
-          <Fragment key={overlay.id}>
+          <Fragment key={`${overlay.id}-z${zIndex}`}>
             {overlay.kind === 'scene' && overlay.tileUrl ? (
               <TileLayer
                 url={overlay.tileUrl}
                 bounds={leafletBounds}
-                opacity={sceneOpacity}
+                opacity={overlay.opacity}
                 maxNativeZoom={16}
                 maxZoom={18}
+                pane="evStackPane"
                 zIndex={zIndex}
                 updateWhenZooming={false}
                 updateWhenIdle
@@ -791,18 +802,20 @@ export function LightMap({
                 bounds={leafletBounds}
                 opacity={overlay.opacity}
                 interactive={false}
+                pane="evStackPane"
                 zIndex={zIndex}
               />
             ) : null}
             {overlay.geojson && (
               <GeoJSON
-                key={`${overlay.id}-gj`}
+                key={`${overlay.id}-gj-z${zIndex}`}
                 data={overlay.geojson as GeoJSON.GeoJsonObject}
                 interactive={false}
                 style={() => geoStyle(overlay.kind)}
                 pointToLayer={
                   overlay.kind === 'detection' ? detectionPointToLayer : undefined
                 }
+                pane="evStackPane"
               />
             )}
             {footprintRing && (
@@ -816,6 +829,7 @@ export function LightMap({
                   dashArray: '6 4',
                   interactive: false,
                 }}
+                pane="evStackPane"
               />
             )}
           </Fragment>
