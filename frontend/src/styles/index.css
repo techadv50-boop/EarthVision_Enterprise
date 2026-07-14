@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f4f7f5;
+  --panel: #ffffff;
+  --ink: #14231c;
+  --muted: #5d7368;
+  --line: #d5e2db;
+  --accent: #1f6f54;
+  --accent-soft: #e6f3ed;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  background: #dce8e2;
+  font: inherit;
+}
+
+.leaflet-container.ev-pan-mode {
+  cursor: grab;
+}
+
+.leaflet-container.ev-pan-mode.leaflet-drag-target,
+.leaflet-container.ev-pan-mode.leaflet-dragging {
+  cursor: grabbing;
+}
+
+.leaflet-container.ev-draw-mode {
+  cursor: crosshair;
+}
+
+.ev-card {
+  @apply rounded-xl border border-[var(--line)] bg-white shadow-sm;
+}
+
+.ev-btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+    transition disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.ev-btn-primary {
+  @apply ev-btn bg-[var(--accent)] text-white hover:brightness-110;
+}
+
+.ev-btn-ghost {
+  @apply ev-btn bg-transparent text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)];
+}
+
+.ev-input {
+  @apply w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none
+    focus:border-[var(--accent)];
+}
+.ev-input:focus {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-thumb { background: #b7c9c0; border-radius: 4px; }
