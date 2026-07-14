@@ -485,12 +485,15 @@ class AnalyticsService:
         if index == "LST":
             thermal = bands.get("thermal")
             if thermal is not None and np.isfinite(thermal).any():
-                t = thermal.astype(float)
-                if np.nanmax(t) > 400:
-                    t = t * 0.00341802 + 149.0 - 273.15
-                elif np.nanmax(t) > 200:
-                    t = t - 273.15
-                return t
+                t = thermal.astype(np.float64)
+                # Landsat Collection-2 surface temperature may already be Kelvin or °C.
+                # DN radiance path: values typically 20k–45k → use Planck conversion.
+                tmax = float(np.nanmax(t))
+                if tmax > 400:
+                    return self.compute_lst(t)
+                if tmax > 200:  # Kelvin
+                    return t - 273.15
+                return t  # already °C
             return self.compute_lst(synth["thermal"])
         raise ValidationError(f"Unsupported index: {index}")
 

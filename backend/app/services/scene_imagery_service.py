@@ -234,11 +234,16 @@ class SceneImageryService:
                 assets = feat.get("assets") or {}
                 analysis_bands = {
                     k: assets[k]["href"]
-                    for k in ("red", "green", "blue", "nir", "swir16")
+                    for k in ("red", "green", "blue", "nir", "swir16", "swir22")
                     if k in assets and assets[k].get("href")
                 }
                 if "swir16" in analysis_bands:
                     analysis_bands["swir"] = analysis_bands["swir16"]
+                if "swir22" in analysis_bands:
+                    analysis_bands["swir2"] = analysis_bands["swir22"]
+                elif "swir" in analysis_bands:
+                    # Fallback: NBR uses SWIR2 when available; else SWIR1 with note
+                    analysis_bands["swir2"] = analysis_bands["swir"]
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": assets["visual"]["href"],
@@ -359,6 +364,10 @@ class SceneImageryService:
                     analysis_bands["nir"] = assets["nir08"]["href"]
                 if assets.get("swir16", {}).get("href"):
                     analysis_bands["swir"] = assets["swir16"]["href"]
+                if assets.get("swir22", {}).get("href"):
+                    analysis_bands["swir2"] = assets["swir22"]["href"]
+                elif analysis_bands.get("swir"):
+                    analysis_bands["swir2"] = analysis_bands["swir"]
                 if assets.get("lwir11", {}).get("href"):
                     analysis_bands["thermal"] = assets["lwir11"]["href"]
                 return {
@@ -741,7 +750,7 @@ class SceneImageryService:
         scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else "sentinel2_l2a"
 
         bands: dict[str, np.ndarray] = {}
-        for name in ("red", "green", "blue", "nir", "swir", "thermal"):
+        for name in ("red", "green", "blue", "nir", "swir", "swir2", "thermal"):
             href = analysis.get(name)
             if not href:
                 continue
@@ -756,5 +765,8 @@ class SceneImageryService:
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to load analysis band {} for {}: {}", name, scene_id, exc)
+
+        if "swir2" not in bands and "swir" in bands:
+            bands["swir2"] = bands["swir"]
 
         return bands, bounds, layer.get("footprint"), layer

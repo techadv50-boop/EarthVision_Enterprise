@@ -20,6 +20,12 @@ import {
   type LegendInfo,
 } from '../services/analyticsService';
 import {
+  compositeService,
+  type CompositePreset,
+  type CompositeResult,
+  type StretchResult,
+} from '../services/compositeService';
+import {
   terrainService,
   type TerrainProduct,
 } from '../services/terrainService';
@@ -88,6 +94,15 @@ export function WorkspacePage() {
   const [lastBufferDistance, setLastBufferDistance] = useState<number | null>(null);
   const [lastBufferArea, setLastBufferArea] = useState<number | null>(null);
   const [mapCommand, setMapCommand] = useState<{ id: number; type: string } | null>(null);
+  const [compositeResult, setCompositeResult] = useState<CompositeResult | null>(null);
+  const [stretchResult, setStretchResult] = useState<StretchResult | null>(null);
+  const [stretchParams, setStretchParams] = useState({
+    p_low: 2,
+    p_high: 98,
+    gamma: 1,
+    brightness: 1,
+    contrast: 1,
+  });
   const [processFilter, setProcessFilter] = useState({
     brightness: 1,
     contrast: 1,
@@ -621,33 +636,128 @@ export function WorkspacePage() {
   };
 
   const applyProcessFilter = (op: string) => {
-    const next = { ...processFilter };
-    if (op === 'brightness') next.brightness = Math.min(1.6, next.brightness + 0.1);
-    if (op === 'contrast') next.contrast = Math.min(1.8, next.contrast + 0.1);
-    if (op === 'gamma') next.gamma = Math.min(2.2, next.gamma + 0.1);
-    if (op === 'histogram' || op === 'sharpen' || op === 'denoise') {
-      next.contrast = 1.25;
-      next.brightness = 1.05;
-    }
     if (op === 'true_color') {
-      next.brightness = 1;
-      next.contrast = 1;
-      next.gamma = 1;
-      setLastMessage('True color — scene tiles restored');
+      void runComposite('true_color');
+      return;
     }
     if (op === 'false_color') {
-      // False color uses NIR-like stretch via index false-color proxy
-      void runIndex('NDVI');
-      setLastMessage('False-color style via vegetation contrast');
+      void runComposite('false_color_infrared');
+      return;
+    }
+    if (op === 'histogram') {
+      void runStretch();
+      return;
+    }
+    if (op === 'brightness' || op === 'contrast' || op === 'gamma') {
+      const next = { ...stretchParams };
+      if (op === 'brightness') next.brightness = Math.min(1.8, next.brightness + 0.1);
+      if (op === 'contrast') next.contrast = Math.min(2.0, next.contrast + 0.1);
+      if (op === 'gamma') next.gamma = Math.min(2.2, next.gamma + 0.1);
+      setStretchParams(next);
+      setProcessFilter({
+        brightness: next.brightness,
+        contrast: next.contrast,
+        gamma: next.gamma,
+      });
+      void runStretch(next);
+      return;
+    }
+    if (op === 'sharpen' || op === 'denoise') {
+      void runStretch({
+        ...stretchParams,
+        contrast: Math.min(2, stretchParams.contrast + 0.15),
+        brightness: Math.min(1.5, stretchParams.brightness + 0.05),
+      });
+      setLastMessage(`${op} via contrast/edge-enhanced stretch`);
+      return;
     }
     if (op === 'mosaic') {
       setLastMessage('Mosaic: all visible scene layers shown');
+      return;
     }
     if (op === 'reproject' || op === 'resample') {
       setLastMessage(`${op}: display CRS EPSG:3857 / native scene resolution`);
     }
-    setProcessFilter(next);
-    setLastMessage((m) => m || `Image ${op} applied to map view`);
+  };
+
+  const runComposite = async (preset: CompositePreset) => {
+    setToolLoading(true);
+    setActiveToolId(`composite-${preset}`);
+    setToolStatus(`Rendering ${preset.replaceAll('_', ' ')}…`);
+    setError(null);
+    try {
+      const result = await compositeService.render({
+        preset,
+        scene_id: focusScene?.id,
+        bbox: [...analysisBbox],
+        ...stretchParams,
+      });
+      setCompositeResult(result);
+      setLastLegend((result.legend as LegendInfo | null) ?? null);
+      setLastMessage(`${result.label} · ${result.formula}`);
+      upsertOverlay({
+        id: `composite-${preset}`,
+        kind: 'index',
+        sceneId: focusScene?.id,
+        url: compositeService.toDataUrl(result.overlay_base64),
+        bounds: result.bounds as [number, number, number, number],
+        opacity: layerOpacity,
+        label: result.label,
+        visible: true,
+      });
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setToolLoading(false);
+      setToolStatus(null);
+    }
+  };
+
+  const runStretch = async (params = stretchParams) => {
+    setToolLoading(true);
+    setActiveToolId('histogram');
+    setToolStatus('Applying histogram stretch…');
+    setError(null);
+    try {
+      const result = await compositeService.stretch({
+        scene_id: focusScene?.id,
+        bbox: [...analysisBbox],
+        ...params,
+      });
+      setStretchResult(result);
+      setLastMessage(result.message);
+      upsertOverlay({
+        id: 'stretch-overlay',
+        kind: 'index',
+        sceneId: focusScene?.id,
+        url: compositeService.toDataUrl(result.overlay_base64),
+        bounds: result.bounds as [number, number, number, number],
+        opacity: layerOpacity,
+        label: `Stretch ${params.p_low}-${params.p_high}%`,
+        visible: true,
+      });
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setToolLoading(false);
+      setToolStatus(null);
+    }
+  };
+
+  const exportActiveOverlayPng = () => {
+    const last = [...overlays].reverse().find(
+      (o) =>
+        (o.kind === 'index' || o.kind === 'change' || o.kind === 'terrain' || o.kind === 'detection') &&
+        o.url,
+    );
+    if (!last?.url) {
+      setError('No processed overlay to export — run an index, composite, or stretch first');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = last.url;
+    a.download = `${last.label.replace(/\W+/g, '_')}.png`;
+    a.click();
   };
 
   const deactivateTool = useCallback(
@@ -1053,6 +1163,67 @@ export function WorkspacePage() {
                 setLastBufferDistance(null);
                 setLastBufferArea(null);
               }}
+              indexResult={indexResult}
+              compositeResult={compositeResult}
+              stretchResult={stretchResult}
+              stretchParams={stretchParams}
+              onComposite={(preset) => void runComposite(preset)}
+              onIndexTool={(index) => void runIndex(index)}
+              onStretch={() => void runStretch()}
+              onStretchParams={(patch) =>
+                setStretchParams((s) => ({ ...s, ...patch }))
+              }
+              onEnhance={(op) => applyProcessFilter(op)}
+              onExportIndexPng={() => {
+                if (!indexResult || !focusScene) {
+                  setError('Compute an index first');
+                  return;
+                }
+                if (indexResult.overlay_base64) {
+                  void compositeService.downloadPngFromBase64(
+                    indexResult.overlay_base64,
+                    `${indexResult.index}_${focusScene.id}.png`,
+                  );
+                } else {
+                  void compositeService.downloadIndexPng(
+                    indexResult.index,
+                    focusScene.id,
+                    analysisBbox,
+                  );
+                }
+              }}
+              onExportIndexCsv={() => {
+                if (!indexResult || !focusScene) {
+                  setError('Compute an index first');
+                  return;
+                }
+                void compositeService.downloadIndexCsv(indexResult.index, focusScene.id);
+              }}
+              onExportCompositePng={() => {
+                if (compositeResult?.overlay_base64) {
+                  void compositeService.downloadPngFromBase64(
+                    compositeResult.overlay_base64,
+                    `${compositeResult.preset}.png`,
+                  );
+                } else {
+                  void compositeService.downloadCompositePng(
+                    compositeResult?.preset || 'false_color_infrared',
+                    focusScene?.id,
+                    analysisBbox,
+                  );
+                }
+              }}
+              onExportStretchPng={() => {
+                if (!stretchResult?.overlay_base64) {
+                  setError('Apply histogram stretch first');
+                  return;
+                }
+                void compositeService.downloadPngFromBase64(
+                  stretchResult.overlay_base64,
+                  `stretch_${focusScene?.id || 'aoi'}.png`,
+                );
+              }}
+              onExportOverlayPng={exportActiveOverlayPng}
             />
           </div>
         ) : (

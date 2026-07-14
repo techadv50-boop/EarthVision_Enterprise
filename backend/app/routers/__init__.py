@@ -7,6 +7,7 @@ from app.routers import (
     auth,
     bookmarks,
     catalog,
+    composite,
     detection,
     gis,
     health,
@@ -30,6 +31,7 @@ def build_api_router() -> APIRouter:
     api.include_router(catalog.router)
     api.include_router(gis.router)
     api.include_router(analytics.router)
+    api.include_router(composite.router)
     api.include_router(terrain.router)
     api.include_router(detection.router)
     api.include_router(ml.router)

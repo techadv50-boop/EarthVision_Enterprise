@@ -19,8 +19,14 @@ import {
   type ToolboxTool,
 } from '../../toolbox/catalog';
 import type { MapOverlay } from '../../store/workflowStore';
-import type { LegendInfo } from '../../services/analyticsService';
+import type { LegendInfo, IndexName, IndexResult } from '../../services/analyticsService';
+import type {
+  CompositePreset,
+  CompositeResult,
+  StretchResult,
+} from '../../services/compositeService';
 import { BufferPanel } from './BufferPanel';
+import { ImageProcessingPanel } from './ImageProcessingPanel';
 
 const ICONS: Record<ToolboxId, typeof Compass> = {
   navigation: Compass,
@@ -67,6 +73,27 @@ interface Props {
   onRenameOverlay: (id: string, label: string) => void;
   onApplyBuffer: (distance: number) => void;
   onClearBuffer: () => void;
+  // Image processing
+  indexResult?: IndexResult | null;
+  compositeResult?: CompositeResult | null;
+  stretchResult?: StretchResult | null;
+  stretchParams?: {
+    p_low: number;
+    p_high: number;
+    gamma: number;
+    brightness: number;
+    contrast: number;
+  };
+  onComposite?: (preset: CompositePreset) => void;
+  onIndexTool?: (index: IndexName) => void;
+  onStretch?: () => void;
+  onStretchParams?: (patch: Record<string, number>) => void;
+  onEnhance?: (op: 'brightness' | 'contrast' | 'gamma' | 'sharpen' | 'denoise') => void;
+  onExportIndexPng?: () => void;
+  onExportIndexCsv?: () => void;
+  onExportCompositePng?: () => void;
+  onExportStretchPng?: () => void;
+  onExportOverlayPng?: () => void;
 }
 
 export function ToolboxPanel({
@@ -95,6 +122,20 @@ export function ToolboxPanel({
   onRenameOverlay,
   onApplyBuffer,
   onClearBuffer,
+  indexResult = null,
+  compositeResult = null,
+  stretchResult = null,
+  stretchParams = { p_low: 2, p_high: 98, gamma: 1, brightness: 1, contrast: 1 },
+  onComposite,
+  onIndexTool,
+  onStretch,
+  onStretchParams,
+  onEnhance,
+  onExportIndexPng,
+  onExportIndexCsv,
+  onExportCompositePng,
+  onExportStretchPng,
+  onExportOverlayPng,
 }: Props) {
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -175,6 +216,28 @@ export function ToolboxPanel({
           )}
         </div>
 
+        {activeBox.id === 'image' && onComposite && onIndexTool && onStretch && (
+          <ImageProcessingPanel
+            hasScene={hasScene}
+            loading={loading}
+            activeToolId={activeToolId}
+            indexResult={indexResult}
+            compositeResult={compositeResult}
+            stretchResult={stretchResult}
+            stretchParams={stretchParams}
+            onComposite={onComposite}
+            onIndex={onIndexTool}
+            onStretch={onStretch}
+            onStretchParams={(patch) => onStretchParams?.(patch)}
+            onEnhance={(op) => onEnhance?.(op)}
+            onExportIndexPng={() => onExportIndexPng?.()}
+            onExportIndexCsv={() => onExportIndexCsv?.()}
+            onExportCompositePng={() => onExportCompositePng?.()}
+            onExportStretchPng={() => onExportStretchPng?.()}
+            onExportOverlayPng={() => onExportOverlayPng?.()}
+          />
+        )}
+
         {activeBox.id === 'layers' && (
           <div className="mb-3">
             <LayerManagerBody
@@ -230,12 +293,13 @@ export function ToolboxPanel({
           </div>
         )}
 
-        <ul className="space-y-1" data-testid="toolbox-tool-list">
-          {activeBox.tools.map((tool) => {
-            const active = activeToolId === tool.id;
-            return (
-              <li key={tool.id}>
-                  <button
+        {activeBox.id !== 'image' && (
+          <div className="grid grid-cols-2 gap-1" data-testid="toolbox-tool-list">
+            {activeBox.tools.map((tool) => {
+              const active = activeToolId === tool.id;
+              return (
+                <button
+                  key={tool.id}
                   type="button"
                   title={
                     active
@@ -270,10 +334,10 @@ export function ToolboxPanel({
                     </span>
                   )}
                 </button>
-              </li>
-            );
-          })}
-        </ul>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {(lastMessage || lastLegend) && (
