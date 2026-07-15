@@ -770,30 +770,56 @@ export function WorkspacePage() {
   };
 
   const runComposite = async (preset: CompositePreset) => {
+    if (!focusScene?.id) {
+      setError('Eye-On an optical scene first, then run True Color / False Color.');
+      setLastMessage('True/False color needs a visible scene (toggle the eye on Images).');
+      return;
+    }
     setToolLoading(true);
     setActiveToolId(`composite-${preset}`);
     setToolStatus(`Rendering ${preset.replaceAll('_', ' ')}…`);
     setError(null);
     try {
+      const sceneOverlay = useWorkflowStore
+        .getState()
+        .overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id);
+      const bbox = (sceneOverlay?.bounds ?? analysisBbox) as [
+        number,
+        number,
+        number,
+        number,
+      ];
       const result = await compositeService.render({
         preset,
-        scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
+        scene_id: focusScene.id,
+        bbox: [...bbox],
+        size: 1024,
         ...stretchParams,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(`${result.label} · ${result.formula}`);
+      setLastMessage(`${result.label} · ${result.formula} · sharp 1024px`);
+      // Match satellite frame exactly; full opacity for crisp composite
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
-        sceneId: focusScene?.id,
+        sceneId: focusScene.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
-        opacity: layerOpacity,
+        bounds: (sceneOverlay?.bounds ??
+          (result.bounds as [number, number, number, number])) as [
+          number,
+          number,
+          number,
+          number,
+        ],
+        footprint: sceneOverlay?.footprint ?? null,
+        opacity: 1,
         label: result.label,
         visible: true,
+        renderMode: 'rgb',
       });
+      useWorkflowStore.getState().setExpandedToolbox('layers');
+      useWorkflowStore.getState().setToolboxOpen(true);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -808,9 +834,21 @@ export function WorkspacePage() {
     setToolStatus('Applying histogram stretch…');
     setError(null);
     try {
+      const sceneOverlay = focusScene
+        ? useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
+        : null;
+      const bbox = (sceneOverlay?.bounds ?? analysisBbox) as [
+        number,
+        number,
+        number,
+        number,
+      ];
       const result = await compositeService.stretch({
         scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
+        bbox: [...bbox],
+        size: 1024,
         ...params,
       });
       setStretchResult(result);
@@ -820,10 +858,18 @@ export function WorkspacePage() {
         kind: 'index',
         sceneId: focusScene?.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
-        opacity: layerOpacity,
+        bounds: (sceneOverlay?.bounds ??
+          (result.bounds as [number, number, number, number])) as [
+          number,
+          number,
+          number,
+          number,
+        ],
+        footprint: sceneOverlay?.footprint ?? null,
+        opacity: 1,
         label: `Stretch ${params.p_low}-${params.p_high}%`,
         visible: true,
+        renderMode: 'rgb',
       });
     } catch (err) {
       setError(getErrorMessage(err));

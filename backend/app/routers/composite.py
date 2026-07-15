@@ -61,6 +61,7 @@ async def export_composite_png(
             preset=preset,  # type: ignore[arg-type]
             scene_id=scene_id,
             bbox=[west, south, east, north],
+            size=1024,
         )
     )
     return Response(
@@ -89,6 +90,7 @@ async def export_stretch_png(
             bbox=[west, south, east, north],
             p_low=p_low,
             p_high=p_high,
+            size=1024,
         )
     )
     return Response(

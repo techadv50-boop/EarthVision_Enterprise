@@ -91,6 +91,7 @@ export const compositeService = {
     preset: CompositePreset;
     scene_id?: string;
     bbox?: number[];
+    size?: number;
     p_low?: number;
     p_high?: number;
     gamma?: number;
@@ -104,6 +105,7 @@ export const compositeService = {
       gamma: 1,
       brightness: 1,
       contrast: 1,
+      size: 1024,
       ...payload,
     });
     return data;
@@ -112,13 +114,17 @@ export const compositeService = {
   async stretch(payload: {
     scene_id?: string;
     bbox?: number[];
+    size?: number;
     p_low?: number;
     p_high?: number;
     gamma?: number;
     brightness?: number;
     contrast?: number;
   }): Promise<StretchResult> {
-    const { data } = await api.post<StretchResult>('/analytics/stretch', payload);
+    const { data } = await api.post<StretchResult>('/analytics/stretch', {
+      size: 1024,
+      ...payload,
+    });
     return data;
   },
 
