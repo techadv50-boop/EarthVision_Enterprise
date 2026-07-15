@@ -36,6 +36,16 @@ body {
   cursor: grab;
 }
 
+/* Keep EO composite / index overlays crisp when Leaflet scales them */
+.leaflet-image-layer.ev-sharp-overlay,
+.ev-sharp-overlay {
+  image-rendering: auto;
+  -ms-interpolation-mode: bicubic;
+  /* Avoid subpixel soft blur from fractional CSS transforms */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
 .leaflet-container.ev-pan-mode.leaflet-drag-target,
 .leaflet-container.ev-pan-mode.leaflet-dragging {
   cursor: grabbing;

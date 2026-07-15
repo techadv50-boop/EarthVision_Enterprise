@@ -713,7 +713,8 @@ class SceneImageryService:
                     1,
                     out_shape=(size, size),
                     window=window,
-                    resampling=Resampling.bilinear,
+                    # Cubic reads sharper detail for map overlays than bilinear
+                    resampling=Resampling.cubic if size >= 512 else Resampling.bilinear,
                     boundless=True,
                     fill_value=0,
                 ).astype(np.float64)
