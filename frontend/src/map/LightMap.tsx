@@ -864,6 +864,11 @@ export function LightMap({
                 interactive={false}
                 pane="evStackPane"
                 zIndex={zIndex}
+                className={
+                  overlay.kind === 'index' || overlay.kind === 'change'
+                    ? 'ev-sharp-overlay'
+                    : undefined
+                }
                 eventHandlers={tagHandlers}
               />
             ) : null}
