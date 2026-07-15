@@ -770,16 +770,19 @@ export function WorkspacePage() {
   };
 
   const runComposite = async (preset: CompositePreset) => {
+    if (!focusScene?.id) {
+      setError('Eye-On an optical scene first, then run True Color / False Color.');
+      setLastMessage('True/False color needs a visible scene (toggle the eye on Images).');
+      return;
+    }
     setToolLoading(true);
     setActiveToolId(`composite-${preset}`);
     setToolStatus(`Rendering ${preset.replaceAll('_', ' ')}…`);
     setError(null);
     try {
-      const sceneOverlay = focusScene
-        ? useWorkflowStore
-            .getState()
-            .overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
-        : null;
+      const sceneOverlay = useWorkflowStore
+        .getState()
+        .overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id);
       const bbox = (sceneOverlay?.bounds ?? analysisBbox) as [
         number,
         number,
@@ -788,7 +791,7 @@ export function WorkspacePage() {
       ];
       const result = await compositeService.render({
         preset,
-        scene_id: focusScene?.id,
+        scene_id: focusScene.id,
         bbox: [...bbox],
         size: 1024,
         ...stretchParams,
@@ -800,7 +803,7 @@ export function WorkspacePage() {
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
-        sceneId: focusScene?.id,
+        sceneId: focusScene.id,
         url: compositeService.toDataUrl(result.overlay_base64),
         bounds: (sceneOverlay?.bounds ??
           (result.bounds as [number, number, number, number])) as [
@@ -815,6 +818,8 @@ export function WorkspacePage() {
         visible: true,
         renderMode: 'rgb',
       });
+      useWorkflowStore.getState().setExpandedToolbox('layers');
+      useWorkflowStore.getState().setToolboxOpen(true);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
