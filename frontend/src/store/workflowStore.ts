@@ -41,10 +41,18 @@ export interface MapOverlay {
   demStats?: Record<string, number> | null;
   /** Vertical exaggeration for DEM mesh under imagery */
   exaggeration?: number;
+  /** ArcScene-style orbit yaw in degrees */
+  demYaw?: number;
+  /** ArcScene-style pitch in degrees (higher = more top-down) */
+  demPitch?: number;
   /** DEM base sits under satellite; other terrain products are analysis overlays */
   terrainRole?: 'base' | 'analysis';
-  /** Satellite×hillshade texture draped onto DEM mesh */
+  /** Satellite RGB×hillshade texture draped onto DEM mesh (ArcScene) */
   textureUrl?: string | null;
+  /** Elevation color theme for DEM mesh */
+  demColormap?: string | null;
+  /** 0–1 how much satellite texture vs elev theme on the mesh */
+  demTextureMix?: number;
 }
 
 /** Drawn feature available for buffer / profile / LOS */
@@ -52,6 +60,14 @@ export interface DrawnFeature {
   type: 'Point' | 'LineString' | 'Polygon';
   geometry: GeoJSON.Geometry;
   label: string;
+}
+
+/** DEM base defaults under imagery; users may still reorder freely in Layer Manager. */
+function pinDemBaseToBack(overlays: MapOverlay[]): MapOverlay[] {
+  const dems = overlays.filter((o) => o.terrainRole === 'base');
+  if (!dems.length) return overlays;
+  const rest = overlays.filter((o) => o.terrainRole !== 'base');
+  return [...dems, ...rest];
 }
 
 interface WorkflowState {
@@ -220,13 +236,18 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   upsertOverlay: (overlay) =>
     set((state) => {
       let next = state.overlays.filter((o) => o.id !== overlay.id);
-      if (
-        overlay.kind === 'index' ||
-        overlay.kind === 'change' ||
-        overlay.kind === 'terrain' ||
-        overlay.kind === 'detection'
-      ) {
+      if (overlay.kind === 'index' || overlay.kind === 'change' || overlay.kind === 'detection') {
         next = next.filter((o) => o.kind !== overlay.kind);
+      }
+      // Keep DEM base when swapping analysis terrain products
+      if (overlay.kind === 'terrain') {
+        if (overlay.terrainRole === 'base') {
+          next = next.filter((o) => !(o.kind === 'terrain' && o.terrainRole === 'base'));
+        } else {
+          next = next.filter(
+            (o) => !(o.kind === 'terrain' && o.terrainRole !== 'base'),
+          );
+        }
       }
       if (overlay.kind === 'buffer') {
         next = next.filter((o) => o.kind !== 'buffer');
@@ -235,17 +256,12 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         next = next.filter((o) => !(o.kind === 'scene' && o.sceneId === overlay.sceneId));
       }
       const item = { visible: true, ...overlay };
-      // DEM base starts under satellite; user can drag it up in Layer Manager
+      next = [...next, item];
+      // New DEM base starts at the back; later Layer Manager reorder is free
       if (overlay.terrainRole === 'base') {
-        const sceneIdx = next.findIndex((o) => o.kind === 'scene');
-        if (sceneIdx >= 0) {
-          next = [...next.slice(0, sceneIdx), item, ...next.slice(sceneIdx)];
-        } else {
-          next = [item, ...next];
-        }
-        return { overlays: next };
+        return { overlays: pinDemBaseToBack(next) };
       }
-      return { overlays: [...next, item] };
+      return { overlays: next };
     }),
 
   removeOverlay: (id) =>
@@ -273,17 +289,20 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   moveOverlay: (id, dir) =>
     set((state) => {
-      // Layer Manager shows overlays reversed (top of list = top of map = end of array).
-      // "up" in the UI = toward top of map = higher index in store.
       const display = [...state.overlays].reverse();
       const idx = display.findIndex((o) => o.id === id);
       if (idx < 0) return state;
       const target = dir === 'up' ? idx - 1 : idx + 1;
       if (target < 0 || target >= display.length) return state;
+      const moving = display[idx];
+      const swapWith = display[target];
+      // DEM base stays under imagery in the unified stack
+      if (moving.terrainRole === 'base' && dir === 'up') return state;
+      if (swapWith.terrainRole === 'base' && dir === 'down') return state;
       const nextDisplay = [...display];
       const [item] = nextDisplay.splice(idx, 1);
       nextDisplay.splice(target, 0, item);
-      return { overlays: nextDisplay.reverse() };
+      return { overlays: pinDemBaseToBack(nextDisplay.reverse()) };
     }),
 
   reorderOverlaysDisplay: (displayIds) =>
@@ -297,10 +316,8 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
           byId.delete(id);
         }
       }
-      // Append any missing (shouldn't happen)
       for (const o of byId.values()) ordered.push(o);
-      // displayIds are top→bottom; store is bottom→top
-      return { overlays: ordered.reverse() };
+      return { overlays: pinDemBaseToBack(ordered.reverse()) };
     }),
 
   patchOverlay: (id, patch) =>

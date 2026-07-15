@@ -247,7 +247,10 @@ class CompositeService:
                     ColormapStop(value=255, color="#ffffff"),
                 ],
             ),
-            message=f"{label} · stretch {request.stretch} {request.p_low}-{request.p_high}%",
+            message=(
+                f"{label} · stretch {request.stretch} {request.p_low}-{request.p_high}% · "
+                f"{rgb.shape[1]}×{rgb.shape[0]}px"
+            ),
             stretch=f"{request.stretch} p{request.p_low}-{request.p_high} γ={request.gamma}",
         )
 
@@ -346,7 +349,6 @@ class CompositeService:
         contrast: float,
     ) -> np.ndarray:
         stacked = np.stack([r, g, b], axis=-1)
-        valid = np.isfinite(stacked)
         out = np.zeros_like(stacked, dtype=np.float64)
         if mode == "none":
             out = np.nan_to_num(stacked, nan=0.0)
@@ -360,17 +362,19 @@ class CompositeService:
                 lo, hi = float(np.nanmin(ch)), float(np.nanmax(ch))
                 out[:, :, i] = np.clip((ch - lo) / (hi - lo + 1e-9), 0, 1)
                 out[:, :, i][~m] = 0
-        else:  # percentile — joint stretch across channels (standard EO display)
-            vals = stacked[valid]
-            if vals.size:
+        else:  # percentile — per-channel stretch (sharper EO display than joint RGB)
+            for i in range(3):
+                ch = stacked[:, :, i]
+                m = np.isfinite(ch)
+                if not m.any():
+                    continue
+                vals = ch[m]
                 lo = float(np.percentile(vals, p_low))
                 hi = float(np.percentile(vals, p_high))
                 if hi <= lo:
                     hi = lo + 1e-6
-                out = np.clip((stacked - lo) / (hi - lo), 0, 1)
-                out[~valid] = 0
-            else:
-                out = np.zeros_like(stacked)
+                out[:, :, i] = np.clip((ch - lo) / (hi - lo), 0, 1)
+                out[:, :, i][~m] = 0
 
         if abs(gamma - 1.0) > 1e-6:
             out = np.power(np.clip(out, 0, 1), 1.0 / gamma)
@@ -382,14 +386,19 @@ class CompositeService:
 
     def _rgb_to_png(self, rgb: np.ndarray) -> bytes:
         u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-        alpha = np.full(u8.shape[:2], 220, dtype=np.uint8)
-        # Transparent where all near black (no data)
-        dark = (u8.sum(axis=2) < 3)
+        alpha = np.full(u8.shape[:2], 255, dtype=np.uint8)
+        # Transparent where no-data (all near black)
+        dark = u8.sum(axis=2) < 3
         alpha[dark] = 0
         rgba = np.dstack([u8, alpha])
         img = Image.fromarray(rgba, mode="RGBA")
+        # Mild unsharp mask keeps edges crisp after bilinear COG sampling
+        rgb_img = img.convert("RGB")
+        rgb_img = rgb_img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=80, threshold=2))
+        out = Image.merge("RGBA", (*rgb_img.split(), img.split()[-1]))
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        # compress_level 3 = faster / sharper decode path; avoid over-optimizing
+        out.save(buf, format="PNG", compress_level=3, optimize=False)
         return buf.getvalue()
 
     def _rgb_histogram(self, rgb: np.ndarray) -> dict[str, Any]:

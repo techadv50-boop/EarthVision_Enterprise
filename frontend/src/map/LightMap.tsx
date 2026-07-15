@@ -21,7 +21,7 @@ import {
   polygonAreaSqMeters,
 } from '../utils/geoMath';
 import { LatLngGrid, NorthArrow, ScaleBar } from '../components/map/MapDecorations';
-import { DemTerrainLayer } from './DemTerrainLayer';
+import { DemTerrainLayer, isArcSceneMode } from './DemTerrainLayer';
 import 'leaflet/dist/leaflet.css';
 
 type LonLat = [number, number]; // [lon, lat]
@@ -594,11 +594,20 @@ function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
 
 function EnsureStackPane() {
   const map = useMap();
-  // Create synchronously so child TileLayer/ImageOverlay can mount into it
+  // DEM pane under imagery; stack pane for scenes / analysis
+  if (!map.getPane('evDemPane')) {
+    const dem = map.createPane('evDemPane');
+    dem.style.zIndex = '440';
+    dem.style.pointerEvents = 'none';
+  } else {
+    map.getPane('evDemPane')!.style.zIndex = '440';
+  }
   if (!map.getPane('evStackPane')) {
     const pane = map.createPane('evStackPane');
     pane.style.zIndex = '450';
     pane.style.pointerEvents = 'none';
+  } else {
+    map.getPane('evStackPane')!.style.zIndex = '450';
   }
   return null;
 }
@@ -743,20 +752,23 @@ export function LightMap({
     [visibleOverlays],
   );
 
-  const demZ = demBaseOverlay
-    ? overlayZIndex.get(demBaseOverlay.id) ?? 415
-    : 415;
+  const arcSceneActive = isArcSceneMode(demBaseOverlay);
+
+  // Fallback drape from Eye-On scene still (when API drape missing)
+  const sceneTextureUrl = useMemo(() => {
+    const scene = visibleOverlays.find((o) => o.kind === 'scene' && o.url);
+    return scene?.url ?? null;
+  }, [visibleOverlays]);
+
+  // ArcScene mesh in stack pane (front); flat elev under imagery in dem pane
+  const demZ = arcSceneActive ? 455 : 405;
 
   const mapStyle = useMemo(() => {
+    // Mesh provides its own 3D orbit — skip CSS map warp (would misalign basemap)
+    if (demBaseOverlay) return undefined;
+    if (!chrome.view3d && !chrome.rotate) return undefined;
     const parts: string[] = [];
-    // Mild oblique tilt so DEM base height reads under imagery (not extreme)
-    if (chrome.view3d) {
-      parts.push(
-        demBaseOverlay
-          ? 'perspective(1000px) rotateX(22deg) scale(1.04)'
-          : 'perspective(900px) rotateX(28deg)',
-      );
-    }
+    if (chrome.view3d) parts.push('perspective(900px) rotateX(28deg)');
     if (chrome.rotate) parts.push('rotateZ(-12deg)');
     if (chrome.terrainRelief) parts.push('contrast(1.06) saturate(1.05)');
     return parts.length
@@ -789,10 +801,12 @@ export function LightMap({
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
+      {/* ArcScene: draped mesh in stack pane. Flat: elev under imagery. */}
       <DemTerrainLayer
         overlay={demBaseOverlay}
         enabled={Boolean(demBaseOverlay)}
         zIndex={demZ}
+        sceneTextureUrl={sceneTextureUrl}
       />
       <DrawingTools
         mapTool={mapTool}
@@ -814,6 +828,10 @@ export function LightMap({
       )}
 
       {visibleOverlays.map((overlay) => {
+        // DEM mesh is drawn in evDemPane; skip flat DEM raster in the imagery stack
+        if (overlay.kind === 'terrain' && overlay.terrainRole === 'base') {
+          return null;
+        }
         const [west, south, east, north] = overlay.bounds;
         const leafletBounds: [[number, number], [number, number]] = [
           [south, west],
@@ -840,13 +858,20 @@ export function LightMap({
           },
         };
 
+        // ArcScene: hide flat satellite tiles — imagery is already draped on the DEM mesh.
+        // Flat mode: keep translucent scenes so elev colors show under the image.
+        const opacity =
+          arcSceneActive && overlay.kind === 'scene'
+            ? 0
+            : overlay.opacity;
+
         return (
           <Fragment key={`${overlay.id}-z${zIndex}`}>
             {overlay.kind === 'scene' && overlay.tileUrl ? (
               <TileLayer
                 url={overlay.tileUrl}
                 bounds={leafletBounds}
-                opacity={overlay.opacity}
+                opacity={opacity}
                 maxNativeZoom={16}
                 maxZoom={18}
                 pane="evStackPane"
@@ -860,10 +885,15 @@ export function LightMap({
               <ImageOverlay
                 url={overlay.url}
                 bounds={leafletBounds}
-                opacity={overlay.opacity}
+                opacity={opacity}
                 interactive={false}
                 pane="evStackPane"
                 zIndex={zIndex}
+                className={
+                  overlay.kind === 'index' || overlay.kind === 'change'
+                    ? 'ev-sharp-overlay'
+                    : undefined
+                }
                 eventHandlers={tagHandlers}
               />
             ) : null}

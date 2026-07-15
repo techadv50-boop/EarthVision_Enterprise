@@ -343,12 +343,23 @@ export function WorkspacePage() {
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,
-          // Soft-drape: satellite stays on top of DEM base
-          opacity: hasDemBase ? 0.78 : 1,
+          // Flat tiles hidden while ArcScene drapes imagery onto the DEM mesh
+          opacity: hasDemBase ? 0.05 : 1,
           label,
           renderMode: overlay.render_mode,
           visible: true,
         });
+        // Keep ArcScene drape texture in sync with the Eye-On scene still
+        if (hasDemBase && overlay.overlay_base64) {
+          const dem = useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.terrainRole === 'base');
+          if (dem) {
+            useWorkflowStore.getState().patchOverlay(dem.id, {
+              textureUrl: dem.textureUrl || analyticsService.toDataUrl(overlay.overlay_base64),
+            });
+          }
+        }
       } catch (err) {
         setError(getErrorMessage(err));
         hideScene(scene.id);
@@ -511,42 +522,76 @@ export function WorkspacePage() {
         observer = [first[0], first[1]];
         target = [last[0], last[1]];
       }
+      const sceneForDem =
+        product === 'dem'
+          ? focusScene ||
+            (() => {
+              const sid = useWorkflowStore
+                .getState()
+                .overlays.find((o) => o.kind === 'scene' && o.visible !== false)?.sceneId;
+              return sid ? scenes.find((s) => s.id === sid) ?? null : null;
+            })()
+          : null;
+      const sceneOverlayForDem = sceneForDem
+        ? useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.kind === 'scene' && o.sceneId === sceneForDem.id)
+        : null;
+      // DEM must use the same geographic frame as the Eye-On satellite
+      const demBbox = (sceneOverlayForDem?.bounds ?? analysisBbox) as [
+        number,
+        number,
+        number,
+        number,
+      ];
+
       const result = await terrainService.compute({
         product,
-        bbox: [...analysisBbox],
-        aoi: aoiGeoJson?.geometry ?? null,
-        size: 256,
+        bbox: product === 'dem' ? [...demBbox] : [...analysisBbox],
+        aoi: product === 'dem' ? null : aoiGeoJson?.geometry ?? null,
+        // High-resolution DEM source for ArcScene draping (schema max 1024)
+        size: product === 'dem' ? 768 : 256,
         observer,
         target,
         profile_line: line ?? undefined,
-        scene_id: product === 'dem' ? focusScene?.id : undefined,
+        scene_id: product === 'dem' ? sceneForDem?.id : undefined,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(result.message || result.formula || product);
 
       const isDem = product === 'dem';
-      const drapeUrl =
-        isDem && result.drape_base64
-          ? terrainService.toDataUrl(result.drape_base64)
-          : null;
       if (result.overlay_base64 || result.geojson || (isDem && result.dem_grid)) {
+        // Force DEM bounds to match the satellite overlay exactly
+        const alignedBounds = (sceneOverlayForDem?.bounds ??
+          (result.bounds as [number, number, number, number])) as [
+          number,
+          number,
+          number,
+          number,
+        ];
+        const drapeUrl = result.drape_base64
+          ? terrainService.toDataUrl(result.drape_base64)
+          : sceneOverlayForDem?.url || null;
         upsertOverlay({
           id: isDem ? 'terrain-dem-base' : `terrain-${product}`,
           kind: 'terrain',
           url: result.overlay_base64
             ? terrainService.toDataUrl(result.overlay_base64)
             : '',
-          bounds: result.bounds as [number, number, number, number],
+          bounds: isDem ? alignedBounds : (result.bounds as [number, number, number, number]),
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          // Visible elev color base under the Eye-On satellite
-          opacity: isDem ? 0.7 : layerOpacity,
-          label: isDem ? 'DEM base (under imagery)' : product.replaceAll('_', ' '),
+          opacity: isDem ? 0.98 : layerOpacity,
+          label: isDem ? 'DEM 3D · ArcScene' : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 1.2 : undefined,
+          exaggeration: isDem ? 2.2 : undefined,
+          demYaw: isDem ? 28 : undefined,
+          demPitch: isDem ? 55 : undefined,
+          demColormap: isDem ? 'elev' : undefined,
+          demTextureMix: isDem ? 1 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
-          textureUrl: drapeUrl,
+          textureUrl: isDem ? drapeUrl : null,
         });
       }
 
@@ -555,19 +600,28 @@ export function WorkspacePage() {
           view3d: true,
           terrainRelief: true,
         });
+        useWorkflowStore.getState().setExpandedToolbox('terrain');
+        useWorkflowStore.getState().setToolboxOpen(true);
+        // Flat scene tiles hidden by LightMap while ArcScene mesh shows draped imagery
         const state = useWorkflowStore.getState();
         for (const o of state.overlays) {
           if (o.kind === 'scene' && o.visible !== false) {
-            // Keep satellite clearly on top of DEM base
-            state.upsertOverlay({ ...o, opacity: Math.max(o.opacity, 0.85) });
+            state.patchOverlay(o.id, { opacity: 0.05 });
           }
         }
-        const relief = result.dem_stats?.relief_m;
+        const vmin = result.dem_stats?.min;
+        const vmax = result.dem_stats?.max;
+        const src = result.dem_stats?.source_px;
+        const mesh = result.dem_stats?.mesh_rows;
         setLastMessage(
           [
-            result.message || 'DEM base under satellite',
-            relief != null ? `relief ${Math.round(relief)} m` : null,
-            'image overlaid on elevation',
+            result.message || 'ArcScene DEM 3D — satellite draped on elevation',
+            vmin != null && vmax != null
+              ? `${vmin.toFixed(0)}–${vmax.toFixed(0)} m MSL`
+              : null,
+            src != null ? `${Math.round(src)}px DEM` : null,
+            mesh != null ? `mesh ${Math.round(mesh)}²` : null,
+            'Height / Tilt / Rotate in Terrain toolbox',
           ]
             .filter(Boolean)
             .join(' · '),
@@ -775,24 +829,45 @@ export function WorkspacePage() {
     setToolStatus(`Rendering ${preset.replaceAll('_', ' ')}…`);
     setError(null);
     try {
+      const sceneOverlay = focusScene
+        ? useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
+        : null;
+      const bbox = (sceneOverlay?.bounds ?? analysisBbox) as [
+        number,
+        number,
+        number,
+        number,
+      ];
       const result = await compositeService.render({
         preset,
         scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
+        bbox: [...bbox],
+        size: 1024,
         ...stretchParams,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(`${result.label} · ${result.formula}`);
+      setLastMessage(`${result.label} · ${result.formula} · sharp 1024px`);
+      // Match satellite frame exactly; full opacity for crisp composite
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
         sceneId: focusScene?.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
-        opacity: layerOpacity,
+        bounds: (sceneOverlay?.bounds ??
+          (result.bounds as [number, number, number, number])) as [
+          number,
+          number,
+          number,
+          number,
+        ],
+        footprint: sceneOverlay?.footprint ?? null,
+        opacity: 1,
         label: result.label,
         visible: true,
+        renderMode: 'rgb',
       });
     } catch (err) {
       setError(getErrorMessage(err));
@@ -808,9 +883,21 @@ export function WorkspacePage() {
     setToolStatus('Applying histogram stretch…');
     setError(null);
     try {
+      const sceneOverlay = focusScene
+        ? useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
+        : null;
+      const bbox = (sceneOverlay?.bounds ?? analysisBbox) as [
+        number,
+        number,
+        number,
+        number,
+      ];
       const result = await compositeService.stretch({
         scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
+        bbox: [...bbox],
+        size: 1024,
         ...params,
       });
       setStretchResult(result);
@@ -820,10 +907,18 @@ export function WorkspacePage() {
         kind: 'index',
         sceneId: focusScene?.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
-        opacity: layerOpacity,
+        bounds: (sceneOverlay?.bounds ??
+          (result.bounds as [number, number, number, number])) as [
+          number,
+          number,
+          number,
+          number,
+        ],
+        footprint: sceneOverlay?.footprint ?? null,
+        opacity: 1,
         label: `Stretch ${params.p_low}-${params.p_high}%`,
         visible: true,
+        renderMode: 'rgb',
       });
     } catch (err) {
       setError(getErrorMessage(err));

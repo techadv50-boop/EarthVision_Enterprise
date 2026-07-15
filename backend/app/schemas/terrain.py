@@ -32,7 +32,7 @@ class TerrainComputeRequest(BaseModel):
         default=None, description="[west, south, east, north]"
     )
     aoi: dict[str, Any] | None = None
-    size: int = Field(default=256, ge=64, le=512)
+    size: int = Field(default=256, ge=64, le=1024)
     # Contour
     contour_interval: float = Field(default=25.0, gt=0)
     # Viewshed / LOS
