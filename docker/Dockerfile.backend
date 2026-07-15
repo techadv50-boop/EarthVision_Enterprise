@@ -1,0 +1,21 @@
+FROM python:3.12-slim-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gdal-bin libgdal-dev g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    || pip install --no-cache-dir fastapi uvicorn[standard] pydantic pydantic-settings \
+       sqlalchemy[asyncio] alembic asyncpg aiosqlite python-jose[cryptography] \
+       'passlib[bcrypt]' bcrypt==4.2.1 python-multipart httpx loguru redis \
+       shapely pyproj numpy pillow scikit-learn openpyxl reportlab aiofiles \
+       orjson email-validator greenlet tenacity
+
+COPY backend/ .
+RUN mkdir -p /data/cache /data/imagery /data/uploads /data/logs
+
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
