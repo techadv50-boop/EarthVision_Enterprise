@@ -113,7 +113,7 @@ export const TOOLBOXES: ToolboxDef[] = [
   {
     id: 'ai',
     title: 'AI Detection',
-    blurb: 'Object & land-cover detection on imagery',
+    blurb: 'Task-specific EO detectors (CV + ML) on Eye-On imagery',
     tools: [
       { id: 'building_detection', label: 'Building Detection', action: { type: 'detection', task: 'building_detection' }, needsScene: true },
       { id: 'road_extraction', label: 'Road Extraction', action: { type: 'detection', task: 'road_extraction' }, needsScene: true },

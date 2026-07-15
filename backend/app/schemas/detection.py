@@ -56,4 +56,4 @@ class DetectionRunResponse(BaseModel):
     count: int
     legend: LegendInfo | None = None
     message: str
-    formula: str = "spectral-index–guided EO detector"
+    formula: str = "task-specific EO detector (OpenCV CV + scikit-learn ML)"

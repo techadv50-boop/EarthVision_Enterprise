@@ -28,5 +28,7 @@ tenacity==9.0.0
 # Optional heavy deps (install in production as needed):
 # torch==2.5.1
 rasterio==1.5.0
+opencv-python-headless==4.10.0.84
+scipy>=1.11.0
 # geopandas==1.0.1
 pyshp==2.3.1
