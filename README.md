@@ -2,16 +2,40 @@
 
 Commercial Earth Observation Platform combining interactive 3D globe visualization, satellite catalog search (Copernicus / Sentinel / Landsat / MODIS), spectral analytics, GIS tools, and machine learning — in one integrated product.
 
+## Use online (recommended — home + office)
+
+You do **not** need local project folders on both PCs. GitHub is the source of truth.
+
+1. Open **[cursor.com/agents](https://cursor.com/agents)**
+2. Select this GitHub repo
+3. Give the agent a task (it installs deps, starts API + UI, pushes a PR)
+4. Review the PR on GitHub from either PC
+
+Cloud setup lives in `.cursor/environment.json` and `scripts/cloud-install.sh`.  
+See **`AGENTS.md`** for ports, login, and smoke checks.
+
+Optional: create a saved Environment snapshot at  
+[cursor.com/dashboard/cloud-agents#environments](https://cursor.com/dashboard/cloud-agents#environments)  
+so every new agent boots faster.
+
 ## Stack
 
 | Layer | Technology |
 |-------|------------|
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2, Pydantic v2, JWT |
 | Frontend | React 19, TypeScript, Vite, CesiumJS, Tailwind, Zustand |
-| Database | PostgreSQL + PostGIS (SQLite for local dev) |
+| Database | PostgreSQL + PostGIS (SQLite for local / cloud dev) |
 | Deploy | Docker Compose, Nginx, GitHub Actions |
+| Online IDE | Cursor Cloud Agents (`cursor.com/agents`) |
 
-## Quick Start (local)
+## Quick Start (local — optional)
+
+### One-shot (API + UI)
+
+```bash
+bash scripts/cloud-install.sh
+bash scripts/dev.sh
+```
 
 ### Backend
 
@@ -20,7 +44,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # or use the included .env
+cp ../.env.example .env   # or use the included .env
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
