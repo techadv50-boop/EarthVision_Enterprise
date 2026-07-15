@@ -259,56 +259,42 @@ class TerrainService:
         altitude: float = 45.0,
     ) -> TerrainComputeResponse:
         vmin, vmax = float(np.nanmin(dem)), float(np.nanmax(dem))
-        # Spatially registered elev tint for under-satellite display (same bounds / grid)
-        png = self._rgba(dem, "elev", vmin, vmax, alpha=200)
-        step = max(1, dem.shape[0] // 64)
+        # Elev legend / flat-mode tint (same geographic frame as mesh)
+        png = self._rgba(dem, "elev", vmin, vmax, alpha=220)
+        # Dense mesh for ArcScene (~128 cells); high-res DEM source up to 1024px
+        target_cells = min(128, dem.shape[0])
+        step = max(1, dem.shape[0] // target_cells)
         grid = dem[::step, ::step]
         relief = float(vmax - vmin)
         hs = self._hillshade(dem, bounds, azimuth, altitude)
         hs_n = np.clip(hs / 255.0, 0, 1)
 
-        # Optional: satellite×elev blend (features colored by MSL elevation)
+        # True-color satellite × hillshade — drapes onto DEM mesh (ArcScene)
         drape_b64: str | None = None
         if scene_id:
             try:
                 from app.services.scene_imagery_service import SceneImageryService
 
-                bands, band_bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
+                bands, _band_bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
                     scene_id, size=dem.shape[0]
                 )
-                # Prefer scene band bounds when they match the DEM grid size
-                if band_bounds and len(band_bounds) == 4:
-                    # Keep DEM bounds as the display frame (already scene-aligned above)
-                    pass
                 if bands and bands.get("red") is not None:
                     r = np.asarray(bands["red"], dtype=np.float32)
                     g = np.asarray(bands.get("green", bands["red"]), dtype=np.float32)
                     b = np.asarray(bands.get("blue", bands["red"]), dtype=np.float32)
-                    # Resize bands to DEM shape if needed
                     if r.shape != dem.shape:
                         r_img = Image.fromarray(
                             np.nan_to_num(r, nan=0).astype(np.float32), mode="F"
-                        ).resize((dem.shape[1], dem.shape[0]), Image.BILINEAR)
+                        ).resize((dem.shape[1], dem.shape[0]), Image.BICUBIC)
                         g_img = Image.fromarray(
                             np.nan_to_num(g, nan=0).astype(np.float32), mode="F"
-                        ).resize((dem.shape[1], dem.shape[0]), Image.BILINEAR)
+                        ).resize((dem.shape[1], dem.shape[0]), Image.BICUBIC)
                         b_img = Image.fromarray(
                             np.nan_to_num(b, nan=0).astype(np.float32), mode="F"
-                        ).resize((dem.shape[1], dem.shape[0]), Image.BILINEAR)
+                        ).resize((dem.shape[1], dem.shape[0]), Image.BICUBIC)
                         r = np.asarray(r_img, dtype=np.float32)
                         g = np.asarray(g_img, dtype=np.float32)
                         b = np.asarray(b_img, dtype=np.float32)
-
-                    elev_norm = (dem - vmin) / (vmax - vmin + 1e-6)
-                    elev_rgb = np.zeros((*dem.shape, 3), dtype=np.float32)
-                    # Simple elev ramp for blend: blue→yellow→red
-                    elev_rgb[..., 0] = np.clip(0.1 + 0.9 * elev_norm**1.2, 0, 1)
-                    elev_rgb[..., 1] = np.clip(
-                        0.55 + 0.35 * elev_norm - 0.7 * np.maximum(elev_norm - 0.5, 0),
-                        0,
-                        1,
-                    )
-                    elev_rgb[..., 2] = np.clip(0.95 - 0.9 * elev_norm, 0, 1)
 
                     draped = np.zeros((dem.shape[0], dem.shape[1], 4), dtype=np.uint8)
                     for i, band in enumerate((r, g, b)):
@@ -317,21 +303,21 @@ class TerrainService:
                             continue
                         lo, hi = np.nanpercentile(band[valid], [2, 98])
                         sat = np.clip((band - lo) / (hi - lo + 1e-6), 0, 1)
-                        # 55% satellite feature detail + 45% elev color (MSL)
-                        mixed = sat * 0.55 + elev_rgb[..., i] * 0.45
-                        mixed = mixed * (0.82 + 0.18 * hs_n)
-                        draped[..., i] = (np.clip(mixed, 0, 1) * 255).astype(np.uint8)
+                        # ArcScene drape: satellite detail shaded by terrain relief
+                        lit = sat * (0.52 + 0.48 * hs_n)
+                        draped[..., i] = (np.clip(lit, 0, 1) * 255).astype(np.uint8)
                     draped[..., 3] = 255
                     buf = io.BytesIO()
                     Image.fromarray(draped, mode="RGBA").save(buf, format="PNG", optimize=True)
                     drape_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
             except Exception as exc:  # noqa: BLE001
-                logger.warning("DEM elev×satellite blend failed for {}: {}", scene_id, exc)
+                logger.warning("ArcScene DEM drape failed for {}: {}", scene_id, exc)
 
+        rows, cols = int(grid.shape[0]), int(grid.shape[1])
         msg = (
-            f"Elevation (m MSL) spatially aligned to satellite · "
-            f"{vmin:.0f}–{vmax:.0f} m · relief {relief:.0f} m · "
-            "colors map image features to height above mean sea level"
+            f"ArcScene DEM 3D · high-res {dem.shape[0]}px source · mesh {rows}×{cols} · "
+            f"{vmin:.0f}–{vmax:.0f} m MSL · relief {relief:.0f} m · "
+            "satellite draped on elevation (spatially locked)"
         )
         return TerrainComputeResponse(
             product="dem",
@@ -345,9 +331,12 @@ class TerrainService:
                 "mean": float(np.nanmean(dem)),
                 "std": float(np.nanstd(dem)),
                 "relief_m": relief,
+                "source_px": float(dem.shape[0]),
+                "mesh_rows": float(rows),
+                "mesh_cols": float(cols),
             },
             drape_base64=drape_b64,
-            formula="Elevation above mean sea level (m) — synthetic plains DEM for demo",
+            formula="Elevation above mean sea level (m) — high-res DEM draped for ArcScene 3D",
             message=msg,
         )
 

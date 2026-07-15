@@ -21,7 +21,7 @@ import {
   polygonAreaSqMeters,
 } from '../utils/geoMath';
 import { LatLngGrid, NorthArrow, ScaleBar } from '../components/map/MapDecorations';
-import { DemTerrainLayer } from './DemTerrainLayer';
+import { DemTerrainLayer, isArcSceneMode } from './DemTerrainLayer';
 import 'leaflet/dist/leaflet.css';
 
 type LonLat = [number, number]; // [lon, lat]
@@ -752,10 +752,19 @@ export function LightMap({
     [visibleOverlays],
   );
 
-  // DEM mesh lives in evDemPane (z 440) — always behind imagery in evStackPane (z 450)
-  const demZ = 405;
+  const arcSceneActive = isArcSceneMode(demBaseOverlay);
+
+  // Fallback drape from Eye-On scene still (when API drape missing)
+  const sceneTextureUrl = useMemo(() => {
+    const scene = visibleOverlays.find((o) => o.kind === 'scene' && o.url);
+    return scene?.url ?? null;
+  }, [visibleOverlays]);
+
+  // ArcScene mesh in stack pane (front); flat elev under imagery in dem pane
+  const demZ = arcSceneActive ? 455 : 405;
 
   const mapStyle = useMemo(() => {
+    // Mesh provides its own 3D orbit — skip CSS map warp (would misalign basemap)
     if (demBaseOverlay) return undefined;
     if (!chrome.view3d && !chrome.rotate) return undefined;
     const parts: string[] = [];
@@ -792,11 +801,12 @@ export function LightMap({
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
       <FitOverlay overlays={visibleOverlays} />
-      {/* DEM always in lower pane — satellite stays on top in evStackPane */}
+      {/* ArcScene: draped mesh in stack pane. Flat: elev under imagery. */}
       <DemTerrainLayer
         overlay={demBaseOverlay}
         enabled={Boolean(demBaseOverlay)}
         zIndex={demZ}
+        sceneTextureUrl={sceneTextureUrl}
       />
       <DrawingTools
         mapTool={mapTool}
@@ -848,9 +858,12 @@ export function LightMap({
           },
         };
 
-        // Satellite stays in front of DEM pane. Use layer opacity (softened on DEM apply)
-        // so elev color themes show through the image.
-        const opacity = overlay.opacity;
+        // ArcScene: hide flat satellite tiles — imagery is already draped on the DEM mesh.
+        // Flat mode: keep translucent scenes so elev colors show under the image.
+        const opacity =
+          arcSceneActive && overlay.kind === 'scene'
+            ? 0
+            : overlay.opacity;
 
         return (
           <Fragment key={`${overlay.id}-z${zIndex}`}>

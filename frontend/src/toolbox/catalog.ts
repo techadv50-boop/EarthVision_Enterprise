@@ -205,7 +205,7 @@ export const TOOLBOXES: ToolboxDef[] = [
     title: 'Terrain Analysis',
     blurb: 'DEM, hydro, viewshed & surface metrics',
     tools: [
-      { id: 'dem', label: 'Elev on image (MSL)', action: { type: 'terrain', product: 'dem' } },
+      { id: 'dem', label: 'DEM 3D (ArcScene)', action: { type: 'terrain', product: 'dem' } },
       { id: 'hillshade', label: 'Hillshade', action: { type: 'terrain', product: 'hillshade' } },
       { id: 'slope', label: 'Slope', action: { type: 'terrain', product: 'slope' } },
       { id: 'aspect', label: 'Aspect', action: { type: 'terrain', product: 'aspect' } },

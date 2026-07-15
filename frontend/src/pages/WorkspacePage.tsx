@@ -343,20 +343,20 @@ export function WorkspacePage() {
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,
-          // Flat tiles are hidden on the map while DEM drapes this imagery
-          opacity: 1,
+          // Flat tiles hidden while ArcScene drapes imagery onto the DEM mesh
+          opacity: hasDemBase ? 0.05 : 1,
           label,
           renderMode: overlay.render_mode,
           visible: true,
         });
-        // If DEM is already active, refresh its drape texture from this scene still
+        // Keep ArcScene drape texture in sync with the Eye-On scene still
         if (hasDemBase && overlay.overlay_base64) {
           const dem = useWorkflowStore
             .getState()
             .overlays.find((o) => o.terrainRole === 'base');
-          if (dem && !dem.textureUrl) {
+          if (dem) {
             useWorkflowStore.getState().patchOverlay(dem.id, {
-              textureUrl: analyticsService.toDataUrl(overlay.overlay_base64),
+              textureUrl: dem.textureUrl || analyticsService.toDataUrl(overlay.overlay_base64),
             });
           }
         }
@@ -549,7 +549,8 @@ export function WorkspacePage() {
         product,
         bbox: product === 'dem' ? [...demBbox] : [...analysisBbox],
         aoi: product === 'dem' ? null : aoiGeoJson?.geometry ?? null,
-        size: 256,
+        // High-resolution DEM source for ArcScene draping (schema max 1024)
+        size: product === 'dem' ? 768 : 256,
         observer,
         target,
         profile_line: line ?? undefined,
@@ -568,6 +569,9 @@ export function WorkspacePage() {
           number,
           number,
         ];
+        const drapeUrl = result.drape_base64
+          ? terrainService.toDataUrl(result.drape_base64)
+          : sceneOverlayForDem?.url || null;
         upsertOverlay({
           id: isDem ? 'terrain-dem-base' : `terrain-${product}`,
           kind: 'terrain',
@@ -576,44 +580,48 @@ export function WorkspacePage() {
             : '',
           bounds: isDem ? alignedBounds : (result.bounds as [number, number, number, number]),
           geojson: (result.geojson as GeoJSON.GeoJsonObject | null) ?? null,
-          opacity: isDem ? 0.85 : layerOpacity,
-          label: isDem ? 'Elevation (m MSL)' : product.replaceAll('_', ' '),
+          opacity: isDem ? 0.98 : layerOpacity,
+          label: isDem ? 'DEM 3D · ArcScene' : product.replaceAll('_', ' '),
           visible: true,
           demGrid: isDem ? result.dem_grid ?? null : null,
           demStats: isDem ? result.dem_stats ?? null : null,
-          exaggeration: isDem ? 1.6 : undefined,
-          demYaw: isDem ? 0 : undefined,
-          demPitch: isDem ? 90 : undefined,
+          exaggeration: isDem ? 2.2 : undefined,
+          demYaw: isDem ? 28 : undefined,
+          demPitch: isDem ? 55 : undefined,
           demColormap: isDem ? 'elev' : undefined,
-          demTextureMix: isDem ? 0 : undefined,
+          demTextureMix: isDem ? 1 : undefined,
           terrainRole: isDem ? 'base' : 'analysis',
-          textureUrl: null,
+          textureUrl: isDem ? drapeUrl : null,
         });
       }
 
       if (isDem) {
         useWorkflowStore.getState().setMapChrome({
-          view3d: false,
+          view3d: true,
           terrainRelief: true,
         });
-        useWorkflowStore.getState().setExpandedToolbox('layers');
+        useWorkflowStore.getState().setExpandedToolbox('terrain');
         useWorkflowStore.getState().setToolboxOpen(true);
-        // Satellite on top, see-through so elev colors map to image features
+        // Flat scene tiles hidden by LightMap while ArcScene mesh shows draped imagery
         const state = useWorkflowStore.getState();
         for (const o of state.overlays) {
           if (o.kind === 'scene' && o.visible !== false) {
-            state.patchOverlay(o.id, { opacity: 0.55 });
+            state.patchOverlay(o.id, { opacity: 0.05 });
           }
         }
         const vmin = result.dem_stats?.min;
         const vmax = result.dem_stats?.max;
+        const src = result.dem_stats?.source_px;
+        const mesh = result.dem_stats?.mesh_rows;
         setLastMessage(
           [
-            result.message || 'Elevation (m MSL) aligned to satellite',
+            result.message || 'ArcScene DEM 3D — satellite draped on elevation',
             vmin != null && vmax != null
-              ? `${vmin.toFixed(0)}–${vmax.toFixed(0)} m above mean sea level`
+              ? `${vmin.toFixed(0)}–${vmax.toFixed(0)} m MSL`
               : null,
-            'adjust DEM / scene opacity in Layer Manager',
+            src != null ? `${Math.round(src)}px DEM` : null,
+            mesh != null ? `mesh ${Math.round(mesh)}²` : null,
+            'Height / Tilt / Rotate in Terrain toolbox',
           ]
             .filter(Boolean)
             .join(' · '),

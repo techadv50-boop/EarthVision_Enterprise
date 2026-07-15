@@ -47,11 +47,11 @@ export interface MapOverlay {
   demPitch?: number;
   /** DEM base sits under satellite; other terrain products are analysis overlays */
   terrainRole?: 'base' | 'analysis';
-  /** Satellite×hillshade texture (optional soft mix into elev colors) */
+  /** Satellite RGB×hillshade texture draped onto DEM mesh (ArcScene) */
   textureUrl?: string | null;
   /** Elevation color theme for DEM mesh */
   demColormap?: string | null;
-  /** 0–0.5 how much satellite texture tints the elev theme */
+  /** 0–1 how much satellite texture vs elev theme on the mesh */
   demTextureMix?: number;
 }
 

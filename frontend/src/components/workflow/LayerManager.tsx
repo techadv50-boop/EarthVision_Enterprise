@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { MapOverlay } from '../../store/workflowStore';
 import {
   DEM_COLORMAPS,
+  isArcSceneMode,
   type DemColormapId,
 } from '../../map/DemTerrainLayer';
 
@@ -16,77 +17,145 @@ export function DemBaseHeightPanel({
   if (!dem) {
     return (
       <p className="mb-2 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1.5 text-[10px] text-[var(--muted)]">
-        Run <strong>DEM under imagery</strong> after Eye-On a scene. DEM stays behind the satellite;
-        pick a color theme to see elevation.
+        Run <strong>DEM 3D (ArcScene)</strong> after Eye-On a scene. Satellite drapes onto the
+        elevation mesh — image and DEM stay spatially locked.
       </p>
     );
   }
-  const baseH = dem.exaggeration ?? 1.6;
-  const cmap = (dem.demColormap as DemColormapId) || 'elev';
+  const baseH = dem.exaggeration ?? 2.2;
+  const yaw = dem.demYaw ?? 28;
+  const pitch = dem.demPitch ?? 55;
   const relief = dem.demStats?.relief_m;
+  const sourcePx = dem.demStats?.source_px;
+  const meshRows = dem.demStats?.mesh_rows;
+  const arc = isArcSceneMode(dem);
   return (
     <div className="mb-3 space-y-1.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/40 p-2">
       <div className="text-[11px] font-semibold text-[var(--accent)]">
-        Elevation · m above mean sea level
+        DEM 3D · ArcScene view
       </div>
       <p className="text-[10px] text-[var(--muted)]">
-        Spatially aligned under the satellite — colors show which image features are higher /
-        lower
-        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}.
+        {arc
+          ? 'Satellite draped on elevation mesh (oblique 3D)'
+          : 'Flat elev under imagery — switch to Oblique for ArcScene'}
+        {relief != null ? ` · relief ${Math.round(relief)} m` : ''}
+        {sourcePx != null ? ` · ${Math.round(sourcePx)}px DEM` : ''}
+        {meshRows != null ? ` · mesh ${Math.round(meshRows)}²` : ''}
         {dem.demStats?.min != null && dem.demStats?.max != null
           ? ` · ${dem.demStats.min.toFixed(0)}–${dem.demStats.max.toFixed(0)} m MSL`
           : ''}
+        .
       </p>
 
-      <div className="text-[10px] font-semibold text-[var(--ink)]">Color theme</div>
-      <div className="grid grid-cols-2 gap-1">
-        {DEM_COLORMAPS.map((cm) => (
-          <button
-            key={cm.id}
-            type="button"
-            title={cm.label}
-            onClick={() => onPatch(dem.id, { demColormap: cm.id })}
-            className={`rounded border px-1.5 py-1 text-left text-[10px] ${
-              cmap === cm.id
-                ? 'border-[var(--accent)] bg-white ring-1 ring-[var(--accent)]'
-                : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
-            }`}
-          >
-            <div className="mb-0.5 h-2 rounded" style={{ background: cm.gradient }} />
-            {cm.label}
-          </button>
-        ))}
-      </div>
-
       <label className="flex items-center gap-2 text-[10px]">
-        <span className="w-14 shrink-0 font-medium">Opacity</span>
+        <span className="w-14 shrink-0 font-medium">Height</span>
         <input
           type="range"
-          min={20}
-          max={100}
-          step={1}
-          value={Math.round((dem.opacity ?? 0.92) * 100)}
-          onChange={(e) => onPatch(dem.id, { opacity: Number(e.target.value) / 100 })}
-          className="w-full accent-[var(--accent)]"
-        />
-        <span className="w-10 font-mono">{Math.round((dem.opacity ?? 0.92) * 100)}%</span>
-      </label>
-      <label className="flex items-center gap-2 text-[10px]">
-        <span className="w-14 shrink-0 font-medium">Shading</span>
-        <input
-          type="range"
-          min={5}
-          max={40}
+          min={8}
+          max={50}
           step={1}
           value={Math.round(baseH * 10)}
           onChange={(e) => onPatch(dem.id, { exaggeration: Number(e.target.value) / 10 })}
           className="w-full accent-[var(--accent)]"
-          title="Hillshade strength (does not move DEM geographically)"
         />
         <span className="w-10 font-mono">{baseH.toFixed(1)}×</span>
       </label>
+      <label className="flex items-center gap-2 text-[10px]">
+        <span className="w-14 shrink-0 font-medium">Tilt</span>
+        <input
+          type="range"
+          min={25}
+          max={90}
+          step={1}
+          value={pitch}
+          onChange={(e) => onPatch(dem.id, { demPitch: Number(e.target.value) })}
+          className="w-full accent-[var(--accent)]"
+        />
+        <span className="w-10 font-mono">{pitch}°</span>
+      </label>
+      <label className="flex items-center gap-2 text-[10px]">
+        <span className="w-14 shrink-0 font-medium">Rotate</span>
+        <input
+          type="range"
+          min={0}
+          max={360}
+          step={2}
+          value={yaw}
+          onChange={(e) => onPatch(dem.id, { demYaw: Number(e.target.value) })}
+          className="w-full accent-[var(--accent)]"
+        />
+        <span className="w-10 font-mono">{yaw}°</span>
+      </label>
+
+      <div className="text-[10px] font-semibold text-[var(--ink)]">Color theme</div>
+      <div className="grid grid-cols-4 gap-0.5">
+        {DEM_COLORMAPS.map((cm) => {
+          const cmap = (dem.demColormap as DemColormapId) || 'elev';
+          return (
+            <button
+              key={cm.id}
+              type="button"
+              title={cm.label}
+              onClick={() => onPatch(dem.id, { demColormap: cm.id })}
+              className={`h-3 rounded border ${
+                cmap === cm.id
+                  ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]'
+                  : 'border-[var(--line)]'
+              }`}
+              style={{ background: cm.gradient }}
+            />
+          );
+        })}
+      </div>
+
+      <label className="flex items-center gap-2 text-[10px]">
+        <span className="w-14 shrink-0 font-medium">Drape</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          value={Math.round((dem.demTextureMix ?? (arc ? 1 : 0.35)) * 100)}
+          onChange={(e) => onPatch(dem.id, { demTextureMix: Number(e.target.value) / 100 })}
+          className="w-full accent-[var(--accent)]"
+          title="Satellite texture vs elev color on the mesh"
+        />
+        <span className="w-10 font-mono">
+          {Math.round((dem.demTextureMix ?? (arc ? 1 : 0.35)) * 100)}%
+        </span>
+      </label>
+
+      <div className="flex flex-wrap gap-1">
+        {[
+          {
+            label: 'ArcScene',
+            patch: { exaggeration: 2.2, demPitch: 55, demYaw: 28, demTextureMix: 1 },
+          },
+          {
+            label: 'Steep',
+            patch: { exaggeration: 3.5, demPitch: 42, demYaw: 48, demTextureMix: 1 },
+          },
+          {
+            label: 'Top',
+            patch: { exaggeration: 1.8, demPitch: 78, demYaw: 12, demTextureMix: 0.85 },
+          },
+          {
+            label: 'Flat',
+            patch: { exaggeration: 1.6, demPitch: 90, demYaw: 0, demTextureMix: 0 },
+          },
+        ].map(({ label, patch }) => (
+          <button
+            key={label}
+            type="button"
+            className="rounded border border-[var(--line)] bg-white px-1.5 py-0.5 text-[10px] hover:border-[var(--accent)]"
+            onClick={() => onPatch(dem.id, patch)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <p className="text-[10px] text-[var(--muted)]">
-        Tip: lower satellite opacity in Layer Manager to see elev colors on image features.
+        Image + DEM share one mesh — tilt/rotate never separates them.
       </p>
     </div>
   );
@@ -277,9 +346,9 @@ export function LayerManagerBody({
             {isDem && (
               <div className="mt-1.5 space-y-1 border-t border-[var(--line)] pt-1.5">
                 <div className="text-[9px] text-[var(--muted)]">
-                  Elev color (m MSL) — aligned to satellite
+                  ArcScene mesh — image draped on DEM
                   {layer.demStats?.min != null && layer.demStats?.max != null
-                    ? ` · ${layer.demStats.min.toFixed(0)}–${layer.demStats.max.toFixed(0)} m`
+                    ? ` · ${layer.demStats.min.toFixed(0)}–${layer.demStats.max.toFixed(0)} m MSL`
                     : ''}
                 </div>
                 <div className="grid grid-cols-4 gap-0.5">
@@ -299,20 +368,45 @@ export function LayerManagerBody({
                   ))}
                 </div>
                 <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
-                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Shading</span>
+                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Height</span>
                   <input
                     type="range"
-                    min={5}
-                    max={40}
+                    min={8}
+                    max={50}
                     step={1}
                     value={Math.round(baseH * 10)}
                     onChange={(e) =>
                       onPatch(layer.id, { exaggeration: Number(e.target.value) / 10 })
                     }
                     className="w-full accent-[var(--accent)]"
-                    title="Hillshade strength only — keeps spatial alignment"
                   />
                   <span className="w-9 font-mono text-[var(--ink)]">{baseH.toFixed(1)}×</span>
+                </label>
+                <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
+                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Tilt</span>
+                  <input
+                    type="range"
+                    min={25}
+                    max={90}
+                    step={1}
+                    value={layer.demPitch ?? 55}
+                    onChange={(e) => onPatch(layer.id, { demPitch: Number(e.target.value) })}
+                    className="w-full accent-[var(--accent)]"
+                  />
+                  <span className="w-9 font-mono text-[var(--ink)]">{layer.demPitch ?? 55}°</span>
+                </label>
+                <label className="flex items-center gap-2 text-[10px] text-[var(--muted)]">
+                  <span className="w-12 shrink-0 font-semibold text-[var(--ink)]">Rotate</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={360}
+                    step={2}
+                    value={layer.demYaw ?? 28}
+                    onChange={(e) => onPatch(layer.id, { demYaw: Number(e.target.value) })}
+                    className="w-full accent-[var(--accent)]"
+                  />
+                  <span className="w-9 font-mono text-[var(--ink)]">{layer.demYaw ?? 28}°</span>
                 </label>
               </div>
             )}
