@@ -858,7 +858,8 @@ class DetectionService:
         if valid.size == 0:
             return np.zeros_like(arr, dtype=np.float32)
         lo, hi = np.percentile(valid, [5, 95])
-        return np.clip((arr - lo) / (hi - lo + 1e-9), 0, 1).astype(np.float32)
+        out = np.clip((arr - lo) / (hi - lo + 1e-9), 0, 1).astype(np.float32)
+        return np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)
 
     def _cfar_peaks(
         self,
@@ -1037,15 +1038,31 @@ class DetectionService:
         n_int = self._norm01(inten)
 
         # Local texture (std) + Sobel edge — built-up tends to be textured
-        mu = cv2.blur(np.nan_to_num(inten), (7, 7))
-        mu2 = cv2.blur(np.nan_to_num(inten) ** 2, (7, 7))
+        inten_f = np.nan_to_num(inten, nan=0.0).astype(np.float32)
+        mu = cv2.blur(inten_f, (7, 7))
+        mu2 = cv2.blur(inten_f ** 2, (7, 7))
         tex = self._norm01(np.sqrt(np.maximum(mu2 - mu * mu, 0)))
-        gx = cv2.Sobel(np.nan_to_num(inten), cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(np.nan_to_num(inten), cv2.CV_32F, 0, 1, ksize=3)
+        gx = cv2.Sobel(inten_f, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(inten_f, cv2.CV_32F, 0, 1, ksize=3)
         edge = self._norm01(np.hypot(gx, gy))
 
-        # Feature stack: [NDVI, NDBI, NDWI, BSI, intensity, texture, edge]
-        X = np.stack([n_ndvi, n_ndbi, n_ndwi, n_bsi, n_int, tex, edge], axis=-1).reshape(-1, 7)
+        # MLP cannot accept NaN — impute all features to finite values
+        feats = [
+            np.nan_to_num(n_ndvi, nan=0.0),
+            np.nan_to_num(n_ndbi, nan=0.0),
+            np.nan_to_num(n_ndwi, nan=0.0),
+            np.nan_to_num(n_bsi, nan=0.0),
+            np.nan_to_num(n_int, nan=0.0),
+            np.nan_to_num(tex, nan=0.0),
+            np.nan_to_num(edge, nan=0.0),
+        ]
+        n_ndvi, n_ndbi, n_ndwi, n_bsi, n_int, tex, edge = feats
+        X = np.stack(feats, axis=-1).reshape(-1, 7).astype(np.float32)
+        if not np.isfinite(X).all():
+            X = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
+
+        # Valid pixels: original intensity finite (ignore nodata holes)
+        valid = np.isfinite(inten).reshape(-1)
 
         # Pseudo-labels for built-up vs background (spectral decision rules)
         # Built-up: high NDBI, low NDVI, low water, not extreme bare-soil only
@@ -1062,17 +1079,19 @@ class DetectionService:
         y = np.full(h * w, -1, dtype=np.int32)
         y[built.reshape(-1)] = 1
         y[(veg | water | dark).reshape(-1)] = 0
+        y[~valid] = -1
         # Ambiguous mid pixels: leave unlabeled (-1)
 
-        labeled = y >= 0
-        if labeled.sum() < 200:
+        labeled = (y >= 0) & valid
+        if int(labeled.sum()) < 200:
             # Fallback spectral MBI if scene has too few clear training pixels
             score = n_ndbi * (1.0 - 0.6 * n_ndvi) * (0.4 + 0.6 * n_int)
+            score = np.nan_to_num(score, nan=0.0)
             u8 = self._to_u8(score)
             k = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 11))
             tophat = cv2.morphologyEx(u8, cv2.MORPH_TOPHAT, k)
             mask = self._otsu_mask(tophat.astype(np.float32))
-            mask = mask & (n_ndvi < 0.45) & (n_ndwi < 0.40)
+            mask = mask & (n_ndvi < 0.45) & (n_ndwi < 0.40) & np.isfinite(inten)
             mask = self._morph_clean(mask, open_k=3, close_k=7)
             return self._contour_polygons(
                 mask, score, bounds, label, task, conf_min, min_area=40, max_features=60
@@ -1110,8 +1129,20 @@ class DetectionService:
             validation_fraction=0.15,
             n_iter_no_change=8,
         )
-        clf.fit(X[sel], y[sel])
-        proba = clf.predict_proba(X)[:, list(clf.classes_).index(1)].reshape(h, w)
+        X_train = X[sel]
+        y_train = y[sel]
+        # Final NaN guard for sklearn
+        fin = np.isfinite(X_train).all(axis=1)
+        X_train, y_train = X_train[fin], y_train[fin]
+        if X_train.shape[0] < 40 or len(np.unique(y_train)) < 2:
+            raise ValidationError(
+                "Building Detection training set incomplete after cleaning nodata. "
+                "Eye-On a clearer Sentinel-2 / Landsat scene over built-up area."
+            )
+        clf.fit(X_train, y_train)
+        X_pred = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
+        proba = clf.predict_proba(X_pred)[:, list(clf.classes_).index(1)].reshape(h, w)
+        proba = np.nan_to_num(proba, nan=0.0)
 
         # Built-up probability mask — require ML confidence AND urban spectral prior
         thr = max(0.55, float(conf_min))
