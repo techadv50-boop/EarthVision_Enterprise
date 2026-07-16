@@ -89,15 +89,25 @@ function MapCommandRunner({
 
 function CursorCoordinates({ enabled }: { enabled: boolean }) {
   const [pos, setPos] = useState<string>('—');
+  const rafRef = useRef<number | null>(null);
   useMapEvents({
     mousemove(e) {
       if (!enabled) return;
-      setPos(`${e.latlng.lat.toFixed(5)}°, ${e.latlng.lng.toFixed(5)}°`);
+      const next = `${e.latlng.lat.toFixed(5)}°, ${e.latlng.lng.toFixed(5)}°`;
+      // Throttle React updates to animation frames — avoids UI churn while moving the cursor
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        setPos(next);
+        rafRef.current = null;
+      });
     },
   });
   if (!enabled) return null;
   return (
-    <div className="pointer-events-none absolute bottom-3 left-1/2 z-[1000] -translate-x-1/2 rounded-full border border-[var(--line)] bg-white/95 px-3 py-1 font-mono text-[11px] shadow">
+    <div
+      className="pointer-events-none absolute bottom-3 left-1/2 z-[1000] -translate-x-1/2 rounded-full border border-[var(--line)] bg-white/95 px-3 py-1 font-mono text-[11px] shadow"
+      data-map-chrome="coords"
+    >
       {pos}
     </div>
   );
@@ -182,8 +192,8 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
   useEffect(() => {
     const last = overlays[overlays.length - 1];
     if (!last || last.id === lastId.current) return;
-    // Don't auto-fit buffer-only updates
-    if (last.kind === 'buffer') {
+    // Don't auto-fit buffer-only updates or DEM mesh tweaks
+    if (last.kind === 'buffer' || last.terrainRole === 'base') {
       lastId.current = last.id;
       return;
     }
@@ -194,7 +204,7 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
         [south, west],
         [north, east],
       ],
-      { padding: [40, 40], maxZoom: 15, animate: true },
+      { padding: [40, 40], maxZoom: 15, animate: false },
     );
   }, [overlays, map]);
   return null;
@@ -603,7 +613,10 @@ function EnsureStackPane() {
   return null;
 }
 
-/** Re-append stack pane children bottom→top so Layer Manager order always wins. */
+/** Re-append stack pane children bottom→top so Layer Manager order always wins.
+ *  Only runs when overlay order/visibility changes — NOT on pan/zoom (that caused
+ *  the whole map UI to "refresh" while working).
+ */
 function EnforceStackOrder({
   overlays,
   zIndexById,
@@ -632,14 +645,11 @@ function EnforceStackOrder({
 
     apply();
     const onAdd = () => {
-      // Tag newly added leaflet layers if missing data-ev-id (fallback)
       window.requestAnimationFrame(apply);
     };
     map.on('layeradd', onAdd);
-    map.on('zoomend moveend', apply);
     return () => {
       map.off('layeradd', onAdd);
-      map.off('zoomend moveend', apply);
     };
   }, [map, overlays, zIndexById]);
 
@@ -841,7 +851,7 @@ export function LightMap({
         };
 
         return (
-          <Fragment key={`${overlay.id}-z${zIndex}`}>
+          <Fragment key={overlay.id}>
             {overlay.kind === 'scene' && overlay.tileUrl ? (
               <TileLayer
                 url={overlay.tileUrl}
@@ -874,7 +884,7 @@ export function LightMap({
             ) : null}
             {overlay.geojson && (
               <GeoJSON
-                key={`${overlay.id}-gj-z${zIndex}`}
+                key={`${overlay.id}-gj`}
                 data={overlay.geojson as GeoJSON.GeoJsonObject}
                 interactive={false}
                 style={() => geoStyle(overlay.kind)}

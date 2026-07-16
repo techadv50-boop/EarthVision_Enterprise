@@ -187,7 +187,7 @@ export function WorkspacePage() {
     backToPlace,
   } = useWorkflowStore();
 
-  // Recover from stale HMR / old store snapshots missing new fields
+  // Recover from stale HMR / old store snapshots missing new fields (once on mount only)
   useEffect(() => {
     const state = useWorkflowStore.getState();
     const patch: Record<string, unknown> = {};
@@ -213,8 +213,7 @@ export function WorkspacePage() {
     } else if (typeof (state.mapChrome as { grid?: boolean }).grid !== 'boolean') {
       patch.mapChrome = { ...state.mapChrome, grid: true };
     }
-    // Always reopen toolboxes after login so the new UI is visible
-    if (state.toolboxOpen === false) patch.toolboxOpen = true;
+    // Do NOT force toolboxOpen=true — that disrupted work by resetting the UI
     if (Object.keys(patch).length) {
       useWorkflowStore.setState(patch as Partial<typeof state>);
     }
