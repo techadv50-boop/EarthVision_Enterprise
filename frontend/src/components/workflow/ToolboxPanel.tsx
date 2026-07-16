@@ -259,8 +259,8 @@ export function ToolboxPanel({
           <p className="text-[11px] text-[var(--muted)]">{activeBox.blurb}</p>
           {['ai', 'maritime', 'aviation'].includes(activeBox.id) && (
             <p className="mt-1 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10px] text-[var(--muted)]">
-              Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its
-              formula. Detections show legend, scale bar, north arrow, and grid on the map.
+              ML / neural detectors (MLP built-up buildings, CFAR ships, Hough roads, DoG
+              aircraft, RandomForest LULC). Eye-On an optical scene first — no random placeholders.
             </p>
           )}
           {!hasScene && activeBox.tools.some((t) => t.needsScene) && (

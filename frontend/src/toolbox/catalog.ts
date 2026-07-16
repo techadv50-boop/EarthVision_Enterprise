@@ -68,7 +68,7 @@ export const TOOLBOXES: ToolboxDef[] = [
   {
     id: 'layers',
     title: 'Layer Manager',
-    blurb: 'Drag to reorder · DEM base height · scene & analytics layers',
+    blurb: 'Unified priority list for every map layer',
     tools: [
       { id: 'add_layer', label: 'Add Layer', action: { type: 'layer', op: 'add' } },
       { id: 'remove_layer', label: 'Remove Layer', action: { type: 'layer', op: 'remove' } },
@@ -113,7 +113,7 @@ export const TOOLBOXES: ToolboxDef[] = [
   {
     id: 'ai',
     title: 'AI Detection',
-    blurb: 'Object & land-cover detection on imagery',
+    blurb: 'ML / neural detectors on Eye-On imagery (built-up, ships, roads, LULC)',
     tools: [
       { id: 'building_detection', label: 'Building Detection', action: { type: 'detection', task: 'building_detection' }, needsScene: true },
       { id: 'road_extraction', label: 'Road Extraction', action: { type: 'detection', task: 'road_extraction' }, needsScene: true },
@@ -205,7 +205,7 @@ export const TOOLBOXES: ToolboxDef[] = [
     title: 'Terrain Analysis',
     blurb: 'DEM, hydro, viewshed & surface metrics',
     tools: [
-      { id: 'dem', label: 'DEM 3D (under imagery)', action: { type: 'terrain', product: 'dem' } },
+      { id: 'dem', label: 'DEM 3D (ArcScene)', action: { type: 'terrain', product: 'dem' } },
       { id: 'hillshade', label: 'Hillshade', action: { type: 'terrain', product: 'hillshade' } },
       { id: 'slope', label: 'Slope', action: { type: 'terrain', product: 'slope' } },
       { id: 'aspect', label: 'Aspect', action: { type: 'terrain', product: 'aspect' } },
