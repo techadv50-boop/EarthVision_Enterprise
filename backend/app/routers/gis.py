@@ -8,6 +8,8 @@ from fastapi.responses import Response
 from app.core.deps import CurrentUser
 from app.schemas.gis import (
     ExportRequest,
+    ExtractByMaskRequest,
+    ExtractByMaskResponse,
     GeocodeRequest,
     GeocodeResponse,
     MeasurementRequest,
@@ -114,3 +116,29 @@ async def import_shapefile(
     service = GISService()
     content = await file.read()
     return service.shapefile_zip_to_geojson(content)
+
+
+@router.post("/import/geometry")
+async def import_geometry(
+    user: CurrentUser, file: UploadFile = File(...)
+) -> dict:
+    """Import shapefile (.zip), KML, KMZ, or GeoJSON as a FeatureCollection (AOI / mask)."""
+    service = GISService()
+    content = await file.read()
+    filename = file.filename or "upload.geojson"
+    return service.import_geometry_bytes(filename, content)
+
+
+@router.post("/extract-by-mask", response_model=ExtractByMaskResponse)
+async def extract_by_mask(
+    data: ExtractByMaskRequest, user: CurrentUser
+) -> ExtractByMaskResponse:
+    """Clip the Eye-On satellite image to an uploaded/drawn vector mask."""
+    service = GISService()
+    result = service.extract_by_mask(
+        data.scene_id,
+        data.mask,
+        size=data.size,
+        preset=data.preset,
+    )
+    return ExtractByMaskResponse(**result)

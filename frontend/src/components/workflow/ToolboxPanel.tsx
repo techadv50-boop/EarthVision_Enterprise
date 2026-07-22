@@ -26,6 +26,7 @@ import type {
   StretchResult,
 } from '../../services/compositeService';
 import { BufferPanel } from './BufferPanel';
+import { GeometryImportPanel } from './GeometryImportPanel';
 import { ImageProcessingPanel } from './ImageProcessingPanel';
 import { detectionService } from '../../services/detectionService';
 
@@ -83,6 +84,14 @@ interface Props {
   onRenameOverlay: (id: string, label: string) => void;
   onApplyBuffer: (distance: number) => void;
   onClearBuffer: () => void;
+  // Vector mask import + extract-by-mask
+  maskLoading?: boolean;
+  extractLoading?: boolean;
+  hasMask?: boolean;
+  maskLabel?: string | null;
+  onImportMaskFile?: (file: File) => Promise<void> | void;
+  onExtractByMask?: () => void;
+  onClearMask?: () => void;
   // Image processing
   indexResult?: IndexResult | null;
   compositeResult?: CompositeResult | null;
@@ -139,6 +148,13 @@ export function ToolboxPanel({
   onRenameOverlay,
   onApplyBuffer,
   onClearBuffer,
+  maskLoading = false,
+  extractLoading = false,
+  hasMask = false,
+  maskLabel = null,
+  onImportMaskFile,
+  onExtractByMask,
+  onClearMask,
   indexResult = null,
   compositeResult = null,
   stretchResult = null,
@@ -354,7 +370,19 @@ export function ToolboxPanel({
         )}
 
         {activeBox.id === 'gis' && (
-          <div className="mb-3">
+          <div className="mb-3 space-y-3">
+            {onImportMaskFile && onExtractByMask && onClearMask && (
+              <GeometryImportPanel
+                loading={maskLoading}
+                extractLoading={extractLoading}
+                hasMask={hasMask}
+                hasScene={hasScene && toolsEnabled}
+                maskLabel={maskLabel}
+                onImportFile={onImportMaskFile}
+                onExtractByMask={onExtractByMask}
+                onClearMask={onClearMask}
+              />
+            )}
             <BufferPanel
               hasGeometry={hasDrawn}
               geometryType={drawnType}
