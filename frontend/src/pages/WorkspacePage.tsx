@@ -38,7 +38,13 @@ import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
 import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
 import { bookmarkService } from '../services/bookmarkService';
-import { TOOLBOXES } from '../toolbox/catalog';
+import {
+  TOOLBOXES,
+  OPTICAL_LAND_HIDDEN_CATEGORIES,
+  findToolboxIdForTool,
+  isOpticalLandCollection,
+  resolveVisibleToolboxIds,
+} from '../toolbox/catalog';
 
 function sceneBounds(
   scene: SceneSummary,
@@ -114,15 +120,8 @@ export function WorkspacePage() {
   const [adminOpen, setAdminOpen] = useState(false);
 
   const isAdmin = user?.role === 'admin';
-  const allowedTools =
+  const userAllowedTools =
     isAdmin || user?.allowed_tools == null ? null : user.allowed_tools;
-  const toolCount = useMemo(() => {
-    const boxes =
-      allowedTools == null
-        ? TOOLBOXES
-        : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
-    return boxes.reduce((n, b) => n + b.tools.length, 0);
-  }, [allowedTools]);
 
   const {
     step,
@@ -225,6 +224,29 @@ export function WorkspacePage() {
   );
 
   const hasVisibleScene = visibleSceneIds.length > 0;
+
+  /** Prefer focused Eye-On scene; fall back to first visible scene. */
+  const activeScene = useMemo(() => {
+    if (focusScene && visibleSceneIds.includes(focusScene.id)) return focusScene;
+    return scenes.find((s) => visibleSceneIds.includes(s.id)) ?? null;
+  }, [focusScene, scenes, visibleSceneIds]);
+
+  const toolsEnabled = hasVisibleScene && Boolean(activeScene);
+
+  const allowedTools = useMemo(
+    () =>
+      resolveVisibleToolboxIds({
+        userAllowed: userAllowedTools,
+        hasScene: toolsEnabled,
+        collection: activeScene?.collection,
+      }),
+    [userAllowedTools, toolsEnabled, activeScene?.collection],
+  );
+
+  const toolCount = useMemo(() => {
+    const boxes = TOOLBOXES.filter((b) => allowedTools.includes(b.id));
+    return boxes.reduce((n, b) => n + b.tools.length, 0);
+  }, [allowedTools]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
     const sceneOverlay = focusScene
@@ -983,6 +1005,28 @@ export function WorkspacePage() {
       return;
     }
 
+    if (!toolsEnabled) {
+      setError('Select a satellite image first (toggle the eye on a catalog scene)');
+      return;
+    }
+
+    const boxId = findToolboxIdForTool(tool.id);
+    if (
+      boxId &&
+      isOpticalLandCollection(activeScene?.collection) &&
+      OPTICAL_LAND_HIDDEN_CATEGORIES.includes(boxId)
+    ) {
+      setError(
+        `AI / Change / Maritime / Air tools are not available for ${activeScene?.collection || 'this'} scenes`,
+      );
+      return;
+    }
+
+    if (!allowedTools.includes(boxId as ToolboxId) && boxId) {
+      setError('This toolbox is not available for the selected satellite image');
+      return;
+    }
+
     setActiveToolId(tool.id);
     const { action } = tool;
 
@@ -1297,6 +1341,8 @@ export function WorkspacePage() {
               overlays={overlays}
               layerOpacity={layerOpacity}
               hasScene={hasVisibleScene}
+              toolsEnabled={toolsEnabled}
+              sceneCollection={activeScene?.collection ?? null}
               hasDrawn={Boolean(drawnFeature)}
               drawnType={drawnFeature?.type ?? null}
               bufferLoading={bufferLoading}
@@ -1406,13 +1452,21 @@ export function WorkspacePage() {
             >
               <Wrench className="h-4 w-4" />
             </button>
-            {TOOLBOXES.slice(0, 6).map((box) => (
+            {TOOLBOXES.filter((b) => allowedTools.includes(b.id))
+              .slice(0, 6)
+              .map((box) => (
               <button
                 key={box.id}
                 type="button"
-                className="rounded p-1.5 text-[9px] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-                title={box.title}
+                disabled={!toolsEnabled}
+                className="rounded p-1.5 text-[9px] text-[var(--muted)] hover:bg-[var(--accent-soft)] disabled:cursor-not-allowed disabled:opacity-40"
+                title={
+                  toolsEnabled
+                    ? box.title
+                    : `${box.title} (select a satellite image first)`
+                }
                 onClick={() => {
+                  if (!toolsEnabled) return;
                   setExpandedToolbox(box.id);
                   setToolboxOpen(true);
                 }}

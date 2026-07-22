@@ -259,3 +259,46 @@ export const TOOLBOXES: ToolboxDef[] = [
     ],
   },
 ];
+
+/**
+ * Categories that do not apply to optical land missions (Sentinel-2 / Landsat).
+ * AI, Change, Maritime, and Air stay hidden for those scenes.
+ */
+export const OPTICAL_LAND_HIDDEN_CATEGORIES: ToolboxId[] = [
+  'ai',
+  'change',
+  'maritime',
+  'aviation',
+];
+
+export function isOpticalLandCollection(collection?: string | null): boolean {
+  const c = (collection || '').toUpperCase();
+  return c === 'SENTINEL-2' || c.startsWith('LANDSAT');
+}
+
+/** Resolve which toolbox category ids are visible for the current scene + user ACL. */
+export function resolveVisibleToolboxIds(options: {
+  userAllowed?: string[] | null;
+  hasScene: boolean;
+  collection?: string | null;
+}): ToolboxId[] {
+  const all = TOOLBOXES.map((b) => b.id);
+  let ids: ToolboxId[] =
+    options.userAllowed == null
+      ? all
+      : all.filter((id) => options.userAllowed!.includes(id));
+
+  if (options.hasScene && isOpticalLandCollection(options.collection)) {
+    const hide = new Set(OPTICAL_LAND_HIDDEN_CATEGORIES);
+    ids = ids.filter((id) => !hide.has(id));
+  }
+
+  return ids;
+}
+
+export function findToolboxIdForTool(toolId: string): ToolboxId | null {
+  for (const box of TOOLBOXES) {
+    if (box.tools.some((t) => t.id === toolId)) return box.id;
+  }
+  return null;
+}
