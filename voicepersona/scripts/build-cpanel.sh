@@ -16,6 +16,8 @@ cp -R "$ROOT/frontend/dist/." "$DIST/"
 cp "$ROOT/public/.htaccess" "$DIST/.htaccess"
 cp "$ROOT/api/"*.php "$DIST/api/"
 cp "$ROOT/api/.htaccess" "$DIST/api/.htaccess"
+# Ensure SQLite data dir is writable after upload
+chmod 755 "$DIST/data" "$DIST/data/personas" "$DIST/data/samples" 2>/dev/null || true
 
 # Protect raw data from direct web listing where possible
 cat > "$DIST/data/.htaccess" <<'EOF'

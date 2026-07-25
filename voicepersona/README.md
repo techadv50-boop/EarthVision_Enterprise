@@ -2,63 +2,66 @@
 
 Web app for families who want to **keep a loved one’s voice and talking style** — then talk with that same accent later.
 
-Built to run on **cPanel shared hosting** (PHP API + static web UI). No VPS required.
+Runs on **cPanel shared hosting** (PHP + static UI). Accounts require **admin approval** and a **monthly subscription**.
 
-## Who it is for
+## Accounts & billing
 
-Older people may not log in themselves. Typical use:
+1. Visitor **creates an account** (pending).
+2. Request is emailed to admin and appears in **Admin accounts**.
+3. Admin can **Allow**, **Decline**, or **Restrict**.
+4. **Allow** starts a **1-month** subscription.
+5. Near expiry, a **reminder email** is sent (cPanel cron).
+6. After login + active plan, the voice studio opens (same interface as before).
 
-1. **Son/daughter + elder sit together**  
-   Headphones/mic on the elder. They talk naturally. The program records the elder’s voice, accent, and manner.
+Default admin (change in `api/config.php` on the server):
 
-2. **Elder talks with the program**  
-   Any topic. The program replies (Eliza AI). Purpose: keep capturing the real voice.
+- Email: `admin@voxpersona.local`
+- Password: `Admin@123456`
 
-3. **Many people**  
-   Save Irfan, Amma, Abu, … Later choose who you want to talk with — replies follow that person’s style.
-
-## Quick start (local)
-
-### PHP API (cPanel-compatible)
+## Local demo
 
 ```bash
+# API
 cd voicepersona
 php -S 127.0.0.1:8790 -t api api/router.php
-```
 
-### Frontend
-
-```bash
-cd voicepersona/frontend
+# UI
+cd frontend
 npm install
 npm run dev
 ```
 
-Open http://localhost:5174
+Open http://localhost:5174 → create account → log in as admin → Allow the user → user can enter the studio.
 
-## Deploy to cPanel shared domain
+## Deploy to cPanel
 
 ```bash
 cd voicepersona
 bash scripts/build-cpanel.sh
 ```
 
-Upload **contents** of `deploy/dist/` into `public_html` (or a subdomain).  
-Details: [deploy/README-CPANEL.md](deploy/README-CPANEL.md)
+Upload **contents** of `deploy/dist/` into `public_html`.  
+Edit `api/config.php` (price, admin email, mail from, cron key).
 
-## Modes in the interface
+### Cron for renewal reminders (cPanel → Cron Jobs)
+
+Once daily:
+
+```bash
+curl -s "https://YOUR-DOMAIN.com/api/cron/reminders?key=YOUR_CRON_KEY"
+```
+
+## Studio modes (after login)
 
 | Mode | What happens |
 |------|----------------|
-| Family conversation | Continuous listening on elder mic while family talks |
-| Talk with program | Hold-to-talk; program replies; voice is stored |
-| Talk with [Name] | Chat/speak in that person’s captured accent & style |
+| Family conversation | Mic on elder while family talks; voice captured |
+| Talk with program | Hold-to-talk; program replies; voice stored |
+| Talk with [Name] | Chat in that person’s accent & style |
 
 ## Tech
 
-- Frontend: React + Vite (static build for cPanel)
-- Backend: PHP 8 (works on shared hosting)
-- AI: Eliza built-in (no external API key)
-- Speech playback: browser speech synthesis (good demo)
-
-Optional Python backend under `backend/` remains for experimentation; **cPanel deploy uses PHP only**.
+- React static frontend
+- PHP 8 API + SQLite users/sessions
+- Eliza AI (no external key)
+- Browser speech for demo playback

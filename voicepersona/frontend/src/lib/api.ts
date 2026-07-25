@@ -1,3 +1,4 @@
+import { authHeaders, getToken, setToken, type AuthUser, type PublicConfig } from "./auth";
 import type {
   ChatMessage,
   ChatResponse,
@@ -10,16 +11,62 @@ import type {
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || res.statusText);
+  const headers = new Headers(authHeaders(init?.headers));
+  if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
   }
+  const res = await fetch(path, { ...init, headers });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const data = await res.json();
+      message = data.error || JSON.stringify(data);
+    } catch {
+      message = await res.text();
+    }
+    const err = new Error(message || res.statusText) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
 export const api = {
-  health: () => request<{ ok: boolean }>("/api/health"),
+  publicConfig: () => request<PublicConfig>("/api/public/config"),
+  register: (body: { name: string; email: string; password: string }) =>
+    request<{ ok: boolean; message: string; status: string }>("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  login: async (body: { email: string; password: string }) => {
+    const data = await request<{ token: string; user: AuthUser; warning?: string }>(
+      "/api/auth/login",
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    setToken(data.token);
+    return data;
+  },
+  logout: async () => {
+    try {
+      await request("/api/auth/logout", { method: "POST", body: "{}" });
+    } finally {
+      setToken(null);
+    }
+  },
+  me: () =>
+    request<{ user: AuthUser; config: PublicConfig }>("/api/auth/me"),
+  renewRequest: () =>
+    request<{ ok: boolean; message: string }>("/api/auth/renew-request", {
+      method: "POST",
+      body: "{}",
+    }),
+  adminUsers: () => request<AuthUser[]>("/api/admin/users"),
+  adminAction: (userId: string, action: "allow" | "decline" | "restrict" | "renew", note = "") =>
+    request<{ user: AuthUser }>(`/api/admin/users/${userId}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
   engines: () => request<{ engines: EngineInfo[] }>("/api/engines"),
   listPersonas: () => request<Persona[]>("/api/personas"),
   createPersona: (body: {
@@ -30,7 +77,6 @@ export const api = {
   }) =>
     request<Persona>("/api/personas", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
   getPersona: (id: string) => request<Persona>(`/api/personas/${id}`),
@@ -46,7 +92,6 @@ export const api = {
   ) =>
     request<Persona>(`/api/personas/${id}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
   deletePersona: (id: string) =>
@@ -89,11 +134,12 @@ export const api = {
   ) =>
     request<ChatResponse>(`/api/personas/${personaId}/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
 };
 
 export function sampleAudioUrl(personaId: string, filename: string) {
-  return `/api/personas/${personaId}/samples/${filename}/audio`;
+  const token = getToken();
+  const q = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `/api/personas/${personaId}/samples/${filename}/audio${q}`;
 }

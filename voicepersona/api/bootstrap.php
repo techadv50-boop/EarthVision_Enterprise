@@ -21,7 +21,7 @@ function vox_json_response(mixed $data, int $status = 200): never
     header('Content-Type: application/json; charset=utf-8');
     header('Access-Control-Allow-Origin: *');
     header('Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS');
-    header('Access-Control-Allow-Headers: Content-Type');
+    header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Auth-Token');
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -76,18 +76,27 @@ function vox_save_persona(array $persona): array
     return $persona;
 }
 
-function vox_list_personas(): array
+function vox_list_personas(?string $ownerId = null): array
 {
     vox_ensure_dirs();
     $out = [];
     foreach (glob(VOX_PERSONAS . '/*.json') ?: [] as $file) {
         $data = json_decode((string) file_get_contents($file), true);
-        if (is_array($data)) {
-            $out[] = $data;
+        if (!is_array($data)) {
+            continue;
         }
+        if ($ownerId !== null && ($data['owner_id'] ?? '') !== $ownerId) {
+            continue;
+        }
+        $out[] = $data;
     }
     usort($out, static fn($a, $b) => strcmp($a['name'] ?? '', $b['name'] ?? ''));
     return $out;
+}
+
+function vox_persona_owned(?array $persona, string $userId): bool
+{
+    return $persona !== null && ($persona['owner_id'] ?? '') === $userId;
 }
 
 function vox_default_traits(): array
