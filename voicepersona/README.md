@@ -1,28 +1,30 @@
 # VoxPersona
 
-Voice & talking-style capture studio with a background AI agent that replies in the same persona.
+Web app for families who want to **keep a loved one’s voice and talking style** — then talk with that same accent later.
 
-## What it does
+Built to run on **cPanel shared hosting** (PHP API + static web UI). No VPS required.
 
-1. **Capture** — Record or upload a person’s voice samples.
-2. **Annotate** — Tag accent, talking style, laugh, sadness, moods, and other speech traits.
-3. **Feed** — Build a living persona profile from those samples and notes.
-4. **Reply** — Chat with a background AI (Eliza by default, optional OpenAI-compatible LLM) that answers in that person’s style.
-5. **Speak** — Play replies with browser speech synthesis (hooks ready for ElevenLabs / OpenAI voice clone APIs).
+## Who it is for
 
-## Quick start
+Older people may not log in themselves. Typical use:
 
-### Backend
+1. **Son/daughter + elder sit together**  
+   Headphones/mic on the elder. They talk naturally. The program records the elder’s voice, accent, and manner.
+
+2. **Elder talks with the program**  
+   Any topic. The program replies (Eliza AI). Purpose: keep capturing the real voice.
+
+3. **Many people**  
+   Save Irfan, Amma, Abu, … Later choose who you want to talk with — replies follow that person’s style.
+
+## Quick start (local)
+
+### PHP API (cPanel-compatible)
 
 ```bash
-cd voicepersona/backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8790
+cd voicepersona
+php -S 127.0.0.1:8790 -t api api/router.php
 ```
-
-API docs: http://localhost:8790/docs
 
 ### Frontend
 
@@ -32,27 +34,31 @@ npm install
 npm run dev
 ```
 
-App: http://localhost:5174
+Open http://localhost:5174
 
-## AI backends
+## Deploy to cPanel shared domain
 
-| Engine | Config | Notes |
-|--------|--------|-------|
-| `eliza` (default) | none | Classic pattern chatbot + persona style transform |
-| `openai` | `VOX_LLM_API_KEY`, optional `VOX_LLM_BASE_URL`, `VOX_LLM_MODEL` | Any OpenAI-compatible API (OpenAI, Groq, Ollama proxy, etc.) |
-
-Optional voice clone TTS:
-
-- `VOX_TTS_PROVIDER=elevenlabs` + `VOX_ELEVENLABS_API_KEY`
-- `VOX_TTS_PROVIDER=openai` + `VOX_LLM_API_KEY`
-
-## Project layout
-
-```
-voicepersona/
-├── backend/          # FastAPI persona store + AI agent
-├── frontend/         # React capture + chat studio
-└── data/             # Local persona profiles & audio samples
+```bash
+cd voicepersona
+bash scripts/build-cpanel.sh
 ```
 
-This package is standalone software (not part of EarthVision). You can move the `voicepersona/` folder into its own repository when ready.
+Upload **contents** of `deploy/dist/` into `public_html` (or a subdomain).  
+Details: [deploy/README-CPANEL.md](deploy/README-CPANEL.md)
+
+## Modes in the interface
+
+| Mode | What happens |
+|------|----------------|
+| Family conversation | Continuous listening on elder mic while family talks |
+| Talk with program | Hold-to-talk; program replies; voice is stored |
+| Talk with [Name] | Chat/speak in that person’s captured accent & style |
+
+## Tech
+
+- Frontend: React + Vite (static build for cPanel)
+- Backend: PHP 8 (works on shared hosting)
+- AI: Eliza built-in (no external API key)
+- Speech playback: browser speech synthesis (good demo)
+
+Optional Python backend under `backend/` remains for experimentation; **cPanel deploy uses PHP only**.

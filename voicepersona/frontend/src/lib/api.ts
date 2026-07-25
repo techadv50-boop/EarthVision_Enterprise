@@ -6,6 +6,7 @@ import type {
   Persona,
   PersonaTraits,
   SampleKind,
+  SampleSource,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -20,7 +21,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<{ ok: boolean }>("/api/health"),
   engines: () => request<{ engines: EngineInfo[] }>("/api/engines"),
-  moods: () => request<{ moods: MoodTag[] }>("/api/moods"),
   listPersonas: () => request<Persona[]>("/api/personas"),
   createPersona: (body: {
     name: string;
@@ -62,6 +62,7 @@ export const api = {
       moods: MoodTag[];
       notes: string;
       duration_ms?: number;
+      source?: SampleSource;
     },
     filename = "sample.webm",
   ) => {

@@ -82,9 +82,46 @@ a {
 
 .brand-sub {
   margin: 0.55rem 0 0;
-  max-width: 36rem;
+  max-width: 40rem;
   color: var(--muted);
   font-size: 1rem;
+}
+
+.mode-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mode-tabs button {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: 12px;
+  padding: 0.7rem 0.95rem;
+  font-weight: 600;
+  color: var(--muted);
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.mode-tabs button.on {
+  background: linear-gradient(135deg, var(--teal), #245850);
+  border-color: transparent;
+  color: #f7fffc;
+}
+
+.howto {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.howto li {
+  margin-bottom: 0.55rem;
+}
+
+.howto strong {
+  color: var(--ink);
 }
 
 .layout {

@@ -1,37 +1,26 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import { playAudioUrl, speakText } from "../lib/speech";
+import { speakText } from "../lib/speech";
 import type { ChatMessage, MoodTag, Persona } from "../lib/types";
 
-const MOODS: MoodTag[] = [
-  "neutral",
-  "happy",
-  "sad",
-  "laughing",
-  "excited",
-  "calm",
-  "sarcastic",
-];
+const MOODS: MoodTag[] = ["neutral", "happy", "sad", "laughing", "calm", "affectionate"];
 
 interface Props {
   persona: Persona;
 }
 
-export default function ChatPanel({ persona }: Props) {
+/** After (or anytime): talk to a saved person in their captured style/voice. */
+export default function RememberChat({ persona }: Props) {
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [message, setMessage] = useState("");
-  const [mood, setMood] = useState<MoodTag>("neutral");
+  const [mood, setMood] = useState<MoodTag>("affectionate");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [styleNotes, setStyleNotes] = useState<string[]>([]);
-  const [engine, setEngine] = useState(persona.ai_engine);
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setHistory([]);
-    setStyleNotes([]);
-    setEngine(persona.ai_engine);
-  }, [persona.id, persona.ai_engine]);
+  }, [persona.id]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -54,13 +43,7 @@ export default function ChatPanel({ persona }: Props) {
         speak: true,
       });
       setHistory([...nextHistory, { role: "assistant", content: res.reply }]);
-      setStyleNotes(res.style_notes);
-      setEngine(res.engine);
-      if (res.audio_url) {
-        await playAudioUrl(res.audio_url);
-      } else {
-        speakText(res.reply);
-      }
+      speakText(res.reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Chat failed");
     } finally {
@@ -68,16 +51,26 @@ export default function ChatPanel({ persona }: Props) {
     }
   }
 
+  const ready = persona.samples.length > 0 || !!persona.traits.talking_style || !!persona.traits.accent;
+
   return (
     <div className="chat">
-      <h3>Talk with the persona</h3>
+      <h3>Talk with {persona.name}</h3>
       <p className="empty">
-        Background AI ({engine}) replies in {persona.name}&apos;s fed voice and
-        talking style.
+        Choose this person — the program answers in {persona.name}&apos;s captured
+        accent and talking style. Add many people (Irfan, and others); pick who you
+        want to talk with.
       </p>
 
+      {!ready && (
+        <p className="status error">
+          Few or no voice samples yet. Use Family conversation or Talk with the
+          program first so the style is stronger.
+        </p>
+      )}
+
       <div className="field">
-        <label>Reply mood target</label>
+        <label>Feeling for the reply</label>
         <div className="mood-row">
           {MOODS.map((m) => (
             <button
@@ -94,7 +87,7 @@ export default function ChatPanel({ persona }: Props) {
 
       <div className="chat-log">
         {history.length === 0 && (
-          <p className="empty">Ask anything. Replies follow the captured persona.</p>
+          <p className="empty">Say hello to {persona.name}…</p>
         )}
         {history.map((item, idx) => (
           <div key={`${item.role}-${idx}`} className={`bubble ${item.role}`}>
@@ -111,38 +104,28 @@ export default function ChatPanel({ persona }: Props) {
           <textarea
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder={`Ask ${persona.name} something…`}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void onSubmit(e);
-              }
-            }}
+            placeholder={`Talk to ${persona.name}…`}
           />
         </div>
         <div className="row">
           <button className="btn btn-primary" type="submit" disabled={busy || !message.trim()}>
-            {busy ? "Thinking…" : "Send & hear reply"}
+            {busy ? "…" : `Speak with ${persona.name}`}
           </button>
           <button
             className="btn btn-ghost"
             type="button"
-            onClick={() => {
-              setHistory([]);
-              setStyleNotes([]);
-            }}
+            onClick={() => setHistory([])}
           >
-            Clear chat
+            Clear
           </button>
         </div>
       </form>
-
       {error && <p className="status error">{error}</p>}
-      {styleNotes.length > 0 && (
-        <div className="style-notes">
-          Style guide used: {styleNotes.join(" · ")}
-        </div>
-      )}
+      <p className="style-notes">
+        Using {persona.samples.length} voice clips
+        {persona.traits.accent ? ` · accent: ${persona.traits.accent}` : ""}
+        {persona.traits.talking_style ? ` · style: ${persona.traits.talking_style}` : ""}
+      </p>
     </div>
   );
 }

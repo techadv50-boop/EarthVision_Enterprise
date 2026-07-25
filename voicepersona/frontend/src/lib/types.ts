@@ -18,6 +18,8 @@ export type SampleKind =
   | "style"
   | "other";
 
+export type SampleSource = "family_talk" | "program_talk" | "upload" | string;
+
 export interface VoiceSample {
   id: string;
   filename: string;
@@ -28,6 +30,7 @@ export interface VoiceSample {
   moods: MoodTag[];
   notes: string;
   duration_ms?: number | null;
+  source?: SampleSource;
   created_at: string;
 }
 
@@ -72,3 +75,5 @@ export interface EngineInfo {
   name: string;
   description: string;
 }
+
+export type AppMode = "family" | "program" | "remember";
