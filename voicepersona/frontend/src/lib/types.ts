@@ -35,6 +35,7 @@ export interface VoiceSample {
 }
 
 export interface PersonaTraits {
+  language?: string;
   accent: string;
   talking_style: string;
   vocabulary_notes: string;

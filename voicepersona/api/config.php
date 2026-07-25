@@ -27,4 +27,13 @@ return [
 
     // Optional shared secret for cron URL: /api/cron/reminders?key=...
     'cron_key' => getenv('VOX_CRON_KEY') ?: 'change-me-cron-key',
+
+    /**
+     * Discussion / analysis AI (OpenAI-compatible).
+     * Works with OpenAI, Groq, OpenRouter, local Ollama proxies, etc.
+     * Leave llm_api_key empty to use the built-in discussion engine + local speech analysis.
+     */
+    'llm_api_key' => getenv('VOX_LLM_API_KEY') ?: '',
+    'llm_base_url' => getenv('VOX_LLM_BASE_URL') ?: 'https://api.openai.com/v1',
+    'llm_model' => getenv('VOX_LLM_MODEL') ?: 'gpt-4o-mini',
 ];

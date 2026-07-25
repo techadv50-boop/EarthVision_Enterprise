@@ -2,12 +2,11 @@ import { FormEvent, useEffect, useState } from "react";
 import AdminPanel from "./components/AdminPanel";
 import AuthScreen from "./components/AuthScreen";
 import FamilyCapture from "./components/FamilyCapture";
-import PersonaEditor from "./components/PersonaEditor";
 import ProgramTalk from "./components/ProgramTalk";
 import RememberChat from "./components/RememberChat";
 import { api, sampleAudioUrl } from "./lib/api";
 import { getToken, setToken, type AuthUser, type PublicConfig } from "./lib/auth";
-import type { AppMode, EngineInfo, Persona } from "./lib/types";
+import type { AppMode, Persona } from "./lib/types";
 
 export default function App() {
   const [bootstrapping, setBootstrapping] = useState(true);
@@ -19,7 +18,6 @@ export default function App() {
 
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [newName, setNewName] = useState("");
   const [mode, setMode] = useState<AppMode>("family");
   const [loading, setLoading] = useState(false);
@@ -59,9 +57,8 @@ export default function App() {
     setLoading(true);
     setError("");
     try {
-      const [list, engineRes] = await Promise.all([api.listPersonas(), api.engines()]);
+      const list = await api.listPersonas();
       setPersonas(list);
-      setEngines(engineRes.engines);
       const nextId = preferId || selectedId || list[0]?.id || null;
       setSelectedId(nextId && list.some((p) => p.id === nextId) ? nextId : list[0]?.id || null);
     } catch (err) {
@@ -86,7 +83,7 @@ export default function App() {
       const created = await api.createPersona({
         name: newName.trim(),
         description: "Loved one’s voice memory",
-        ai_engine: "eliza",
+        ai_engine: "discussion",
       });
       setNewName("");
       await refreshStudio(created.id);
@@ -313,45 +310,31 @@ export default function App() {
                   </section>
 
                   {mode === "family" && (
-                    <section className="panel grid-2">
+                    <section className="panel">
                       <FamilyCapture
                         persona={selected}
                         busy={busy}
                         onChunk={async (payload) => {
                           setBusy(true);
                           try {
-                            await api.uploadSample(
+                            const res = await api.uploadSample(
                               selected.id,
                               payload.blob,
                               {
                                 kind: "speech",
                                 transcript: payload.transcript,
-                                accent: payload.accent,
-                                talking_style: payload.talking_style,
-                                moods: ["neutral"],
-                                notes: payload.notes,
                                 duration_ms: payload.duration_ms,
                                 source: "family_talk",
+                                auto_analyze: true,
                               },
                               payload.filename,
                             );
-                            const fresh = await api.getPersona(selected.id);
                             setPersonas((prev) =>
-                              prev.map((p) => (p.id === fresh.id ? fresh : p)),
+                              prev.map((p) => (p.id === res.persona.id ? res.persona : p)),
                             );
                           } finally {
                             setBusy(false);
                           }
-                        }}
-                      />
-                      <PersonaEditor
-                        persona={selected}
-                        engines={engines}
-                        onSave={async (patch) => {
-                          const updated = await api.updatePersona(selected.id, patch);
-                          setPersonas((prev) =>
-                            prev.map((p) => (p.id === updated.id ? updated : p)),
-                          );
                         }}
                       />
                     </section>

@@ -102,6 +102,7 @@ function vox_persona_owned(?array $persona, string $userId): bool
 function vox_default_traits(): array
 {
     return [
+        'language' => '',
         'accent' => '',
         'talking_style' => '',
         'vocabulary_notes' => '',

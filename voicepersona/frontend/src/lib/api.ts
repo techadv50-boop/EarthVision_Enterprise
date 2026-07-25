@@ -102,19 +102,25 @@ export const api = {
     meta: {
       kind: SampleKind;
       transcript: string;
-      accent: string;
-      talking_style: string;
-      moods: MoodTag[];
-      notes: string;
+      accent?: string;
+      talking_style?: string;
+      moods?: MoodTag[];
+      notes?: string;
       duration_ms?: number;
       source?: SampleSource;
+      auto_analyze?: boolean;
+      language?: string;
     },
     filename = "sample.webm",
   ) => {
     const form = new FormData();
     form.append("file", file, filename);
-    form.append("meta", JSON.stringify(meta));
-    return request(`/api/personas/${personaId}/samples`, {
+    form.append("meta", JSON.stringify({ auto_analyze: true, ...meta }));
+    return request<{
+      sample: unknown;
+      persona: Persona;
+      auto_traits: Record<string, string>;
+    }>(`/api/personas/${personaId}/samples`, {
       method: "POST",
       body: form,
     });

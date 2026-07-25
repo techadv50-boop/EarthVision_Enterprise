@@ -105,6 +105,38 @@ a {
   margin-bottom: 1rem;
 }
 
+.family-only {
+  max-width: 640px;
+}
+
+.family-actions {
+  margin-top: 0.75rem;
+}
+
+.btn-listen {
+  min-width: min(100%, 280px);
+  padding: 0.9rem 1.2rem;
+  font-size: 1.05rem;
+}
+
+.live-line {
+  margin: 0.75rem 0 0;
+  color: var(--teal);
+  font-size: 0.95rem;
+}
+
+.auto-traits {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.auto-traits h4 {
+  margin: 0 0 0.6rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
 .brand-bar {
   display: flex;
   align-items: end;

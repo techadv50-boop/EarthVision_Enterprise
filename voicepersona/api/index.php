@@ -39,6 +39,7 @@ function route_request(string $method, string $uri): void
             'auth' => true,
             'subscription_price' => $config['subscription_price'],
             'subscription_currency' => $config['subscription_currency'],
+            'llm_configured' => vox_llm_configured(),
         ]);
     }
 
@@ -299,14 +300,23 @@ function route_request(string $method, string $uri): void
     // -------- App data (auth + active subscription required) --------
     if ($method === 'GET' && $uri === '/engines') {
         vox_require_user(true);
-        vox_json_response([
-            'engines' => [
-                [
-                    'id' => 'eliza',
-                    'name' => 'Eliza',
-                    'description' => 'Built-in conversational agent for cPanel. No external API required.',
-                ],
+        $engines = [
+            [
+                'id' => 'discussion',
+                'name' => vox_llm_configured() ? 'Discussion AI (LLM)' : 'Discussion AI',
+                'description' => vox_llm_configured()
+                    ? 'OpenAI-compatible model for natural conversation and style analysis.'
+                    : 'Built-in discussion engine. Add llm_api_key in config.php for full LLM chat (OpenAI/Groq/etc).',
             ],
+            [
+                'id' => 'eliza',
+                'name' => 'Eliza',
+                'description' => 'Classic pattern chatbot fallback.',
+            ],
+        ];
+        vox_json_response([
+            'engines' => $engines,
+            'llm_configured' => vox_llm_configured(),
         ]);
     }
 
@@ -339,7 +349,7 @@ function route_request(string $method, string $uri): void
             'description' => trim((string) ($body['description'] ?? '')),
             'traits' => array_merge(vox_default_traits(), is_array($body['traits'] ?? null) ? $body['traits'] : []),
             'samples' => [],
-            'ai_engine' => $body['ai_engine'] ?? 'eliza',
+            'ai_engine' => $body['ai_engine'] ?? 'discussion',
             'voice_clone_id' => $body['voice_clone_id'] ?? null,
             'created_at' => vox_now(),
             'updated_at' => vox_now(),
@@ -403,41 +413,59 @@ function route_request(string $method, string $uri): void
             vox_json_response(['error' => 'Failed to store audio'], 500);
         }
 
+        $transcript = trim((string) ($meta['transcript'] ?? ''));
+        $auto = !empty($meta['auto_analyze']) || $transcript !== '';
+        $analysis = $auto && $transcript !== ''
+            ? vox_analyze_speech($transcript, $persona['traits'] ?? [])
+            : [];
+
         $sample = [
             'id' => vox_uuid(),
             'filename' => $filename,
             'kind' => $meta['kind'] ?? 'speech',
-            'transcript' => trim((string) ($meta['transcript'] ?? '')),
-            'accent' => trim((string) ($meta['accent'] ?? '')),
-            'talking_style' => trim((string) ($meta['talking_style'] ?? '')),
-            'moods' => array_values(array_filter((array) ($meta['moods'] ?? []))),
-            'notes' => trim((string) ($meta['notes'] ?? '')),
+            'transcript' => $transcript,
+            'language' => trim((string) ($meta['language'] ?? ($analysis['language'] ?? ''))),
+            'accent' => trim((string) ($meta['accent'] ?? ($analysis['accent'] ?? ''))),
+            'talking_style' => trim((string) ($meta['talking_style'] ?? ($analysis['talking_style'] ?? ''))),
+            'moods' => array_values(array_filter(
+                (array) ($meta['moods'] ?? ($analysis['moods'] ?? ['neutral']))
+            )),
+            'notes' => trim((string) ($meta['notes'] ?? ($analysis['notes'] ?? ''))),
             'duration_ms' => isset($meta['duration_ms']) ? (int) $meta['duration_ms'] : null,
             'source' => $meta['source'] ?? 'upload',
+            'analysis' => $analysis,
             'created_at' => vox_now(),
         ];
         $persona['samples'][] = $sample;
 
-        if ($sample['accent'] !== '' && empty($persona['traits']['accent'])) {
-            $persona['traits']['accent'] = $sample['accent'];
-        }
-        if ($sample['talking_style'] !== '' && empty($persona['traits']['talking_style'])) {
-            $persona['traits']['talking_style'] = $sample['talking_style'];
-        }
-        foreach ($sample['moods'] as $mood) {
-            if (!in_array($mood, $persona['traits']['moods_observed'], true)) {
-                $persona['traits']['moods_observed'][] = $mood;
+        if ($analysis) {
+            $persona['traits'] = vox_merge_traits($persona['traits'] ?? [], $analysis);
+        } else {
+            if ($sample['accent'] !== '' && empty($persona['traits']['accent'])) {
+                $persona['traits']['accent'] = $sample['accent'];
+            }
+            if ($sample['talking_style'] !== '' && empty($persona['traits']['talking_style'])) {
+                $persona['traits']['talking_style'] = $sample['talking_style'];
+            }
+            foreach ($sample['moods'] as $mood) {
+                if (!in_array($mood, $persona['traits']['moods_observed'], true)) {
+                    $persona['traits']['moods_observed'][] = $mood;
+                }
             }
         }
-        if (($sample['kind'] ?? '') === 'laughing' && $sample['notes'] !== '' && empty($persona['traits']['laugh_style'])) {
-            $persona['traits']['laugh_style'] = $sample['notes'];
-        }
-        if (($sample['kind'] ?? '') === 'sadness' && $sample['notes'] !== '' && empty($persona['traits']['sadness_style'])) {
-            $persona['traits']['sadness_style'] = $sample['notes'];
-        }
 
-        vox_save_persona($persona);
-        vox_json_response($sample, 201);
+        $saved = vox_save_persona($persona);
+        vox_json_response([
+            'sample' => $sample,
+            'persona' => $saved,
+            'auto_traits' => [
+                'language' => $saved['traits']['language'] ?? '',
+                'accent' => $saved['traits']['accent'] ?? '',
+                'talking_style' => $saved['traits']['talking_style'] ?? '',
+                'laugh_style' => $saved['traits']['laugh_style'] ?? '',
+                'sadness_style' => $saved['traits']['sadness_style'] ?? '',
+            ],
+        ], 201);
     }
 
     if ($method === 'GET' && preg_match('#^/personas/([a-f0-9]+)/samples/([^/]+)/audio$#', $uri, $m)) {
@@ -498,12 +526,14 @@ function route_request(string $method, string $uri): void
             vox_json_response(['error' => 'Message is required'], 400);
         }
         $mood = isset($body['mood']) ? (string) $body['mood'] : null;
-        [$reply, $engine, $styleNotes] = vox_generate_reply($persona, $message, $mood);
+        $history = is_array($body['history'] ?? null) ? $body['history'] : [];
+        [$reply, $engine, $styleNotes] = vox_generate_reply($persona, $message, $mood, $history);
         vox_json_response([
             'reply' => $reply,
             'engine' => $engine,
             'style_notes' => $styleNotes,
             'audio_url' => null,
+            'llm_configured' => vox_llm_configured(),
         ]);
     }
 

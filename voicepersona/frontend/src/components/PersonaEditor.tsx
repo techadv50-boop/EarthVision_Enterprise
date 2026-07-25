@@ -27,7 +27,7 @@ function textToList(value: string) {
 export default function PersonaEditor({ persona, engines, onSave }: Props) {
   const [name, setName] = useState(persona.name);
   const [description, setDescription] = useState(persona.description);
-  const [aiEngine, setAiEngine] = useState(persona.ai_engine || "eliza");
+  const [aiEngine, setAiEngine] = useState(persona.ai_engine || "discussion");
   const [voiceCloneId, setVoiceCloneId] = useState(persona.voice_clone_id || "");
   const [traits, setTraits] = useState(persona.traits);
   const [fillers, setFillers] = useState(listToText(persona.traits.filler_words));
@@ -40,7 +40,7 @@ export default function PersonaEditor({ persona, engines, onSave }: Props) {
   useEffect(() => {
     setName(persona.name);
     setDescription(persona.description);
-    setAiEngine(persona.ai_engine || "eliza");
+    setAiEngine(persona.ai_engine || "discussion");
     setVoiceCloneId(persona.voice_clone_id || "");
     setTraits(persona.traits);
     setFillers(listToText(persona.traits.filler_words));

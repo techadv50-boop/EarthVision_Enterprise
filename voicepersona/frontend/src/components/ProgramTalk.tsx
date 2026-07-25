@@ -102,12 +102,10 @@ export default function ProgramTalk({ persona, onVoiceSaved }: Props) {
           {
             kind: "speech",
             transcript: message.startsWith("(spoken") ? "" : message,
-            accent: persona.traits.accent || "",
-            talking_style: persona.traits.talking_style || "",
-            moods: ["neutral"],
             notes: "Captured while talking with the program",
             duration_ms: Date.now() - startedAt.current,
             source: "program_talk",
+            auto_analyze: true,
           },
           `program_${Date.now()}.${ext}`,
         );
