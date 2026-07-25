@@ -55,13 +55,21 @@ curl -s "https://YOUR-DOMAIN.com/api/cron/reminders?key=YOUR_CRON_KEY"
 
 | Mode | What happens |
 |------|----------------|
-| Family conversation | Mic on elder while family talks; voice captured |
-| Talk with program | Hold-to-talk; program replies; voice stored |
+| Family conversation | Only **Start listening** — language, accent, style, laugh/mood auto-captured |
+| Talk with program | Hold-to-talk; Discussion AI replies; voice stored |
 | Talk with [Name] | Chat in that person’s accent & style |
+
+Use **Chrome** for best automatic speech recognition during family listening.
+
+### Stronger discussion AI (optional)
+
+In `api/config.php` set an OpenAI-compatible key (`llm_api_key`, `llm_base_url`, `llm_model`).  
+Without a key, built-in Discussion AI still holds a real conversation (not Eliza-only).
 
 ## Tech
 
 - React static frontend
 - PHP 8 API + SQLite users/sessions
-- Eliza AI (no external key)
+- Discussion AI (+ optional LLM); Eliza only as fallback
+- Auto speech analysis (language/accent/style)
 - Browser speech for demo playback
