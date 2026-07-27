@@ -103,22 +103,33 @@ class SceneOverlayBody(BaseModel):
 
 @router.post("/scenes/overlay")
 async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
-    """Prepare Sentinel-2 true-color (TCI) tiles for a scene and return map layer metadata.
+    """Prepare Sentinel-2 / Landsat / S1 tiles and return map layer metadata + preview.
 
-    Uses real Sentinel-2 L2A visual COGs (B04/B03/B02) served as XYZ tiles so
-    features stay sharp when zooming — not a low-res basemap PNG.
+    Returns XYZ tile_url for sharp zoom, plus a low-res overlay_base64 so the map
+    shows imagery immediately while tiles stream in.
     """
+    import base64
+    from functools import partial
+
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    layer = imagery.prepare_scene_layer(
-        data.scene_id,
-        bbox=data.bbox,
-        footprint=data.footprint,
-        sensing_time=data.sensing_time,
-        cloud_cover=data.cloud_cover,
-        collection=data.collection,
+    layer = await run_in_threadpool(
+        partial(
+            imagery.prepare_scene_layer,
+            data.scene_id,
+            bbox=data.bbox,
+            footprint=data.footprint,
+            sensing_time=data.sensing_time,
+            cloud_cover=data.cloud_cover,
+            collection=data.collection,
+        )
     )
+    # Quick full-scene preview for ImageOverlay (tiles remain source of truth when zooming)
+    preview_png = await run_in_threadpool(imagery.render_preview, data.scene_id, 512)
+    overlay_b64 = base64.b64encode(preview_png).decode("ascii") if preview_png else ""
     return {
         "scene_id": data.scene_id,
         "bounds": layer["bounds"],
@@ -135,18 +146,22 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
         "footprint": layer.get("footprint"),
         "thumbnail_url": layer.get("thumbnail_url"),
         "content_type": "image/png",
-        "overlay_base64": "",
+        "overlay_base64": overlay_b64,
         "download_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
     }
 
 
 @router.get("/scenes/{scene_id}/tiles/{z}/{x}/{y}.png")
 async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
-    """XYZ tile from the scene's Sentinel-2 true-color COG (no auth — used by Leaflet)."""
+    """XYZ tile from the scene COG (no auth — used by Leaflet). Runs in a thread pool
+    so concurrent tile bursts (Landsat especially) do not serialize on the event loop.
+    """
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    png = imagery.render_tile(scene_id, z, x, y)
+    png = await run_in_threadpool(imagery.render_tile, scene_id, z, x, y)
     return Response(
         content=png,
         media_type="image/png",

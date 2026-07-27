@@ -193,12 +193,14 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
     }
     lastId.current = last.id;
     const [west, south, east, north] = last.bounds;
+    // Cap zoom so eye-on does not request dozens of slow Landsat tiles at once
+    const maxZoom = last.kind === 'scene' ? 12 : 15;
     map.fitBounds(
       [
         [south, west],
         [north, east],
       ],
-      { padding: [40, 40], maxZoom: 15, animate: false },
+      { padding: [40, 40], maxZoom, animate: false },
     );
   }, [overlays, map]);
   return null;
@@ -607,9 +609,9 @@ function EnsureStackPane() {
   return null;
 }
 
-/** Re-append stack pane children bottom→top so Layer Manager order always wins.
- *  Only runs when overlay order/visibility changes — NOT on pan/zoom (that caused
- *  the whole map UI to "refresh" while working).
+/** Re-order stack pane by z-index only.
+ *  Do NOT reparent DOM nodes — appendChild on GridLayer containers breaks
+ *  Leaflet tile transforms (blank / stuck imagery after eye-on).
  */
 function EnforceStackOrder({
   overlays,
@@ -625,14 +627,11 @@ function EnforceStackOrder({
     if (!pane) return;
 
     const apply = () => {
-      // Store order is bottom → top; appendChild moves node to end (= top)
       for (const o of overlays) {
         if (o.visible === false) continue;
         const z = String(zIndexById.get(o.id) ?? 410);
         pane.querySelectorAll(`[data-ev-id="${CSS.escape(o.id)}"]`).forEach((node) => {
-          const el = node as HTMLElement;
-          el.style.zIndex = z;
-          pane.appendChild(el);
+          (node as HTMLElement).style.zIndex = z;
         });
       }
     };
@@ -847,19 +846,34 @@ export function LightMap({
         return (
           <Fragment key={overlay.id}>
             {overlay.kind === 'scene' && overlay.tileUrl ? (
-              <TileLayer
-                url={overlay.tileUrl}
-                bounds={leafletBounds}
-                opacity={overlay.opacity}
-                maxNativeZoom={16}
-                maxZoom={18}
-                pane="evStackPane"
-                zIndex={zIndex}
-                updateWhenZooming={false}
-                updateWhenIdle
-                keepBuffer={2}
-                eventHandlers={tagHandlers}
-              />
+              <>
+                {/* Instant preview while XYZ tiles stream in (Landsat/S2 can be slow) */}
+                {overlay.url ? (
+                  <ImageOverlay
+                    url={overlay.url}
+                    bounds={leafletBounds}
+                    opacity={overlay.opacity}
+                    interactive={false}
+                    pane="evStackPane"
+                    zIndex={zIndex}
+                    eventHandlers={tagHandlers}
+                  />
+                ) : null}
+                <TileLayer
+                  key={`${overlay.id}-tiles-${overlay.tileUrl}`}
+                  url={overlay.tileUrl}
+                  bounds={leafletBounds}
+                  opacity={overlay.opacity}
+                  maxNativeZoom={16}
+                  maxZoom={18}
+                  pane="evStackPane"
+                  zIndex={zIndex + 1}
+                  updateWhenZooming={false}
+                  updateWhenIdle
+                  keepBuffer={1}
+                  eventHandlers={tagHandlers}
+                />
+              </>
             ) : overlay.url ? (
               <ImageOverlay
                 url={overlay.url}

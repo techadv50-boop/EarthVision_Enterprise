@@ -329,6 +329,7 @@ export function WorkspacePage() {
     async (scene: SceneSummary) => {
       addLoadingOverlay(scene.id);
       setError(null);
+      setToolStatus(`Loading ${scene.collection} imagery…`);
       try {
         const bounds = sceneBounds(scene, place);
         const overlay = await analyticsService.sceneOverlay({
@@ -373,11 +374,15 @@ export function WorkspacePage() {
           renderMode: overlay.render_mode,
           visible: true,
         });
+        setLastMessage(
+          `${label}${overlay.stac_id ? ` · ${overlay.stac_id}` : ''} · tiles sharpen on zoom`,
+        );
       } catch (err) {
         setError(getErrorMessage(err));
         hideScene(scene.id);
       } finally {
         removeLoadingOverlay(scene.id);
+        setToolStatus(null);
       }
     },
     [
@@ -386,6 +391,8 @@ export function WorkspacePage() {
       place,
       removeLoadingOverlay,
       setError,
+      setLastMessage,
+      setToolStatus,
       upsertOverlay,
     ],
   );

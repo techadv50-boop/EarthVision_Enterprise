@@ -31,13 +31,29 @@ GDAL_ENV = {
 }
 
 # Registry schema version — bump to invalidate old all-S2 layers
-LAYER_VERSION = 3
+LAYER_VERSION = 4
+
+# Cap concurrent COG reads so Leaflet's tile burst does not starve the API
+_TILE_SEMAPHORE = None
+_TILE_SEMAPHORE_LIMIT = 6
+
+
+def _tile_semaphore():
+    global _TILE_SEMAPHORE
+    if _TILE_SEMAPHORE is None:
+        import threading
+
+        _TILE_SEMAPHORE = threading.Semaphore(_TILE_SEMAPHORE_LIMIT)
+    return _TILE_SEMAPHORE
 
 
 class SceneImageryService:
     """Resolve per-collection satellite imagery and serve XYZ tiles."""
 
     TILE_SIZE = 256
+    PREVIEW_SIZE = 512
+    # Planetary Computer SAS tokens typically last ~1h; refresh earlier
+    SIGNED_URL_TTL_SEC = 45 * 60
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -143,6 +159,33 @@ class SceneImageryService:
         if resp.status_code != 200:
             raise NotFoundError(f"Failed to sign Landsat asset ({resp.status_code})")
         return resp.json()["href"]
+
+    def _ensure_signed_cog_urls(self, layer: dict[str, Any]) -> dict[str, str]:
+        """Return Landsat band→signed URL map, refreshing Planetary Computer SAS as needed."""
+        cog_urls = layer.get("cog_urls") or {}
+        if not cog_urls:
+            return {}
+        signed = layer.get("signed_cog_urls") or {}
+        signed_at = layer.get("signed_at")
+        fresh = False
+        if signed and signed_at and set(signed.keys()) >= set(cog_urls.keys()):
+            try:
+                ts = datetime.fromisoformat(str(signed_at).replace("Z", "+00:00"))
+                age = (datetime.now(UTC) - ts).total_seconds()
+                fresh = age < self.SIGNED_URL_TTL_SEC
+            except ValueError:
+                fresh = False
+        if fresh:
+            return {k: signed[k] for k in cog_urls}
+        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+            refreshed = {k: self._sign_pc(v, client) for k, v in cog_urls.items()}
+        layer["signed_cog_urls"] = refreshed
+        layer["signed_at"] = datetime.now(UTC).isoformat()
+        # Persist so concurrent tile workers reuse the same SAS token
+        scene_id = layer.get("scene_id")
+        if scene_id:
+            self.save_layer(str(scene_id), layer)
+        return refreshed
 
     def _datetime_windows(self, sensing_time: str | None) -> list[tuple[str, str]]:
         dt = self._parse_sensing_time(sensing_time)
@@ -442,6 +485,13 @@ class SceneImageryService:
             "polarization": match.get("polarization"),
             "tile_url_template": f"/api/v1/catalog/scenes/{scene_id}/tiles/{{z}}/{{x}}/{{y}}.png",
         }
+        # Pre-sign Landsat COGs once so every XYZ tile does not pay SAS latency
+        if match.get("sign") == "planetary_computer" and match.get("cog_urls"):
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                layer["signed_cog_urls"] = {
+                    k: self._sign_pc(v, client) for k, v in match["cog_urls"].items()
+                }
+            layer["signed_at"] = datetime.now(UTC).isoformat()
         # Drop previous tile cache when remapping a scene
         cache_root = self._tile_cache_root(scene_id)
         if cache_root.exists():
@@ -477,21 +527,35 @@ class SceneImageryService:
         except Exception:  # noqa: BLE001
             return None
         size = self.TILE_SIZE
-        xs = np.linspace(lon_min, lon_max, size, endpoint=False) + (lon_max - lon_min) / (2 * size)
-        ys = np.linspace(lat_max, lat_min, size, endpoint=False) + (lat_min - lat_max) / (2 * size)
-        # Coarser mask then upsample for speed
-        step = 4
-        mask_small = np.zeros((size // step, size // step), dtype=bool)
-        for iy, lat in enumerate(ys[::step]):
-            for ix, lon in enumerate(xs[::step]):
-                mask_small[iy, ix] = geom.contains(Point(lon, lat)) or geom.touches(Point(lon, lat))
-        # Nearest upsample
-        mask = np.repeat(np.repeat(mask_small, step, axis=0), step, axis=1)
-        if mask.shape[0] < size or mask.shape[1] < size:
-            padded = np.zeros((size, size), dtype=bool)
-            padded[: mask.shape[0], : mask.shape[1]] = mask
-            mask = padded
-        return mask[:size, :size]
+        try:
+            from rasterio.features import geometry_mask
+            from rasterio.transform import from_bounds
+
+            # Row 0 = north (lat_max), matching image / PNG orientation
+            transform = from_bounds(lon_min, lat_min, lon_max, lat_max, size, size)
+            outside = geometry_mask(
+                [geom],
+                out_shape=(size, size),
+                transform=transform,
+                all_touched=True,
+                invert=False,
+            )
+            return ~outside
+        except Exception:  # noqa: BLE001
+            # Fallback: coarse point sampling
+            xs = np.linspace(lon_min, lon_max, size, endpoint=False) + (lon_max - lon_min) / (2 * size)
+            ys = np.linspace(lat_max, lat_min, size, endpoint=False) + (lat_min - lat_max) / (2 * size)
+            step = 8
+            mask_small = np.zeros((size // step, size // step), dtype=bool)
+            for iy, lat in enumerate(ys[::step]):
+                for ix, lon in enumerate(xs[::step]):
+                    mask_small[iy, ix] = geom.contains(Point(lon, lat)) or geom.touches(Point(lon, lat))
+            mask = np.repeat(np.repeat(mask_small, step, axis=0), step, axis=1)
+            if mask.shape[0] < size or mask.shape[1] < size:
+                padded = np.zeros((size, size), dtype=bool)
+                padded[: mask.shape[0], : mask.shape[1]] = mask
+                mask = padded
+            return mask[:size, :size]
 
     def _read_rgb_cog(
         self, cog_url: str, lon_min: float, lat_min: float, lon_max: float, lat_max: float
@@ -529,6 +593,8 @@ class SceneImageryService:
         lat_min: float,
         lon_max: float,
         lat_max: float,
+        *,
+        already_signed: bool = False,
     ) -> np.ndarray:
         import rasterio
         from rasterio.enums import Resampling
@@ -536,8 +602,11 @@ class SceneImageryService:
         from rasterio.windows import from_bounds
 
         bands: list[np.ndarray] = []
-        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-            signed = {k: self._sign_pc(v, client) for k, v in cog_urls.items()}
+        if already_signed:
+            signed = cog_urls
+        else:
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                signed = {k: self._sign_pc(v, client) for k, v in cog_urls.items()}
         with rasterio.Env():
             for name in ("red", "green", "blue"):
                 with rasterio.open(signed[name]) as src:
@@ -664,22 +733,129 @@ class SceneImageryService:
             return data
 
         mode = layer.get("render_mode") or "rgb"
+        sem = _tile_semaphore()
+        acquired = sem.acquire(timeout=90)
+        if not acquired:
+            logger.warning("Tile semaphore timeout {}/{}/{}/{}", scene_id, z, x, y)
+            return self._empty_tile()
+        try:
+            try:
+                if layer.get("source") == "sentinel1_grd":
+                    rgb = self._read_s1_gray(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
+                elif layer.get("cog_urls"):
+                    signed = self._ensure_signed_cog_urls(layer)
+                    rgb = self._read_landsat_rgb(
+                        signed, lon_min, lat_min, lon_max, lat_max, already_signed=True
+                    )
+                else:
+                    rgb = self._read_rgb_cog(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Scene tile read failed {}/{}/{}/{}: {}", scene_id, z, x, y, exc)
+                # Do not cache failures — next request can retry after transient COG/SAS errors
+                return self._empty_tile()
+
+            # Clip to tilted STAC footprint (critical for Landsat / S1 swaths)
+            mask = self._footprint_mask(layer.get("footprint"), lon_min, lat_min, lon_max, lat_max)
+            png = self._to_rgba(rgb, mask, mode)
+            cache_path.write_bytes(png)
+            return png
+        finally:
+            sem.release()
+
+    def render_preview(self, scene_id: str, size: int | None = None) -> bytes:
+        """Single ImageOverlay preview covering the scene bounds (shows immediately while XYZ tiles load)."""
+        import io
+
+        from rasterio.enums import Resampling
+        from rasterio.warp import transform_bounds
+        from rasterio.windows import from_bounds as window_from_bounds
+        import rasterio
+
+        layer = self.get_layer(scene_id)
+        if not layer:
+            raise NotFoundError("Scene imagery layer not prepared — open the eye overlay first")
+
+        size = size or self.PREVIEW_SIZE
+        west, south, east, north = (float(v) for v in layer["bounds"])
+        mode = layer.get("render_mode") or "rgb"
+        # Slight pad so preview edges aren't clipped oddly
+        pad_x = (east - west) * 0.01
+        pad_y = (north - south) * 0.01
+        lon_min, lon_max = west - pad_x, east + pad_x
+        lat_min, lat_max = south - pad_y, north + pad_y
+
         try:
             if layer.get("source") == "sentinel1_grd":
-                rgb = self._read_s1_gray(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
+                # Reuse tile reader at preview resolution via temporary override
+                old = self.TILE_SIZE
+                self.TILE_SIZE = size
+                try:
+                    rgb = self._read_s1_gray(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
+                finally:
+                    self.TILE_SIZE = old
             elif layer.get("cog_urls"):
-                rgb = self._read_landsat_rgb(layer["cog_urls"], lon_min, lat_min, lon_max, lat_max)
+                signed = self._ensure_signed_cog_urls(layer)
+                bands: list[np.ndarray] = []
+                with rasterio.Env():
+                    for name in ("red", "green", "blue"):
+                        with rasterio.open(signed[name]) as src:
+                            left, bottom, right, top = transform_bounds(
+                                "EPSG:4326", src.crs, lon_min, lat_min, lon_max, lat_max
+                            )
+                            window = window_from_bounds(
+                                left, bottom, right, top, transform=src.transform
+                            )
+                            arr = src.read(
+                                1,
+                                out_shape=(size, size),
+                                window=window,
+                                resampling=Resampling.bilinear,
+                                boundless=True,
+                                fill_value=0,
+                            )
+                            bands.append(arr.astype(np.float32))
+                stacked = np.stack(bands, axis=0)
+                refl = np.clip(stacked * 0.0000275 - 0.2, 0, 1)
+                rgb = (refl * 10000).astype(np.float32)
             else:
-                rgb = self._read_rgb_cog(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Scene tile read failed {}/{}/{}/{}: {}", scene_id, z, x, y, exc)
-            return self._empty_tile()
+                with rasterio.Env(**GDAL_ENV):
+                    with rasterio.open(layer["cog_url"]) as src:
+                        left, bottom, right, top = transform_bounds(
+                            "EPSG:4326", src.crs, lon_min, lat_min, lon_max, lat_max
+                        )
+                        window = window_from_bounds(
+                            left, bottom, right, top, transform=src.transform
+                        )
+                        count = min(3, src.count)
+                        data = src.read(
+                            indexes=list(range(1, count + 1)),
+                            out_shape=(count, size, size),
+                            window=window,
+                            resampling=Resampling.bilinear,
+                            boundless=True,
+                            fill_value=0,
+                        )
+                if data.shape[0] == 1:
+                    rgb = np.stack([data[0], data[0], data[0]], axis=0)
+                else:
+                    rgb = data[:3]
 
-        # Clip to tilted STAC footprint (critical for Landsat / S1 swaths)
-        mask = self._footprint_mask(layer.get("footprint"), lon_min, lat_min, lon_max, lat_max)
-        png = self._to_rgba(rgb, mask, mode)
-        cache_path.write_bytes(png)
-        return png
+            # Footprint mask at preview resolution
+            old = self.TILE_SIZE
+            self.TILE_SIZE = size
+            try:
+                mask = self._footprint_mask(
+                    layer.get("footprint"), lon_min, lat_min, lon_max, lat_max
+                )
+            finally:
+                self.TILE_SIZE = old
+            return self._to_rgba(rgb, mask, mode)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Scene preview failed {}: {}", scene_id, exc)
+            img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
 
     def read_band_grid(
         self,
