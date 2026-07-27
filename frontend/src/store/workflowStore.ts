@@ -400,6 +400,11 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       overlays: [],
       measureLabel: null,
       loadingOverlayIds: [],
+      // Clear any prior AOI / drawn mask so a new search is point-only
+      aoiGeoJson: null,
+      drawnFeature: null,
+      measureLine: null,
+      bufferGeoJson: null,
     }),
 
   backToPlace: () =>

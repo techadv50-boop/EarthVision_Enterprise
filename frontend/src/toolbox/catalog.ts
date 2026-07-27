@@ -68,7 +68,7 @@ export const TOOLBOXES: ToolboxDef[] = [
   {
     id: 'layers',
     title: 'Layer Manager',
-    blurb: 'Drag to reorder · DEM base height · scene & analytics layers',
+    blurb: 'Unified priority list for every map layer',
     tools: [
       { id: 'add_layer', label: 'Add Layer', action: { type: 'layer', op: 'add' } },
       { id: 'remove_layer', label: 'Remove Layer', action: { type: 'layer', op: 'remove' } },
@@ -105,7 +105,7 @@ export const TOOLBOXES: ToolboxDef[] = [
       { id: 'denoise', label: 'Denoise', action: { type: 'process', op: 'denoise' }, needsScene: true },
       { id: 'cloud_mask', label: 'Cloud Mask', action: { type: 'detection', task: 'cloud_mask' }, needsScene: true },
       { id: 'mosaic', label: 'Image Mosaic', action: { type: 'process', op: 'mosaic' }, needsScene: true },
-      { id: 'clip', label: 'Clip Raster', action: { type: 'gis', op: 'clip' } },
+      { id: 'clip', label: 'Extract by Mask', action: { type: 'gis', op: 'extract_by_mask' }, needsScene: true },
       { id: 'reproject', label: 'Reproject', action: { type: 'process', op: 'reproject' } },
       { id: 'resample', label: 'Resample', action: { type: 'process', op: 'resample' } },
     ],
@@ -113,7 +113,7 @@ export const TOOLBOXES: ToolboxDef[] = [
   {
     id: 'ai',
     title: 'AI Detection',
-    blurb: 'Object & land-cover detection on imagery',
+    blurb: 'ML / neural detectors on Eye-On imagery (built-up, ships, roads, LULC)',
     tools: [
       { id: 'building_detection', label: 'Building Detection', action: { type: 'detection', task: 'building_detection' }, needsScene: true },
       { id: 'road_extraction', label: 'Road Extraction', action: { type: 'detection', task: 'road_extraction' }, needsScene: true },
@@ -205,7 +205,7 @@ export const TOOLBOXES: ToolboxDef[] = [
     title: 'Terrain Analysis',
     blurb: 'DEM, hydro, viewshed & surface metrics',
     tools: [
-      { id: 'dem', label: 'DEM 3D (under imagery)', action: { type: 'terrain', product: 'dem' } },
+      { id: 'dem', label: 'DEM 3D (ArcScene)', action: { type: 'terrain', product: 'dem' } },
       { id: 'hillshade', label: 'Hillshade', action: { type: 'terrain', product: 'hillshade' } },
       { id: 'slope', label: 'Slope', action: { type: 'terrain', product: 'slope' } },
       { id: 'aspect', label: 'Aspect', action: { type: 'terrain', product: 'aspect' } },
@@ -226,9 +226,11 @@ export const TOOLBOXES: ToolboxDef[] = [
     blurb: 'Vector overlays & spatial operations',
     tools: [
       { id: 'buffer', label: 'Buffer', action: { type: 'gis', op: 'buffer' } },
+      { id: 'extract_mask', label: 'Extract by Mask', action: { type: 'gis', op: 'extract_by_mask' }, needsScene: true },
+      { id: 'import_vector', label: 'Import Shapefile / KML', action: { type: 'gis', op: 'import_vector' } },
       { id: 'intersect', label: 'Intersect', action: { type: 'gis', op: 'intersect' } },
       { id: 'union', label: 'Union', action: { type: 'gis', op: 'union' } },
-      { id: 'clip', label: 'Clip', action: { type: 'gis', op: 'clip' } },
+      { id: 'clip', label: 'Clip (vector)', action: { type: 'gis', op: 'clip' } },
       { id: 'dissolve', label: 'Dissolve', action: { type: 'gis', op: 'dissolve' } },
       { id: 'merge', label: 'Merge', action: { type: 'gis', op: 'merge' } },
       { id: 'spatial_join', label: 'Spatial Join', action: { type: 'gis', op: 'merge' } },
@@ -259,3 +261,46 @@ export const TOOLBOXES: ToolboxDef[] = [
     ],
   },
 ];
+
+/**
+ * Categories that do not apply to optical land missions (Sentinel-2 / Landsat).
+ * AI, Change, Maritime, and Air stay hidden for those scenes.
+ */
+export const OPTICAL_LAND_HIDDEN_CATEGORIES: ToolboxId[] = [
+  'ai',
+  'change',
+  'maritime',
+  'aviation',
+];
+
+export function isOpticalLandCollection(collection?: string | null): boolean {
+  const c = (collection || '').toUpperCase();
+  return c === 'SENTINEL-2' || c.startsWith('LANDSAT');
+}
+
+/** Resolve which toolbox category ids are visible for the current scene + user ACL. */
+export function resolveVisibleToolboxIds(options: {
+  userAllowed?: string[] | null;
+  hasScene: boolean;
+  collection?: string | null;
+}): ToolboxId[] {
+  const all = TOOLBOXES.map((b) => b.id);
+  let ids: ToolboxId[] =
+    options.userAllowed == null
+      ? all
+      : all.filter((id) => options.userAllowed!.includes(id));
+
+  if (options.hasScene && isOpticalLandCollection(options.collection)) {
+    const hide = new Set(OPTICAL_LAND_HIDDEN_CATEGORIES);
+    ids = ids.filter((id) => !hide.has(id));
+  }
+
+  return ids;
+}
+
+export function findToolboxIdForTool(toolId: string): ToolboxId | null {
+  for (const box of TOOLBOXES) {
+    if (box.tools.some((t) => t.id === toolId)) return box.id;
+  }
+  return null;
+}

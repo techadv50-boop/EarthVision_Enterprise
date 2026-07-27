@@ -87,3 +87,24 @@ class SpatialOpResponse(BaseModel):
     count: int
     message: str | None = None
     bounds: list[float] | None = None
+
+
+class ExtractByMaskRequest(BaseModel):
+    scene_id: str = Field(min_length=1)
+    mask: dict[str, Any] = Field(
+        description="GeoJSON Geometry, Feature, or FeatureCollection used as the clip mask",
+    )
+    size: int = Field(default=1024, ge=64, le=2048)
+    preset: str = Field(
+        default="true_color",
+        description="RGB composite preset to extract (default true_color)",
+    )
+
+
+class ExtractByMaskResponse(BaseModel):
+    scene_id: str
+    bounds: list[float]
+    overlay_base64: str
+    mask_geojson: dict[str, Any]
+    feature_count: int
+    message: str | None = None

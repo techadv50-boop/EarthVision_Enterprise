@@ -38,7 +38,13 @@ import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
 import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
 import { bookmarkService } from '../services/bookmarkService';
-import { TOOLBOXES } from '../toolbox/catalog';
+import {
+  TOOLBOXES,
+  OPTICAL_LAND_HIDDEN_CATEGORIES,
+  findToolboxIdForTool,
+  isOpticalLandCollection,
+  resolveVisibleToolboxIds,
+} from '../toolbox/catalog';
 
 function sceneBounds(
   scene: SceneSummary,
@@ -95,6 +101,9 @@ export function WorkspacePage() {
   const [bufferLoading, setBufferLoading] = useState(false);
   const [lastBufferDistance, setLastBufferDistance] = useState<number | null>(null);
   const [lastBufferArea, setLastBufferArea] = useState<number | null>(null);
+  const [maskLoading, setMaskLoading] = useState(false);
+  const [extractLoading, setExtractLoading] = useState(false);
+  const [maskLabel, setMaskLabel] = useState<string | null>(null);
   const [mapCommand, setMapCommand] = useState<{ id: number; type: string } | null>(null);
   const [compositeResult, setCompositeResult] = useState<CompositeResult | null>(null);
   const [stretchResult, setStretchResult] = useState<StretchResult | null>(null);
@@ -114,15 +123,8 @@ export function WorkspacePage() {
   const [adminOpen, setAdminOpen] = useState(false);
 
   const isAdmin = user?.role === 'admin';
-  const allowedTools =
+  const userAllowedTools =
     isAdmin || user?.allowed_tools == null ? null : user.allowed_tools;
-  const toolCount = useMemo(() => {
-    const boxes =
-      allowedTools == null
-        ? TOOLBOXES
-        : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
-    return boxes.reduce((n, b) => n + b.tools.length, 0);
-  }, [allowedTools]);
 
   const {
     step,
@@ -187,7 +189,7 @@ export function WorkspacePage() {
     backToPlace,
   } = useWorkflowStore();
 
-  // Recover from stale HMR / old store snapshots missing new fields
+  // Recover from stale HMR / old store snapshots missing new fields (once on mount only)
   useEffect(() => {
     const state = useWorkflowStore.getState();
     const patch: Record<string, unknown> = {};
@@ -213,8 +215,7 @@ export function WorkspacePage() {
     } else if (typeof (state.mapChrome as { grid?: boolean }).grid !== 'boolean') {
       patch.mapChrome = { ...state.mapChrome, grid: true };
     }
-    // Always reopen toolboxes after login so the new UI is visible
-    if (state.toolboxOpen === false) patch.toolboxOpen = true;
+    // Do NOT force toolboxOpen=true — that disrupted work by resetting the UI
     if (Object.keys(patch).length) {
       useWorkflowStore.setState(patch as Partial<typeof state>);
     }
@@ -226,6 +227,29 @@ export function WorkspacePage() {
   );
 
   const hasVisibleScene = visibleSceneIds.length > 0;
+
+  /** Prefer focused Eye-On scene; fall back to first visible scene. */
+  const activeScene = useMemo(() => {
+    if (focusScene && visibleSceneIds.includes(focusScene.id)) return focusScene;
+    return scenes.find((s) => visibleSceneIds.includes(s.id)) ?? null;
+  }, [focusScene, scenes, visibleSceneIds]);
+
+  const toolsEnabled = hasVisibleScene && Boolean(activeScene);
+
+  const allowedTools = useMemo(
+    () =>
+      resolveVisibleToolboxIds({
+        userAllowed: userAllowedTools,
+        hasScene: toolsEnabled,
+        collection: activeScene?.collection,
+      }),
+    [userAllowedTools, toolsEnabled, activeScene?.collection],
+  );
+
+  const toolCount = useMemo(() => {
+    const boxes = TOOLBOXES.filter((b) => allowedTools.includes(b.id));
+    return boxes.reduce((n, b) => n + b.tools.length, 0);
+  }, [allowedTools]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
     const sceneOverlay = focusScene
@@ -626,10 +650,177 @@ export function WorkspacePage() {
     }
   };
 
+  const onImportMaskFile = async (file: File) => {
+    setMaskLoading(true);
+    setError(null);
+    try {
+      const fc = await gisService.importGeometry(file);
+      const features = fc.features || [];
+      if (!features.length) {
+        throw new Error('No features found in the uploaded file');
+      }
+      // Prefer first polygon; otherwise use first feature
+      const poly =
+        features.find((f) =>
+          ['Polygon', 'MultiPolygon'].includes(f.geometry?.type || ''),
+        ) || features[0];
+      const feature: GeoJSON.Feature = {
+        type: 'Feature',
+        properties: {
+          ...(poly.properties || {}),
+          name:
+            (poly.properties as { name?: string } | null)?.name ||
+            file.name ||
+            'Uploaded mask',
+          source: 'upload',
+        },
+        geometry: poly.geometry as GeoJSON.Geometry,
+      };
+      setAoiGeoJson(feature);
+      const drawnType =
+        feature.geometry.type === 'Polygon' ||
+        feature.geometry.type === 'LineString' ||
+        feature.geometry.type === 'Point'
+          ? feature.geometry.type
+          : feature.geometry.type === 'MultiPolygon'
+            ? 'Polygon'
+            : feature.geometry.type === 'MultiLineString'
+              ? 'LineString'
+              : 'Polygon';
+      setDrawnFeature({
+        type: drawnType,
+        geometry: feature.geometry,
+        label:
+          (feature.properties as { name?: string } | null)?.name ||
+          file.name ||
+          'Uploaded mask',
+      });
+      const name =
+        (feature.properties as { name?: string } | null)?.name || file.name;
+      setMaskLabel(`${name} · ${features.length} feature(s)`);
+      // Show mask outline on the map
+      const boundsGuess = (() => {
+        try {
+          const coords: number[][] = [];
+          const walk = (g: GeoJSON.Geometry) => {
+            if (g.type === 'Point') coords.push(g.coordinates as number[]);
+            else if (g.type === 'MultiPoint' || g.type === 'LineString')
+              coords.push(...(g.coordinates as number[][]));
+            else if (g.type === 'MultiLineString' || g.type === 'Polygon')
+              for (const ring of g.coordinates as number[][][]) coords.push(...ring);
+            else if (g.type === 'MultiPolygon')
+              for (const polyRings of g.coordinates as number[][][][])
+                for (const ring of polyRings) coords.push(...ring);
+          };
+          walk(feature.geometry);
+          if (!coords.length) return null;
+          const xs = coords.map((c) => c[0]);
+          const ys = coords.map((c) => c[1]);
+          return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] as [
+            number,
+            number,
+            number,
+            number,
+          ];
+        } catch {
+          return null;
+        }
+      })();
+      const maskFc: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features: [feature],
+      };
+      upsertOverlay({
+        id: 'mask-aoi',
+        kind: 'buffer',
+        url: '',
+        bounds: boundsGuess || analysisBbox,
+        geojson: maskFc,
+        opacity: 1,
+        label: `Mask: ${name}`,
+        visible: true,
+      });
+      setExpandedToolbox('gis');
+      setToolboxOpen(true);
+      setLastMessage(`Imported ${features.length} feature(s) from ${file.name}`);
+      setToolStatus('Mask ready — click Extract by mask');
+    } catch (err) {
+      setError(getErrorMessage(err));
+      throw err instanceof Error ? err : new Error(getErrorMessage(err));
+    } finally {
+      setMaskLoading(false);
+    }
+  };
+
+  const runExtractByMask = async () => {
+    if (!focusScene?.id && !activeScene?.id) {
+      setError('Eye-On a satellite image first');
+      return;
+    }
+    const sceneId = (focusScene || activeScene)!.id;
+    const maskSource =
+      aoiGeoJson ||
+      (drawnFeature
+        ? {
+            type: 'Feature' as const,
+            properties: {},
+            geometry: drawnFeature.geometry,
+          }
+        : null);
+    if (!maskSource) {
+      setError('Upload a shapefile/KML/KMZ or draw an AOI polygon first');
+      setExpandedToolbox('gis');
+      return;
+    }
+    setExtractLoading(true);
+    setToolLoading(true);
+    setToolStatus('Extract by mask…');
+    setError(null);
+    try {
+      const result = await gisService.extractByMask({
+        scene_id: sceneId,
+        mask: maskSource,
+        size: 1024,
+        preset: 'true_color',
+      });
+      upsertOverlay({
+        id: `extract-mask-${sceneId}`,
+        kind: 'index',
+        url: analyticsService.toDataUrl(result.overlay_base64),
+        bounds: result.bounds,
+        geojson: {
+          type: 'FeatureCollection',
+          features: [result.mask_geojson],
+        } as GeoJSON.FeatureCollection,
+        opacity: layerOpacity,
+        label: 'Extract by mask',
+        visible: true,
+        sceneId,
+      });
+      setLastMessage(result.message || 'Extract by mask complete');
+      setToolStatus(result.message || 'Extract complete');
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setExtractLoading(false);
+      setToolLoading(false);
+    }
+  };
+
   const runGis = async (op: string) => {
     if (op === 'buffer') {
       setExpandedToolbox('gis');
       setToolStatus('Set buffer distance below, then Apply');
+      return;
+    }
+    if (op === 'import_vector') {
+      setExpandedToolbox('gis');
+      setToolStatus('Upload a shapefile (.zip), KML, or KMZ below');
+      setActiveToolId(null);
+      return;
+    }
+    if (op === 'extract_by_mask') {
+      await runExtractByMask();
       return;
     }
     if (!drawnFeature) {
@@ -984,6 +1175,28 @@ export function WorkspacePage() {
       return;
     }
 
+    if (!toolsEnabled) {
+      setError('Select a satellite image first (toggle the eye on a catalog scene)');
+      return;
+    }
+
+    const boxId = findToolboxIdForTool(tool.id);
+    if (
+      boxId &&
+      isOpticalLandCollection(activeScene?.collection) &&
+      OPTICAL_LAND_HIDDEN_CATEGORIES.includes(boxId)
+    ) {
+      setError(
+        `AI / Change / Maritime / Air tools are not available for ${activeScene?.collection || 'this'} scenes`,
+      );
+      return;
+    }
+
+    if (!allowedTools.includes(boxId as ToolboxId) && boxId) {
+      setError('This toolbox is not available for the selected satellite image');
+      return;
+    }
+
     setActiveToolId(tool.id);
     const { action } = tool;
 
@@ -1298,6 +1511,8 @@ export function WorkspacePage() {
               overlays={overlays}
               layerOpacity={layerOpacity}
               hasScene={hasVisibleScene}
+              toolsEnabled={toolsEnabled}
+              sceneCollection={activeScene?.collection ?? null}
               hasDrawn={Boolean(drawnFeature)}
               drawnType={drawnFeature?.type ?? null}
               bufferLoading={bufferLoading}
@@ -1326,6 +1541,26 @@ export function WorkspacePage() {
                 removeOverlaysByKind('buffer');
                 setLastBufferDistance(null);
                 setLastBufferArea(null);
+              }}
+              maskLoading={maskLoading}
+              extractLoading={extractLoading}
+              hasMask={Boolean(aoiGeoJson || drawnFeature)}
+              maskLabel={
+                maskLabel ||
+                (aoiGeoJson
+                  ? 'Drawn / AOI mask'
+                  : drawnFeature
+                    ? `Drawn ${drawnFeature.type}`
+                    : null)
+              }
+              onImportMaskFile={onImportMaskFile}
+              onExtractByMask={() => void runExtractByMask()}
+              onClearMask={() => {
+                setAoiGeoJson(null);
+                setDrawnFeature(null);
+                setMaskLabel(null);
+                removeOverlay('mask-aoi');
+                removeOverlay(`extract-mask-${focusScene?.id || activeScene?.id || ''}`);
               }}
               indexResult={indexResult}
               compositeResult={compositeResult}
@@ -1407,13 +1642,21 @@ export function WorkspacePage() {
             >
               <Wrench className="h-4 w-4" />
             </button>
-            {TOOLBOXES.slice(0, 6).map((box) => (
+            {TOOLBOXES.filter((b) => allowedTools.includes(b.id))
+              .slice(0, 6)
+              .map((box) => (
               <button
                 key={box.id}
                 type="button"
-                className="rounded p-1.5 text-[9px] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-                title={box.title}
+                disabled={!toolsEnabled}
+                className="rounded p-1.5 text-[9px] text-[var(--muted)] hover:bg-[var(--accent-soft)] disabled:cursor-not-allowed disabled:opacity-40"
+                title={
+                  toolsEnabled
+                    ? box.title
+                    : `${box.title} (select a satellite image first)`
+                }
                 onClick={() => {
+                  if (!toolsEnabled) return;
                   setExpandedToolbox(box.id);
                   setToolboxOpen(true);
                 }}

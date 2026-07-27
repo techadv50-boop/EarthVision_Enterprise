@@ -159,7 +159,7 @@ export function ImageProcessingPanel({
     <div className="mb-3 space-y-3 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/30 p-2">
       {!hasScene && (
         <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
-          Toggle a Sentinel-2 / Landsat scene eye for best results. Tools can still run on the AOI.
+          Eye-On a satellite image to activate image processing for that scene.
         </p>
       )}
 
@@ -200,13 +200,13 @@ export function ImageProcessingPanel({
               <button
                 key={p.id}
                 type="button"
-                disabled={loading}
+                disabled={loading || !hasScene}
                 onClick={() => onComposite(p.id)}
                 className={`rounded-lg border px-2 py-1.5 text-left text-[11px] ${
                   active
                     ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
                     : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-50`}
               >
                 <div className="font-semibold">{p.label}</div>
                 <div className={`font-mono text-[9px] ${active ? 'text-white/80' : 'text-[var(--muted)]'}`}>
@@ -234,7 +234,7 @@ export function ImageProcessingPanel({
                 key={idx.id}
                 type="button"
                 title={them ? `${them.formula}\nBands: ${them.bands}` : idx.label}
-                disabled={loading}
+                disabled={loading || !hasScene}
                 onClick={() => onIndex(idx.id)}
                 className={`rounded-lg border px-1.5 py-1.5 text-[11px] font-semibold ${
                   indexResult?.index === idx.id
@@ -269,7 +269,7 @@ export function ImageProcessingPanel({
                 <button
                   key={ramp.id}
                   type="button"
-                  disabled={loading}
+                  disabled={loading || !hasScene}
                   title={ramp.label}
                   onClick={() => onColormapChange?.(ramp.id as ColormapName)}
                   className={`flex items-center gap-2 rounded border px-2 py-1 text-left ${
@@ -397,7 +397,7 @@ export function ImageProcessingPanel({
           </label>
           <button
             type="button"
-            disabled={loading}
+            disabled={loading || !hasScene}
             onClick={onStretch}
             className="ev-btn-primary w-full text-[11px]"
           >

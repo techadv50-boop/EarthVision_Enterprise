@@ -26,6 +26,7 @@ import type {
   StretchResult,
 } from '../../services/compositeService';
 import { BufferPanel } from './BufferPanel';
+import { GeometryImportPanel } from './GeometryImportPanel';
 import { ImageProcessingPanel } from './ImageProcessingPanel';
 import { detectionService } from '../../services/detectionService';
 
@@ -57,6 +58,10 @@ interface Props {
   overlays: MapOverlay[];
   layerOpacity: number;
   hasScene: boolean;
+  /** When false, category tabs + tools are inactive until a scene is selected */
+  toolsEnabled?: boolean;
+  /** Optional label for the active scene collection (e.g. SENTINEL-2) */
+  sceneCollection?: string | null;
   hasDrawn: boolean;
   drawnType?: string | null;
   bufferLoading?: boolean;
@@ -79,6 +84,14 @@ interface Props {
   onRenameOverlay: (id: string, label: string) => void;
   onApplyBuffer: (distance: number) => void;
   onClearBuffer: () => void;
+  // Vector mask import + extract-by-mask
+  maskLoading?: boolean;
+  extractLoading?: boolean;
+  hasMask?: boolean;
+  maskLabel?: string | null;
+  onImportMaskFile?: (file: File) => Promise<void> | void;
+  onExtractByMask?: () => void;
+  onClearMask?: () => void;
   // Image processing
   indexResult?: IndexResult | null;
   compositeResult?: CompositeResult | null;
@@ -112,6 +125,8 @@ export function ToolboxPanel({
   overlays,
   layerOpacity,
   hasScene,
+  toolsEnabled = true,
+  sceneCollection = null,
   hasDrawn,
   drawnType,
   bufferLoading,
@@ -133,6 +148,13 @@ export function ToolboxPanel({
   onRenameOverlay,
   onApplyBuffer,
   onClearBuffer,
+  maskLoading = false,
+  extractLoading = false,
+  hasMask = false,
+  maskLabel = null,
+  onImportMaskFile,
+  onExtractByMask,
+  onClearMask,
   indexResult = null,
   compositeResult = null,
   stretchResult = null,
@@ -218,7 +240,7 @@ export function ToolboxPanel({
         </button>
       </div>
 
-      {/* Category tabs — always visible */}
+      {/* Category tabs — inactive until a satellite image is selected */}
       <div className="shrink-0 border-b border-[var(--line)] bg-white px-2 py-2">
         <div className="grid grid-cols-5 gap-1">
           {visibleToolboxes.map((box) => {
@@ -228,12 +250,19 @@ export function ToolboxPanel({
               <button
                 key={box.id}
                 type="button"
-                title={box.title}
-                onClick={() => onExpand(box.id)}
+                title={
+                  toolsEnabled
+                    ? box.title
+                    : `${box.title} (select a satellite image first)`
+                }
+                disabled={!toolsEnabled}
+                onClick={() => toolsEnabled && onExpand(box.id)}
                 className={`flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[9px] font-semibold leading-tight ${
-                  on
-                    ? 'bg-[var(--accent)] text-white'
-                    : 'bg-[var(--bg)] text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]'
+                  !toolsEnabled
+                    ? 'cursor-not-allowed bg-[var(--bg)] text-[var(--muted)] opacity-50'
+                    : on
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'bg-[var(--bg)] text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]'
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />
@@ -246,6 +275,22 @@ export function ToolboxPanel({
         </div>
       </div>
 
+      {!toolsEnabled && (
+        <div className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+          Toolboxes are inactive. Eye-On a satellite image in the catalog to unlock tools for
+          that mission
+          {sceneCollection ? ` (${sceneCollection})` : ''}.
+        </div>
+      )}
+
+      {toolsEnabled && sceneCollection && (
+        <div className="border-b border-[var(--line)] bg-[var(--bg)] px-3 py-1.5 text-[10px] text-[var(--muted)]">
+          Active for <span className="font-semibold text-[var(--ink)]">{sceneCollection}</span>
+          {' — '}
+          tools match this image only
+        </div>
+      )}
+
       {(loading || status) && (
         <div className="flex items-center gap-2 border-b border-[var(--line)] bg-[var(--accent-soft)] px-3 py-2 text-[11px] text-[var(--accent)]">
           {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -253,26 +298,28 @@ export function ToolboxPanel({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div
+        className={`min-h-0 flex-1 overflow-y-auto p-3 ${!toolsEnabled ? 'pointer-events-none opacity-50' : ''}`}
+      >
         <div className="mb-2">
           <div className="font-display text-sm font-semibold">{activeBox.title}</div>
           <p className="text-[11px] text-[var(--muted)]">{activeBox.blurb}</p>
           {['ai', 'maritime', 'aviation'].includes(activeBox.id) && (
             <p className="mt-1 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10px] text-[var(--muted)]">
-              Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its
-              formula. Detections show legend, scale bar, north arrow, and grid on the map.
+              ML / neural detectors (MLP built-up buildings, CFAR ships, Hough roads, DoG
+              aircraft, RandomForest LULC). Eye-On an optical scene first — no random placeholders.
             </p>
           )}
-          {!hasScene && activeBox.tools.some((t) => t.needsScene) && (
+          {!hasScene && (
             <p className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
-              Tip: open a place and toggle a scene eye for best imagery results. Tools still run on the map AOI.
+              Select a place and toggle a scene eye to activate tools for that satellite image.
             </p>
           )}
         </div>
 
         {activeBox.id === 'image' && onComposite && onIndexTool && onStretch && (
           <ImageProcessingPanel
-            hasScene={hasScene}
+            hasScene={hasScene && toolsEnabled}
             loading={loading}
             activeToolId={activeToolId}
             indexResult={indexResult}
@@ -323,7 +370,19 @@ export function ToolboxPanel({
         )}
 
         {activeBox.id === 'gis' && (
-          <div className="mb-3">
+          <div className="mb-3 space-y-3">
+            {onImportMaskFile && onExtractByMask && onClearMask && (
+              <GeometryImportPanel
+                loading={maskLoading}
+                extractLoading={extractLoading}
+                hasMask={hasMask}
+                hasScene={hasScene && toolsEnabled}
+                maskLabel={maskLabel}
+                onImportFile={onImportMaskFile}
+                onExtractByMask={onExtractByMask}
+                onClearMask={onClearMask}
+              />
+            )}
             <BufferPanel
               hasGeometry={hasDrawn}
               geometryType={drawnType}
@@ -365,21 +424,23 @@ export function ToolboxPanel({
               const taskId =
                 tool.action.type === 'detection' ? tool.action.task : undefined;
               const algo = taskId ? algoByTask[taskId] : undefined;
-              const tip = active
-                ? `${tool.label} (click again to turn off)`
-                : algo || tool.hint || tool.label;
+              const tip = !toolsEnabled
+                ? 'Select a satellite image first'
+                : active
+                  ? `${tool.label} (click again to turn off)`
+                  : algo || tool.hint || tool.label;
               return (
                 <button
                   key={tool.id}
                   type="button"
                   title={tip}
-                  disabled={loading}
+                  disabled={loading || !toolsEnabled}
                   onClick={() => onTool(tool)}
                   className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${
                     active
                       ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
                       : 'border-[var(--line)] bg-white hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
-                  } disabled:opacity-50`}
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   <span
                     className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[9px] ${

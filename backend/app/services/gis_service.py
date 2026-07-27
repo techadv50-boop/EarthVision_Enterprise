@@ -616,3 +616,314 @@ class GISService:
                 }
             )
         return out_g, out_p
+
+
+    # ------------------------------------------------------------------
+    # Geometry import (shapefile / KML / KMZ / GeoJSON) + extract-by-mask
+    # ------------------------------------------------------------------
+
+    def import_geometry_bytes(self, filename: str, content: bytes) -> dict[str, Any]:
+        """Import uploaded vector file into a GeoJSON FeatureCollection."""
+        name = (filename or "upload").lower().strip()
+        if name.endswith(".zip") or name.endswith(".shp"):
+            return self.shapefile_zip_to_geojson(content)
+        if name.endswith(".kmz"):
+            return self.kmz_to_geojson(content)
+        if name.endswith(".kml"):
+            return self.kml_to_geojson(content.decode("utf-8", errors="replace"))
+        if name.endswith(".geojson") or name.endswith(".json"):
+            import json
+
+            try:
+                data = json.loads(content.decode("utf-8"))
+            except Exception as exc:
+                raise ValidationError("Invalid GeoJSON", details=str(exc)) from exc
+            return self._normalize_feature_collection(data)
+        raise ValidationError(
+            "Unsupported format — upload .zip (shapefile), .kml, .kmz, or .geojson"
+        )
+
+    def _normalize_feature_collection(self, data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValidationError("Invalid GeoJSON document")
+        gtype = data.get("type")
+        if gtype == "FeatureCollection":
+            feats = data.get("features") or []
+            return {"type": "FeatureCollection", "features": feats}
+        if gtype == "Feature":
+            return {"type": "FeatureCollection", "features": [data]}
+        if gtype in {
+            "Point",
+            "MultiPoint",
+            "LineString",
+            "MultiLineString",
+            "Polygon",
+            "MultiPolygon",
+            "GeometryCollection",
+        }:
+            return {
+                "type": "FeatureCollection",
+                "features": [{"type": "Feature", "geometry": data, "properties": {}}],
+            }
+        raise ValidationError("Unrecognized GeoJSON type")
+
+    def kml_to_geojson(self, kml_text: str) -> dict[str, Any]:
+        """Parse KML placemarks into a GeoJSON FeatureCollection (stdlib XML)."""
+        import re
+        import xml.etree.ElementTree as ET
+
+        def _strip(tag: str) -> str:
+            return tag.split("}")[-1] if "}" in tag else tag
+
+        def _coords(text: str | None) -> list[list[float]]:
+            if not text:
+                return []
+            out: list[list[float]] = []
+            for tok in re.split(r"\s+", text.strip()):
+                if not tok:
+                    continue
+                parts = tok.split(",")
+                if len(parts) < 2:
+                    continue
+                try:
+                    lon, lat = float(parts[0]), float(parts[1])
+                except ValueError:
+                    continue
+                out.append([lon, lat])
+            return out
+
+        try:
+            root = ET.fromstring(kml_text)
+        except ET.ParseError as exc:
+            raise ValidationError("Invalid KML", details=str(exc)) from exc
+
+        features: list[dict[str, Any]] = []
+
+        def walk(el: ET.Element, inherited_name: str = "Feature") -> None:
+            tag = _strip(el.tag)
+            name = inherited_name
+            if tag == "Placemark":
+                local_name = inherited_name
+                for child in el:
+                    if _strip(child.tag) == "name" and child.text:
+                        local_name = child.text.strip()
+                for child in el:
+                    walk(child, local_name)
+                return
+            if tag == "name" and el.text:
+                return
+            if tag == "Point":
+                for child in el:
+                    if _strip(child.tag) == "coordinates":
+                        pts = _coords(child.text)
+                        if pts:
+                            features.append(
+                                {
+                                    "type": "Feature",
+                                    "geometry": {"type": "Point", "coordinates": pts[0]},
+                                    "properties": {"name": name},
+                                }
+                            )
+            elif tag == "LineString":
+                for child in el:
+                    if _strip(child.tag) == "coordinates":
+                        pts = _coords(child.text)
+                        if len(pts) >= 2:
+                            features.append(
+                                {
+                                    "type": "Feature",
+                                    "geometry": {"type": "LineString", "coordinates": pts},
+                                    "properties": {"name": name},
+                                }
+                            )
+            elif tag == "Polygon":
+                outer: list[list[float]] = []
+                holes: list[list[list[float]]] = []
+                for child in el:
+                    ct = _strip(child.tag)
+                    if ct == "outerBoundaryIs":
+                        for ring in child.iter():
+                            if _strip(ring.tag) == "coordinates":
+                                outer = _coords(ring.text)
+                    elif ct == "innerBoundaryIs":
+                        for ring in child.iter():
+                            if _strip(ring.tag) == "coordinates":
+                                hole = _coords(ring.text)
+                                if hole:
+                                    holes.append(hole)
+                if outer:
+                    if outer[0] != outer[-1]:
+                        outer = outer + [outer[0]]
+                    rings = [outer, *holes]
+                    features.append(
+                        {
+                            "type": "Feature",
+                            "geometry": {"type": "Polygon", "coordinates": rings},
+                            "properties": {"name": name},
+                        }
+                    )
+            else:
+                for child in el:
+                    walk(child, name)
+
+        walk(root)
+        if not features:
+            raise ValidationError("No placemarks / geometries found in KML")
+        return {"type": "FeatureCollection", "features": features}
+
+    def kmz_to_geojson(self, content: bytes) -> dict[str, Any]:
+        """Extract the first .kml from a KMZ (zip) and parse it."""
+        import io
+        import zipfile
+        from pathlib import Path as P
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                names = [n for n in zf.namelist() if n.lower().endswith(".kml")]
+                if not names:
+                    raise ValidationError("No .kml found inside KMZ")
+                # Prefer doc.kml if present
+                preferred = next((n for n in names if P(n).name.lower() == "doc.kml"), names[0])
+                raw = zf.read(preferred)
+        except zipfile.BadZipFile as exc:
+            raise ValidationError("Invalid KMZ archive", details=str(exc)) from exc
+        return self.kml_to_geojson(raw.decode("utf-8", errors="replace"))
+
+    def mask_polygon_from_geojson(self, mask: dict[str, Any]):
+        """Build a polygonal shapely geometry suitable for extract-by-mask."""
+        from shapely.ops import unary_union
+
+        fc = self._normalize_feature_collection(mask)
+        geoms = []
+        for feat in fc.get("features") or []:
+            geom = feat.get("geometry")
+            if not geom:
+                continue
+            try:
+                geoms.append(shape(geom))
+            except Exception:
+                continue
+        if not geoms:
+            raise ValidationError("Mask has no valid geometries")
+        merged = unary_union(geoms)
+        if merged.is_empty:
+            raise ValidationError("Mask geometry is empty")
+        # Promote points/lines to a usable area mask
+        if merged.geom_type in ("Point", "MultiPoint"):
+            merged = merged.buffer(0.001)  # ~100 m at equator
+        elif merged.geom_type in ("LineString", "MultiLineString"):
+            merged = merged.buffer(0.0005)
+        if merged.geom_type == "GeometryCollection":
+            polys = [g for g in merged.geoms if g.geom_type in ("Polygon", "MultiPolygon")]
+            if not polys:
+                merged = merged.convex_hull
+            else:
+                merged = unary_union(polys)
+        if not merged.is_valid:
+            merged = merged.buffer(0)
+        return merged
+
+    def extract_by_mask(
+        self,
+        scene_id: str,
+        mask: dict[str, Any],
+        *,
+        size: int = 1024,
+        preset: str = "true_color",
+    ) -> dict[str, Any]:
+        """Clip Eye-On scene imagery to a vector mask and return a PNG overlay."""
+        import base64
+        import io
+
+        import numpy as np
+        from PIL import Image
+        from shapely.geometry import Point
+
+        from app.schemas.composite import CompositeRequest
+        from app.services.composite_service import CompositeService
+
+        mask_geom = self.mask_polygon_from_geojson(mask)
+        minx, miny, maxx, maxy = mask_geom.bounds
+        # Render true-color (or requested) composite for the scene
+        composite = CompositeService().render_composite(
+            CompositeRequest(
+                scene_id=scene_id,
+                bbox=None,
+                preset=preset if preset in {
+                    "true_color",
+                    "false_color_infrared",
+                    "false_color_agriculture",
+                    "false_color_urban",
+                    "swir_composite",
+                    "geology",
+                    "atmospheric_penetration",
+                    "land_water",
+                    "vegetation_health",
+                    "burn_severity",
+                } else "true_color",
+                size=size,
+            )
+        )
+        bounds = [float(x) for x in composite.bounds]
+        west, south, east, north = bounds
+        png_bytes = base64.b64decode(composite.overlay_base64)
+        img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+        w, h = img.size
+        # Build alpha mask aligned to composite bounds
+        alpha = np.zeros((h, w), dtype=np.uint8)
+        # Sample every pixel center (vectorized-ish via coarse then upsample for speed)
+        step = 2 if max(w, h) > 800 else 1
+        ys = np.linspace(north, south, h, endpoint=False) + (south - north) / (2 * h)
+        xs = np.linspace(west, east, w, endpoint=False) + (east - west) / (2 * w)
+        for iy in range(0, h, step):
+            lat = float(ys[iy])
+            for ix in range(0, w, step):
+                lon = float(xs[ix])
+                if mask_geom.contains(Point(lon, lat)) or mask_geom.touches(Point(lon, lat)):
+                    y1 = min(iy + step, h)
+                    x1 = min(ix + step, w)
+                    alpha[iy:y1, ix:x1] = 255
+        arr = np.array(img)
+        arr[:, :, 3] = np.minimum(arr[:, :, 3], alpha)
+        # Tight crop to mask ∩ image
+        clip_west = max(west, minx)
+        clip_east = min(east, maxx)
+        clip_south = max(south, miny)
+        clip_north = min(north, maxy)
+        if clip_east <= clip_west or clip_north <= clip_south:
+            raise ValidationError("Mask does not overlap the Eye-On scene footprint")
+
+        def lon_to_x(lon: float) -> int:
+            return int(round((lon - west) / (east - west) * w))
+
+        def lat_to_y(lat: float) -> int:
+            return int(round((north - lat) / (north - south) * h))
+
+        x0 = max(0, min(w - 1, lon_to_x(clip_west)))
+        x1 = max(1, min(w, lon_to_x(clip_east)))
+        y0 = max(0, min(h - 1, lat_to_y(clip_north)))
+        y1 = max(1, min(h, lat_to_y(clip_south)))
+        if x1 <= x0:
+            x1 = min(w, x0 + 1)
+        if y1 <= y0:
+            y1 = min(h, y0 + 1)
+        cropped = Image.fromarray(arr).crop((x0, y0, x1, y1))
+        out = io.BytesIO()
+        cropped.save(out, format="PNG", optimize=True)
+        fc = self._normalize_feature_collection(mask)
+        feat_count = len(fc.get("features") or [])
+        return {
+            "scene_id": scene_id,
+            "bounds": [clip_west, clip_south, clip_east, clip_north],
+            "overlay_base64": base64.b64encode(out.getvalue()).decode("ascii"),
+            "mask_geojson": {
+                "type": "Feature",
+                "properties": {"name": "extract_mask", "source_features": feat_count},
+                "geometry": mapping(mask_geom),
+            },
+            "feature_count": feat_count,
+            "message": (
+                f"Extract by mask · {feat_count} feature(s) · "
+                f"{cropped.size[0]}×{cropped.size[1]}px · preset {composite.preset}"
+            ),
+        }

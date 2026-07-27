@@ -65,4 +65,33 @@ export const gisService = {
       bounds: number[];
     };
   },
+
+  async importGeometry(file: File): Promise<GeoJSON.FeatureCollection> {
+    const form = new FormData();
+    form.append('file', file);
+    const { data } = await api.post<GeoJSON.FeatureCollection>('/gis/import/geometry', form);
+    return data;
+  },
+
+  async extractByMask(params: {
+    scene_id: string;
+    mask: GeoJSON.Geometry | GeoJSON.Feature | GeoJSON.FeatureCollection;
+    size?: number;
+    preset?: string;
+  }) {
+    const { data } = await api.post('/gis/extract-by-mask', {
+      scene_id: params.scene_id,
+      mask: params.mask,
+      size: params.size ?? 1024,
+      preset: params.preset ?? 'true_color',
+    });
+    return data as {
+      scene_id: string;
+      bounds: [number, number, number, number];
+      overlay_base64: string;
+      mask_geojson: GeoJSON.Feature;
+      feature_count: number;
+      message?: string;
+    };
+  },
 };

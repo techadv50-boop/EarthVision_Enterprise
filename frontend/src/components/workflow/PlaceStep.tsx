@@ -37,16 +37,9 @@ interface Props {
 }
 
 function resultToPlace(r: GeocodeResult): PlaceSelection {
-  const bbox = r.bounding_box as [number, number, number, number] | null | undefined;
-  if (bbox && bbox.length === 4) {
-    return {
-      name: r.display_name,
-      longitude: r.longitude,
-      latitude: r.latitude,
-      bbox,
-    };
-  }
-  const pad = 0.2;
+  // Always use a point-centered pad for search — Nominatim admin bounding boxes
+  // are huge and look like an automatic area selection on the map.
+  const pad = 0.15;
   return {
     name: r.display_name,
     longitude: r.longitude,
@@ -82,7 +75,8 @@ export function PlaceStep({ onSelect, busy }: Props) {
       <div>
         <h2 className="font-display text-lg font-semibold text-[var(--ink)]">Choose a place</h2>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Search a city or click the map. We load the 20 most recent satellite scenes for that area.
+          Search a city or click the map to drop a point. Satellite scenes appear in the list —
+          use the eye icon to show one on the map.
         </p>
       </div>
 
