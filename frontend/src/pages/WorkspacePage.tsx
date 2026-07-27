@@ -342,6 +342,13 @@ export function WorkspacePage() {
         });
         const tileUrl =
           overlay.tile_url || analyticsService.sceneTileUrl(scene.id);
+        const previewUrl =
+          (overlay.overlay_base64
+            ? analyticsService.toDataUrl(overlay.overlay_base64)
+            : null) ||
+          overlay.preview_url ||
+          overlay.download_url ||
+          '';
         const label =
           overlay.label ||
           (scene.collection === 'SENTINEL-1'
@@ -362,9 +369,7 @@ export function WorkspacePage() {
           id: `scene-${scene.id}`,
           kind: 'scene',
           sceneId: scene.id,
-          url: overlay.overlay_base64
-            ? analyticsService.toDataUrl(overlay.overlay_base64)
-            : '',
+          url: previewUrl,
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,

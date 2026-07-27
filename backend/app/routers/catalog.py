@@ -103,12 +103,11 @@ class SceneOverlayBody(BaseModel):
 
 @router.post("/scenes/overlay")
 async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
-    """Prepare Sentinel-2 / Landsat / S1 tiles and return map layer metadata + preview.
+    """Prepare Sentinel-2 / Landsat / S1 tiles and return map layer metadata.
 
-    Returns XYZ tile_url for sharp zoom, plus a low-res overlay_base64 so the map
-    shows imagery immediately while tiles stream in.
+    Returns a small JSON payload (tile_url + preview_url). Do NOT embed large
+    base64 previews here — tunnels like Serveo return HTTP 502 on ~400KB+ bodies.
     """
-    import base64
     from functools import partial
 
     from starlette.concurrency import run_in_threadpool
@@ -127,13 +126,19 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
             collection=data.collection,
         )
     )
-    # Quick full-scene preview for ImageOverlay (tiles remain source of truth when zooming)
-    preview_png = await run_in_threadpool(imagery.render_preview, data.scene_id, 512)
-    overlay_b64 = base64.b64encode(preview_png).decode("ascii") if preview_png else ""
+    # Warm preview cache in the background so ImageOverlay can fetch quickly
+    try:
+        import asyncio
+
+        asyncio.create_task(run_in_threadpool(imagery.ensure_preview, data.scene_id, 384))
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "scene_id": data.scene_id,
         "bounds": layer["bounds"],
         "tile_url": layer["tile_url_template"],
+        "preview_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
         "source": layer["source"],
         "composite": layer["composite"],
         "render_mode": layer.get("render_mode"),
@@ -146,7 +151,8 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
         "footprint": layer.get("footprint"),
         "thumbnail_url": layer.get("thumbnail_url"),
         "content_type": "image/png",
-        "overlay_base64": overlay_b64,
+        # Intentionally empty — large base64 breaks Serveo / some reverse proxies (502)
+        "overlay_base64": "",
         "download_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
     }
 
@@ -170,46 +176,16 @@ async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
 
 
 @router.get("/scenes/{scene_id}/overlay.png")
-async def scene_overlay_png(
-    scene_id: str,
-    user: CurrentUser,
-    west: float | None = None,
-    south: float | None = None,
-    east: float | None = None,
-    north: float | None = None,
-) -> Response:
-    """Export a single true-color preview PNG for the scene AOI (download helper)."""
+async def scene_overlay_png(scene_id: str) -> Response:
+    """Full-scene preview PNG for Leaflet ImageOverlay (no auth — same as XYZ tiles)."""
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    bbox = None
-    if None not in (west, south, east, north):
-        bbox = [west, south, east, north]  # type: ignore[list-item]
-    layer = imagery.get_layer(scene_id)
-    if not layer:
-        layer = imagery.prepare_scene_layer(scene_id, bbox=bbox)
-    # Build a mid-zoom mosaic preview from a few tiles
-    bounds = layer["bounds"]
-    # Approximate center tile at z=13
-    clon = (bounds[0] + bounds[2]) / 2
-    clat = (bounds[1] + bounds[3]) / 2
-    z = 13
-    n = 2**z
-    import math
-
-    tx = int((clon + 180.0) / 360.0 * n)
-    ty = int(
-        (
-            1.0
-            - math.log(math.tan(math.radians(clat)) + 1.0 / math.cos(math.radians(clat)))
-            / math.pi
-        )
-        / 2.0
-        * n
-    )
-    png = imagery.render_tile(scene_id, z, tx, ty)
+    png = await run_in_threadpool(imagery.ensure_preview, scene_id, 384)
     return Response(
         content=png,
         media_type="image/png",
-        headers={"Content-Disposition": f'attachment; filename="scene_{scene_id}_tci.png"'},
+        headers={"Cache-Control": "public, max-age=3600"},
     )

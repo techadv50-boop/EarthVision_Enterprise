@@ -83,6 +83,8 @@ export interface SceneOverlay {
   local_path?: string;
   /** XYZ template e.g. /api/v1/catalog/scenes/{id}/tiles/{z}/{x}/{y}.png */
   tile_url?: string;
+  /** Full-scene preview PNG URL for ImageOverlay (avoids huge base64 over tunnels) */
+  preview_url?: string;
   source?: string;
   composite?: string;
   render_mode?: 'rgb' | 'grayscale';

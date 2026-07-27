@@ -857,6 +857,20 @@ class SceneImageryService:
             img.save(buf, format="PNG", optimize=True)
             return buf.getvalue()
 
+    def _preview_cache_path(self, scene_id: str, size: int) -> Path:
+        safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", scene_id)[:180]
+        return self.tile_cache / safe / f"preview_{size}.png"
+
+    def ensure_preview(self, scene_id: str, size: int = 384) -> bytes:
+        """Return cached full-scene preview PNG, generating on first request."""
+        path = self._preview_cache_path(scene_id, size)
+        if path.exists() and path.stat().st_size > 0:
+            return path.read_bytes()
+        png = self.render_preview(scene_id, size)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png)
+        return png
+
     def read_band_grid(
         self,
         href: str,
