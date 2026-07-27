@@ -38,7 +38,8 @@ export interface CompositeResult {
   band_keys: { R: string; G: string; B: string };
   formula: string;
   bounds: number[];
-  overlay_base64: string;
+  overlay_base64?: string;
+  overlay_url?: string | null;
   histogram?: {
     edges: number[];
     channels: { red: number[]; green: number[]; blue: number[] };
@@ -51,7 +52,8 @@ export interface CompositeResult {
 
 export interface StretchResult {
   bounds: number[];
-  overlay_base64: string;
+  overlay_base64?: string;
+  overlay_url?: string | null;
   histogram: CompositeResult['histogram'];
   p_low: number;
   p_high: number;
@@ -65,6 +67,16 @@ function toDataUrl(b64: string): string {
   return `data:image/png;base64,${b64}`;
 }
 
+/** Prefer tunnel-safe overlay_url; fall back to embedded base64 when present. */
+function resolveOverlayUrl(result: {
+  overlay_url?: string | null;
+  overlay_base64?: string | null;
+}): string {
+  if (result.overlay_url) return result.overlay_url;
+  if (result.overlay_base64) return toDataUrl(result.overlay_base64);
+  return '';
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const href = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -74,8 +86,27 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(href);
 }
 
+async function pollAnalyticsJob<T>(jobId: string, timeoutMs = 180000): Promise<T> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const { data } = await api.get<{
+      job_id: string;
+      status: string;
+      result?: T;
+      error?: string;
+    }>(`/analytics/jobs/${jobId}`);
+    if (data.status === 'done' && data.result) return data.result;
+    if (data.status === 'error') {
+      throw new Error(data.error || 'Analytics job failed');
+    }
+    await new Promise((r) => setTimeout(r, 900));
+  }
+  throw new Error('Timed out waiting for analytics job');
+}
+
 export const compositeService = {
   toDataUrl,
+  resolveOverlayUrl,
 
   async listPresets(): Promise<CompositePresetInfo[]> {
     const { data } = await api.get('/analytics/composites');
@@ -98,17 +129,23 @@ export const compositeService = {
     brightness?: number;
     contrast?: number;
   }): Promise<CompositeResult> {
-    const { data } = await api.post<CompositeResult>('/analytics/composite', {
-      stretch: 'percentile',
-      p_low: 2,
-      p_high: 98,
-      gamma: 1,
-      brightness: 1,
-      contrast: 1,
-      size: 1024,
-      ...payload,
-    });
-    return data;
+    const { data } = await api.post<{ job_id: string; status: string } | CompositeResult>(
+      '/analytics/composite',
+      {
+        stretch: 'percentile',
+        p_low: 2,
+        p_high: 98,
+        gamma: 1,
+        brightness: 1,
+        contrast: 1,
+        size: 768,
+        ...payload,
+      },
+    );
+    if (data && typeof data === 'object' && 'job_id' in data && data.job_id) {
+      return pollAnalyticsJob<CompositeResult>(data.job_id);
+    }
+    return data as CompositeResult;
   },
 
   async stretch(payload: {
@@ -121,15 +158,42 @@ export const compositeService = {
     brightness?: number;
     contrast?: number;
   }): Promise<StretchResult> {
-    const { data } = await api.post<StretchResult>('/analytics/stretch', {
-      size: 1024,
-      ...payload,
-    });
-    return data;
+    const { data } = await api.post<{ job_id: string; status: string } | StretchResult>(
+      '/analytics/stretch',
+      {
+        size: 768,
+        ...payload,
+      },
+    );
+    if (data && typeof data === 'object' && 'job_id' in data && data.job_id) {
+      return pollAnalyticsJob<StretchResult>(data.job_id);
+    }
+    return data as StretchResult;
   },
 
   async downloadPngFromBase64(b64: string, filename: string) {
     const res = await fetch(toDataUrl(b64));
+    const blob = await res.blob();
+    downloadBlob(blob, filename);
+  },
+
+  async downloadOverlay(
+    result: {
+      overlay_url?: string | null;
+      overlay_base64?: string | null;
+    },
+    filename: string,
+  ) {
+    const url = resolveOverlayUrl(result);
+    if (!url) return;
+    if (url.startsWith('data:')) {
+      await this.downloadPngFromBase64(
+        url.replace(/^data:image\/png;base64,/, ''),
+        filename,
+      );
+      return;
+    }
+    const res = await fetch(url);
     const blob = await res.blob();
     downloadBlob(blob, filename);
   },

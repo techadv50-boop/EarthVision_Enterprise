@@ -623,9 +623,6 @@ class AnalyticsService:
         fp_mask = self._footprint_mask_grid(footprint, bounds, result.shape)
         cmap = request.colormap or meta["cmap"]
         overlay_bytes = self._rgba_overlay(result, cmap, vmin, vmax, mask=fp_mask)
-        preview_bytes = self._rgba_overlay(
-            result, cmap, vmin, vmax, alpha=255, mask=fp_mask
-        )
 
         out_dir = self.settings.imagery_dir / "indices"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -636,6 +633,9 @@ class AnalyticsService:
 
         stats = self._stats(result)
         stac_bit = f"  stac={layer_meta.get('stac_id')}" if layer_meta else ""
+        from app.services.overlay_cache import overlay_url_for, store_overlay_png
+
+        oid = store_overlay_png(overlay_bytes, prefix=f"idx_{index.lower()}")
         return IndexComputeResponse(
             index=index,
             mean=stats["mean"],
@@ -647,8 +647,10 @@ class AnalyticsService:
             percentile_75=stats["percentile_75"],
             valid_pixels=stats["valid_pixels"],
             histogram=stats["histogram"],
-            preview_base64=base64.b64encode(preview_bytes).decode("ascii"),
-            overlay_base64=base64.b64encode(overlay_bytes).decode("ascii"),
+            # Avoid embedding large PNGs in JSON (Serveo HTTP 502)
+            preview_base64=None,
+            overlay_base64=None,
+            overlay_url=overlay_url_for(oid),
             bounds=bounds,
             legend=self._legend(index, vmin, vmax, cmap),
             formula=f"{meta['formula']}  [{meta['ref']}]  source={data_source}{stac_bit}",
@@ -703,6 +705,8 @@ class AnalyticsService:
                 ColormapStop(value=vmax, color="#b2182b"),
             ],
         )
+        from app.services.overlay_cache import overlay_url_for, store_overlay_png
+
         return IndexChangeResponse(
             index=request.index,
             before_scene_id=request.before_scene_id,
@@ -712,7 +716,8 @@ class AnalyticsService:
             mean_difference=float(np.nanmean(diff)),
             change_ratio=float(np.mean(mask)),
             significant_pixels=int(np.sum(mask)),
-            overlay_base64=base64.b64encode(overlay).decode("ascii"),
+            overlay_base64="",
+            overlay_url=overlay_url_for(store_overlay_png(overlay, prefix="change")),
             bounds=bounds,
             legend=legend,
             formula=legend.formula,

@@ -2,39 +2,57 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 
 from app.core.deps import CurrentUser
+from app.core.exceptions import NotFoundError
 from app.schemas.analytics import (
     IndexChangeRequest,
-    IndexChangeResponse,
     IndexComputeRequest,
-    IndexComputeResponse,
     PixelInspectRequest,
     PixelInspectResponse,
     TimeSeriesRequest,
     TimeSeriesResponse,
 )
 from app.services.analytics_service import INDEX_META, AnalyticsService
+from app.services.job_store import create_job, set_job_done, set_job_error
+from app.services.overlay_cache import read_overlay_png
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 
-@router.post("/index", response_model=IndexComputeResponse)
-async def compute_index(
-    data: IndexComputeRequest, user: CurrentUser
-) -> IndexComputeResponse:
-    service = AnalyticsService()
-    return service.compute_index(data)
+@router.post("/index")
+async def compute_index(data: IndexComputeRequest, user: CurrentUser) -> dict:
+    job_id = create_job("index")
+
+    async def _run() -> None:
+        try:
+            result = await run_in_threadpool(AnalyticsService().compute_index, data)
+            set_job_done(job_id, result.model_dump(mode="json"))
+        except Exception as exc:  # noqa: BLE001
+            set_job_error(job_id, str(exc))
+
+    asyncio.create_task(_run())
+    return {"job_id": job_id, "status": "pending", "kind": "index"}
 
 
-@router.post("/change", response_model=IndexChangeResponse)
-async def index_change_detection(
-    data: IndexChangeRequest, user: CurrentUser
-) -> IndexChangeResponse:
-    service = AnalyticsService()
-    return service.change_detection(data)
+@router.post("/change")
+async def index_change_detection(data: IndexChangeRequest, user: CurrentUser) -> dict:
+    job_id = create_job("change")
+
+    async def _run() -> None:
+        try:
+            result = await run_in_threadpool(AnalyticsService().change_detection, data)
+            set_job_done(job_id, result.model_dump(mode="json"))
+        except Exception as exc:  # noqa: BLE001
+            set_job_error(job_id, str(exc))
+
+    asyncio.create_task(_run())
+    return {"job_id": job_id, "status": "pending", "kind": "change"}
 
 
 @router.post("/timeseries", response_model=TimeSeriesResponse)
@@ -85,20 +103,28 @@ async def export_index_png(
     north: float = 31.7,
     colormap: str | None = None,
 ) -> Response:
-    service = AnalyticsService()
-    result = service.compute_index(
+    result = await run_in_threadpool(
+        AnalyticsService().compute_index,
         IndexComputeRequest(
             index=index,  # type: ignore[arg-type]
             scene_id=scene_id,
             bbox=[west, south, east, north],
             colormap=colormap,  # type: ignore[arg-type]
-        )
+        ),
     )
-    assert result.overlay_base64
-    import base64
+    png = None
+    if result.overlay_url:
+        oid = result.overlay_url.rsplit("/", 1)[-1].removesuffix(".png")
+        png = read_overlay_png(oid)
+    if not png and result.overlay_base64:
+        import base64
+
+        png = base64.b64decode(result.overlay_base64)
+    if not png:
+        raise NotFoundError("Index overlay missing")
 
     return Response(
-        content=base64.b64decode(result.overlay_base64),
+        content=png,
         media_type="image/png",
         headers={
             "Content-Disposition": f'attachment; filename="{index}_{scene_id}.png"'
@@ -112,9 +138,9 @@ async def export_index_csv(
     index: str = "NDVI",
     scene_id: str = "export",
 ) -> Response:
-    service = AnalyticsService()
-    result = service.compute_index(
-        IndexComputeRequest(index=index, scene_id=scene_id)  # type: ignore[arg-type]
+    result = await run_in_threadpool(
+        AnalyticsService().compute_index,
+        IndexComputeRequest(index=index, scene_id=scene_id),  # type: ignore[arg-type]
     )
     rows = [
         "metric,value",

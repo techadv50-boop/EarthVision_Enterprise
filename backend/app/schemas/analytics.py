@@ -70,6 +70,7 @@ class IndexComputeResponse(BaseModel):
     histogram: dict[str, list[float]]
     preview_base64: str | None = None
     overlay_base64: str | None = None
+    overlay_url: str | None = None
     bounds: list[float] | None = None  # [west, south, east, north]
     legend: LegendInfo | None = None
     formula: str | None = None
@@ -95,7 +96,8 @@ class IndexChangeResponse(BaseModel):
     mean_difference: float
     change_ratio: float
     significant_pixels: int
-    overlay_base64: str
+    overlay_base64: str = ""
+    overlay_url: str | None = None
     bounds: list[float]
     legend: LegendInfo
     formula: str

@@ -47,7 +47,9 @@ class CompositeResponse(BaseModel):
     band_keys: dict[str, str]  # {R,G,B} → internal keys
     formula: str
     bounds: list[float]
-    overlay_base64: str
+    # Empty by default — large base64 breaks Serveo (HTTP 502). Use overlay_url.
+    overlay_base64: str = ""
+    overlay_url: str | None = None
     histogram: dict[str, Any] | None = None
     legend: LegendInfo | None = None
     message: str | None = None
@@ -68,7 +70,8 @@ class StretchRequest(BaseModel):
 
 class StretchResponse(BaseModel):
     bounds: list[float]
-    overlay_base64: str
+    overlay_base64: str = ""
+    overlay_url: str | None = None
     histogram: dict[str, Any]
     p_low: float
     p_high: float

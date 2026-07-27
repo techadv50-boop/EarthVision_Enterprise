@@ -226,6 +226,9 @@ class CompositeService:
         )
         hist = self._rgb_histogram(rgb)
         png = self._rgb_to_png(rgb)
+        from app.services.overlay_cache import overlay_url_for, store_overlay_png
+
+        oid = store_overlay_png(png, prefix=f"comp_{preset_id}")
         return CompositeResponse(
             preset=preset_id,
             label=label,
@@ -233,7 +236,8 @@ class CompositeService:
             band_keys=band_keys,
             formula=formula,
             bounds=bounds,
-            overlay_base64=base64.b64encode(png).decode("ascii"),
+            overlay_base64="",
+            overlay_url=overlay_url_for(oid),
             histogram=hist,
             legend=LegendInfo(
                 min=0,
@@ -277,9 +281,13 @@ class CompositeService:
         )
         hist["raw"] = raw_hist
         png = self._rgb_to_png(rgb)
+        from app.services.overlay_cache import overlay_url_for, store_overlay_png
+
+        oid = store_overlay_png(png, prefix="stretch")
         return StretchResponse(
             bounds=bounds,
-            overlay_base64=base64.b64encode(png).decode("ascii"),
+            overlay_base64="",
+            overlay_url=overlay_url_for(oid),
             histogram=hist,
             p_low=request.p_low,
             p_high=request.p_high,

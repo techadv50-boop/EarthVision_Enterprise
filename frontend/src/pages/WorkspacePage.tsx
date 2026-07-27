@@ -448,12 +448,12 @@ export function WorkspacePage() {
       setLastMessage(
         `${result.formula || index} · ramp ${result.colormap || ramp || 'default'}`,
       );
-      if (result.overlay_base64 && result.bounds) {
+      if (result.overlay_base64 || result.overlay_url) {
         upsertOverlay({
           id: `index-${focusScene.id}-${index}`,
           kind: 'index',
           sceneId: focusScene.id,
-          url: analyticsService.toDataUrl(result.overlay_base64),
+          url: analyticsService.resolveOverlayUrl(result),
           bounds: result.bounds as [number, number, number, number],
           footprint: sceneOverlay?.footprint ?? null,
           opacity: layerOpacity,
@@ -506,7 +506,7 @@ export function WorkspacePage() {
         id: `change-${before.id}-${focusScene.id}`,
         kind: 'change',
         sceneId: focusScene.id,
-        url: analyticsService.toDataUrl(result.overlay_base64),
+        url: analyticsService.resolveOverlayUrl(result),
         bounds: result.bounds as [number, number, number, number],
         footprint: sceneOverlay?.footprint ?? null,
         opacity: layerOpacity,
@@ -996,18 +996,23 @@ export function WorkspacePage() {
         preset,
         scene_id: focusScene.id,
         bbox: [...bbox],
-        size: 1024,
+        size: 768,
         ...stretchParams,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(`${result.label} · ${result.formula} · sharp 1024px`);
+      setLastMessage(`${result.label} · ${result.formula} · sharp 768px`);
       // Match satellite frame exactly; full opacity for crisp composite
+      const overlaySrc = compositeService.resolveOverlayUrl(result);
+      if (!overlaySrc) {
+        setError('Composite rendered but no overlay image was returned');
+        return;
+      }
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
         sceneId: focusScene.id,
-        url: compositeService.toDataUrl(result.overlay_base64),
+        url: overlaySrc,
         bounds: (sceneOverlay?.bounds ??
           (result.bounds as [number, number, number, number])) as [
           number,
@@ -1051,16 +1056,21 @@ export function WorkspacePage() {
       const result = await compositeService.stretch({
         scene_id: focusScene?.id,
         bbox: [...bbox],
-        size: 1024,
+        size: 768,
         ...params,
       });
       setStretchResult(result);
       setLastMessage(result.message);
+      const stretchSrc = compositeService.resolveOverlayUrl(result);
+      if (!stretchSrc) {
+        setError('Stretch rendered but no overlay image was returned');
+        return;
+      }
       upsertOverlay({
         id: 'stretch-overlay',
         kind: 'index',
         sceneId: focusScene?.id,
-        url: compositeService.toDataUrl(result.overlay_base64),
+        url: stretchSrc,
         bounds: (sceneOverlay?.bounds ??
           (result.bounds as [number, number, number, number])) as [
           number,
@@ -1597,9 +1607,9 @@ export function WorkspacePage() {
                   setError('Compute an index first');
                   return;
                 }
-                if (indexResult.overlay_base64) {
-                  void compositeService.downloadPngFromBase64(
-                    indexResult.overlay_base64,
+                if (indexResult.overlay_url || indexResult.overlay_base64) {
+                  void compositeService.downloadOverlay(
+                    indexResult,
                     `${indexResult.index}_${focusScene.id}.png`,
                   );
                 } else {
@@ -1618,9 +1628,9 @@ export function WorkspacePage() {
                 void compositeService.downloadIndexCsv(indexResult.index, focusScene.id);
               }}
               onExportCompositePng={() => {
-                if (compositeResult?.overlay_base64) {
-                  void compositeService.downloadPngFromBase64(
-                    compositeResult.overlay_base64,
+                if (compositeResult?.overlay_url || compositeResult?.overlay_base64) {
+                  void compositeService.downloadOverlay(
+                    compositeResult,
                     `${compositeResult.preset}.png`,
                   );
                 } else {
@@ -1632,12 +1642,12 @@ export function WorkspacePage() {
                 }
               }}
               onExportStretchPng={() => {
-                if (!stretchResult?.overlay_base64) {
+                if (!stretchResult?.overlay_url && !stretchResult?.overlay_base64) {
                   setError('Apply histogram stretch first');
                   return;
                 }
-                void compositeService.downloadPngFromBase64(
-                  stretchResult.overlay_base64,
+                void compositeService.downloadOverlay(
+                  stretchResult,
                   `stretch_${focusScene?.id || 'aoi'}.png`,
                 );
               }}

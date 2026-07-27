@@ -866,7 +866,16 @@ class GISService:
         )
         bounds = [float(x) for x in composite.bounds]
         west, south, east, north = bounds
-        png_bytes = base64.b64decode(composite.overlay_base64)
+        png_bytes: bytes | None = None
+        if composite.overlay_url:
+            from app.services.overlay_cache import read_overlay_png
+
+            oid = composite.overlay_url.rsplit("/", 1)[-1].removesuffix(".png")
+            png_bytes = read_overlay_png(oid)
+        if not png_bytes and composite.overlay_base64:
+            png_bytes = base64.b64decode(composite.overlay_base64)
+        if not png_bytes:
+            raise ValidationError("Composite overlay missing for extract-by-mask")
         img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
         w, h = img.size
         # Build alpha mask aligned to composite bounds
