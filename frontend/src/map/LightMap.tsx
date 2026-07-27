@@ -174,14 +174,8 @@ function FlyToPlace({ place }: { place: PlaceSelection | null }) {
   const map = useMap();
   useEffect(() => {
     if (!place) return;
-    const [west, south, east, north] = place.bbox;
-    map.fitBounds(
-      [
-        [south, west],
-        [north, east],
-      ],
-      { padding: [48, 48], maxZoom: 12, animate: true },
-    );
+    // Point-only framing — do not fit a large admin bbox (looks like auto AOI select)
+    map.setView([place.latitude, place.longitude], 11, { animate: true });
   }, [place, map]);
   return null;
 }

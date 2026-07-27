@@ -46,7 +46,7 @@ export function ScenesStep({
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
-          {' — '}eye shows real scene imagery (S2 color / S1 grayscale / Landsat tilted)
+          {' — '}click the <strong>eye</strong> to show imagery (search only places a point)
         </p>
       </div>
 
@@ -95,9 +95,15 @@ export function ScenesStep({
                     type="button"
                     className="min-w-0 flex-1 text-left"
                     onClick={() => {
+                      // Only focus an already Eye-On scene — never auto-load imagery
+                      // from a catalog row click (search should leave only a point).
                       if (visible) onFocus(scene);
-                      else onToggleEye(scene);
                     }}
+                    title={
+                      visible
+                        ? 'Focus this scene'
+                        : 'Click the eye icon to show this scene on the map'
+                    }
                   >
                     <div className="flex items-center gap-2">
                       <span className="rounded bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold text-white">
