@@ -204,6 +204,43 @@ class SceneImageryService:
         )
         return windows
 
+    def _datetime_windows_for_collection(
+        self, collection: str, sensing_time: str | None
+    ) -> list[tuple[str, str]]:
+        """Collection-aware datetime windows (S1 did not exist in 2000; Landsat-7 did)."""
+        dt = self._parse_sensing_time(sensing_time)
+        if collection == "SENTINEL-1":
+            # Sentinel-1 ops start mid-2014 — never search empty pre-mission years
+            if dt is None or dt.year < 2015:
+                return [
+                    ("2015-01-01T00:00:00Z", "2016-12-31T23:59:59Z"),
+                    ("2017-01-01T00:00:00Z", "2019-12-31T23:59:59Z"),
+                    (
+                        (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%dT00:00:00Z"),
+                        datetime.now(UTC).strftime("%Y-%m-%dT23:59:59Z"),
+                    ),
+                ]
+            return self._datetime_windows(sensing_time)
+        if collection in {"LANDSAT-8", "LANDSAT-9", "LANDSAT-7", "LANDSAT"}:
+            if dt and dt.year <= 2012:
+                # Landsat-5/7 era — widen around the requested year
+                year = dt.year
+                return [
+                    (f"{year}-01-01T00:00:00Z", f"{year}-12-31T23:59:59Z"),
+                    (f"{year - 1}-01-01T00:00:00Z", f"{year + 1}-12-31T23:59:59Z"),
+                    ("1999-01-01T00:00:00Z", "2002-12-31T23:59:59Z"),
+                ]
+        if collection == "SENTINEL-2":
+            if dt is None or dt.year < 2016:
+                return [
+                    ("2017-01-01T00:00:00Z", "2018-12-31T23:59:59Z"),
+                    (
+                        (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%dT00:00:00Z"),
+                        datetime.now(UTC).strftime("%Y-%m-%dT23:59:59Z"),
+                    ),
+                ]
+        return self._datetime_windows(sensing_time)
+
     def _stac_search(
         self,
         client: httpx.Client,
@@ -239,7 +276,7 @@ class SceneImageryService:
         """Match S2 TCI whose cloud cover is closest to the catalog scene."""
         last_error = "empty"
         with httpx.Client(timeout=45.0, follow_redirects=True) as client:
-            for start, end in self._datetime_windows(sensing_time):
+            for start, end in self._datetime_windows_for_collection("SENTINEL-2", sensing_time):
                 # Allow high cloud so cloudy catalog scenes can match cloudy imagery
                 features = self._stac_search(
                     client,
@@ -307,7 +344,7 @@ class SceneImageryService:
         """Match Sentinel-1 GRD VV (grayscale SAR)."""
         last_error = "empty"
         with httpx.Client(timeout=45.0, follow_redirects=True) as client:
-            for start, end in self._datetime_windows(sensing_time):
+            for start, end in self._datetime_windows_for_collection("SENTINEL-1", sensing_time):
                 features = self._stac_search(
                     client, EARTH_SEARCH_URL, ["sentinel-1-grd"], bbox, start, end
                 )
@@ -332,6 +369,10 @@ class SceneImageryService:
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": self._s3_to_https(assets[pol]["href"]),
+                    "thumbnail_url": self._s3_to_https(
+                        (assets.get("thumbnail") or {}).get("href") or ""
+                    )
+                    or None,
                     "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
                     "footprint": feat.get("geometry"),
                     "datetime": props.get("datetime"),
@@ -358,7 +399,7 @@ class SceneImageryService:
         # Filter by platform when possible
         platform_q = "landsat-8" if platform == "LANDSAT-8" else "landsat-9"
         with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-            for start, end in self._datetime_windows(sensing_time):
+            for start, end in self._datetime_windows_for_collection(platform, sensing_time):
                 features = self._stac_search(
                     client,
                     PC_STAC_URL,
@@ -373,11 +414,15 @@ class SceneImageryService:
                 for feat in features:
                     props = feat.get("properties") or {}
                     plat = (props.get("platform") or "").lower()
-                    # Soft preference for requested Landsat-8 vs 9
+                    # Soft preference for requested Landsat-8 vs 9; allow L5/L7 for year-2000 era
                     if platform == "LANDSAT-8" and "9" in plat and "8" not in plat:
                         platform_bonus = -0.05
                     elif platform == "LANDSAT-9" and "8" in plat and "9" not in plat:
                         platform_bonus = -0.05
+                    elif "landsat-7" in plat or "landsat-5" in plat:
+                        # Prefer heritage missions when searching ~2000
+                        dt = self._parse_sensing_time(sensing_time)
+                        platform_bonus = 0.15 if dt and dt.year <= 2012 else -0.02
                     else:
                         platform_bonus = 0.0
                     cov = self._coverage(bbox, feat.get("bbox") or [])
@@ -430,7 +475,7 @@ class SceneImageryService:
                     "source": "landsat_c2_l2",
                     "platform": props.get("platform") or platform_q,
                     "bands": {"R": "SR_B4 Red", "G": "SR_B3 Green", "B": "SR_B2 Blue"},
-                    "label": f"{platform} true-color (OLI)",
+                    "label": f"{(props.get('platform') or platform).replace('-', ' ').title()} true-color",
                 }
         raise NotFoundError(f"No Landsat imagery found ({last_error})")
 
@@ -483,6 +528,7 @@ class SceneImageryService:
             "acquisition_date": match.get("datetime"),
             "cloud_cover": match.get("cloud_cover"),
             "polarization": match.get("polarization"),
+            "thumbnail_url": match.get("thumbnail_url"),
             "tile_url_template": f"/api/v1/catalog/scenes/{scene_id}/tiles/{{z}}/{{x}}/{{y}}.png",
         }
         # Pre-sign Landsat COGs once so every XYZ tile does not pay SAS latency
@@ -499,6 +545,61 @@ class SceneImageryService:
 
             shutil.rmtree(cache_root, ignore_errors=True)
         return self.save_layer(scene_id, layer)
+
+    def cache_remote_preview(self, scene_id: str, url: str | None, size: int = 256) -> str | None:
+        """Download a small remote thumbnail into the preview cache (fast S1 eye-on)."""
+        if not url:
+            return None
+        url = self._s3_to_https(url)
+        path = self._preview_cache_path(scene_id, size)
+        if path.exists() and path.stat().st_size > 0:
+            return f"/api/v1/catalog/scenes/{scene_id}/overlay.png"
+        try:
+            with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                resp = client.get(url)
+            if resp.status_code != 200 or not resp.content:
+                logger.warning("Remote preview HTTP {}: {}", resp.status_code, url[:120])
+                return None
+            # Normalize to PNG
+            img = Image.open(__import__("io").BytesIO(resp.content)).convert("RGBA")
+            img.thumbnail((size, size))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            buf = __import__("io").BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            path.write_bytes(buf.getvalue())
+            return f"/api/v1/catalog/scenes/{scene_id}/overlay.png"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Remote preview cache failed {}: {}", scene_id, exc)
+            return None
+
+    def prewarm_center_tiles(self, scene_id: str, zoom: int = 9, radius: int = 1) -> None:
+        """Background warm of nearby tiles after eye-on (non-blocking for Serveo)."""
+        layer = self.get_layer(scene_id)
+        if not layer:
+            return
+        bounds = layer.get("bounds") or []
+        if len(bounds) != 4:
+            return
+        west, south, east, north = (float(v) for v in bounds)
+        clon = (west + east) / 2
+        clat = (south + north) / 2
+        n = 2**zoom
+        cx = int((clon + 180.0) / 360.0 * n)
+        cy = int(
+            (
+                1.0
+                - math.log(math.tan(math.radians(clat)) + 1.0 / math.cos(math.radians(clat)))
+                / math.pi
+            )
+            / 2.0
+            * n
+        )
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                try:
+                    self.render_tile(scene_id, zoom, cx + dx, cy + dy)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Tile prewarm {}/{}/{}/{}: {}", scene_id, zoom, cx + dx, cy + dy, exc)
 
     def _mercator_bounds(self, z: int, x: int, y: int) -> tuple[float, float, float, float]:
         n = 2.0**z
@@ -633,33 +734,53 @@ class SceneImageryService:
     def _read_s1_gray(
         self, cog_url: str, lon_min: float, lat_min: float, lon_max: float, lat_max: float
     ) -> np.ndarray:
+        """Fast windowed SAR read via WarpedVRT (full-scene reproject was 10–40s/tile)."""
         import rasterio
         from rasterio.enums import Resampling
-        from rasterio.warp import reproject
+        from rasterio.vrt import WarpedVRT
+        from rasterio.windows import from_bounds
 
+        url = self._s3_to_https(cog_url)
         dst = np.zeros((self.TILE_SIZE, self.TILE_SIZE), dtype=np.float32)
-        dst_transform = rasterio.transform.from_bounds(
-            lon_min, lat_min, lon_max, lat_max, self.TILE_SIZE, self.TILE_SIZE
-        )
         with rasterio.Env(**GDAL_ENV):
-            with rasterio.open(self._s3_to_https(cog_url)) as src:
+            with rasterio.open(url) as src:
                 src_crs = src.crs
-                gcps = None
                 if src_crs is None and src.gcps and src.gcps[0]:
-                    gcps = src.gcps[0]
-                    src_crs = src.gcps[1]
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=dst,
-                    src_transform=src.transform if gcps is None else None,
-                    src_crs=src_crs,
-                    src_gcps=gcps,
-                    dst_transform=dst_transform,
-                    dst_crs="EPSG:4326",
-                    resampling=Resampling.bilinear,
-                    src_nodata=0,
-                    dst_nodata=0,
-                )
+                    # GCP-only products: fall back to slower full reproject
+                    from rasterio.warp import reproject
+
+                    dst_transform = rasterio.transform.from_bounds(
+                        lon_min, lat_min, lon_max, lat_max, self.TILE_SIZE, self.TILE_SIZE
+                    )
+                    reproject(
+                        source=rasterio.band(src, 1),
+                        destination=dst,
+                        src_transform=None,
+                        src_crs=src.gcps[1],
+                        src_gcps=src.gcps[0],
+                        dst_transform=dst_transform,
+                        dst_crs="EPSG:4326",
+                        resampling=Resampling.bilinear,
+                        src_nodata=0,
+                        dst_nodata=0,
+                    )
+                else:
+                    with WarpedVRT(
+                        src,
+                        crs="EPSG:4326",
+                        resampling=Resampling.bilinear,
+                    ) as vrt:
+                        window = from_bounds(
+                            lon_min, lat_min, lon_max, lat_max, transform=vrt.transform
+                        )
+                        data = vrt.read(
+                            1,
+                            window=window,
+                            out_shape=(self.TILE_SIZE, self.TILE_SIZE),
+                            boundless=True,
+                            fill_value=0,
+                        )
+                        dst = data.astype(np.float32)
         return np.stack([dst, dst, dst], axis=0)
 
     def _to_rgba(self, rgb: np.ndarray, mask: np.ndarray | None, mode: str) -> bytes:
@@ -755,7 +876,14 @@ class SceneImageryService:
                 return self._empty_tile()
 
             # Clip to tilted STAC footprint (critical for Landsat / S1 swaths)
-            mask = self._footprint_mask(layer.get("footprint"), lon_min, lat_min, lon_max, lat_max)
+            # Skip dense mask for S1 — WarpedVRT already leaves exterior as nodata/0,
+            # and the mask was adding seconds per tile (Serveo timeouts).
+            if layer.get("source") == "sentinel1_grd":
+                mask = None
+            else:
+                mask = self._footprint_mask(
+                    layer.get("footprint"), lon_min, lat_min, lon_max, lat_max
+                )
             png = self._to_rgba(rgb, mask, mode)
             cache_path.write_bytes(png)
             return png

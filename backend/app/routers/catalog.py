@@ -105,8 +105,9 @@ class SceneOverlayBody(BaseModel):
 async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
     """Prepare Sentinel-2 / Landsat / S1 tiles and return map layer metadata.
 
-    Returns a small JSON payload (tile_url + preview_url). Do NOT embed large
-    base64 previews here — tunnels like Serveo return HTTP 502 on ~400KB+ bodies.
+    Keep this response fast for Serveo (~5s proxy limit): STAC match only, then
+    warm tiles/preview in the background. S1 uses the STAC thumbnail for an
+    immediate ImageOverlay while XYZ tiles fill in.
     """
     from functools import partial
 
@@ -126,19 +127,41 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
             collection=data.collection,
         )
     )
-    # Warm preview cache in the background so ImageOverlay can fetch quickly
+
+    preview_url = None
+    # S1: cache remote thumbnail quickly (<1s) so eye-on shows something immediately
+    if layer.get("source") == "sentinel1_grd" and layer.get("thumbnail_url"):
+        preview_url = await run_in_threadpool(
+            imagery.cache_remote_preview, data.scene_id, layer.get("thumbnail_url"), 256
+        )
+    elif imagery._preview_cache_path(data.scene_id, 384).exists():
+        preview_url = f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png"
+
+    # Background: tile prewarm + optical preview (must not block Serveo response)
     try:
         import asyncio
 
-        asyncio.create_task(run_in_threadpool(imagery.ensure_preview, data.scene_id, 384))
+        async def _warm() -> None:
+            try:
+                await run_in_threadpool(imagery.prewarm_center_tiles, data.scene_id, 9, 1)
+            except Exception:  # noqa: BLE001
+                pass
+            if layer.get("source") != "sentinel1_grd":
+                try:
+                    await run_in_threadpool(imagery.ensure_preview, data.scene_id, 384)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        asyncio.create_task(_warm())
     except Exception:  # noqa: BLE001
         pass
 
+    download_url = f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png"
     return {
         "scene_id": data.scene_id,
         "bounds": layer["bounds"],
         "tile_url": layer["tile_url_template"],
-        "preview_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
+        "preview_url": preview_url,
         "source": layer["source"],
         "composite": layer["composite"],
         "render_mode": layer.get("render_mode"),
@@ -151,9 +174,8 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
         "footprint": layer.get("footprint"),
         "thumbnail_url": layer.get("thumbnail_url"),
         "content_type": "image/png",
-        # Intentionally empty — large base64 breaks Serveo / some reverse proxies (502)
         "overlay_base64": "",
-        "download_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
+        "download_url": download_url,
     }
 
 
@@ -183,6 +205,27 @@ async def scene_overlay_png(scene_id: str) -> Response:
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
+    # Prefer already-cached sizes (including tiny S1 thumbnails)
+    for size in (256, 160, 384, 512):
+        path = imagery._preview_cache_path(scene_id, size)
+        if path.exists() and path.stat().st_size > 0:
+            return Response(
+                content=path.read_bytes(),
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+    layer = imagery.get_layer(scene_id)
+    if layer and layer.get("source") == "sentinel1_grd" and layer.get("thumbnail_url"):
+        url = await run_in_threadpool(
+            imagery.cache_remote_preview, scene_id, layer.get("thumbnail_url"), 256
+        )
+        if url:
+            png = imagery._preview_cache_path(scene_id, 256).read_bytes()
+            return Response(
+                content=png,
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
     png = await run_in_threadpool(imagery.ensure_preview, scene_id, 384)
     return Response(
         content=png,

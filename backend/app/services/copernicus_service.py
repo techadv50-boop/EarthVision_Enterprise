@@ -230,7 +230,7 @@ class CopernicusCatalogService:
             return self._demo_results(request)
 
     def _demo_results(self, request: CatalogSearchRequest) -> tuple[list[SceneSummary], int]:
-        """Generate realistic recent demo scenes (default 20) for offline / unconfigured CDSE."""
+        """Generate demo scenes. Honors start_date/end_date (default year 2000 window)."""
         import uuid
         from datetime import timedelta
 
@@ -250,13 +250,35 @@ class CopernicusCatalogService:
             "MODIS": "MOD09GA",
         }
 
+        # Default imagery window: year 2000 (Landsat-7 era). Missions that did not
+        # exist yet get dates shifted to their earliest useful archive year.
+        start = request.start_date or datetime(2000, 1, 1, tzinfo=UTC)
+        end = request.end_date or datetime(2000, 12, 31, 23, 59, 59, tzinfo=UTC)
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        if end < start:
+            start, end = end, start
+
         limit = max(1, min(request.max_results, 20))
-        now = datetime.now(UTC)
+        span_days = max((end - start).days, 1)
         scenes: list[SceneSummary] = []
         for j in range(limit):
             collection = collections[j % len(collections)]
-            # Most recent first: every ~5 days back
-            sensing = now - timedelta(days=j * 5, hours=j % 7)
+            # Spread scenes across the requested date window (newest first)
+            sensing = end - timedelta(days=(j * max(span_days // max(limit, 1), 1)) % span_days)
+            # Mission-aware display dates in the catalog list
+            if collection == "SENTINEL-1" and sensing.year < 2015:
+                sensing = sensing.replace(year=2015)
+            elif collection == "SENTINEL-2" and sensing.year < 2016:
+                sensing = sensing.replace(year=2017)
+            elif collection.startswith("LANDSAT") and sensing.year >= 2013 and (
+                request.start_date is None or request.start_date.year <= 2005
+            ):
+                # Keep year-2000 default as Landsat-7 era labels
+                sensing = sensing.replace(year=2000)
+
             cloud_cap = request.cloud_cover_max if request.cloud_cover_max is not None else 80.0
             cloud = round((j * 4.7) % max(cloud_cap, 1.0), 1)
             # Footprints: Landsat/S1 are orbit-tilted parallelograms; S2 closer to rectangular tile
@@ -294,14 +316,22 @@ class CopernicusCatalogService:
                     ],
                 }
             tile = f"T{43 + (j % 3)}R{66 + (j % 9):02d}"
+            # Landsat year-2000 catalog entries read as Landsat-7 heritage products
+            display_collection = collection
+            product = product_types.get(collection, "L2")
+            if collection.startswith("LANDSAT") and sensing.year <= 2002:
+                display_name_prefix = "LANDSAT7"
+                product = "L2SP"
+            else:
+                display_name_prefix = collection.replace("-", "")
             scenes.append(
                 SceneSummary(
                     id=str(uuid.uuid4()),
                     name=(
-                        f"{collection.replace('-', '')}_{product_types.get(collection, 'L2')}_"
+                        f"{display_name_prefix}_{product}_"
                         f"{sensing.strftime('%Y%m%dT%H%M%S')}_N0510_R{100 + j:03d}_{tile}"
                     ),
-                    collection=collection,
+                    collection=display_collection,
                     platform=collection.split("-")[0],
                     sensing_time=sensing,
                     cloud_cover=(
@@ -314,8 +344,13 @@ class CopernicusCatalogService:
                     thumbnail_url=None,
                     size_bytes=int(720_000_000 + j * 18_000_000 + abs(math.sin(j)) * 2_000_000),
                     content_date=sensing.isoformat(),
-                    product_type=product_types.get(collection, "L2"),
-                    metadata={"demo": True, "source": "earthvision-demo-catalog", "rank": j + 1},
+                    product_type=product,
+                    metadata={
+                        "demo": True,
+                        "source": "earthvision-demo-catalog",
+                        "rank": j + 1,
+                        "era": str(sensing.year),
+                    },
                 )
             )
         return scenes, len(scenes)

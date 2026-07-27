@@ -269,7 +269,11 @@ export function WorkspacePage() {
       try {
         const bbox = aoiBbox(aoiGeoJson, selected.bbox);
         const result = await catalogService.search({
-          collections: ['SENTINEL-1', 'SENTINEL-2', 'LANDSAT-8', 'LANDSAT-9', 'MODIS'],
+          // Year-2000 imagery window (Landsat-7 archive). S1/S2 rematch to earliest
+          // available mission years when eye-on is used.
+          collections: ['LANDSAT-8', 'LANDSAT-9', 'SENTINEL-2', 'SENTINEL-1', 'MODIS'],
+          start_date: '2000-01-01T00:00:00Z',
+          end_date: '2000-12-31T23:59:59Z',
           cloud_cover_max: 80,
           bbox: [...bbox],
           max_results: 20,
@@ -342,13 +346,9 @@ export function WorkspacePage() {
         });
         const tileUrl =
           overlay.tile_url || analyticsService.sceneTileUrl(scene.id);
-        const previewUrl =
-          (overlay.overlay_base64
-            ? analyticsService.toDataUrl(overlay.overlay_base64)
-            : null) ||
-          overlay.preview_url ||
-          overlay.download_url ||
-          '';
+        const previewUrl = overlay.overlay_base64
+          ? analyticsService.toDataUrl(overlay.overlay_base64)
+          : overlay.preview_url || '';
         const label =
           overlay.label ||
           (scene.collection === 'SENTINEL-1'
