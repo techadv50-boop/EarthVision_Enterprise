@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import AdminPanel from "./components/AdminPanel";
 import AuthScreen from "./components/AuthScreen";
 import FamilyCapture from "./components/FamilyCapture";
+import PhoneAccentRecord from "./components/PhoneAccentRecord";
 import ProgramTalk from "./components/ProgramTalk";
 import RememberChat from "./components/RememberChat";
 import ServerSetup from "./components/ServerSetup";
@@ -307,6 +308,10 @@ export default function App() {
                       elder; program records their voice.
                     </li>
                     <li>
+                      <strong>Phone accent recording:</strong> use the phone mic to capture
+                      their accent — tap Record accent on phone.
+                    </li>
+                    <li>
                       <strong>Talk with program:</strong> elder chats on any topic; program
                       replies and keeps recording.
                     </li>
@@ -331,17 +336,24 @@ export default function App() {
                       </button>
                       <button
                         type="button"
+                        className={mode === "phone" ? "on" : ""}
+                        onClick={() => setMode("phone")}
+                      >
+                        2. Phone accent recording
+                      </button>
+                      <button
+                        type="button"
                         className={mode === "program" ? "on" : ""}
                         onClick={() => setMode("program")}
                       >
-                        2. Talk with program
+                        3. Talk with program
                       </button>
                       <button
                         type="button"
                         className={mode === "remember" ? "on" : ""}
                         onClick={() => setMode("remember")}
                       >
-                        3. Talk with {selected.name}
+                        4. Talk with {selected.name}
                       </button>
                     </div>
                   </section>
@@ -363,6 +375,38 @@ export default function App() {
                                 duration_ms: payload.duration_ms,
                                 source: "family_talk",
                                 auto_analyze: true,
+                              },
+                              payload.filename,
+                            );
+                            setPersonas((prev) =>
+                              prev.map((p) => (p.id === res.persona.id ? res.persona : p)),
+                            );
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      />
+                    </section>
+                  )}
+
+                  {mode === "phone" && (
+                    <section className="panel">
+                      <PhoneAccentRecord
+                        persona={selected}
+                        busy={busy}
+                        onSaved={async (payload) => {
+                          setBusy(true);
+                          try {
+                            const res = await api.uploadSample(
+                              selected.id,
+                              payload.blob,
+                              {
+                                kind: "accent",
+                                transcript: payload.transcript,
+                                duration_ms: payload.duration_ms,
+                                source: "phone_accent",
+                                auto_analyze: true,
+                                notes: "Phone microphone accent recording",
                               },
                               payload.filename,
                             );

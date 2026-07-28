@@ -18,7 +18,7 @@ export type SampleKind =
   | "style"
   | "other";
 
-export type SampleSource = "family_talk" | "program_talk" | "upload" | string;
+export type SampleSource = "family_talk" | "program_talk" | "phone_accent" | "upload" | string;
 
 export interface VoiceSample {
   id: string;
@@ -77,4 +77,4 @@ export interface EngineInfo {
   description: string;
 }
 
-export type AppMode = "family" | "program" | "remember";
+export type AppMode = "family" | "phone" | "program" | "remember";
