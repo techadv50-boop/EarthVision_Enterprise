@@ -261,7 +261,9 @@ class CopernicusCatalogService:
         if end < start:
             start, end = end, start
 
-        limit = max(1, min(request.max_results, 20))
+        # Single-satellite searches can return denser timelines; multi-collection stays compact.
+        demo_cap = 100 if len(collections) == 1 else 20
+        limit = max(1, min(request.max_results, demo_cap))
         span_days = max((end - start).days, 1)
 
         def _safe_year(dt: datetime, year: int) -> datetime:

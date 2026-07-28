@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { SceneSummary } from '../services/catalogService';
 import type { IndexName, IndexResult, ChangeResult } from '../services/analyticsService';
 
-export type WorkflowStep = 'place' | 'browse';
+export type WorkflowStep = 'place' | 'catalog' | 'browse';
 export type MapTool =
   | 'navigate'
   | 'draw-point'
@@ -384,7 +384,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   resetFromPlace: () =>
     set({
-      step: 'browse',
+      step: 'catalog',
       scenes: [],
       visibleSceneIds: [],
       focusSceneId: null,

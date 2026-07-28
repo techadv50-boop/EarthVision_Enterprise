@@ -4,6 +4,7 @@ import { LightMap } from '../map/LightMap';
 import { MapToolbar } from '../components/map/MapToolbar';
 import { MapLegend } from '../components/map/MapLegend';
 import { PlaceStep } from '../components/workflow/PlaceStep';
+import { CatalogQueryStep, type CatalogQuery } from '../components/workflow/CatalogQueryStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
 import { AdminPanel } from '../components/admin/AdminPanel';
@@ -121,6 +122,7 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [catalogQuery, setCatalogQuery] = useState<CatalogQuery | null>(null);
 
   const isAdmin = user?.role === 'admin';
   const userAllowedTools =
@@ -260,25 +262,41 @@ export function WorkspacePage() {
     return [74.15, 31.35, 74.55, 31.7];
   }, [aoiGeoJson, focusScene, overlays, place]);
 
-  const loadScenesForPlace = useCallback(
-    async (selected: PlaceSelection) => {
+  const selectPlace = useCallback(
+    (selected: PlaceSelection) => {
       setPlace(selected);
       resetFromPlace();
+      setCatalogQuery(null);
+      setScenes([]);
+      setError(null);
+      setStep('catalog');
+    },
+    [resetFromPlace, setError, setPlace, setScenes, setStep],
+  );
+
+  const loadScenesForQuery = useCallback(
+    async (query: CatalogQuery) => {
+      const selected = useWorkflowStore.getState().place;
+      if (!selected) {
+        setError('Choose a place first.');
+        setStep('place');
+        return;
+      }
+      setCatalogQuery(query);
       setLoadingScenes(true);
       setError(null);
+      setScenes([]);
       try {
         const bbox = aoiBbox(aoiGeoJson, selected.bbox);
         const result = await catalogService.search({
-          // Year-2000 imagery window (Landsat-7 archive). S1/S2 rematch to earliest
-          // available mission years when eye-on is used.
-          collections: ['LANDSAT-8', 'LANDSAT-9', 'SENTINEL-2', 'SENTINEL-1', 'MODIS'],
-          start_date: '2000-01-01T00:00:00Z',
-          end_date: '2000-12-31T23:59:59Z',
+          collections: [query.collection],
+          start_date: `${query.startDate}T00:00:00Z`,
+          end_date: `${query.endDate}T23:59:59Z`,
           cloud_cover_max: 80,
           bbox: [...bbox],
-          max_results: 20,
+          max_results: 100,
         });
-        setScenes(result.items.slice(0, 20));
+        setScenes(result.items);
         setStep('browse');
       } catch (err) {
         setError(getErrorMessage(err));
@@ -287,8 +305,21 @@ export function WorkspacePage() {
         setLoadingScenes(false);
       }
     },
-    [aoiGeoJson, resetFromPlace, setError, setLoadingScenes, setPlace, setScenes, setStep],
+    [aoiGeoJson, setError, setLoadingScenes, setScenes, setStep],
   );
+
+  const filterSummary = useMemo(() => {
+    if (!catalogQuery) return null;
+    const label =
+      {
+        'LANDSAT-8': 'Landsat 8 / heritage',
+        'LANDSAT-9': 'Landsat 9',
+        'SENTINEL-2': 'Sentinel-2',
+        'SENTINEL-1': 'Sentinel-1',
+        MODIS: 'MODIS',
+      }[catalogQuery.collection] ?? catalogQuery.collection;
+    return `${label} · ${catalogQuery.startDate} → ${catalogQuery.endDate} · ${scenes.length} scene${scenes.length === 1 ? '' : 's'}`;
+  }, [catalogQuery, scenes.length]);
 
   const onPlaceClick = useCallback(
     async (lon: number, lat: number) => {
@@ -297,14 +328,14 @@ export function WorkspacePage() {
       const pad = 0.18;
       try {
         const reverse = await gisService.reverseGeocode(lon, lat);
-        await loadScenesForPlace({
+        selectPlace({
           name: reverse.display_name || `Point ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
           longitude: lon,
           latitude: lat,
           bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
         });
       } catch {
-        await loadScenesForPlace({
+        selectPlace({
           name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
           longitude: lon,
           latitude: lat,
@@ -312,7 +343,7 @@ export function WorkspacePage() {
         });
       }
     },
-    [loadScenesForPlace, mapTool, step],
+    [mapTool, selectPlace, step],
   );
 
   const onDrawnFeature = useCallback(
@@ -1423,7 +1454,20 @@ export function WorkspacePage() {
           )}
 
           {step === 'place' && (
-            <PlaceStep onSelect={loadScenesForPlace} busy={loadingScenes} />
+            <PlaceStep onSelect={selectPlace} busy={loadingScenes} />
+          )}
+
+          {step === 'catalog' && place && (
+            <CatalogQueryStep
+              place={place}
+              initial={catalogQuery}
+              busy={loadingScenes}
+              onSearch={loadScenesForQuery}
+              onBack={() => {
+                setCatalogQuery(null);
+                backToPlace();
+              }}
+            />
           )}
 
           {step === 'browse' && place && (
@@ -1434,9 +1478,31 @@ export function WorkspacePage() {
               focusSceneId={focusSceneId}
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
+              filterSummary={filterSummary}
               onToggleEye={onToggleEye}
               onFocus={(scene) => setFocusSceneId(scene.id)}
-              onBack={backToPlace}
+              onBack={() => {
+                setCatalogQuery(null);
+                backToPlace();
+              }}
+              onChangeFilters={() => {
+                // Drop prior Eye-On layers — new satellite/range will replace the list
+                useWorkflowStore.setState({
+                  scenes: [],
+                  visibleSceneIds: [],
+                  focusSceneId: null,
+                  overlays: [],
+                  loadingOverlayIds: [],
+                  indexResult: null,
+                  changeResult: null,
+                  selectedIndex: null,
+                  compareSceneId: null,
+                  analysisOpen: false,
+                  terrainOpen: false,
+                  error: null,
+                  step: 'catalog',
+                });
+              }}
             />
           )}
         </aside>
@@ -1518,7 +1584,12 @@ export function WorkspacePage() {
           )}
           {step === 'place' && (
             <div className="pointer-events-none absolute bottom-14 left-1/2 z-[500] max-w-[90%] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1.5 text-center text-xs text-[var(--muted)] shadow">
-              Search Lahore, click the map, or draw an AOI — then use eyes to show images
+              Search a place or click the map — then choose satellite and dates
+            </div>
+          )}
+          {step === 'catalog' && (
+            <div className="pointer-events-none absolute bottom-14 left-1/2 z-[500] max-w-[90%] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1.5 text-center text-xs text-[var(--muted)] shadow">
+              Pick one satellite and a from–to date range to load scenes
             </div>
           )}
         </section>

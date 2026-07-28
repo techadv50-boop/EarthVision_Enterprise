@@ -75,8 +75,8 @@ export function PlaceStep({ onSelect, busy }: Props) {
       <div>
         <h2 className="font-display text-lg font-semibold text-[var(--ink)]">Choose a place</h2>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Search a city or click the map to drop a point. Satellite scenes appear in the list —
-          use the eye icon to show one on the map.
+          Search a city or click the map to drop a point. Next you will choose a satellite and
+          date range, then load matching scenes.
         </p>
       </div>
 

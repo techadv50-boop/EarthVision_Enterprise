@@ -8,9 +8,11 @@ interface Props {
   focusSceneId: string | null;
   loading: boolean;
   loadingOverlayIds: string[];
+  filterSummary?: string | null;
   onToggleEye: (scene: SceneSummary) => void;
   onFocus: (scene: SceneSummary) => void;
   onBack: () => void;
+  onChangeFilters?: () => void;
 }
 
 function formatDate(value?: string | null): string {
@@ -33,20 +35,37 @@ export function ScenesStep({
   focusSceneId,
   loading,
   loadingOverlayIds,
+  filterSummary,
   onToggleEye,
   onFocus,
   onBack,
+  onChangeFilters,
 }: Props) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3">
-        <button type="button" className="ev-btn-ghost mb-1 -ml-2 px-2 py-1 text-xs" onClick={onBack}>
-          <ArrowLeft className="h-3.5 w-3.5" /> Change place
-        </button>
+        <div className="mb-1 flex flex-wrap gap-1">
+          <button type="button" className="ev-btn-ghost -ml-2 px-2 py-1 text-xs" onClick={onBack}>
+            <ArrowLeft className="h-3.5 w-3.5" /> Change place
+          </button>
+          {onChangeFilters && (
+            <button
+              type="button"
+              className="ev-btn-ghost px-2 py-1 text-xs"
+              onClick={onChangeFilters}
+            >
+              <ArrowLeft className="h-3.5 w-3.5" /> Change satellite / dates
+            </button>
+          )}
+        </div>
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
+        {filterSummary && (
+          <p className="mt-1 text-xs font-medium text-[var(--accent)]">{filterSummary}</p>
+        )}
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
-          {' — '}click the <strong>eye</strong> to show imagery (search only places a point)
+          {' — '}all matching scenes for your satellite and date range. Click the{' '}
+          <strong>eye</strong> to show imagery on the map.
         </p>
       </div>
 
@@ -58,7 +77,8 @@ export function ScenesStep({
 
       {!loading && scenes.length === 0 && (
         <div className="rounded-lg bg-[var(--accent-soft)] p-4 text-sm text-[var(--accent)]">
-          No scenes found. Try another place or AOI.
+          No scenes found for this satellite and date range. Try different dates or another
+          satellite.
         </div>
       )}
 
