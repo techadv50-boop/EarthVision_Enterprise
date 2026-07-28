@@ -171,8 +171,10 @@ export function AnalysisPanel({
               type="button"
               className="ev-btn-ghost mt-2 w-full border border-[var(--line)] text-xs"
               onClick={() => {
+                const href = analyticsService.resolveOverlayUrl(changeResult);
+                if (!href) return;
                 const a = document.createElement('a');
-                a.href = analyticsService.toDataUrl(changeResult.overlay_base64);
+                a.href = href;
                 a.download = `change_${changeResult.index}.png`;
                 a.click();
               }}

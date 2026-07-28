@@ -432,7 +432,7 @@ export function ImageProcessingPanel({
           <button
             type="button"
             className="ev-btn border border-[var(--line)] bg-white text-[10px]"
-            disabled={!indexResult?.overlay_base64}
+            disabled={!indexResult?.overlay_base64 && !indexResult?.overlay_url}
             onClick={onExportIndexPng}
           >
             <Download className="h-3 w-3" /> Index PNG
@@ -448,7 +448,7 @@ export function ImageProcessingPanel({
           <button
             type="button"
             className="ev-btn border border-[var(--line)] bg-white text-[10px]"
-            disabled={!compositeResult?.overlay_base64}
+            disabled={!compositeResult?.overlay_base64 && !compositeResult?.overlay_url}
             onClick={onExportCompositePng}
           >
             <Download className="h-3 w-3" /> Composite PNG
@@ -456,7 +456,7 @@ export function ImageProcessingPanel({
           <button
             type="button"
             className="ev-btn border border-[var(--line)] bg-white text-[10px]"
-            disabled={!stretchResult?.overlay_base64}
+            disabled={!stretchResult?.overlay_base64 && !stretchResult?.overlay_url}
             onClick={onExportStretchPng}
           >
             <Download className="h-3 w-3" /> Stretch PNG

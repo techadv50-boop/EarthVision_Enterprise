@@ -53,6 +53,7 @@ export interface IndexResult {
   histogram: { counts: number[]; edges: number[] };
   preview_base64?: string | null;
   overlay_base64?: string | null;
+  overlay_url?: string | null;
   bounds?: number[] | null;
   legend?: LegendInfo | null;
   formula?: string | null;
@@ -69,7 +70,8 @@ export interface ChangeResult {
   mean_difference: number;
   change_ratio: number;
   significant_pixels: number;
-  overlay_base64: string;
+  overlay_base64?: string;
+  overlay_url?: string | null;
   bounds: number[];
   legend: LegendInfo;
   formula: string;
@@ -83,6 +85,8 @@ export interface SceneOverlay {
   local_path?: string;
   /** XYZ template e.g. /api/v1/catalog/scenes/{id}/tiles/{z}/{x}/{y}.png */
   tile_url?: string;
+  /** Full-scene preview PNG URL for ImageOverlay (avoids huge base64 over tunnels) */
+  preview_url?: string;
   source?: string;
   composite?: string;
   render_mode?: 'rgb' | 'grayscale';
@@ -100,8 +104,36 @@ function toDataUrl(b64: string): string {
   return `data:image/png;base64,${b64}`;
 }
 
+function resolveOverlayUrl(result: {
+  overlay_url?: string | null;
+  overlay_base64?: string | null;
+}): string {
+  if (result.overlay_url) return result.overlay_url;
+  if (result.overlay_base64) return toDataUrl(result.overlay_base64);
+  return '';
+}
+
+async function pollAnalyticsJob<T>(jobId: string, timeoutMs = 180000): Promise<T> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const { data } = await api.get<{
+      job_id: string;
+      status: string;
+      result?: T;
+      error?: string;
+    }>(`/analytics/jobs/${jobId}`);
+    if (data.status === 'done' && data.result) return data.result;
+    if (data.status === 'error') {
+      throw new Error(data.error || 'Analytics job failed');
+    }
+    await new Promise((r) => setTimeout(r, 900));
+  }
+  throw new Error('Timed out waiting for analytics job');
+}
+
 export const analyticsService = {
   toDataUrl,
+  resolveOverlayUrl,
 
   async listIndices() {
     const { data } = await api.get('/analytics/indices');
@@ -125,13 +157,19 @@ export const analyticsService = {
     bbox?: number[],
     colormap?: ColormapName | string | null,
   ): Promise<IndexResult> {
-    const { data } = await api.post<IndexResult>('/analytics/index', {
-      index,
-      scene_id: sceneId,
-      bbox,
-      colormap: colormap || undefined,
-    });
-    return data;
+    const { data } = await api.post<{ job_id: string; status: string } | IndexResult>(
+      '/analytics/index',
+      {
+        index,
+        scene_id: sceneId,
+        bbox,
+        colormap: colormap || undefined,
+      },
+    );
+    if (data && typeof data === 'object' && 'job_id' in data && data.job_id) {
+      return pollAnalyticsJob<IndexResult>(data.job_id);
+    }
+    return data as IndexResult;
   },
 
   async changeDetection(payload: {
@@ -141,12 +179,18 @@ export const analyticsService = {
     bbox?: number[];
     threshold?: number;
   }): Promise<ChangeResult> {
-    const { data } = await api.post<ChangeResult>('/analytics/change', {
-      index: 'NDVI',
-      threshold: 0.12,
-      ...payload,
-    });
-    return data;
+    const { data } = await api.post<{ job_id: string; status: string } | ChangeResult>(
+      '/analytics/change',
+      {
+        index: 'NDVI',
+        threshold: 0.12,
+        ...payload,
+      },
+    );
+    if (data && typeof data === 'object' && 'job_id' in data && data.job_id) {
+      return pollAnalyticsJob<ChangeResult>(data.job_id);
+    }
+    return data as ChangeResult;
   },
 
   async sceneOverlay(payload: {

@@ -4,7 +4,8 @@ const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
 
 export const api: AxiosInstance = axios.create({
   baseURL: API_URL,
-  timeout: 60000,
+  // Eye-on prepares STAC match + preview COG read (Landsat can exceed 60s on cold start)
+  timeout: 120000,
   headers: { 'Content-Type': 'application/json' },
 });
 

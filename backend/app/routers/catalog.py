@@ -103,26 +103,71 @@ class SceneOverlayBody(BaseModel):
 
 @router.post("/scenes/overlay")
 async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
-    """Prepare Sentinel-2 true-color (TCI) tiles for a scene and return map layer metadata.
+    """Prepare Sentinel-2 / Landsat / S1 tiles and return map layer metadata.
 
-    Uses real Sentinel-2 L2A visual COGs (B04/B03/B02) served as XYZ tiles so
-    features stay sharp when zooming — not a low-res basemap PNG.
+    Keep this response fast for Serveo (~5s proxy limit): STAC match only, then
+    warm tiles/preview in the background. S1 uses the STAC thumbnail for an
+    immediate ImageOverlay while XYZ tiles fill in.
     """
+    from functools import partial
+
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    layer = imagery.prepare_scene_layer(
-        data.scene_id,
-        bbox=data.bbox,
-        footprint=data.footprint,
-        sensing_time=data.sensing_time,
-        cloud_cover=data.cloud_cover,
-        collection=data.collection,
+    layer = await run_in_threadpool(
+        partial(
+            imagery.prepare_scene_layer,
+            data.scene_id,
+            bbox=data.bbox,
+            footprint=data.footprint,
+            sensing_time=data.sensing_time,
+            cloud_cover=data.cloud_cover,
+            collection=data.collection,
+        )
     )
+
+    preview_url = None
+    # S1: ESA STAC "thumbnail" is a colorful RGB quick-look — convert to grayscale SAR
+    if layer.get("source") == "sentinel1_grd" and layer.get("thumbnail_url"):
+        preview_url = await run_in_threadpool(
+            partial(
+                imagery.cache_remote_preview,
+                data.scene_id,
+                layer.get("thumbnail_url"),
+                256,
+                as_grayscale=True,
+            )
+        )
+    elif imagery._preview_cache_path(data.scene_id, 384).exists():
+        preview_url = f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png"
+
+    # Background: tile prewarm + real VV grayscale preview (replaces quick-look)
+    try:
+        import asyncio
+
+        async def _warm() -> None:
+            try:
+                await run_in_threadpool(imagery.prewarm_center_tiles, data.scene_id, 9, 1)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                # For S1 this reads the VV COG → true single-band grayscale
+                await run_in_threadpool(imagery.ensure_preview, data.scene_id, 384)
+            except Exception:  # noqa: BLE001
+                pass
+
+        asyncio.create_task(_warm())
+    except Exception:  # noqa: BLE001
+        pass
+
+    download_url = f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png"
     return {
         "scene_id": data.scene_id,
         "bounds": layer["bounds"],
         "tile_url": layer["tile_url_template"],
+        "preview_url": preview_url,
         "source": layer["source"],
         "composite": layer["composite"],
         "render_mode": layer.get("render_mode"),
@@ -136,17 +181,21 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
         "thumbnail_url": layer.get("thumbnail_url"),
         "content_type": "image/png",
         "overlay_base64": "",
-        "download_url": f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png",
+        "download_url": download_url,
     }
 
 
 @router.get("/scenes/{scene_id}/tiles/{z}/{x}/{y}.png")
 async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
-    """XYZ tile from the scene's Sentinel-2 true-color COG (no auth — used by Leaflet)."""
+    """XYZ tile from the scene COG (no auth — used by Leaflet). Runs in a thread pool
+    so concurrent tile bursts (Landsat especially) do not serialize on the event loop.
+    """
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    png = imagery.render_tile(scene_id, z, x, y)
+    png = await run_in_threadpool(imagery.render_tile, scene_id, z, x, y)
     return Response(
         content=png,
         media_type="image/png",
@@ -155,46 +204,68 @@ async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
 
 
 @router.get("/scenes/{scene_id}/overlay.png")
-async def scene_overlay_png(
-    scene_id: str,
-    user: CurrentUser,
-    west: float | None = None,
-    south: float | None = None,
-    east: float | None = None,
-    north: float | None = None,
-) -> Response:
-    """Export a single true-color preview PNG for the scene AOI (download helper)."""
+async def scene_overlay_png(scene_id: str) -> Response:
+    """Full-scene preview PNG for Leaflet ImageOverlay (no auth — same as XYZ tiles)."""
+    from functools import partial
+    import io
+
+    from PIL import Image
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    bbox = None
-    if None not in (west, south, east, north):
-        bbox = [west, south, east, north]  # type: ignore[list-item]
     layer = imagery.get_layer(scene_id)
-    if not layer:
-        layer = imagery.prepare_scene_layer(scene_id, bbox=bbox)
-    # Build a mid-zoom mosaic preview from a few tiles
-    bounds = layer["bounds"]
-    # Approximate center tile at z=13
-    clon = (bounds[0] + bounds[2]) / 2
-    clat = (bounds[1] + bounds[3]) / 2
-    z = 13
-    n = 2**z
-    import math
-
-    tx = int((clon + 180.0) / 360.0 * n)
-    ty = int(
-        (
-            1.0
-            - math.log(math.tan(math.radians(clat)) + 1.0 / math.cos(math.radians(clat)))
-            / math.pi
+    force_gray = bool(
+        layer
+        and (
+            layer.get("source") == "sentinel1_grd"
+            or layer.get("render_mode") == "grayscale"
+            or layer.get("collection") == "SENTINEL-1"
         )
-        / 2.0
-        * n
     )
-    png = imagery.render_tile(scene_id, z, tx, ty)
+
+    def _maybe_gray(png: bytes) -> bytes:
+        if not force_gray:
+            return png
+        try:
+            img = Image.open(io.BytesIO(png))
+            gray = SceneImageryService._to_grayscale_rgba(img)
+            buf = io.BytesIO()
+            gray.save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
+        except Exception:  # noqa: BLE001
+            return png
+
+    # Prefer already-cached sizes (including tiny S1 thumbnails)
+    for size in (384, 256, 160, 512):
+        path = imagery._preview_cache_path(scene_id, size)
+        if path.exists() and path.stat().st_size > 0:
+            return Response(
+                content=_maybe_gray(path.read_bytes()),
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+    if layer and layer.get("source") == "sentinel1_grd" and layer.get("thumbnail_url"):
+        url = await run_in_threadpool(
+            partial(
+                imagery.cache_remote_preview,
+                scene_id,
+                layer.get("thumbnail_url"),
+                256,
+                as_grayscale=True,
+            )
+        )
+        if url:
+            png = imagery._preview_cache_path(scene_id, 256).read_bytes()
+            return Response(
+                content=_maybe_gray(png),
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+    png = await run_in_threadpool(imagery.ensure_preview, scene_id, 384)
     return Response(
-        content=png,
+        content=_maybe_gray(png),
         media_type="image/png",
-        headers={"Content-Disposition": f'attachment; filename="scene_{scene_id}_tci.png"'},
+        headers={"Cache-Control": "public, max-age=3600"},
     )

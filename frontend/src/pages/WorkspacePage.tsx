@@ -4,6 +4,7 @@ import { LightMap } from '../map/LightMap';
 import { MapToolbar } from '../components/map/MapToolbar';
 import { MapLegend } from '../components/map/MapLegend';
 import { PlaceStep } from '../components/workflow/PlaceStep';
+import { CatalogQueryStep, type CatalogQuery } from '../components/workflow/CatalogQueryStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
 import { AdminPanel } from '../components/admin/AdminPanel';
@@ -121,6 +122,7 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [catalogQuery, setCatalogQuery] = useState<CatalogQuery | null>(null);
 
   const isAdmin = user?.role === 'admin';
   const userAllowedTools =
@@ -260,21 +262,41 @@ export function WorkspacePage() {
     return [74.15, 31.35, 74.55, 31.7];
   }, [aoiGeoJson, focusScene, overlays, place]);
 
-  const loadScenesForPlace = useCallback(
-    async (selected: PlaceSelection) => {
+  const selectPlace = useCallback(
+    (selected: PlaceSelection) => {
       setPlace(selected);
       resetFromPlace();
+      setCatalogQuery(null);
+      setScenes([]);
+      setError(null);
+      setStep('catalog');
+    },
+    [resetFromPlace, setError, setPlace, setScenes, setStep],
+  );
+
+  const loadScenesForQuery = useCallback(
+    async (query: CatalogQuery) => {
+      const selected = useWorkflowStore.getState().place;
+      if (!selected) {
+        setError('Choose a place first.');
+        setStep('place');
+        return;
+      }
+      setCatalogQuery(query);
       setLoadingScenes(true);
       setError(null);
+      setScenes([]);
       try {
         const bbox = aoiBbox(aoiGeoJson, selected.bbox);
         const result = await catalogService.search({
-          collections: ['SENTINEL-1', 'SENTINEL-2', 'LANDSAT-8', 'LANDSAT-9', 'MODIS'],
+          collections: [query.collection],
+          start_date: `${query.startDate}T00:00:00Z`,
+          end_date: `${query.endDate}T23:59:59Z`,
           cloud_cover_max: 80,
           bbox: [...bbox],
-          max_results: 20,
+          max_results: 100,
         });
-        setScenes(result.items.slice(0, 20));
+        setScenes(result.items);
         setStep('browse');
       } catch (err) {
         setError(getErrorMessage(err));
@@ -283,8 +305,21 @@ export function WorkspacePage() {
         setLoadingScenes(false);
       }
     },
-    [aoiGeoJson, resetFromPlace, setError, setLoadingScenes, setPlace, setScenes, setStep],
+    [aoiGeoJson, setError, setLoadingScenes, setScenes, setStep],
   );
+
+  const filterSummary = useMemo(() => {
+    if (!catalogQuery) return null;
+    const label =
+      {
+        'LANDSAT-8': 'Landsat 8 / heritage',
+        'LANDSAT-9': 'Landsat 9',
+        'SENTINEL-2': 'Sentinel-2',
+        'SENTINEL-1': 'Sentinel-1',
+        MODIS: 'MODIS',
+      }[catalogQuery.collection] ?? catalogQuery.collection;
+    return `${label} · ${catalogQuery.startDate} → ${catalogQuery.endDate} · ${scenes.length} scene${scenes.length === 1 ? '' : 's'}`;
+  }, [catalogQuery, scenes.length]);
 
   const onPlaceClick = useCallback(
     async (lon: number, lat: number) => {
@@ -293,14 +328,14 @@ export function WorkspacePage() {
       const pad = 0.18;
       try {
         const reverse = await gisService.reverseGeocode(lon, lat);
-        await loadScenesForPlace({
+        selectPlace({
           name: reverse.display_name || `Point ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
           longitude: lon,
           latitude: lat,
           bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
         });
       } catch {
-        await loadScenesForPlace({
+        selectPlace({
           name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
           longitude: lon,
           latitude: lat,
@@ -308,7 +343,7 @@ export function WorkspacePage() {
         });
       }
     },
-    [loadScenesForPlace, mapTool, step],
+    [mapTool, selectPlace, step],
   );
 
   const onDrawnFeature = useCallback(
@@ -329,6 +364,7 @@ export function WorkspacePage() {
     async (scene: SceneSummary) => {
       addLoadingOverlay(scene.id);
       setError(null);
+      setToolStatus(`Loading ${scene.collection} imagery…`);
       try {
         const bounds = sceneBounds(scene, place);
         const overlay = await analyticsService.sceneOverlay({
@@ -341,6 +377,9 @@ export function WorkspacePage() {
         });
         const tileUrl =
           overlay.tile_url || analyticsService.sceneTileUrl(scene.id);
+        const previewUrl = overlay.overlay_base64
+          ? analyticsService.toDataUrl(overlay.overlay_base64)
+          : overlay.preview_url || '';
         const label =
           overlay.label ||
           (scene.collection === 'SENTINEL-1'
@@ -361,9 +400,7 @@ export function WorkspacePage() {
           id: `scene-${scene.id}`,
           kind: 'scene',
           sceneId: scene.id,
-          url: overlay.overlay_base64
-            ? analyticsService.toDataUrl(overlay.overlay_base64)
-            : '',
+          url: previewUrl,
           tileUrl,
           bounds: overlay.bounds as [number, number, number, number],
           footprint: (overlay.footprint as GeoJSON.Polygon | null) ?? null,
@@ -373,11 +410,15 @@ export function WorkspacePage() {
           renderMode: overlay.render_mode,
           visible: true,
         });
+        setLastMessage(
+          `${label}${overlay.stac_id ? ` · ${overlay.stac_id}` : ''} · tiles sharpen on zoom`,
+        );
       } catch (err) {
         setError(getErrorMessage(err));
         hideScene(scene.id);
       } finally {
         removeLoadingOverlay(scene.id);
+        setToolStatus(null);
       }
     },
     [
@@ -386,6 +427,8 @@ export function WorkspacePage() {
       place,
       removeLoadingOverlay,
       setError,
+      setLastMessage,
+      setToolStatus,
       upsertOverlay,
     ],
   );
@@ -436,12 +479,17 @@ export function WorkspacePage() {
       setLastMessage(
         `${result.formula || index} · ramp ${result.colormap || ramp || 'default'}`,
       );
-      if (result.overlay_base64 && result.bounds) {
+      if (result.overlay_base64 || result.overlay_url) {
+        const indexSrc = await compositeService.materializeOverlayUrl(result);
+        if (!indexSrc) {
+          setError('Index computed but no overlay image was returned');
+          return;
+        }
         upsertOverlay({
           id: `index-${focusScene.id}-${index}`,
           kind: 'index',
           sceneId: focusScene.id,
-          url: analyticsService.toDataUrl(result.overlay_base64),
+          url: indexSrc,
           bounds: result.bounds as [number, number, number, number],
           footprint: sceneOverlay?.footprint ?? null,
           opacity: layerOpacity,
@@ -494,7 +542,7 @@ export function WorkspacePage() {
         id: `change-${before.id}-${focusScene.id}`,
         kind: 'change',
         sceneId: focusScene.id,
-        url: analyticsService.toDataUrl(result.overlay_base64),
+        url: await compositeService.materializeOverlayUrl(result),
         bounds: result.bounds as [number, number, number, number],
         footprint: sceneOverlay?.footprint ?? null,
         opacity: layerOpacity,
@@ -984,18 +1032,23 @@ export function WorkspacePage() {
         preset,
         scene_id: focusScene.id,
         bbox: [...bbox],
-        size: 1024,
+        size: 512,
         ...stretchParams,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(`${result.label} · ${result.formula} · sharp 1024px`);
+      setLastMessage(`${result.label} · ${result.formula}`);
       // Match satellite frame exactly; full opacity for crisp composite
+      const overlaySrc = await compositeService.materializeOverlayUrl(result);
+      if (!overlaySrc) {
+        setError('Composite rendered but no overlay image was returned');
+        return;
+      }
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
         sceneId: focusScene.id,
-        url: compositeService.toDataUrl(result.overlay_base64),
+        url: overlaySrc,
         bounds: (sceneOverlay?.bounds ??
           (result.bounds as [number, number, number, number])) as [
           number,
@@ -1039,16 +1092,21 @@ export function WorkspacePage() {
       const result = await compositeService.stretch({
         scene_id: focusScene?.id,
         bbox: [...bbox],
-        size: 1024,
+        size: 512,
         ...params,
       });
       setStretchResult(result);
       setLastMessage(result.message);
+      const stretchSrc = await compositeService.materializeOverlayUrl(result);
+      if (!stretchSrc) {
+        setError('Stretch rendered but no overlay image was returned');
+        return;
+      }
       upsertOverlay({
         id: 'stretch-overlay',
         kind: 'index',
         sceneId: focusScene?.id,
-        url: compositeService.toDataUrl(result.overlay_base64),
+        url: stretchSrc,
         bounds: (sceneOverlay?.bounds ??
           (result.bounds as [number, number, number, number])) as [
           number,
@@ -1401,7 +1459,20 @@ export function WorkspacePage() {
           )}
 
           {step === 'place' && (
-            <PlaceStep onSelect={loadScenesForPlace} busy={loadingScenes} />
+            <PlaceStep onSelect={selectPlace} busy={loadingScenes} />
+          )}
+
+          {step === 'catalog' && place && (
+            <CatalogQueryStep
+              place={place}
+              initial={catalogQuery}
+              busy={loadingScenes}
+              onSearch={loadScenesForQuery}
+              onBack={() => {
+                setCatalogQuery(null);
+                backToPlace();
+              }}
+            />
           )}
 
           {step === 'browse' && place && (
@@ -1412,9 +1483,31 @@ export function WorkspacePage() {
               focusSceneId={focusSceneId}
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
+              filterSummary={filterSummary}
               onToggleEye={onToggleEye}
               onFocus={(scene) => setFocusSceneId(scene.id)}
-              onBack={backToPlace}
+              onBack={() => {
+                setCatalogQuery(null);
+                backToPlace();
+              }}
+              onChangeFilters={() => {
+                // Drop prior Eye-On layers — new satellite/range will replace the list
+                useWorkflowStore.setState({
+                  scenes: [],
+                  visibleSceneIds: [],
+                  focusSceneId: null,
+                  overlays: [],
+                  loadingOverlayIds: [],
+                  indexResult: null,
+                  changeResult: null,
+                  selectedIndex: null,
+                  compareSceneId: null,
+                  analysisOpen: false,
+                  terrainOpen: false,
+                  error: null,
+                  step: 'catalog',
+                });
+              }}
             />
           )}
         </aside>
@@ -1496,7 +1589,12 @@ export function WorkspacePage() {
           )}
           {step === 'place' && (
             <div className="pointer-events-none absolute bottom-14 left-1/2 z-[500] max-w-[90%] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1.5 text-center text-xs text-[var(--muted)] shadow">
-              Search Lahore, click the map, or draw an AOI — then use eyes to show images
+              Search a place or click the map — then choose satellite and dates
+            </div>
+          )}
+          {step === 'catalog' && (
+            <div className="pointer-events-none absolute bottom-14 left-1/2 z-[500] max-w-[90%] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1.5 text-center text-xs text-[var(--muted)] shadow">
+              Pick one satellite and a from–to date range to load scenes
             </div>
           )}
         </section>
@@ -1585,9 +1683,9 @@ export function WorkspacePage() {
                   setError('Compute an index first');
                   return;
                 }
-                if (indexResult.overlay_base64) {
-                  void compositeService.downloadPngFromBase64(
-                    indexResult.overlay_base64,
+                if (indexResult.overlay_url || indexResult.overlay_base64) {
+                  void compositeService.downloadOverlay(
+                    indexResult,
                     `${indexResult.index}_${focusScene.id}.png`,
                   );
                 } else {
@@ -1606,9 +1704,9 @@ export function WorkspacePage() {
                 void compositeService.downloadIndexCsv(indexResult.index, focusScene.id);
               }}
               onExportCompositePng={() => {
-                if (compositeResult?.overlay_base64) {
-                  void compositeService.downloadPngFromBase64(
-                    compositeResult.overlay_base64,
+                if (compositeResult?.overlay_url || compositeResult?.overlay_base64) {
+                  void compositeService.downloadOverlay(
+                    compositeResult,
                     `${compositeResult.preset}.png`,
                   );
                 } else {
@@ -1620,12 +1718,12 @@ export function WorkspacePage() {
                 }
               }}
               onExportStretchPng={() => {
-                if (!stretchResult?.overlay_base64) {
+                if (!stretchResult?.overlay_url && !stretchResult?.overlay_base64) {
                   setError('Apply histogram stretch first');
                   return;
                 }
-                void compositeService.downloadPngFromBase64(
-                  stretchResult.overlay_base64,
+                void compositeService.downloadOverlay(
+                  stretchResult,
                   `stretch_${focusScene?.id || 'aoi'}.png`,
                 );
               }}
