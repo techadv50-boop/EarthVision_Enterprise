@@ -263,6 +263,15 @@ class CopernicusCatalogService:
 
         limit = max(1, min(request.max_results, 20))
         span_days = max((end - start).days, 1)
+
+        def _safe_year(dt: datetime, year: int) -> datetime:
+            """Replace year without crashing on Feb 29 → non-leap years."""
+            try:
+                return dt.replace(year=year)
+            except ValueError:
+                # Feb 29 in a non-leap target year → clamp to Feb 28
+                return dt.replace(year=year, day=28)
+
         scenes: list[SceneSummary] = []
         for j in range(limit):
             collection = collections[j % len(collections)]
@@ -270,14 +279,14 @@ class CopernicusCatalogService:
             sensing = end - timedelta(days=(j * max(span_days // max(limit, 1), 1)) % span_days)
             # Mission-aware display dates in the catalog list
             if collection == "SENTINEL-1" and sensing.year < 2015:
-                sensing = sensing.replace(year=2015)
+                sensing = _safe_year(sensing, 2015)
             elif collection == "SENTINEL-2" and sensing.year < 2016:
-                sensing = sensing.replace(year=2017)
+                sensing = _safe_year(sensing, 2017)
             elif collection.startswith("LANDSAT") and sensing.year >= 2013 and (
                 request.start_date is None or request.start_date.year <= 2005
             ):
                 # Keep year-2000 default as Landsat-7 era labels
-                sensing = sensing.replace(year=2000)
+                sensing = _safe_year(sensing, 2000)
 
             cloud_cap = request.cloud_cover_max if request.cloud_cover_max is not None else 80.0
             cloud = round((j * 4.7) % max(cloud_cap, 1.0), 1)
