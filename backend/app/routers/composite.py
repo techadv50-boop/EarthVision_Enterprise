@@ -80,13 +80,20 @@ async def analytics_job_status(job_id: str, user: CurrentUser) -> dict[str, Any]
 
 @router.get("/overlays/{overlay_id}.png")
 async def get_cached_overlay_png(overlay_id: str) -> Response:
-    """Serve a cached analysis overlay PNG (no auth — used by Leaflet ImageOverlay)."""
-    png = read_overlay_png(overlay_id)
-    if not png:
+    """Serve a cached analysis overlay image (no auth — used by Leaflet ImageOverlay)."""
+    data = read_overlay_png(overlay_id)
+    if not data:
         raise NotFoundError("Overlay image not found or expired")
+    # Composites may be JPEG; indices remain PNG. Sniff magic bytes.
+    if data[:3] == b"\xff\xd8\xff":
+        media_type = "image/jpeg"
+    elif data[:8] == b"\x89PNG\r\n\x1a\n":
+        media_type = "image/png"
+    else:
+        media_type = "application/octet-stream"
     return Response(
-        content=png,
-        media_type="image/png",
+        content=data,
+        media_type=media_type,
         headers={"Cache-Control": "public, max-age=3600"},
     )
 

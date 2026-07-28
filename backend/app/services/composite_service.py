@@ -393,20 +393,18 @@ class CompositeService:
         return np.clip(out, 0, 1)
 
     def _rgb_to_png(self, rgb: np.ndarray) -> bytes:
+        """Encode RGB as a tunnel-friendly image.
+
+        Photographic composites compress poorly as PNG (~2MB at 768px) and then
+        fail to load through short-timeout proxies (Serveo), so Leaflet shows
+        nothing after a brief flash. JPEG keeps the same visual at ~200–300KB.
+        """
         u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-        alpha = np.full(u8.shape[:2], 255, dtype=np.uint8)
-        # Transparent where no-data (all near black)
-        dark = u8.sum(axis=2) < 3
-        alpha[dark] = 0
-        rgba = np.dstack([u8, alpha])
-        img = Image.fromarray(rgba, mode="RGBA")
+        img = Image.fromarray(u8, mode="RGB")
         # Mild unsharp mask keeps edges crisp after bilinear COG sampling
-        rgb_img = img.convert("RGB")
-        rgb_img = rgb_img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=80, threshold=2))
-        out = Image.merge("RGBA", (*rgb_img.split(), img.split()[-1]))
+        img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=80, threshold=2))
         buf = io.BytesIO()
-        # compress_level 3 = faster / sharper decode path; avoid over-optimizing
-        out.save(buf, format="PNG", compress_level=3, optimize=False)
+        img.save(buf, format="JPEG", quality=82, optimize=True, progressive=True)
         return buf.getvalue()
 
     def _rgb_histogram(self, rgb: np.ndarray) -> dict[str, Any]:

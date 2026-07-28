@@ -77,6 +77,43 @@ function resolveOverlayUrl(result: {
   return '';
 }
 
+let lastBlobUrl: string | null = null;
+
+/**
+ * Fetch overlay bytes through the API proxy and return a blob: URL.
+ * Leaflet <img> loads of multi‑MB PNGs often time out on Serveo (~5s) and the
+ * layer vanishes after a patchy flash — blob URLs paint atomically once fetched.
+ */
+async function materializeOverlayUrl(result: {
+  overlay_url?: string | null;
+  overlay_base64?: string | null;
+}): Promise<string> {
+  const url = resolveOverlayUrl(result);
+  if (!url) return '';
+  if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+
+  const path = url.startsWith('/api/v1/')
+    ? url.slice('/api/v1'.length)
+    : url.startsWith('/api/')
+      ? url.slice('/api'.length)
+      : url;
+
+  const { data } = await api.get<Blob>(path, {
+    responseType: 'blob',
+    timeout: 90000,
+    headers: { Accept: 'image/*,*/*' },
+  });
+  if (!(data instanceof Blob) || data.size < 32) {
+    throw new Error('Overlay image was empty or truncated');
+  }
+  if (lastBlobUrl) {
+    URL.revokeObjectURL(lastBlobUrl);
+    lastBlobUrl = null;
+  }
+  lastBlobUrl = URL.createObjectURL(data);
+  return lastBlobUrl;
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const href = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -107,6 +144,7 @@ async function pollAnalyticsJob<T>(jobId: string, timeoutMs = 180000): Promise<T
 export const compositeService = {
   toDataUrl,
   resolveOverlayUrl,
+  materializeOverlayUrl,
 
   async listPresets(): Promise<CompositePresetInfo[]> {
     const { data } = await api.get('/analytics/composites');

@@ -480,11 +480,16 @@ export function WorkspacePage() {
         `${result.formula || index} · ramp ${result.colormap || ramp || 'default'}`,
       );
       if (result.overlay_base64 || result.overlay_url) {
+        const indexSrc = await compositeService.materializeOverlayUrl(result);
+        if (!indexSrc) {
+          setError('Index computed but no overlay image was returned');
+          return;
+        }
         upsertOverlay({
           id: `index-${focusScene.id}-${index}`,
           kind: 'index',
           sceneId: focusScene.id,
-          url: analyticsService.resolveOverlayUrl(result),
+          url: indexSrc,
           bounds: result.bounds as [number, number, number, number],
           footprint: sceneOverlay?.footprint ?? null,
           opacity: layerOpacity,
@@ -537,7 +542,7 @@ export function WorkspacePage() {
         id: `change-${before.id}-${focusScene.id}`,
         kind: 'change',
         sceneId: focusScene.id,
-        url: analyticsService.resolveOverlayUrl(result),
+        url: await compositeService.materializeOverlayUrl(result),
         bounds: result.bounds as [number, number, number, number],
         footprint: sceneOverlay?.footprint ?? null,
         opacity: layerOpacity,
@@ -1027,14 +1032,14 @@ export function WorkspacePage() {
         preset,
         scene_id: focusScene.id,
         bbox: [...bbox],
-        size: 768,
+        size: 512,
         ...stretchParams,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(`${result.label} · ${result.formula} · sharp 768px`);
+      setLastMessage(`${result.label} · ${result.formula}`);
       // Match satellite frame exactly; full opacity for crisp composite
-      const overlaySrc = compositeService.resolveOverlayUrl(result);
+      const overlaySrc = await compositeService.materializeOverlayUrl(result);
       if (!overlaySrc) {
         setError('Composite rendered but no overlay image was returned');
         return;
@@ -1087,12 +1092,12 @@ export function WorkspacePage() {
       const result = await compositeService.stretch({
         scene_id: focusScene?.id,
         bbox: [...bbox],
-        size: 768,
+        size: 512,
         ...params,
       });
       setStretchResult(result);
       setLastMessage(result.message);
-      const stretchSrc = compositeService.resolveOverlayUrl(result);
+      const stretchSrc = await compositeService.materializeOverlayUrl(result);
       if (!stretchSrc) {
         setError('Stretch rendered but no overlay image was returned');
         return;

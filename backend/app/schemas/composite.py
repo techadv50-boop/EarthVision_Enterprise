@@ -31,7 +31,7 @@ class CompositeRequest(BaseModel):
     red_band: str | None = None
     green_band: str | None = None
     blue_band: str | None = None
-    size: int = Field(default=1024, ge=64, le=2048)
+    size: int = Field(default=512, ge=64, le=2048)
     stretch: Literal["percentile", "minmax", "none"] = "percentile"
     p_low: float = Field(default=2.0, ge=0, le=49)
     p_high: float = Field(default=98.0, ge=51, le=100)
@@ -59,7 +59,7 @@ class CompositeResponse(BaseModel):
 class StretchRequest(BaseModel):
     scene_id: str | None = None
     bbox: list[float] | None = None
-    size: int = Field(default=1024, ge=64, le=2048)
+    size: int = Field(default=512, ge=64, le=2048)
     p_low: float = Field(default=2.0, ge=0, le=49)
     p_high: float = Field(default=98.0, ge=51, le=100)
     gamma: float = Field(default=1.0, gt=0.1, le=3.0)

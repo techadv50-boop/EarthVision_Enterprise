@@ -186,8 +186,15 @@ function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
   useEffect(() => {
     const last = overlays[overlays.length - 1];
     if (!last || last.id === lastId.current) return;
-    // Don't auto-fit buffer-only updates or DEM mesh tweaks
-    if (last.kind === 'buffer' || last.terrainRole === 'base') {
+    // Don't auto-fit buffer / DEM tweaks, or analysis overlays (index/composite/change).
+    // Refitting those to maxZoom 15 reloads scene XYZ tiles in patches and can hide
+    // the finished ImageOverlay while tiles stream (or fail) underneath.
+    if (
+      last.kind === 'buffer' ||
+      last.kind === 'index' ||
+      last.kind === 'change' ||
+      last.terrainRole === 'base'
+    ) {
       lastId.current = last.id;
       return;
     }
@@ -746,6 +753,19 @@ export function LightMap({
     [visibleOverlays],
   );
 
+  /** True Color / indices / change sit as full ImageOverlays — pause XYZ tiles so they
+   *  don't stream in patches underneath while the analysis image settles. */
+  const analysisImageActive = useMemo(
+    () =>
+      visibleOverlays.some(
+        (o) =>
+          (o.kind === 'index' || o.kind === 'change') &&
+          Boolean(o.url) &&
+          o.visible !== false,
+      ),
+    [visibleOverlays],
+  );
+
   const demZ = demBaseOverlay
     ? overlayZIndex.get(demBaseOverlay.id) ?? 415
     : 415;
@@ -852,27 +872,33 @@ export function LightMap({
                   <ImageOverlay
                     url={overlay.url}
                     bounds={leafletBounds}
-                    opacity={overlay.opacity}
+                    opacity={
+                      analysisImageActive
+                        ? Math.min(overlay.opacity, 0.3)
+                        : overlay.opacity
+                    }
                     interactive={false}
                     pane="evStackPane"
                     zIndex={zIndex}
                     eventHandlers={tagHandlers}
                   />
                 ) : null}
-                <TileLayer
-                  key={`${overlay.id}-tiles-${overlay.tileUrl}`}
-                  url={overlay.tileUrl}
-                  bounds={leafletBounds}
-                  opacity={overlay.opacity}
-                  maxNativeZoom={16}
-                  maxZoom={18}
-                  pane="evStackPane"
-                  zIndex={zIndex + 1}
-                  updateWhenZooming={false}
-                  updateWhenIdle
-                  keepBuffer={1}
-                  eventHandlers={tagHandlers}
-                />
+                {!analysisImageActive && (
+                  <TileLayer
+                    key={`${overlay.id}-tiles-${overlay.tileUrl}`}
+                    url={overlay.tileUrl}
+                    bounds={leafletBounds}
+                    opacity={overlay.opacity}
+                    maxNativeZoom={16}
+                    maxZoom={18}
+                    pane="evStackPane"
+                    zIndex={zIndex + 1}
+                    updateWhenZooming={false}
+                    updateWhenIdle
+                    keepBuffer={1}
+                    eventHandlers={tagHandlers}
+                  />
+                )}
               </>
             ) : overlay.url ? (
               <ImageOverlay
