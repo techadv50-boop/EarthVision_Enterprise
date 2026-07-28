@@ -129,15 +129,21 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
     )
 
     preview_url = None
-    # S1: cache remote thumbnail quickly (<1s) so eye-on shows something immediately
+    # S1: ESA STAC "thumbnail" is a colorful RGB quick-look — convert to grayscale SAR
     if layer.get("source") == "sentinel1_grd" and layer.get("thumbnail_url"):
         preview_url = await run_in_threadpool(
-            imagery.cache_remote_preview, data.scene_id, layer.get("thumbnail_url"), 256
+            partial(
+                imagery.cache_remote_preview,
+                data.scene_id,
+                layer.get("thumbnail_url"),
+                256,
+                as_grayscale=True,
+            )
         )
     elif imagery._preview_cache_path(data.scene_id, 384).exists():
         preview_url = f"/api/v1/catalog/scenes/{data.scene_id}/overlay.png"
 
-    # Background: tile prewarm + optical preview (must not block Serveo response)
+    # Background: tile prewarm + real VV grayscale preview (replaces quick-look)
     try:
         import asyncio
 
@@ -146,11 +152,11 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
                 await run_in_threadpool(imagery.prewarm_center_tiles, data.scene_id, 9, 1)
             except Exception:  # noqa: BLE001
                 pass
-            if layer.get("source") != "sentinel1_grd":
-                try:
-                    await run_in_threadpool(imagery.ensure_preview, data.scene_id, 384)
-                except Exception:  # noqa: BLE001
-                    pass
+            try:
+                # For S1 this reads the VV COG → true single-band grayscale
+                await run_in_threadpool(imagery.ensure_preview, data.scene_id, 384)
+            except Exception:  # noqa: BLE001
+                pass
 
         asyncio.create_task(_warm())
     except Exception:  # noqa: BLE001
@@ -200,35 +206,66 @@ async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
 @router.get("/scenes/{scene_id}/overlay.png")
 async def scene_overlay_png(scene_id: str) -> Response:
     """Full-scene preview PNG for Leaflet ImageOverlay (no auth — same as XYZ tiles)."""
+    from functools import partial
+    import io
+
+    from PIL import Image
     from starlette.concurrency import run_in_threadpool
 
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
+    layer = imagery.get_layer(scene_id)
+    force_gray = bool(
+        layer
+        and (
+            layer.get("source") == "sentinel1_grd"
+            or layer.get("render_mode") == "grayscale"
+            or layer.get("collection") == "SENTINEL-1"
+        )
+    )
+
+    def _maybe_gray(png: bytes) -> bytes:
+        if not force_gray:
+            return png
+        try:
+            img = Image.open(io.BytesIO(png))
+            gray = SceneImageryService._to_grayscale_rgba(img)
+            buf = io.BytesIO()
+            gray.save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
+        except Exception:  # noqa: BLE001
+            return png
+
     # Prefer already-cached sizes (including tiny S1 thumbnails)
-    for size in (256, 160, 384, 512):
+    for size in (384, 256, 160, 512):
         path = imagery._preview_cache_path(scene_id, size)
         if path.exists() and path.stat().st_size > 0:
             return Response(
-                content=path.read_bytes(),
+                content=_maybe_gray(path.read_bytes()),
                 media_type="image/png",
                 headers={"Cache-Control": "public, max-age=3600"},
             )
-    layer = imagery.get_layer(scene_id)
     if layer and layer.get("source") == "sentinel1_grd" and layer.get("thumbnail_url"):
         url = await run_in_threadpool(
-            imagery.cache_remote_preview, scene_id, layer.get("thumbnail_url"), 256
+            partial(
+                imagery.cache_remote_preview,
+                scene_id,
+                layer.get("thumbnail_url"),
+                256,
+                as_grayscale=True,
+            )
         )
         if url:
             png = imagery._preview_cache_path(scene_id, 256).read_bytes()
             return Response(
-                content=png,
+                content=_maybe_gray(png),
                 media_type="image/png",
                 headers={"Cache-Control": "public, max-age=3600"},
             )
     png = await run_in_threadpool(imagery.ensure_preview, scene_id, 384)
     return Response(
-        content=png,
+        content=_maybe_gray(png),
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=3600"},
     )

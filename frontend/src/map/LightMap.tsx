@@ -852,6 +852,7 @@ export function LightMap({
             : null;
 
         const zIndex = overlayZIndex.get(overlay.id) ?? 430;
+        const sarGray = overlay.renderMode === 'grayscale';
         const tagHandlers = {
           add: (e: { target: L.Layer & { getContainer?: () => HTMLElement; getElement?: () => HTMLElement } }) => {
             const el =
@@ -860,6 +861,9 @@ export function LightMap({
               (e.target as unknown as { _container?: HTMLElement; _image?: HTMLElement })._container ||
               (e.target as unknown as { _image?: HTMLElement })._image;
             tagOverlayElement(el ?? null, overlay.id, zIndex);
+            if (sarGray && el) {
+              el.classList.add('ev-sar-grayscale');
+            }
           },
         };
 
@@ -880,6 +884,7 @@ export function LightMap({
                     interactive={false}
                     pane="evStackPane"
                     zIndex={zIndex}
+                    className={sarGray ? 'ev-sar-grayscale' : undefined}
                     eventHandlers={tagHandlers}
                   />
                 ) : null}
@@ -896,6 +901,7 @@ export function LightMap({
                     updateWhenZooming={false}
                     updateWhenIdle
                     keepBuffer={1}
+                    className={sarGray ? 'ev-sar-grayscale' : undefined}
                     eventHandlers={tagHandlers}
                   />
                 )}

@@ -31,7 +31,7 @@ GDAL_ENV = {
 }
 
 # Registry schema version — bump to invalidate old all-S2 layers
-LAYER_VERSION = 4
+LAYER_VERSION = 5
 
 # Cap concurrent COG reads so Leaflet's tile burst does not starve the API
 _TILE_SEMAPHORE = None
@@ -538,7 +538,7 @@ class SceneImageryService:
                     k: self._sign_pc(v, client) for k, v in match["cog_urls"].items()
                 }
             layer["signed_at"] = datetime.now(UTC).isoformat()
-        # Drop previous tile cache when remapping a scene
+        # Drop previous tile + preview caches when remapping a scene
         cache_root = self._tile_cache_root(scene_id)
         if cache_root.exists():
             import shutil
@@ -546,13 +546,39 @@ class SceneImageryService:
             shutil.rmtree(cache_root, ignore_errors=True)
         return self.save_layer(scene_id, layer)
 
-    def cache_remote_preview(self, scene_id: str, url: str | None, size: int = 256) -> str | None:
+    @staticmethod
+    def _to_grayscale_rgba(img: Image.Image) -> Image.Image:
+        """Force single-band SAR-style grayscale (ESA S1 quick-looks are RGB)."""
+        if img.mode == "RGBA":
+            alpha = img.split()[-1]
+            gray = img.convert("L")
+            return Image.merge("RGBA", (gray, gray, gray, alpha))
+        gray = img.convert("L")
+        return Image.merge("RGBA", (gray, gray, gray, Image.new("L", gray.size, 255)))
+
+    def cache_remote_preview(
+        self,
+        scene_id: str,
+        url: str | None,
+        size: int = 256,
+        *,
+        as_grayscale: bool = False,
+    ) -> str | None:
         """Download a small remote thumbnail into the preview cache (fast S1 eye-on)."""
         if not url:
             return None
         url = self._s3_to_https(url)
         path = self._preview_cache_path(scene_id, size)
         if path.exists() and path.stat().st_size > 0:
+            # Re-normalize cached ESA RGB quick-looks to grayscale when required
+            if as_grayscale:
+                try:
+                    gray = self._to_grayscale_rgba(Image.open(path))
+                    buf = __import__("io").BytesIO()
+                    gray.save(buf, format="PNG", optimize=True)
+                    path.write_bytes(buf.getvalue())
+                except Exception:  # noqa: BLE001
+                    pass
             return f"/api/v1/catalog/scenes/{scene_id}/overlay.png"
         try:
             with httpx.Client(timeout=20.0, follow_redirects=True) as client:
@@ -560,9 +586,10 @@ class SceneImageryService:
             if resp.status_code != 200 or not resp.content:
                 logger.warning("Remote preview HTTP {}: {}", resp.status_code, url[:120])
                 return None
-            # Normalize to PNG
             img = Image.open(__import__("io").BytesIO(resp.content)).convert("RGBA")
             img.thumbnail((size, size))
+            if as_grayscale:
+                img = self._to_grayscale_rgba(img)
             path.parent.mkdir(parents=True, exist_ok=True)
             buf = __import__("io").BytesIO()
             img.save(buf, format="PNG", optimize=True)

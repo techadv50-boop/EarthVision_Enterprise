@@ -46,6 +46,13 @@ body {
   backface-visibility: hidden;
 }
 
+/* Sentinel-1 is single-band SAR — force B&W even if a colorful ESA quick-look slipped in */
+.leaflet-image-layer.ev-sar-grayscale,
+.leaflet-layer.ev-sar-grayscale,
+.ev-sar-grayscale {
+  filter: grayscale(1) contrast(1.05);
+}
+
 .leaflet-container.ev-pan-mode.leaflet-drag-target,
 .leaflet-container.ev-pan-mode.leaflet-dragging {
   cursor: grabbing;
