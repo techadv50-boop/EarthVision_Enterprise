@@ -4,12 +4,15 @@ import AuthScreen from "./components/AuthScreen";
 import FamilyCapture from "./components/FamilyCapture";
 import ProgramTalk from "./components/ProgramTalk";
 import RememberChat from "./components/RememberChat";
+import ServerSetup from "./components/ServerSetup";
 import { api, sampleAudioUrl } from "./lib/api";
 import { getToken, setToken, type AuthUser, type PublicConfig } from "./lib/auth";
+import { clearServerUrl, getServerUrl, isNativeApp, needsServerSetup } from "./lib/config";
 import type { AppMode, Persona } from "./lib/types";
 
 export default function App() {
   const [bootstrapping, setBootstrapping] = useState(true);
+  const [needsServer, setNeedsServer] = useState(needsServerSetup());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
   const [billingConfig, setBillingConfig] = useState<PublicConfig | null>(null);
@@ -29,12 +32,20 @@ export default function App() {
   const subActive = !!user && (user.role === "admin" || user.subscription_active);
 
   useEffect(() => {
+    if (needsServer) {
+      setBootstrapping(false);
+      return;
+    }
     void (async () => {
       try {
         const cfg = await api.publicConfig();
         setPublicConfig(cfg);
       } catch {
-        /* ignore */
+        if (isNativeApp()) {
+          setNeedsServer(true);
+          setBootstrapping(false);
+          return;
+        }
       }
       if (!getToken()) {
         setBootstrapping(false);
@@ -50,7 +61,7 @@ export default function App() {
         setBootstrapping(false);
       }
     })();
-  }, []);
+  }, [needsServer]);
 
   async function refreshStudio(preferId?: string | null) {
     if (!subActive) return;
@@ -116,6 +127,18 @@ export default function App() {
     );
   }
 
+  if (needsServer) {
+    return (
+      <ServerSetup
+        initialUrl={getServerUrl()}
+        onReady={() => {
+          setNeedsServer(false);
+          setBootstrapping(true);
+        }}
+      />
+    );
+  }
+
   if (!user) {
     return (
       <AuthScreen
@@ -150,6 +173,20 @@ export default function App() {
           </p>
         </div>
         <div className="row">
+          {isNativeApp() && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => {
+                clearServerUrl();
+                setUser(null);
+                setToken(null);
+                setNeedsServer(true);
+              }}
+            >
+              Change server
+            </button>
+          )}
           {user.role === "admin" && (
             <button
               type="button"

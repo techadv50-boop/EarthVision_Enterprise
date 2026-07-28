@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">VoxPersona</string>
+    <string name="title_activity_main">VoxPersona</string>
+    <string name="package_name">com.voxpersona.app</string>
+    <string name="custom_url_scheme">com.voxpersona.app</string>
+</resources>

@@ -1,4 +1,5 @@
 import { authHeaders, getToken, setToken, type AuthUser, type PublicConfig } from "./auth";
+import { apiUrl } from "./config";
 import type {
   ChatMessage,
   ChatResponse,
@@ -15,7 +16,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(apiUrl(path), { ...init, headers });
   if (!res.ok) {
     let message = res.statusText;
     try {
@@ -147,5 +148,5 @@ export const api = {
 export function sampleAudioUrl(personaId: string, filename: string) {
   const token = getToken();
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
-  return `/api/personas/${personaId}/samples/${filename}/audio${q}`;
+  return apiUrl(`/api/personas/${personaId}/samples/${filename}/audio${q}`);
 }

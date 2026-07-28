@@ -15,3 +15,8 @@ data/*.sqlite-*
 .DS_Store
 .env
 *.pyc
+frontend/android/.gradle/
+frontend/android/build/
+frontend/android/app/build/
+frontend/android/local.properties
+frontend/android/capacitor-cordova-android-plugins/build/
