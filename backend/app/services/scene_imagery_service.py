@@ -234,16 +234,31 @@ class SceneImageryService:
                 assets = feat.get("assets") or {}
                 analysis_bands = {
                     k: assets[k]["href"]
-                    for k in ("red", "green", "blue", "nir", "swir16", "swir22")
+                    for k in (
+                        "coastal",
+                        "blue",
+                        "green",
+                        "red",
+                        "rededge1",
+                        "rededge2",
+                        "rededge3",
+                        "nir",
+                        "nir08",
+                        "nir09",
+                        "swir16",
+                        "swir22",
+                    )
                     if k in assets and assets[k].get("href")
                 }
+                # Friendly aliases used by indices / band picker
                 if "swir16" in analysis_bands:
                     analysis_bands["swir"] = analysis_bands["swir16"]
                 if "swir22" in analysis_bands:
                     analysis_bands["swir2"] = analysis_bands["swir22"]
                 elif "swir" in analysis_bands:
-                    # Fallback: NBR uses SWIR2 when available; else SWIR1 with note
                     analysis_bands["swir2"] = analysis_bands["swir"]
+                if "nir08" in analysis_bands and "nir" not in analysis_bands:
+                    analysis_bands["nir"] = analysis_bands["nir08"]
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": assets["visual"]["href"],
@@ -286,9 +301,15 @@ class SceneImageryService:
                 props = feat.get("properties") or {}
                 assets = feat.get("assets") or {}
                 pol = "vv" if "vv" in assets else "vh"
+                analysis_bands: dict[str, str] = {}
+                if assets.get("vv", {}).get("href"):
+                    analysis_bands["vv"] = self._s3_to_https(assets["vv"]["href"])
+                if assets.get("vh", {}).get("href"):
+                    analysis_bands["vh"] = self._s3_to_https(assets["vh"]["href"])
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": self._s3_to_https(assets[pol]["href"]),
+                    "analysis_bands": analysis_bands,
                     "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
                     "footprint": feat.get("geometry"),
                     "datetime": props.get("datetime"),
@@ -780,12 +801,30 @@ class SceneImageryService:
         scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else "sentinel2_l2a"
 
         bands: dict[str, np.ndarray] = {}
-        for name in ("red", "green", "blue", "nir", "swir", "swir2", "thermal"):
+        for name in (
+            "coastal",
+            "blue",
+            "green",
+            "red",
+            "rededge1",
+            "rededge2",
+            "rededge3",
+            "nir",
+            "nir08",
+            "nir09",
+            "swir",
+            "swir16",
+            "swir2",
+            "swir22",
+            "thermal",
+            "vv",
+            "vh",
+        ):
             href = analysis.get(name)
             if not href:
                 continue
             try:
-                if name == "thermal" and scale == "landsat_c2_sr":
+                if name in {"vv", "vh", "thermal"}:
                     bands[name] = self.read_band_grid(
                         href, bounds, size, sign=sign, reflectance_scale=None
                     )
@@ -798,5 +837,174 @@ class SceneImageryService:
 
         if "swir2" not in bands and "swir" in bands:
             bands["swir2"] = bands["swir"]
+        if "swir" not in bands and "swir16" in bands:
+            bands["swir"] = bands["swir16"]
+        if "nir" not in bands and "nir08" in bands:
+            bands["nir"] = bands["nir08"]
 
         return bands, bounds, layer.get("footprint"), layer
+
+    # Display metadata for band-picker downloads
+    BAND_INFO: dict[str, dict[str, str]] = {
+        "coastal": {"label": "Coastal / Aerosol", "code": "B01", "group": "optical"},
+        "blue": {"label": "Blue", "code": "B02 / SR_B2", "group": "optical"},
+        "green": {"label": "Green", "code": "B03 / SR_B3", "group": "optical"},
+        "red": {"label": "Red", "code": "B04 / SR_B4", "group": "optical"},
+        "rededge1": {"label": "Red Edge 1", "code": "B05", "group": "optical"},
+        "rededge2": {"label": "Red Edge 2", "code": "B06", "group": "optical"},
+        "rededge3": {"label": "Red Edge 3", "code": "B07", "group": "optical"},
+        "nir": {"label": "NIR", "code": "B08 / SR_B5", "group": "optical"},
+        "nir08": {"label": "NIR narrow", "code": "B8A / nir08", "group": "optical"},
+        "nir09": {"label": "Water vapour", "code": "B09", "group": "optical"},
+        "swir": {"label": "SWIR 1", "code": "B11 / SR_B6", "group": "optical"},
+        "swir16": {"label": "SWIR 1.6 µm", "code": "swir16", "group": "optical"},
+        "swir2": {"label": "SWIR 2", "code": "B12 / SR_B7", "group": "optical"},
+        "swir22": {"label": "SWIR 2.2 µm", "code": "swir22", "group": "optical"},
+        "thermal": {"label": "Thermal", "code": "ST_B10 / lwir11", "group": "thermal"},
+        "vv": {"label": "VV polarization", "code": "VV", "group": "sar"},
+        "vh": {"label": "VH polarization", "code": "VH", "group": "sar"},
+    }
+
+    def list_download_bands(
+        self,
+        scene_id: str,
+        *,
+        bbox: list[float] | None = None,
+        footprint: dict[str, Any] | None = None,
+        sensing_time: str | None = None,
+        cloud_cover: float | None = None,
+        collection: str | None = None,
+    ) -> dict[str, Any]:
+        """Return selectable spectral / SAR bands for a scene download."""
+        layer = self.get_layer(scene_id)
+        if not layer or (collection and layer.get("collection") != self._normalize_collection(collection)):
+            layer = self.prepare_scene_layer(
+                scene_id,
+                bbox=bbox,
+                footprint=footprint,
+                sensing_time=sensing_time,
+                cloud_cover=cloud_cover,
+                collection=collection,
+            )
+
+        analysis = layer.get("analysis_bands") or {}
+        # Prefer canonical keys; skip raw duplicates when aliases exist
+        skip = set()
+        if "swir" in analysis:
+            skip.update({"swir16"})
+        if "swir2" in analysis:
+            skip.update({"swir22"})
+        if "nir" in analysis and "nir08" in analysis:
+            skip.add("nir08")
+
+        available: list[dict[str, str]] = []
+        for key in analysis.keys():
+            if key in skip:
+                continue
+            meta = self.BAND_INFO.get(key, {"label": key, "code": key, "group": "other"})
+            available.append(
+                {
+                    "id": key,
+                    "label": meta["label"],
+                    "code": meta["code"],
+                    "group": meta["group"],
+                }
+            )
+
+        # Stable display order
+        order = list(self.BAND_INFO.keys())
+        available.sort(key=lambda b: order.index(b["id"]) if b["id"] in order else 999)
+
+        defaults = [b["id"] for b in available if b["id"] in {"red", "green", "blue", "vv"}]
+        if not defaults and available:
+            defaults = [available[0]["id"]]
+
+        return {
+            "scene_id": scene_id,
+            "collection": layer.get("collection"),
+            "stac_id": layer.get("stac_id"),
+            "bounds": layer.get("bounds"),
+            "bands": available,
+            "default_bands": defaults,
+            "formats": ["geotiff"],
+        }
+
+    def export_selected_bands(
+        self,
+        scene_id: str,
+        band_ids: list[str],
+        *,
+        size: int = 512,
+        collection: str | None = None,
+        bbox: list[float] | None = None,
+        footprint: dict[str, Any] | None = None,
+        sensing_time: str | None = None,
+        cloud_cover: float | None = None,
+    ) -> tuple[bytes, str]:
+        """Load chosen bands and package as a multi-band GeoTIFF."""
+        from app.services.geotiff_export import band_arrays_to_geotiff
+
+        if not band_ids:
+            raise ValidationError("Select at least one band to download")
+
+        layer = self.get_layer(scene_id)
+        if not layer:
+            layer = self.prepare_scene_layer(
+                scene_id,
+                bbox=bbox,
+                footprint=footprint,
+                sensing_time=sensing_time,
+                cloud_cover=cloud_cover,
+                collection=collection,
+            )
+
+        # SAR: allow loading even though optical indices are blocked
+        bounds = [float(x) for x in layer["bounds"]]
+        analysis = layer.get("analysis_bands") or {}
+        sign = layer.get("sign")
+        scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else None
+        if layer.get("source") == "sentinel2_tci":
+            scale = "sentinel2_l2a"
+
+        # Resolve aliases
+        resolved: list[str] = []
+        for bid in band_ids:
+            if bid in analysis:
+                resolved.append(bid)
+            elif bid == "swir" and "swir16" in analysis:
+                resolved.append("swir16")
+            elif bid == "swir2" and "swir22" in analysis:
+                resolved.append("swir22")
+            elif bid == "nir" and "nir08" in analysis:
+                resolved.append("nir08")
+            else:
+                raise ValidationError(f"Band '{bid}' is not available for this scene")
+
+        # De-dupe while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for b in resolved:
+            if b not in seen:
+                seen.add(b)
+                unique.append(b)
+
+        size = max(64, min(int(size), 2048))
+        loaded: dict[str, np.ndarray] = {}
+        for name in unique:
+            href = analysis[name]
+            if name in {"vv", "vh", "thermal"}:
+                loaded[name] = self.read_band_grid(
+                    href, bounds, size, sign=sign, reflectance_scale=None
+                )
+            else:
+                loaded[name] = self.read_band_grid(
+                    href, bounds, size, sign=sign, reflectance_scale=scale
+                )
+
+        coll = (layer.get("collection") or "scene").replace("-", "")
+        stac = (layer.get("stac_id") or scene_id)[:60]
+        band_tag = "-".join(unique)[:80]
+        filename = f"{coll}_{stac}_{band_tag}.tif".replace("/", "_")
+        return band_arrays_to_geotiff(
+            loaded, bounds, filename=filename, band_order=unique
+        )

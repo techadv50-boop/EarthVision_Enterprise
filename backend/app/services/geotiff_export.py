@@ -124,6 +124,68 @@ def dem_grid_to_geotiff(
         return mem.read(), _safe_filename(filename)
 
 
+def band_arrays_to_geotiff(
+    bands: dict[str, np.ndarray],
+    bounds: list[float],
+    *,
+    filename: str = "bands.tif",
+    band_order: list[str] | None = None,
+    nodata: float = -9999.0,
+) -> tuple[bytes, str]:
+    """Write selected named float bands into a multi-band GeoTIFF (EPSG:4326)."""
+    if not bands:
+        raise ValidationError("No bands selected for GeoTIFF export")
+    if not bounds or len(bounds) != 4:
+        raise ValidationError("bounds [west,south,east,north] are required")
+    west, south, east, north = (float(v) for v in bounds)
+    if east <= west or north <= south:
+        raise ValidationError("Invalid bounds for GeoTIFF export")
+
+    order = [b for b in (band_order or list(bands.keys())) if b in bands]
+    if not order:
+        raise ValidationError("Selected bands were not available")
+
+    arrays = [np.asarray(bands[name], dtype=np.float32) for name in order]
+    height, width = arrays[0].shape
+    for name, arr in zip(order, arrays):
+        if arr.shape != (height, width):
+            raise ValidationError(f"Band '{name}' has mismatched shape {arr.shape}")
+
+    try:
+        import rasterio
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_bounds
+    except ImportError as exc:  # pragma: no cover
+        raise ValidationError("rasterio is required for GeoTIFF export") from exc
+
+    stacked = np.stack(arrays, axis=0)
+    # NaNs → nodata for GIS tools
+    stacked = np.where(np.isfinite(stacked), stacked, nodata).astype(np.float32)
+    transform = from_bounds(west, south, east, north, width, height)
+
+    with MemoryFile() as mem:
+        with mem.open(
+            driver="GTiff",
+            height=height,
+            width=width,
+            count=len(order),
+            dtype="float32",
+            crs="EPSG:4326",
+            transform=transform,
+            compress="lzw",
+            nodata=nodata,
+        ) as dst:
+            dst.write(stacked)
+            for i, name in enumerate(order, start=1):
+                dst.set_band_description(i, name)
+            dst.update_tags(
+                AREA_OR_POINT="Area",
+                TIFFTAG_SOFTWARE="EarthVision Enterprise",
+                BANDS=",".join(order),
+            )
+        return mem.read(), _safe_filename(filename)
+
+
 def decode_overlay_png(
     *,
     overlay_base64: str | None = None,

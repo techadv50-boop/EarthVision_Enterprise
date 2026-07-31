@@ -386,21 +386,32 @@ export function WorkspacePage() {
     await loadSceneOverlay(scene);
   };
 
-  const onDownloadScene = useCallback(
-    async (scene: SceneSummary) => {
+  const getSceneBbox = useCallback(
+    (scene: SceneSummary): number[] => {
+      const sceneOverlay = useWorkflowStore
+        .getState()
+        .overlays.find((o) => o.kind === 'scene' && o.sceneId === scene.id);
+      return sceneOverlay?.bounds ?? sceneBounds(scene, place);
+    },
+    [place],
+  );
+
+  const onDownloadSceneBands = useCallback(
+    async (scene: SceneSummary, bands: string[]) => {
       if (downloadingIds.includes(scene.id)) return;
       setDownloadingIds((ids) => [...ids, scene.id]);
       setError(null);
-      setToolStatus(`Downloading ${scene.collection} image…`);
+      setToolStatus(
+        `Exporting ${bands.length} band${bands.length === 1 ? '' : 's'} as GeoTIFF…`,
+      );
       try {
-        const sceneOverlay = useWorkflowStore
-          .getState()
-          .overlays.find((o) => o.kind === 'scene' && o.sceneId === scene.id);
-        await catalogService.downloadImage(scene, {
-          bbox: sceneOverlay?.bounds ?? sceneBounds(scene, place),
-          size: 768,
+        await catalogService.downloadBands(scene, bands, {
+          bbox: getSceneBbox(scene),
+          size: 512,
         });
-        setLastMessage(`Downloaded ${scene.collection} · ${scene.name}`);
+        setLastMessage(
+          `Downloaded GeoTIFF · ${scene.collection} · ${bands.join(', ')}`,
+        );
       } catch (err) {
         setError(getErrorMessage(err));
       } finally {
@@ -408,7 +419,29 @@ export function WorkspacePage() {
         setToolStatus(null);
       }
     },
-    [downloadingIds, place, setError, setLastMessage, setToolStatus],
+    [downloadingIds, getSceneBbox, setError, setLastMessage, setToolStatus],
+  );
+
+  const onDownloadScenePng = useCallback(
+    async (scene: SceneSummary) => {
+      if (downloadingIds.includes(scene.id)) return;
+      setDownloadingIds((ids) => [...ids, scene.id]);
+      setError(null);
+      setToolStatus(`Downloading ${scene.collection} PNG preview…`);
+      try {
+        await catalogService.downloadImage(scene, {
+          bbox: getSceneBbox(scene),
+          size: 768,
+        });
+        setLastMessage(`Downloaded PNG · ${scene.collection} · ${scene.name}`);
+      } catch (err) {
+        setError(getErrorMessage(err));
+      } finally {
+        setDownloadingIds((ids) => ids.filter((id) => id !== scene.id));
+        setToolStatus(null);
+      }
+    },
+    [downloadingIds, getSceneBbox, setError, setLastMessage, setToolStatus],
   );
 
   const runIndex = async (index: IndexName, colormap?: ColormapName | null) => {
@@ -1237,8 +1270,10 @@ export function WorkspacePage() {
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
               downloadingIds={downloadingIds}
+              getSceneBbox={getSceneBbox}
               onToggleEye={onToggleEye}
-              onDownload={onDownloadScene}
+              onDownloadBands={onDownloadSceneBands}
+              onDownloadPng={onDownloadScenePng}
               onFocus={(scene) => setFocusSceneId(scene.id)}
               onBack={backToPlace}
             />

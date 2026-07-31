@@ -249,3 +249,77 @@ async def scene_overlay_geotiff(
             "Cache-Control": "private, max-age=60",
         },
     )
+
+
+class SceneBandsBody(BaseModel):
+    collection: str | None = None
+    bbox: list[float] | None = None
+    footprint: dict[str, Any] | None = None
+    sensing_time: str | None = None
+    cloud_cover: float | None = None
+    bands: list[str] = Field(default_factory=list)
+    size: int = Field(default=512, ge=64, le=2048)
+
+
+@router.get("/scenes/{scene_id}/bands")
+async def list_scene_bands(
+    scene_id: str,
+    user: CurrentUser,
+    collection: str | None = None,
+    west: float | None = None,
+    south: float | None = None,
+    east: float | None = None,
+    north: float | None = None,
+    sensing_time: str | None = None,
+    cloud_cover: float | None = None,
+) -> dict[str, Any]:
+    """List selectable spectral / SAR bands for download."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.scene_imagery_service import SceneImageryService
+
+    bbox = None
+    if None not in (west, south, east, north):
+        bbox = [west, south, east, north]  # type: ignore[list-item]
+    imagery = SceneImageryService()
+    return await run_in_threadpool(
+        imagery.list_download_bands,
+        scene_id,
+        bbox=bbox,
+        sensing_time=sensing_time,
+        cloud_cover=cloud_cover,
+        collection=collection,
+    )
+
+
+@router.post("/scenes/{scene_id}/bands/download")
+async def download_scene_bands(
+    scene_id: str,
+    data: SceneBandsBody,
+    user: CurrentUser,
+) -> Response:
+    """Download user-selected bands as a multi-band GeoTIFF."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.scene_imagery_service import SceneImageryService
+
+    imagery = SceneImageryService()
+    tif, filename = await run_in_threadpool(
+        imagery.export_selected_bands,
+        scene_id,
+        data.bands,
+        size=data.size,
+        collection=data.collection,
+        bbox=data.bbox,
+        footprint=data.footprint,
+        sensing_time=data.sensing_time,
+        cloud_cover=data.cloud_cover,
+    )
+    return Response(
+        content=tif,
+        media_type="image/tiff",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, max-age=60",
+        },
+    )
