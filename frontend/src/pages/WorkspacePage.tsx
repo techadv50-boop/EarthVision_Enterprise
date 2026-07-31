@@ -113,6 +113,8 @@ export function WorkspacePage() {
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [downloadingIds, setDownloadingIds] = useState<string[]>([]);
+  const [geotiffBusy, setGeotiffBusy] = useState(false);
+  const [geotiffLayerId, setGeotiffLayerId] = useState<string | null>(null);
 
   const isAdmin = user?.role === 'admin';
   const allowedTools =
@@ -809,7 +811,9 @@ export function WorkspacePage() {
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(`${result.label} · ${result.formula}`);
+      setLastMessage(
+        `${result.label} · ${result.formula} · download GeoTIFF from Image Processing exports`,
+      );
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
@@ -820,6 +824,8 @@ export function WorkspacePage() {
         label: result.label,
         visible: true,
       });
+      useWorkflowStore.getState().setExpandedToolbox('image');
+      useWorkflowStore.getState().setToolboxOpen(true);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -873,6 +879,57 @@ export function WorkspacePage() {
     a.href = last.url;
     a.download = `${last.label.replace(/\W+/g, '_')}.png`;
     a.click();
+  };
+
+  const exportActiveOverlayGeotiff = async () => {
+    const last = [...overlays].reverse().find(
+      (o) =>
+        (o.kind === 'index' ||
+          o.kind === 'change' ||
+          o.kind === 'terrain' ||
+          o.kind === 'detection' ||
+          o.kind === 'scene') &&
+        (o.url || o.demGrid?.length),
+    );
+    if (!last) {
+      setError('No processed overlay to export as GeoTIFF — run a procedure first');
+      return;
+    }
+    await downloadLayerGeotiff(last);
+  };
+
+  const downloadLayerGeotiff = async (layer: (typeof overlays)[number]) => {
+    setGeotiffBusy(true);
+    setGeotiffLayerId(layer.id);
+    setError(null);
+    setToolStatus(`Exporting ${layer.label} GeoTIFF…`);
+    try {
+      const filename = `${layer.label.replace(/\W+/g, '_') || layer.kind}.tif`;
+      if (layer.demGrid?.length) {
+        await compositeService.downloadGeotiff({
+          bounds: [...layer.bounds],
+          filename,
+          dem_grid: layer.demGrid,
+        });
+      } else if (layer.url) {
+        const overlay_base64 = await compositeService.overlayUrlToBase64(layer.url);
+        await compositeService.downloadGeotiff({
+          bounds: [...layer.bounds],
+          filename,
+          overlay_base64,
+          procedure: 'overlay',
+        });
+      } else {
+        throw new Error('Layer has no raster to export');
+      }
+      setLastMessage(`Downloaded GeoTIFF · ${layer.label}`);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setGeotiffBusy(false);
+      setGeotiffLayerId(null);
+      setToolStatus(null);
+    }
   };
 
   const deactivateTool = useCallback(
@@ -1377,6 +1434,75 @@ export function WorkspacePage() {
                 );
               }}
               onExportOverlayPng={exportActiveOverlayPng}
+              onExportIndexGeotiff={() => {
+                if (!indexResult || !focusScene) {
+                  setError('Compute an index first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void compositeService
+                  .downloadGeotiff({
+                    bounds: (indexResult.bounds as number[]) || [...analysisBbox],
+                    filename: `${indexResult.index}_${focusScene.id}.tif`,
+                    overlay_base64: indexResult.overlay_base64,
+                    procedure: indexResult.overlay_base64 ? 'overlay' : 'index',
+                    scene_id: focusScene.id,
+                    index: indexResult.index,
+                    colormap: indexResult.colormap,
+                  })
+                  .then(() => setLastMessage(`Downloaded GeoTIFF · ${indexResult.index}`))
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
+              onExportCompositeGeotiff={() => {
+                if (!compositeResult) {
+                  setError('Render a composite (e.g. True Color) first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void compositeService
+                  .downloadGeotiff({
+                    bounds: [...compositeResult.bounds],
+                    filename: `${compositeResult.preset}.tif`,
+                    overlay_base64: compositeResult.overlay_base64,
+                    procedure: compositeResult.overlay_base64 ? 'overlay' : 'composite',
+                    scene_id: focusScene?.id,
+                    preset: compositeResult.preset,
+                  })
+                  .then(() =>
+                    setLastMessage(`Downloaded GeoTIFF · ${compositeResult.label}`),
+                  )
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
+              onExportStretchGeotiff={() => {
+                if (!stretchResult) {
+                  setError('Apply histogram stretch first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void compositeService
+                  .downloadGeotiff({
+                    bounds: [...stretchResult.bounds],
+                    filename: `stretch_${focusScene?.id || 'aoi'}.tif`,
+                    overlay_base64: stretchResult.overlay_base64,
+                    procedure: stretchResult.overlay_base64 ? 'overlay' : 'stretch',
+                    scene_id: focusScene?.id,
+                    p_low: stretchResult.p_low,
+                    p_high: stretchResult.p_high,
+                  })
+                  .then(() => setLastMessage('Downloaded GeoTIFF · histogram stretch'))
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
+              onExportOverlayGeotiff={() => {
+                void exportActiveOverlayGeotiff();
+              }}
+              onDownloadLayerGeotiff={(layer) => {
+                void downloadLayerGeotiff(layer);
+              }}
+              geotiffBusy={geotiffBusy}
+              geotiffLayerId={geotiffLayerId}
             />
           </div>
         ) : (

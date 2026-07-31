@@ -43,6 +43,11 @@ interface Props {
   onExportCompositePng: () => void;
   onExportStretchPng: () => void;
   onExportOverlayPng: () => void;
+  onExportIndexGeotiff?: () => void;
+  onExportCompositeGeotiff?: () => void;
+  onExportStretchGeotiff?: () => void;
+  onExportOverlayGeotiff?: () => void;
+  geotiffBusy?: boolean;
 }
 
 function HistogramChart({
@@ -130,6 +135,11 @@ export function ImageProcessingPanel({
   onExportCompositePng,
   onExportStretchPng,
   onExportOverlayPng,
+  onExportIndexGeotiff,
+  onExportCompositeGeotiff,
+  onExportStretchGeotiff,
+  onExportOverlayGeotiff,
+  geotiffBusy = false,
 }: Props) {
   const [presets, setPresets] = useState<CompositePresetInfo[]>([]);
   const [thematic, setThematic] = useState<IndexThematicInfo[]>([]);
@@ -428,6 +438,10 @@ export function ImageProcessingPanel({
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
           Export processed outcomes
         </h3>
+        <p className="mb-1 text-[10px] text-[var(--muted)]">
+          After True Color / indices / stretch, download PNG or georeferenced{' '}
+          <strong>GeoTIFF</strong>.
+        </p>
         <div className="mt-1 grid grid-cols-2 gap-1">
           <button
             type="button"
@@ -436,6 +450,15 @@ export function ImageProcessingPanel({
             onClick={onExportIndexPng}
           >
             <Download className="h-3 w-3" /> Index PNG
+          </button>
+          <button
+            type="button"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={!indexResult || geotiffBusy}
+            onClick={() => onExportIndexGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Index GeoTIFF
           </button>
           <button
             type="button"
@@ -455,6 +478,15 @@ export function ImageProcessingPanel({
           </button>
           <button
             type="button"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={!compositeResult || geotiffBusy}
+            onClick={() => onExportCompositeGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Composite GeoTIFF
+          </button>
+          <button
+            type="button"
             className="ev-btn border border-[var(--line)] bg-white text-[10px]"
             disabled={!stretchResult?.overlay_base64}
             onClick={onExportStretchPng}
@@ -463,10 +495,28 @@ export function ImageProcessingPanel({
           </button>
           <button
             type="button"
-            className="ev-btn col-span-2 border border-[var(--line)] bg-white text-[10px]"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={!stretchResult || geotiffBusy}
+            onClick={() => onExportStretchGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Stretch GeoTIFF
+          </button>
+          <button
+            type="button"
+            className="ev-btn border border-[var(--line)] bg-white text-[10px]"
             onClick={onExportOverlayPng}
           >
-            <Download className="h-3 w-3" /> Download active map overlay PNG
+            <Download className="h-3 w-3" /> Active overlay PNG
+          </button>
+          <button
+            type="button"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={geotiffBusy}
+            onClick={() => onExportOverlayGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Active overlay GeoTIFF
           </button>
         </div>
       </section>

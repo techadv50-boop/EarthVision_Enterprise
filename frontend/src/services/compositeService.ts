@@ -153,4 +153,109 @@ export const compositeService = {
     });
     downloadBlob(data as Blob, `${preset}_${sceneId || 'aoi'}.png`);
   },
+
+  async downloadGeotiffBlob(blob: Blob, filename: string) {
+    downloadBlob(blob, filename.endsWith('.tif') ? filename : `${filename}.tif`);
+  },
+
+  /** Universal GeoTIFF export from an already-rendered overlay (or regenerate). */
+  async downloadGeotiff(payload: {
+    bounds: number[];
+    filename: string;
+    overlay_base64?: string | null;
+    dem_grid?: number[][] | null;
+    procedure?: 'overlay' | 'composite' | 'index' | 'stretch' | 'change';
+    scene_id?: string;
+    before_scene_id?: string;
+    after_scene_id?: string;
+    preset?: string;
+    index?: string;
+    colormap?: string | null;
+    p_low?: number;
+    p_high?: number;
+  }): Promise<void> {
+    const { data, headers } = await api.post<Blob>('/analytics/export/geotiff', payload, {
+      responseType: 'blob',
+      timeout: 180000,
+    });
+    const disposition = String(headers['content-disposition'] || '');
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    const filename = match?.[1] || payload.filename || 'earthvision.tif';
+    downloadBlob(data as Blob, filename);
+  },
+
+  async downloadCompositeGeotiff(
+    preset: string,
+    sceneId: string | undefined,
+    bbox: number[],
+  ) {
+    const [west, south, east, north] = bbox;
+    const { data, headers } = await api.get<Blob>('/analytics/export/composite.tif', {
+      params: { preset, scene_id: sceneId, west, south, east, north },
+      responseType: 'blob',
+      timeout: 180000,
+    });
+    const disposition = String(headers['content-disposition'] || '');
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    downloadBlob(
+      data as Blob,
+      match?.[1] || `${preset}_${sceneId || 'aoi'}.tif`,
+    );
+  },
+
+  async downloadIndexGeotiff(
+    index: string,
+    sceneId: string,
+    bbox: number[],
+    colormap?: string | null,
+  ) {
+    const [west, south, east, north] = bbox;
+    const { data, headers } = await api.get<Blob>('/analytics/export/index.tif', {
+      params: { index, scene_id: sceneId, west, south, east, north, colormap },
+      responseType: 'blob',
+      timeout: 180000,
+    });
+    const disposition = String(headers['content-disposition'] || '');
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    downloadBlob(data as Blob, match?.[1] || `${index}_${sceneId}.tif`);
+  },
+
+  async downloadStretchGeotiff(
+    sceneId: string | undefined,
+    bbox: number[],
+    params?: { p_low?: number; p_high?: number },
+  ) {
+    const [west, south, east, north] = bbox;
+    const { data, headers } = await api.get<Blob>('/analytics/export/stretch.tif', {
+      params: {
+        scene_id: sceneId,
+        west,
+        south,
+        east,
+        north,
+        p_low: params?.p_low ?? 2,
+        p_high: params?.p_high ?? 98,
+      },
+      responseType: 'blob',
+      timeout: 180000,
+    });
+    const disposition = String(headers['content-disposition'] || '');
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    downloadBlob(data as Blob, match?.[1] || `stretch_${sceneId || 'aoi'}.tif`);
+  },
+
+  /** Resolve overlay URL / data-URL into base64 for GeoTIFF packaging. */
+  async overlayUrlToBase64(url: string): Promise<string> {
+    if (url.startsWith('data:')) {
+      const parts = url.split(',', 2);
+      if (parts.length === 2) return parts[1];
+    }
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  },
 };

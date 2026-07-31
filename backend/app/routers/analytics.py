@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+from typing import Any, Literal
+
 from fastapi import APIRouter
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from app.core.deps import CurrentUser
 from app.schemas.analytics import (
@@ -19,6 +23,32 @@ from app.schemas.analytics import (
 from app.services.analytics_service import INDEX_META, AnalyticsService
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
+
+
+class GeoTiffExportRequest(BaseModel):
+    """Convert any procedure overlay (or regenerate) into a GeoTIFF download."""
+
+    bounds: list[float] = Field(..., description="[west,south,east,north]")
+    filename: str = "earthvision_overlay.tif"
+    overlay_base64: str | None = None
+    # Optional regenerate shortcuts (used when overlay_base64 omitted)
+    procedure: Literal[
+        "overlay",
+        "composite",
+        "index",
+        "stretch",
+        "change",
+    ] = "overlay"
+    scene_id: str | None = None
+    before_scene_id: str | None = None
+    after_scene_id: str | None = None
+    preset: str | None = "true_color"
+    index: str | None = "NDVI"
+    colormap: str | None = None
+    p_low: float = 2.0
+    p_high: float = 98.0
+    dem_grid: list[list[float]] | None = None
+
 
 
 @router.post("/index", response_model=IndexComputeResponse)
@@ -135,4 +165,133 @@ async def export_index_csv(
         headers={
             "Content-Disposition": f'attachment; filename="{index}_{scene_id}_stats.csv"'
         },
+    )
+
+
+@router.get("/export/index.tif")
+async def export_index_geotiff(
+    user: CurrentUser,
+    index: str = "NDVI",
+    scene_id: str = "export",
+    west: float = 74.15,
+    south: float = 31.35,
+    east: float = 74.55,
+    north: float = 31.7,
+    colormap: str | None = None,
+) -> Response:
+    from app.services.geotiff_export import png_bytes_to_geotiff
+
+    service = AnalyticsService()
+    result = service.compute_index(
+        IndexComputeRequest(
+            index=index,  # type: ignore[arg-type]
+            scene_id=scene_id,
+            bbox=[west, south, east, north],
+            colormap=colormap,  # type: ignore[arg-type]
+        )
+    )
+    assert result.overlay_base64
+    tif, filename = png_bytes_to_geotiff(
+        base64.b64decode(result.overlay_base64),
+        list(result.bounds or [west, south, east, north]),
+        filename=f"{index}_{scene_id}.tif",
+    )
+    return Response(
+        content=tif,
+        media_type="image/tiff",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/export/geotiff")
+async def export_geotiff(data: GeoTiffExportRequest, user: CurrentUser) -> Response:
+    """Universal GeoTIFF download for any procedure overlay.
+
+    Prefer sending the already-rendered ``overlay_base64`` + ``bounds`` so the
+    exact map result is exported. Otherwise set ``procedure`` to regenerate.
+    """
+    from app.schemas.composite import CompositeRequest, StretchRequest
+    from app.services.composite_service import COMPOSITE_PRESETS, CompositeService
+    from app.services.geotiff_export import (
+        decode_overlay_png,
+        dem_grid_to_geotiff,
+        png_bytes_to_geotiff,
+    )
+
+    bounds = [float(x) for x in data.bounds]
+
+    if data.dem_grid:
+        tif, filename = dem_grid_to_geotiff(
+            data.dem_grid, bounds, filename=data.filename or "dem.tif"
+        )
+        return Response(
+            content=tif,
+            media_type="image/tiff",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    png: bytes | None = None
+    if data.overlay_base64:
+        png = decode_overlay_png(overlay_base64=data.overlay_base64)
+    elif data.procedure == "composite":
+        preset = data.preset if data.preset in COMPOSITE_PRESETS else "true_color"
+        result = CompositeService().render_composite(
+            CompositeRequest(
+                preset=preset,  # type: ignore[arg-type]
+                scene_id=data.scene_id,
+                bbox=bounds,
+            )
+        )
+        png = base64.b64decode(result.overlay_base64)
+        bounds = list(result.bounds)
+    elif data.procedure == "stretch":
+        result = CompositeService().stretch_scene(
+            StretchRequest(
+                scene_id=data.scene_id,
+                bbox=bounds,
+                p_low=data.p_low,
+                p_high=data.p_high,
+            )
+        )
+        png = base64.b64decode(result.overlay_base64)
+        bounds = list(result.bounds)
+    elif data.procedure == "index":
+        result = AnalyticsService().compute_index(
+            IndexComputeRequest(
+                index=(data.index or "NDVI"),  # type: ignore[arg-type]
+                scene_id=data.scene_id or "export",
+                bbox=bounds,
+                colormap=data.colormap,  # type: ignore[arg-type]
+            )
+        )
+        assert result.overlay_base64
+        png = base64.b64decode(result.overlay_base64)
+        bounds = list(result.bounds or bounds)
+    elif data.procedure == "change":
+        if not data.before_scene_id or not data.after_scene_id:
+            from app.core.exceptions import ValidationError
+
+            raise ValidationError("before_scene_id and after_scene_id required for change GeoTIFF")
+        result = AnalyticsService().change_detection(
+            IndexChangeRequest(
+                before_scene_id=data.before_scene_id,
+                after_scene_id=data.after_scene_id,
+                index=(data.index or "NDVI"),  # type: ignore[arg-type]
+                bbox=bounds,
+            )
+        )
+        png = base64.b64decode(result.overlay_base64)
+        bounds = list(result.bounds)
+    else:
+        from app.core.exceptions import ValidationError
+
+        raise ValidationError(
+            "Provide overlay_base64 (or dem_grid), or set procedure to composite/index/stretch/change"
+        )
+
+    tif, filename = png_bytes_to_geotiff(png, bounds, filename=data.filename)
+    return Response(
+        content=tif,
+        media_type="image/tiff",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

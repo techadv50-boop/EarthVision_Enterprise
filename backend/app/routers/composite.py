@@ -72,6 +72,40 @@ async def export_composite_png(
     )
 
 
+@router.get("/export/composite.tif")
+async def export_composite_geotiff(
+    user: CurrentUser,
+    preset: str = "true_color",
+    scene_id: str | None = None,
+    west: float = 74.15,
+    south: float = 31.35,
+    east: float = 74.55,
+    north: float = 31.7,
+) -> Response:
+    """Download a band composite (e.g. True Color) as georeferenced GeoTIFF."""
+    from app.services.geotiff_export import png_bytes_to_geotiff
+
+    if preset not in COMPOSITE_PRESETS:
+        preset = "true_color"
+    result = CompositeService().render_composite(
+        CompositeRequest(
+            preset=preset,  # type: ignore[arg-type]
+            scene_id=scene_id,
+            bbox=[west, south, east, north],
+        )
+    )
+    tif, filename = png_bytes_to_geotiff(
+        base64.b64decode(result.overlay_base64),
+        list(result.bounds),
+        filename=f"{preset}_{scene_id or 'aoi'}.tif",
+    )
+    return Response(
+        content=tif,
+        media_type="image/tiff",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/export/stretch.png")
 async def export_stretch_png(
     user: CurrentUser,
@@ -97,4 +131,37 @@ async def export_stretch_png(
         headers={
             "Content-Disposition": f'attachment; filename="stretch_{scene_id or "aoi"}.png"'
         },
+    )
+
+
+@router.get("/export/stretch.tif")
+async def export_stretch_geotiff(
+    user: CurrentUser,
+    scene_id: str | None = None,
+    west: float = 74.15,
+    south: float = 31.35,
+    east: float = 74.55,
+    north: float = 31.7,
+    p_low: float = 2.0,
+    p_high: float = 98.0,
+) -> Response:
+    from app.services.geotiff_export import png_bytes_to_geotiff
+
+    result = CompositeService().stretch_scene(
+        StretchRequest(
+            scene_id=scene_id,
+            bbox=[west, south, east, north],
+            p_low=p_low,
+            p_high=p_high,
+        )
+    )
+    tif, filename = png_bytes_to_geotiff(
+        base64.b64decode(result.overlay_base64),
+        list(result.bounds),
+        filename=f"stretch_{scene_id or 'aoi'}.tif",
+    )
+    return Response(
+        content=tif,
+        media_type="image/tiff",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

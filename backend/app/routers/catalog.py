@@ -200,3 +200,52 @@ async def scene_overlay_png(
             "Cache-Control": "private, max-age=60",
         },
     )
+
+
+@router.get("/scenes/{scene_id}/overlay.tif")
+async def scene_overlay_geotiff(
+    scene_id: str,
+    user: CurrentUser,
+    west: float | None = None,
+    south: float | None = None,
+    east: float | None = None,
+    north: float | None = None,
+    size: int = 768,
+    collection: str | None = None,
+) -> Response:
+    """Download scene imagery as a georeferenced GeoTIFF."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.geotiff_export import png_bytes_to_geotiff
+    from app.services.scene_imagery_service import SceneImageryService
+
+    imagery = SceneImageryService()
+    bbox = None
+    if None not in (west, south, east, north):
+        bbox = [west, south, east, north]  # type: ignore[list-item]
+
+    def _build() -> tuple[bytes, str]:
+        layer = imagery.get_layer(scene_id)
+        if not layer:
+            layer = imagery.prepare_scene_layer(
+                scene_id,
+                bbox=bbox,
+                collection=collection,
+            )
+        png = imagery.render_preview(scene_id, size=size)
+        tif, filename = png_bytes_to_geotiff(
+            png,
+            list(layer["bounds"]),
+            filename=f"{(layer.get('collection') or 'scene')}_{scene_id}.tif",
+        )
+        return tif, filename
+
+    tif, filename = await run_in_threadpool(_build)
+    return Response(
+        content=tif,
+        media_type="image/tiff",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, max-age=60",
+        },
+    )

@@ -102,6 +102,13 @@ interface Props {
   onExportCompositePng?: () => void;
   onExportStretchPng?: () => void;
   onExportOverlayPng?: () => void;
+  onExportIndexGeotiff?: () => void;
+  onExportCompositeGeotiff?: () => void;
+  onExportStretchGeotiff?: () => void;
+  onExportOverlayGeotiff?: () => void;
+  onDownloadLayerGeotiff?: (layer: MapOverlay) => void;
+  geotiffBusy?: boolean;
+  geotiffLayerId?: string | null;
 }
 
 export function ToolboxPanel({
@@ -149,6 +156,13 @@ export function ToolboxPanel({
   onExportCompositePng,
   onExportStretchPng,
   onExportOverlayPng,
+  onExportIndexGeotiff,
+  onExportCompositeGeotiff,
+  onExportStretchGeotiff,
+  onExportOverlayGeotiff,
+  onDownloadLayerGeotiff,
+  geotiffBusy = false,
+  geotiffLayerId = null,
 }: Props) {
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -291,6 +305,11 @@ export function ToolboxPanel({
             onExportCompositePng={() => onExportCompositePng?.()}
             onExportStretchPng={() => onExportStretchPng?.()}
             onExportOverlayPng={() => onExportOverlayPng?.()}
+            onExportIndexGeotiff={() => onExportIndexGeotiff?.()}
+            onExportCompositeGeotiff={() => onExportCompositeGeotiff?.()}
+            onExportStretchGeotiff={() => onExportStretchGeotiff?.()}
+            onExportOverlayGeotiff={() => onExportOverlayGeotiff?.()}
+            geotiffBusy={geotiffBusy}
           />
         )}
 
@@ -301,12 +320,15 @@ export function ToolboxPanel({
               layerOpacity={layerOpacity}
               renameId={renameId}
               renameValue={renameValue}
+              geotiffBusy={geotiffBusy}
+              geotiffLayerId={geotiffLayerId}
               onOpacity={onOpacity}
               onToggle={onToggleOverlay}
               onRemove={onRemoveOverlay}
               onMove={onMoveOverlay}
               onReorder={(ids) => onReorderOverlays?.(ids)}
               onPatch={(id, patch) => onPatchOverlay?.(id, patch)}
+              onDownloadGeotiff={(layer) => onDownloadLayerGeotiff?.(layer)}
               onStartRename={(id, label) => {
                 setRenameId(id);
                 setRenameValue(label);
@@ -499,12 +521,15 @@ function LayerManagerBody({
   layerOpacity,
   renameId,
   renameValue,
+  geotiffBusy,
+  geotiffLayerId,
   onOpacity,
   onToggle,
   onRemove,
   onMove,
   onReorder,
   onPatch,
+  onDownloadGeotiff,
   onStartRename,
   onCommitRename,
   setRenameValue,
@@ -513,12 +538,15 @@ function LayerManagerBody({
   layerOpacity: number;
   renameId: string | null;
   renameValue: string;
+  geotiffBusy?: boolean;
+  geotiffLayerId?: string | null;
   onOpacity: (v: number) => void;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
   onMove: (id: string, dir: 'up' | 'down') => void;
   onReorder: (displayIds: string[]) => void;
   onPatch: (id: string, patch: Partial<MapOverlay>) => void;
+  onDownloadGeotiff: (layer: MapOverlay) => void;
   onStartRename: (id: string, label: string) => void;
   onCommitRename: () => void;
   setRenameValue: (v: string) => void;
@@ -661,7 +689,7 @@ function LayerManagerBody({
               </label>
             )}
 
-            <div className="mt-1 flex gap-1">
+            <div className="mt-1 flex flex-wrap gap-1">
               <button
                 type="button"
                 className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
@@ -685,6 +713,17 @@ function LayerManagerBody({
               >
                 Rename
               </button>
+              {(layer.url || layer.demGrid?.length) && (
+                <button
+                  type="button"
+                  className="ev-btn-ghost px-1.5 py-0.5 text-[10px] text-[var(--accent)]"
+                  title="Download this layer as GeoTIFF"
+                  disabled={geotiffBusy && geotiffLayerId === layer.id}
+                  onClick={() => onDownloadGeotiff(layer)}
+                >
+                  {geotiffBusy && geotiffLayerId === layer.id ? 'GeoTIFF…' : 'GeoTIFF'}
+                </button>
+              )}
               <button
                 type="button"
                 className="ev-btn-ghost px-1.5 py-0.5 text-[10px] text-red-600"
