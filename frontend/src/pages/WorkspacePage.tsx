@@ -112,6 +112,7 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [downloadingIds, setDownloadingIds] = useState<string[]>([]);
 
   const isAdmin = user?.role === 'admin';
   const allowedTools =
@@ -382,6 +383,31 @@ export function WorkspacePage() {
     removeOverlaysByKind('change');
     await loadSceneOverlay(scene);
   };
+
+  const onDownloadScene = useCallback(
+    async (scene: SceneSummary) => {
+      if (downloadingIds.includes(scene.id)) return;
+      setDownloadingIds((ids) => [...ids, scene.id]);
+      setError(null);
+      setToolStatus(`Downloading ${scene.collection} image…`);
+      try {
+        const sceneOverlay = useWorkflowStore
+          .getState()
+          .overlays.find((o) => o.kind === 'scene' && o.sceneId === scene.id);
+        await catalogService.downloadImage(scene, {
+          bbox: sceneOverlay?.bounds ?? sceneBounds(scene, place),
+          size: 768,
+        });
+        setLastMessage(`Downloaded ${scene.collection} · ${scene.name}`);
+      } catch (err) {
+        setError(getErrorMessage(err));
+      } finally {
+        setDownloadingIds((ids) => ids.filter((id) => id !== scene.id));
+        setToolStatus(null);
+      }
+    },
+    [downloadingIds, place, setError, setLastMessage, setToolStatus],
+  );
 
   const runIndex = async (index: IndexName, colormap?: ColormapName | null) => {
     if (!focusScene) {
@@ -1153,7 +1179,9 @@ export function WorkspacePage() {
               focusSceneId={focusSceneId}
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
+              downloadingIds={downloadingIds}
               onToggleEye={onToggleEye}
+              onDownload={onDownloadScene}
               onFocus={(scene) => setFocusSceneId(scene.id)}
               onBack={backToPlace}
             />

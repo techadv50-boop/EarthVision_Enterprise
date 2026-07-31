@@ -681,6 +681,36 @@ class SceneImageryService:
         cache_path.write_bytes(png)
         return png
 
+    def render_preview(self, scene_id: str, size: int = 768) -> bytes:
+        """Full-scene PNG covering layer bounds — used for download / ImageOverlay."""
+        layer = self.get_layer(scene_id)
+        if not layer:
+            raise NotFoundError("Scene imagery layer not prepared — open the eye overlay first")
+
+        size = max(64, min(int(size), 2048))
+        west, south, east, north = (float(v) for v in layer["bounds"])
+        pad_x = (east - west) * 0.01
+        pad_y = (north - south) * 0.01
+        lon_min, lon_max = west - pad_x, east + pad_x
+        lat_min, lat_max = south - pad_y, north + pad_y
+        mode = layer.get("render_mode") or "rgb"
+
+        old = self.TILE_SIZE
+        self.TILE_SIZE = size
+        try:
+            if layer.get("source") == "sentinel1_grd":
+                rgb = self._read_s1_gray(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
+            elif layer.get("cog_urls"):
+                rgb = self._read_landsat_rgb(layer["cog_urls"], lon_min, lat_min, lon_max, lat_max)
+            else:
+                rgb = self._read_rgb_cog(layer["cog_url"], lon_min, lat_min, lon_max, lat_max)
+            mask = self._footprint_mask(
+                layer.get("footprint"), lon_min, lat_min, lon_max, lat_max
+            )
+            return self._to_rgba(rgb, mask, mode)
+        finally:
+            self.TILE_SIZE = old
+
     def read_band_grid(
         self,
         href: str,

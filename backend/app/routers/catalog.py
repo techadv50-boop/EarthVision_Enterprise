@@ -162,39 +162,41 @@ async def scene_overlay_png(
     south: float | None = None,
     east: float | None = None,
     north: float | None = None,
+    size: int = 768,
+    collection: str | None = None,
 ) -> Response:
-    """Export a single true-color preview PNG for the scene AOI (download helper)."""
+    """Download a full-scene imagery PNG (true-color / SAR grayscale)."""
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
     bbox = None
     if None not in (west, south, east, north):
         bbox = [west, south, east, north]  # type: ignore[list-item]
-    layer = imagery.get_layer(scene_id)
-    if not layer:
-        layer = imagery.prepare_scene_layer(scene_id, bbox=bbox)
-    # Build a mid-zoom mosaic preview from a few tiles
-    bounds = layer["bounds"]
-    # Approximate center tile at z=13
-    clon = (bounds[0] + bounds[2]) / 2
-    clat = (bounds[1] + bounds[3]) / 2
-    z = 13
-    n = 2**z
-    import math
 
-    tx = int((clon + 180.0) / 360.0 * n)
-    ty = int(
-        (
-            1.0
-            - math.log(math.tan(math.radians(clat)) + 1.0 / math.cos(math.radians(clat)))
-            / math.pi
-        )
-        / 2.0
-        * n
-    )
-    png = imagery.render_tile(scene_id, z, tx, ty)
+    def _build() -> tuple[bytes, str]:
+        layer = imagery.get_layer(scene_id)
+        if not layer:
+            layer = imagery.prepare_scene_layer(
+                scene_id,
+                bbox=bbox,
+                collection=collection,
+            )
+        png = imagery.render_preview(scene_id, size=size)
+        coll = (layer.get("collection") or "scene").replace(" ", "_")
+        stac = (layer.get("stac_id") or scene_id)[:80]
+        mode = layer.get("render_mode") or "rgb"
+        suffix = "sar_gray" if mode == "grayscale" else "true_color"
+        filename = f"{coll}_{stac}_{suffix}.png".replace("/", "_")
+        return png, filename
+
+    png, filename = await run_in_threadpool(_build)
     return Response(
         content=png,
         media_type="image/png",
-        headers={"Content-Disposition": f'attachment; filename="scene_{scene_id}_tci.png"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, max-age=60",
+        },
     )

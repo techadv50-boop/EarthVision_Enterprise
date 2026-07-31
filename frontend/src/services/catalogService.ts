@@ -58,6 +58,42 @@ export const catalogService = {
     return data;
   },
 
+  /** Download the scene imagery PNG (true-color / SAR grayscale). */
+  async downloadImage(
+    scene: SceneSummary,
+    opts?: { bbox?: number[]; size?: number },
+  ): Promise<void> {
+    const params: Record<string, string | number> = {
+      size: opts?.size ?? 768,
+      collection: scene.collection,
+    };
+    if (opts?.bbox && opts.bbox.length === 4) {
+      const [west, south, east, north] = opts.bbox;
+      params.west = west;
+      params.south = south;
+      params.east = east;
+      params.north = north;
+    }
+    const { data, headers } = await api.get<Blob>(
+      `/catalog/scenes/${encodeURIComponent(scene.id)}/overlay.png`,
+      {
+        params,
+        responseType: 'blob',
+        timeout: 180000,
+      },
+    );
+    const disposition = String(headers['content-disposition'] || '');
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    const safeName = (scene.name || scene.id).replace(/[^\w.-]+/g, '_').slice(0, 80);
+    const filename = match?.[1] || `${scene.collection}_${safeName}.png`;
+    const href = URL.createObjectURL(data);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(href);
+  },
+
   async listScenes(collection?: string) {
     const { data } = await api.get('/catalog/scenes', { params: { collection } });
     return data;

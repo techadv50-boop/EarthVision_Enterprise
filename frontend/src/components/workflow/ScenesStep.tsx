@@ -1,4 +1,4 @@
-import { ArrowLeft, Eye, EyeOff, Loader2, Satellite } from 'lucide-react';
+import { ArrowLeft, Download, Eye, EyeOff, Loader2, Satellite } from 'lucide-react';
 import type { SceneSummary } from '../../services/catalogService';
 
 interface Props {
@@ -8,7 +8,9 @@ interface Props {
   focusSceneId: string | null;
   loading: boolean;
   loadingOverlayIds: string[];
+  downloadingIds?: string[];
   onToggleEye: (scene: SceneSummary) => void;
+  onDownload: (scene: SceneSummary) => void;
   onFocus: (scene: SceneSummary) => void;
   onBack: () => void;
 }
@@ -33,7 +35,9 @@ export function ScenesStep({
   focusSceneId,
   loading,
   loadingOverlayIds,
+  downloadingIds = [],
   onToggleEye,
+  onDownload,
   onFocus,
   onBack,
 }: Props) {
@@ -46,7 +50,7 @@ export function ScenesStep({
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
-          {' — '}eye shows real scene imagery (S2 color / S1 grayscale / Landsat tilted)
+          {' — '}eye shows imagery on the map; download saves the scene PNG.
         </p>
       </div>
 
@@ -68,6 +72,7 @@ export function ScenesStep({
             const visible = visibleSceneIds.includes(scene.id);
             const focused = focusSceneId === scene.id;
             const overlayLoading = loadingOverlayIds.includes(scene.id);
+            const downloading = downloadingIds.includes(scene.id);
             return (
               <li key={scene.id}>
                 <div
@@ -75,21 +80,36 @@ export function ScenesStep({
                     focused ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]/30' : ''
                   } ${visible ? 'bg-[var(--accent-soft)]/40' : ''}`}
                 >
-                  <button
-                    type="button"
-                    className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-white text-[var(--accent)] hover:bg-[var(--accent-soft)]"
-                    title={visible ? 'Hide on map' : 'Show on map'}
-                    onClick={() => onToggleEye(scene)}
-                    disabled={overlayLoading}
-                  >
-                    {overlayLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : visible ? (
-                      <Eye className="h-4 w-4" />
-                    ) : (
-                      <EyeOff className="h-4 w-4 text-[var(--muted)]" />
-                    )}
-                  </button>
+                  <div className="mt-0.5 flex shrink-0 flex-col gap-1">
+                    <button
+                      type="button"
+                      className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--line)] bg-white text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+                      title={visible ? 'Hide on map' : 'Show on map'}
+                      onClick={() => onToggleEye(scene)}
+                      disabled={overlayLoading}
+                    >
+                      {overlayLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : visible ? (
+                        <Eye className="h-4 w-4" />
+                      ) : (
+                        <EyeOff className="h-4 w-4 text-[var(--muted)]" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--line)] bg-white text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50"
+                      title="Download satellite image (PNG)"
+                      onClick={() => onDownload(scene)}
+                      disabled={downloading}
+                    >
+                      {downloading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
 
                   <button
                     type="button"
