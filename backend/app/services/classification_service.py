@@ -89,6 +89,7 @@ class ClassificationService:
             thresholds,
         )
         amalgam = self._cleanup_implausible_snow(amalgam, features, valid, thresholds)
+        amalgam = self._recover_dark_water(amalgam, features, valid, thresholds)
         amalgam = self._refine_water_bodies(amalgam, features, valid, thresholds)
         amalgam = self._expand_wet_channels(amalgam, features, valid, thresholds)
         amalgam = self._enhance_linear_features(amalgam, features, valid, thresholds)
@@ -98,6 +99,7 @@ class ClassificationService:
             amalgam, features, valid, thresholds, iterations=4
         )
         amalgam = self._enhance_linear_features(amalgam, features, valid, thresholds)
+        amalgam = self._recover_dark_water(amalgam, features, valid, thresholds)
         amalgam = self._strip_false_vegetation(amalgam, features, valid, thresholds)
 
         stats, total_km2 = self._area_stats(amalgam, valid, bounds)
@@ -441,12 +443,23 @@ class ClassificationService:
         land = valid & ~cloud
 
         urban_like = self._hard_urban_mask(f, t)
+        red = f["red"]
+        # Pitch-black / near-zero reflectance — NDVI is unstable here and must
+        # never be treated as vegetation (common failure on canals & rivers).
+        pitch_black = (
+            (bright < 0.12)
+            & (nir < 0.09)
+            & (swir1 < 0.09)
+            & ((red + f["green"] + f["blue"]) < 0.28)
+        )
 
-        # --- Water (clear + turbid); canals refined later by linear enhance
+        # --- Water (clear + turbid + pitch-black); canals refined by linear enhance
+        water_black = land & ~urban_like & pitch_black
         water_core = (
             land
             & ~urban_like
-            & (ndvi < 0.18)
+            & ~pitch_black
+            & (ndvi < 0.20)
             & (nir < t["water_nir_max"])
             & (swir1 < t["water_swir_max"])
             & (bright < t["water_bright_max"])
@@ -459,16 +472,21 @@ class ClassificationService:
         water_dark = (
             land
             & ~urban_like
-            & (nir < 0.10)
-            & (swir1 < 0.10)
-            & (bright < 0.22)
-            & (ndvi < 0.14)
-            & ((mndwi > t["water_mndwi"] - 0.05) | (awei > t["water_awei"] - 0.06))
+            & (nir < 0.11)
+            & (swir1 < 0.11)
+            & (bright < 0.20)
+            # Do NOT require low NDVI — dark water often has noisy NDVI
+            & (
+                (mndwi > t["water_mndwi"] - 0.08)
+                | (awei > t["water_awei"] - 0.10)
+                | (ndwi > -0.15)
+                | pitch_black
+            )
         )
         water_turbid = (
             land
             & ~urban_like
-            & (ndvi < 0.16)
+            & (ndvi < 0.18)
             & (nir < t["wet_nir_max"])
             & (swir1 < t["wet_swir_max"])
             & (bright < t["wet_bright_max"])
@@ -484,7 +502,7 @@ class ClassificationService:
                 | ((ndwi > -0.02) & (nir < 0.18))
             )
         )
-        water = water_core | water_dark | water_turbid
+        water = water_black | water_core | water_dark | water_turbid
 
         # --- Snow
         snow = (
@@ -497,22 +515,27 @@ class ClassificationService:
             & (f["blue"] > 0.22)
         )
 
-        # --- Vegetation: STRICT green crops/trees only (not roads/canals/soil)
+        # --- Vegetation: requires HIGH NIR (photosynthetic). Dark water has low NIR
+        # even when noisy NDVI looks "green", so NIR floor is the key guardrail.
         veg = (
             land
             & ~water
             & ~snow
-            & (mndwi < t["water_mndwi"] + 0.04)
+            & ~pitch_black
+            & (nir > 0.18)  # crops/trees are bright in NIR; canals are not
+            & (bright > 0.08)
+            & (mndwi < t["water_mndwi"] + 0.02)
             & (ndvi > t["veg_ndvi"])
             & (evi > t["veg_evi"] * 0.75)
             & (bsi < t["bare_bsi"] + 0.12)
         )
-        # Secondary sparse crop only with clearly elevated NDVI
         veg |= (
             land
             & ~water
             & ~snow
+            & ~pitch_black
             & ~veg
+            & (nir > 0.22)
             & (ndvi > t["veg_ndvi"] + 0.04)
             & (savi > t["veg_ndvi"])
             & (mndwi < t["water_mndwi"])
@@ -883,13 +906,19 @@ class ClassificationService:
             (f["mndwi"] - t["wet_mndwi_min"]) / 0.25, 0, 1
         ) * (f["ndvi"] < 0.18) * valid
 
-        # Strong vegetation prior only for truly green pixels
+        # Strong vegetation prior only for truly green + high-NIR pixels
         scores[VEGETATION] += 0.70 * np.clip(
             (f["ndvi"] - t["veg_ndvi"]) / 0.25, 0, 1
-        ) * valid
-        # Anti-veg prior for low-NDVI surfaces (roads, canals, soil)
+        ) * (f["nir"] > 0.18) * valid
+        # Anti-veg prior for low-NDVI / dark / low-NIR (roads, canals, soil)
         scores[VEGETATION] -= 1.20 * np.clip(
             (t["veg_ndvi"] - f["ndvi"]) / 0.25, 0, 1
+        ) * valid
+        scores[VEGETATION] -= 1.80 * np.clip((0.14 - f["nir"]) / 0.10, 0, 1) * valid
+        scores[VEGETATION] -= 1.50 * np.clip((0.12 - f["brightness"]) / 0.10, 0, 1) * valid
+        # Pitch-black → hard water prior
+        scores[WATER] += 1.40 * np.clip((0.12 - f["brightness"]) / 0.10, 0, 1) * (
+            f["nir"] < 0.12
         ) * valid
 
         scores[ROADS] += 0.55 * np.clip(f["grey"] - 0.4, 0, 1) * (
@@ -1063,6 +1092,47 @@ class ClassificationService:
         out[mask] = WATER
         return out
 
+    def _recover_dark_water(
+        self,
+        class_map: np.ndarray,
+        f: dict[str, np.ndarray],
+        valid: np.ndarray,
+        t: dict[str, float],
+    ) -> np.ndarray:
+        """Force pitch-black / very dark IR pixels to water (never vegetation)."""
+        out = class_map.copy()
+        urban = self._hard_urban_mask(f, t)
+        bright, nir, swir1 = f["brightness"], f["nir"], f["swir1"]
+        red, green, blue = f["red"], f["green"], f["blue"]
+
+        pitch_black = (
+            valid
+            & ~urban
+            & (bright < 0.13)
+            & (nir < 0.10)
+            & (swir1 < 0.10)
+            & ((red + green + blue) < 0.32)
+        )
+        # Slightly broader dark-water: still much darker than crops in NIR
+        dark_water = (
+            valid
+            & ~urban
+            & (nir < 0.12)
+            & (swir1 < 0.12)
+            & (bright < 0.16)
+            & (nir < green * 0.95 + 0.02)
+            & (
+                (f["mndwi"] > t["wet_mndwi_min"] - 0.06)
+                | (f["ndwi"] > -0.20)
+                | (f["awei"] > t["water_awei"] - 0.15)
+                | pitch_black
+            )
+        )
+        force = pitch_black | dark_water
+        # Reclaim anything currently labeled vegetation / bare / roads on dark water
+        out[force & (out != SNOW)] = WATER
+        return out
+
     def _enhance_linear_features(
         self,
         class_map: np.ndarray,
@@ -1077,22 +1147,28 @@ class ClassificationService:
         ndbi, awei = f["ndbi"], f["awei"]
         urban = self._hard_urban_mask(f, t)
 
-        # Canal candidates: dark / wet, low NDVI, not urban roofs
+        # Canal candidates: include pitch-black lines even if NDVI is noisy/high
+        pitch_black = (bright < 0.13) & (nir < 0.10) & (swir1 < 0.10)
         canal_cand = (
             valid
             & ~urban
             & (out != SNOW)
-            & (ndvi < 0.20)
             & (nir < t["wet_nir_max"] + 0.02)
             & (
-                (mndwi > t["wet_mndwi_min"] - 0.02)
-                | (ndwi > -0.10)
-                | (awei > t["water_awei"] - 0.12)
-                | ((bright < 0.22) & (nir < 0.16) & (swir1 < 0.16))
+                pitch_black
+                | (
+                    (ndvi < 0.25)
+                    & (
+                        (mndwi > t["wet_mndwi_min"] - 0.02)
+                        | (ndwi > -0.12)
+                        | (awei > t["water_awei"] - 0.12)
+                        | ((bright < 0.22) & (nir < 0.16) & (swir1 < 0.16))
+                    )
+                )
             )
         )
-        elong_canal = self._elongation(canal_cand)
-        canal = canal_cand & ((elong_canal >= 3.5) | (out == WATER))
+        elong_canal = self._elongation(canal_cand | pitch_black)
+        canal = canal_cand & ((elong_canal >= 3.0) | (out == WATER) | pitch_black)
         # Grow canals a bit along the line
         if canal.any():
             dil = (
@@ -1105,7 +1181,9 @@ class ClassificationService:
                 > 127
             )
             canal |= dil & canal_cand & valid
+            # Always reclaim false vegetation on dark/canal pixels
             out[canal & (out != SNOW)] = WATER
+            out[pitch_black & valid & (out == VEGETATION)] = WATER
 
         # Road candidates: grey, low NDVI, not water-wet
         road_cand = (
@@ -1198,16 +1276,27 @@ class ClassificationService:
         valid: np.ndarray,
         t: dict[str, float],
     ) -> np.ndarray:
-        """Final pass: low-NDVI 'agriculture' reassigned to roads/soil/water/built-up."""
+        """Final pass: non-photosynthetic 'agriculture' → water/roads/soil/built-up."""
         out = class_map.copy()
         ndvi, mndwi, grey = f["ndvi"], f["mndwi"], f["grey"]
         ndbi, bright, nir = f["ndbi"], f["brightness"], f["nir"]
+        swir1 = f["swir1"]
 
-        false_veg = valid & (out == VEGETATION) & (ndvi < t["veg_ndvi"] - 0.02)
-        # Wet → water
+        # Any vegetation label on dark / low-NIR pixels is wrong (canals, shadows)
+        dark_as_veg = valid & (out == VEGETATION) & (
+            ((bright < 0.14) & (nir < 0.14))
+            | ((nir < 0.16) & (swir1 < 0.14))
+            | (nir < 0.12)
+        )
+        out[dark_as_veg] = WATER
+
+        false_veg = valid & (out == VEGETATION) & (
+            (ndvi < t["veg_ndvi"] - 0.02) | (nir < 0.20)
+        )
         to_water = false_veg & (
             (mndwi > t["wet_mndwi_min"])
-            | ((nir < t["water_nir_max"]) & (f["swir1"] < t["water_swir_max"]))
+            | ((nir < t["water_nir_max"]) & (swir1 < t["water_swir_max"]))
+            | ((bright < 0.18) & (nir < 0.15))
         )
         out[to_water] = WATER
         false_veg = false_veg & ~to_water
