@@ -68,6 +68,7 @@ async def init_db() -> None:
         api_key,
         bookmark,
         project,
+        satellite_provider,
         scene,
         subscription,
         user,
@@ -80,7 +81,9 @@ async def init_db() -> None:
     logger.info("Database tables initialized")
 
     from app.services.bootstrap import bootstrap_admin
+    from app.services.satellite_provider_service import SatelliteProviderService
 
     async with AsyncSessionLocal() as session:
         await bootstrap_admin(session)
+        await SatelliteProviderService(session).ensure_builtins()
         await session.commit()

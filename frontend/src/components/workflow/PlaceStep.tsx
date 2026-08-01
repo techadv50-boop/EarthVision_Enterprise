@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { MapPin, Search } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Loader2, MapPin, Search } from 'lucide-react';
 import { gisService, type GeocodeResult } from '../../services/gisService';
 import { getErrorMessage } from '../../services/api';
 import type { CollectionName } from '../../services/catalogService';
+import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import type { PlaceSelection } from '../../store/workflowStore';
 
 const QUICK_PLACES: PlaceSelection[] = [
@@ -43,6 +44,7 @@ export interface SatelliteOption {
   collections: CollectionName[];
 }
 
+/** Fallback if the satellites API is unreachable. */
 export const SATELLITE_OPTIONS: SatelliteOption[] = [
   { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'] },
   { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'] },
@@ -84,11 +86,41 @@ function resultToPlace(r: GeocodeResult): PlaceSelection {
   };
 }
 
+function toOptions(rows: SatellitePublic[]): SatelliteOption[] {
+  return rows.map((row) => ({
+    id: row.name,
+    label: row.label,
+    collections: [row.collection_id],
+  }));
+}
+
 export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
   const [query, setQuery] = useState('Lahore');
   const [results, setResults] = useState<GeocodeResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [satellites, setSatellites] = useState<SatelliteOption[]>(SATELLITE_OPTIONS);
+  const [satsLoading, setSatsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setSatsLoading(true);
+      try {
+        const rows = await satelliteService.listEnabled();
+        if (!cancelled && rows.length) {
+          setSatellites(toOptions(rows));
+        }
+      } catch {
+        // Keep static fallback
+      } finally {
+        if (!cancelled) setSatsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const satelliteSelected = Boolean(filters.satelliteId);
   const { startDate, endDate } = filters;
@@ -159,26 +191,32 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
         <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
           1. Satellite
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          {SATELLITE_OPTIONS.map((option) => {
-            const active = filters.satelliteId === option.id;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                disabled={busy}
-                onClick={() => pickSatellite(option)}
-                className={`rounded-lg border px-3 py-2 text-left text-sm font-medium transition ${
-                  active
-                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/30'
-                    : 'border-[var(--line)] bg-white text-[var(--ink)] hover:bg-[var(--accent-soft)]/50'
-                }`}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
+        {satsLoading ? (
+          <div className="flex items-center gap-2 py-2 text-xs text-[var(--muted)]">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading satellites…
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            {satellites.map((option) => {
+              const active = filters.satelliteId === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => pickSatellite(option)}
+                  className={`rounded-lg border px-3 py-2 text-left text-sm font-medium transition ${
+                    active
+                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/30'
+                      : 'border-[var(--line)] bg-white text-[var(--ink)] hover:bg-[var(--accent-soft)]/50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {satelliteSelected && (

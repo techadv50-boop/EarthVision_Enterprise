@@ -15,6 +15,7 @@ from app.routers import (
     projects,
     raster,
     reports,
+    satellites,
     subscriptions,
     terrain,
     users,
@@ -29,6 +30,7 @@ def build_api_router() -> APIRouter:
     api.include_router(projects.router)
     api.include_router(bookmarks.router)
     api.include_router(catalog.router)
+    api.include_router(satellites.router)
     api.include_router(gis.router)
     api.include_router(analytics.router)
     api.include_router(composite.router)

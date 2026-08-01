@@ -1,11 +1,7 @@
 import { api } from './api';
 
-export type CollectionName =
-  | 'SENTINEL-1'
-  | 'SENTINEL-2'
-  | 'LANDSAT-8'
-  | 'LANDSAT-9'
-  | 'MODIS';
+/** Built-in names plus any admin-registered satellite collection ids. */
+export type CollectionName = string
 
 export interface CatalogSearchRequest {
   collections: CollectionName[];

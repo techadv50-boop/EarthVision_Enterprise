@@ -7,16 +7,20 @@ import {
 } from '../../services/adminService';
 import { getErrorMessage } from '../../services/api';
 import { TOOLBOXES, type ToolboxId } from '../../toolbox/catalog';
+import { SatelliteAdminSection } from './SatelliteAdminSection';
 
 const ROLES: ClientRole[] = ['analyst', 'viewer', 'billing', 'admin'];
 
 const ALL_TOOL_IDS = TOOLBOXES.map((t) => t.id);
+
+type AdminTab = 'clients' | 'satellites';
 
 interface Props {
   onClose: () => void;
 }
 
 export function AdminPanel({ onClose }: Props) {
+  const [tab, setTab] = useState<AdminTab>('clients');
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -137,10 +141,10 @@ export function AdminPanel({ onClose }: Props) {
           <div>
             <h2 className="flex items-center gap-2 font-display text-lg font-semibold">
               <Shield className="h-5 w-5 text-[var(--accent)]" />
-              Admin · Client accounts
+              Admin
             </h2>
             <p className="mt-1 text-xs text-[var(--muted)]">
-              Create client logins and choose which toolboxes they can use.
+              Manage client accounts and satellite catalog APIs for every client.
             </p>
           </div>
           <button type="button" className="ev-btn-ghost p-2" onClick={onClose} title="Close">
@@ -148,6 +152,34 @@ export function AdminPanel({ onClose }: Props) {
           </button>
         </div>
 
+        <div className="mb-4 flex gap-2 border-b border-[var(--line)] pb-2">
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === 'clients'
+                ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+                : 'text-[var(--muted)] hover:bg-[var(--bg)]'
+            }`}
+            onClick={() => setTab('clients')}
+          >
+            Client accounts
+          </button>
+          <button
+            type="button"
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === 'satellites'
+                ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+                : 'text-[var(--muted)] hover:bg-[var(--bg)]'
+            }`}
+            onClick={() => setTab('satellites')}
+          >
+            Satellites / APIs
+          </button>
+        </div>
+
+        {tab === 'satellites' && <SatelliteAdminSection />}
+
+        {tab === 'clients' && (
         <div className="grid gap-4 md:grid-cols-[1fr_1.2fr]">
           <section className="rounded-lg border border-[var(--line)] p-3">
             <div className="mb-2 flex items-center justify-between">
@@ -337,6 +369,7 @@ export function AdminPanel({ onClose }: Props) {
             </button>
           </form>
         </div>
+        )}
       </div>
     </div>
   );
