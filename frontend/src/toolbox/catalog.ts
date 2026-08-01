@@ -13,9 +13,8 @@ export type ToolboxId =
   | 'measure';
 
 /**
- * Domain toolboxes that require high-resolution imagery.
- * Off for all current free EO satellites; enabled only when a satellite
- * is flagged is_high_resolution (future commercial/high-res APIs).
+ * Domain toolboxes that appear in the menu but stay inactive for now.
+ * Will unlock later with high-resolution imagery APIs.
  */
 export const HIGH_RES_ONLY_TOOLBOXES: ToolboxId[] = [
   'ai',

@@ -68,8 +68,6 @@ interface Props {
   mapChrome?: Record<string, boolean> | null;
   /** null/undefined = all toolboxes; otherwise filter to these ids */
   allowedTools?: string[] | null;
-  /** Hide AI / Change / Maritime / Air until a high-res satellite API is active. */
-  hideHighResOnlyTools?: boolean;
   /** Toolbox actions only work when a satellite is selected. */
   toolsEnabled?: boolean;
   onExpand: (id: ToolboxId) => void;
@@ -133,7 +131,6 @@ export function ToolboxPanel({
   lastMessage,
   mapChrome,
   allowedTools = null,
-  hideHighResOnlyTools = true,
   toolsEnabled = false,
   onExpand,
   onTool,
@@ -176,22 +173,20 @@ export function ToolboxPanel({
   const [algoByTask, setAlgoByTask] = useState<Record<string, string>>({});
 
   const visibleToolboxes = useMemo(() => {
-    let boxes = TOOLBOXES;
-    if (allowedTools != null) {
-      const allowed = new Set(allowedTools);
-      boxes = boxes.filter((b) => allowed.has(b.id));
-    }
-    if (hideHighResOnlyTools) {
-      const hidden = new Set(HIGH_RES_ONLY_TOOLBOXES);
-      boxes = boxes.filter((b) => !hidden.has(b.id));
-    }
-    return boxes;
-  }, [allowedTools, hideHighResOnlyTools]);
+    if (allowedTools == null) return TOOLBOXES;
+    const allowed = new Set(allowedTools);
+    // Always keep AI / Change / Maritime / Air visible in the menu (locked).
+    const locked = new Set(HIGH_RES_ONLY_TOOLBOXES);
+    return TOOLBOXES.filter((b) => allowed.has(b.id) || locked.has(b.id));
+  }, [allowedTools]);
 
+  const lockedIds = useMemo(() => new Set(HIGH_RES_ONLY_TOOLBOXES), []);
   const activeId = (expanded && visibleToolboxes.some((b) => b.id === expanded)
     ? expanded
     : visibleToolboxes[0]?.id) || 'image';
   const activeBox = visibleToolboxes.find((b) => b.id === activeId) || visibleToolboxes[0] || TOOLBOXES[2];
+  const categoryLocked = lockedIds.has(activeBox.id);
+  const actionsEnabled = toolsEnabled && !categoryLocked;
   const chrome = mapChrome || DEFAULT_CHROME;
 
   const managedLayers = useMemo(() => [...overlays].reverse(), [overlays]);
@@ -251,35 +246,49 @@ export function ToolboxPanel({
         <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
           Select a satellite in Find scenes to activate toolbox options.
         </div>
-      ) : hideHighResOnlyTools ? (
+      ) : categoryLocked ? (
         <div className="shrink-0 border-b border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--muted)]">
-          AI, Change, Maritime, and Air stay off for this satellite. They unlock only for
-          high-resolution imagery APIs added later under Admin → Satellites / APIs.
+          {activeBox.title} is shown in the menu but stays inactive. It will unlock later with
+          high-resolution imagery APIs (Admin → Satellites / APIs).
         </div>
       ) : null}
 
-      {/* Category tabs — browsable; actions stay inactive until a satellite is selected */}
+      {/* Category tabs — AI / Change / Maritime / Air always visible but locked */}
       <div className="shrink-0 border-b border-[var(--line)] bg-white px-2 py-2">
         <div className="grid grid-cols-5 gap-1">
           {visibleToolboxes.map((box) => {
             const Icon = ICONS[box.id];
             const on = activeId === box.id;
+            const locked = lockedIds.has(box.id);
             return (
               <button
                 key={box.id}
                 type="button"
-                title={box.title}
+                title={
+                  locked
+                    ? `${box.title} (inactive — high-res imagery later)`
+                    : box.title
+                }
                 onClick={() => onExpand(box.id)}
-                className={`flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[9px] font-semibold leading-tight ${
+                className={`relative flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[9px] font-semibold leading-tight ${
                   on
-                    ? 'bg-[var(--accent)] text-white'
-                    : 'bg-[var(--bg)] text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]'
+                    ? locked
+                      ? 'bg-[var(--line)] text-[var(--muted)]'
+                      : 'bg-[var(--accent)] text-white'
+                    : locked
+                      ? 'bg-[var(--bg)] text-[var(--muted)] opacity-70 hover:opacity-100'
+                      : 'bg-[var(--bg)] text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]'
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />
                 <span className="line-clamp-2 w-full text-center">
                   {box.title.split(' ')[0]}
                 </span>
+                {locked && (
+                  <span className="absolute right-0.5 top-0.5 text-[8px] leading-none opacity-80">
+                    ·
+                  </span>
+                )}
               </button>
             );
           })}
@@ -295,7 +304,7 @@ export function ToolboxPanel({
 
       <div
         className={`min-h-0 flex-1 overflow-y-auto p-3 ${
-          toolsEnabled ? '' : 'pointer-events-none opacity-45'
+          actionsEnabled ? '' : 'pointer-events-none opacity-45'
         }`}
       >
         <div className="mb-2">
@@ -317,7 +326,7 @@ export function ToolboxPanel({
         {activeBox.id === 'image' && onComposite && onIndexTool && onStretch && (
           <ImageProcessingPanel
             hasScene={hasScene}
-            loading={loading || !toolsEnabled}
+            loading={loading || !actionsEnabled}
             activeToolId={activeToolId}
             indexResult={indexResult}
             compositeResult={compositeResult}
@@ -425,11 +434,13 @@ export function ToolboxPanel({
                   key={tool.id}
                   type="button"
                   title={
-                    !toolsEnabled
-                      ? 'Select a satellite first'
-                      : tip
+                    categoryLocked
+                      ? `${tool.label} — inactive (high-res imagery later)`
+                      : !toolsEnabled
+                        ? 'Select a satellite first'
+                        : tip
                   }
-                  disabled={loading || !toolsEnabled}
+                  disabled={loading || !actionsEnabled}
                   onClick={() => onTool(tool)}
                   className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${
                     active

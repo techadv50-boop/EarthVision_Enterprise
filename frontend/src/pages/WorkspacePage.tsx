@@ -241,20 +241,19 @@ export function WorkspacePage() {
   const hasVisibleScene = visibleSceneIds.length > 0;
 
   const satelliteActive = Boolean(catalogFilters.satelliteId);
-  /** AI / Change / Maritime / Air only for high-res satellites (future APIs). */
-  const hideHighResOnlyTools = !catalogFilters.isHighResolution;
 
   const toolCount = useMemo(() => {
-    let boxes =
+    // Count includes AI / Change / Maritime / Air (visible but always inactive).
+    const boxes =
       allowedTools == null
         ? TOOLBOXES
-        : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
-    if (hideHighResOnlyTools) {
-      const hidden = new Set(HIGH_RES_ONLY_TOOLBOXES);
-      boxes = boxes.filter((b) => !hidden.has(b.id));
-    }
+        : TOOLBOXES.filter(
+            (b) =>
+              allowedTools.includes(b.id) ||
+              HIGH_RES_ONLY_TOOLBOXES.includes(b.id),
+          );
     return boxes.reduce((n, b) => n + b.tools.length, 0);
-  }, [allowedTools, hideHighResOnlyTools]);
+  }, [allowedTools]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
     const sceneOverlay = focusScene
@@ -1054,13 +1053,10 @@ export function WorkspacePage() {
       setToolStatus('Select a satellite to use tools');
       return;
     }
-    // Domain tools require a high-resolution satellite (hidden for current free EO).
-    if (
-      (tool.action.type === 'detection' || tool.action.type === 'change') &&
-      !catalogFilters.isHighResolution
-    ) {
+    // AI / Change / Maritime / Air stay inactive for now (visible in menu only).
+    if (tool.action.type === 'detection' || tool.action.type === 'change') {
       setError(
-        'AI, Change, Maritime, and Air require high-resolution imagery (add via Admin → Satellites / APIs later)',
+        'AI, Change, Maritime, and Air are not active yet — reserved for high-resolution imagery APIs',
       );
       return;
     }
@@ -1402,7 +1398,6 @@ export function WorkspacePage() {
               lastMessage={lastMessage}
               mapChrome={mapChrome}
               allowedTools={allowedTools}
-              hideHighResOnlyTools={hideHighResOnlyTools}
               toolsEnabled={satelliteActive}
               onExpand={(id) => setExpandedToolbox(id)}
               onTool={onTool}
