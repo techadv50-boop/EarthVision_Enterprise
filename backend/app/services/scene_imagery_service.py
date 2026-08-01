@@ -930,7 +930,9 @@ class SceneImageryService:
         stacked = np.stack(bands, axis=0)
         # Landsat C2 SR scaling (also works ok for MODIS-ish scaled ints after stretch)
         if float(np.nanmax(stacked)) > 2000:
-            refl = np.clip(stacked * 0.0000275 - 0.2, 0, 1)
+            refl = np.clip(
+                stacked * LANDSAT_C2_SR_SCALE + LANDSAT_C2_SR_OFFSET, 0, 1
+            )
             return (refl * 10000).astype(np.float32)
         return stacked
 
