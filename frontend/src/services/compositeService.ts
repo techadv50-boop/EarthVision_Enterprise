@@ -101,11 +101,11 @@ export const compositeService = {
     const { data } = await api.post<CompositeResult>('/analytics/composite', {
       stretch: 'percentile',
       size: 1024,
-      p_low: 1,
-      p_high: 99,
-      gamma: 1.05,
-      brightness: 1,
-      contrast: 1.1,
+      p_low: 2,
+      p_high: 98,
+      gamma: 1.2,
+      brightness: 1.05,
+      contrast: 1.05,
       ...payload,
     });
     return data;

@@ -103,11 +103,11 @@ export function WorkspacePage() {
   const [compositeResult, setCompositeResult] = useState<CompositeResult | null>(null);
   const [stretchResult, setStretchResult] = useState<StretchResult | null>(null);
   const [stretchParams, setStretchParams] = useState({
-    p_low: 1,
-    p_high: 99,
-    gamma: 1.05,
-    brightness: 1,
-    contrast: 1.1,
+    p_low: 2,
+    p_high: 98,
+    gamma: 1.2,
+    brightness: 1.05,
+    contrast: 1.05,
   });
   const [processFilter, setProcessFilter] = useState({
     brightness: 1,

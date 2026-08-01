@@ -940,10 +940,126 @@ class SceneImageryService:
             data[nodata_mask] = np.nan
         return data
 
+    def clip_bounds_to_layer(
+        self, layer: dict[str, Any], bbox: list[float] | None
+    ) -> list[float]:
+        """Intersect request AOI with scene bounds (keeps composites sharp on the map view)."""
+        scene = [float(x) for x in layer["bounds"]]
+        if not bbox or len(bbox) != 4:
+            return scene
+        west = max(scene[0], float(bbox[0]))
+        south = max(scene[1], float(bbox[1]))
+        east = min(scene[2], float(bbox[2]))
+        north = min(scene[3], float(bbox[3]))
+        if east - west < 1e-5 or north - south < 1e-5:
+            return scene
+        return [west, south, east, north]
+
+    def read_visual_rgb(
+        self,
+        scene_id: str,
+        bounds: list[float],
+        size: int = 1024,
+    ) -> tuple[np.ndarray, list[float]] | None:
+        """Read Sentinel-2 TCI / Landsat RGB visual over bounds → float RGB in [0,1], shape (H,W,3)."""
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.warp import transform_bounds
+        from rasterio.windows import from_bounds
+
+        layer = self.get_layer(scene_id)
+        if not layer:
+            return None
+        west, south, east, north = (float(v) for v in bounds)
+        target_h, target_w = self.analysis_grid_shape(bounds, max_edge=size)
+        try:
+            if layer.get("source") == "sentinel1_grd":
+                return None
+
+            if layer.get("cog_urls"):
+                # Landsat: read each SR band at exact AOI shape, then reflectance scale
+                planes: list[np.ndarray] = []
+                with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                    signed = {
+                        k: self._sign_pc(v, client)
+                        for k, v in layer["cog_urls"].items()
+                    }
+                with rasterio.Env():
+                    for name in ("red", "green", "blue"):
+                        with rasterio.open(signed[name]) as src:
+                            left, bottom, right, top = transform_bounds(
+                                "EPSG:4326", src.crs, west, south, east, north
+                            )
+                            window = from_bounds(
+                                left, bottom, right, top, transform=src.transform
+                            )
+                            oversampling = (
+                                float(window.width) < target_w
+                                or float(window.height) < target_h
+                            )
+                            resampling = (
+                                Resampling.nearest if oversampling else Resampling.cubic
+                            )
+                            arr = src.read(
+                                1,
+                                out_shape=(target_h, target_w),
+                                window=window,
+                                resampling=resampling,
+                                boundless=True,
+                                fill_value=0,
+                            ).astype(np.float64)
+                            planes.append(arr)
+                stacked = np.stack(planes, axis=0)
+                stacked = np.clip(stacked * 0.0000275 - 0.2, 0, 1)
+                stacked[stacked <= 0] = 0
+            elif layer.get("cog_url"):
+                # Sentinel-2 TCI / visual — already display-balanced RGB
+                url = self._s3_to_https(layer["cog_url"])
+                with rasterio.Env(**GDAL_ENV):
+                    with rasterio.open(url) as src:
+                        left, bottom, right, top = transform_bounds(
+                            "EPSG:4326", src.crs, west, south, east, north
+                        )
+                        window = from_bounds(
+                            left, bottom, right, top, transform=src.transform
+                        )
+                        oversampling = (
+                            float(window.width) < target_w
+                            or float(window.height) < target_h
+                        )
+                        resampling = (
+                            Resampling.nearest if oversampling else Resampling.cubic
+                        )
+                        count = min(3, src.count)
+                        data = src.read(
+                            indexes=list(range(1, count + 1)),
+                            out_shape=(count, target_h, target_w),
+                            window=window,
+                            resampling=resampling,
+                            boundless=True,
+                            fill_value=0,
+                        ).astype(np.float64)
+                        if count == 1:
+                            data = np.repeat(data, 3, axis=0)
+                        stacked = data
+                if stacked.max() > 1.5:
+                    stacked = stacked / 255.0
+                stacked = np.clip(stacked, 0, 1)
+            else:
+                return None
+
+            return np.transpose(stacked, (1, 2, 0)), bounds
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Visual RGB read failed for {}: {}", scene_id, exc)
+            return None
+
     def load_analysis_bands(
-        self, scene_id: str, size: int = 1024
+        self,
+        scene_id: str,
+        size: int = 1024,
+        bounds: list[float] | None = None,
     ) -> tuple[dict[str, np.ndarray], list[float], dict[str, Any] | None, dict[str, Any]]:
-        """Load optical analysis bands for a prepared scene over its full footprint bounds."""
+        """Load optical analysis bands for a prepared scene (optional AOI bounds)."""
         layer = self.get_layer(scene_id)
         if not layer:
             raise NotFoundError(
@@ -955,7 +1071,7 @@ class SceneImageryService:
                 "(NDVI, NDWI, NDBI, SAVI, BSI, LST, EVI, NDMI, NBR). Use a Sentinel-2 or Landsat scene."
             )
 
-        bounds = [float(x) for x in layer["bounds"]]
+        bounds = self.clip_bounds_to_layer(layer, bounds)
         analysis = layer.get("analysis_bands") or {}
         sign = layer.get("sign")
         scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else "sentinel2_l2a"

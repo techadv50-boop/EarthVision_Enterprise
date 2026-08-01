@@ -210,15 +210,46 @@ class CompositeService:
         else:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
 
+        # True color: prefer ESA/USGS visual COG (already display-balanced) over AOI.
+        if preset_id == "true_color" and request.scene_id:
+            visual = self._load_visual_rgb(request.scene_id, request.bbox, request.size)
+            if visual is not None:
+                rgb, bounds, valid_mask = visual
+                # Keep TCI color balance; only apply mild user brightness/contrast
+                # (ignore aggressive gamma meant for raw reflectance bands).
+                rgb = self._polish_visual(
+                    rgb,
+                    gamma=1.0,
+                    brightness=min(request.brightness or 1.0, 1.1),
+                    contrast=min(request.contrast or 1.0, 1.15),
+                )
+                hist = self._rgb_histogram(rgb)
+                png = self._rgb_to_png(rgb, valid_mask=valid_mask)
+                return CompositeResponse(
+                    preset=preset_id,
+                    label=label,
+                    bands=display,
+                    band_keys=band_keys,
+                    formula=formula + " · visual/TCI",
+                    bounds=bounds,
+                    overlay_base64=base64.b64encode(png).decode("ascii"),
+                    histogram=hist,
+                    legend=self._rgb_legend(label, formula),
+                    message=f"{label} · visual product (AOI)",
+                    stretch="visual",
+                )
+
         bands, bounds = self._load_bands(request.scene_id, request.bbox, request.size)
         r = self._pick(bands, keys[0])
         g = self._pick(bands, keys[1])
         b = self._pick(bands, keys[2])
-        valid_mask = np.isfinite(r) | np.isfinite(g) | np.isfinite(b)
+        valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
 
+        # True color → joint + cloud-robust; false color → per-channel on land pixels
+        stretch_mode = "joint_land" if preset_id == "true_color" else "channel_land"
         rgb = self._stack_stretch(
             r, g, b,
-            mode=request.stretch,
+            mode=stretch_mode if request.stretch == "percentile" else request.stretch,
             p_low=request.p_low,
             p_high=request.p_high,
             gamma=request.gamma,
@@ -236,31 +267,43 @@ class CompositeService:
             bounds=bounds,
             overlay_base64=base64.b64encode(png).decode("ascii"),
             histogram=hist,
-            legend=LegendInfo(
-                min=0,
-                max=255,
-                unit="DN",
-                label=label,
-                formula=formula,
-                stops=[
-                    ColormapStop(value=0, color="#000000"),
-                    ColormapStop(value=128, color="#808080"),
-                    ColormapStop(value=255, color="#ffffff"),
-                ],
-            ),
-            message=f"{label} · stretch {request.stretch} {request.p_low}-{request.p_high}%",
-            stretch=f"{request.stretch} p{request.p_low}-{request.p_high} γ={request.gamma}",
+            legend=self._rgb_legend(label, formula),
+            message=f"{label} · {stretch_mode} p{request.p_low}-{request.p_high}%",
+            stretch=f"{stretch_mode} p{request.p_low}-{request.p_high} γ={request.gamma}",
         )
 
     def stretch_scene(self, request: StretchRequest) -> StretchResponse:
+        # Prefer visual product when stretching true-color appearance
+        if request.scene_id and request.source == "true_color":
+            visual = self._load_visual_rgb(request.scene_id, request.bbox, request.size)
+            if visual is not None:
+                rgb, bounds, valid_mask = visual
+                rgb = self._polish_visual(rgb, request.gamma, request.brightness, request.contrast)
+                hist = self._rgb_histogram(rgb)
+                png = self._rgb_to_png(rgb, valid_mask=valid_mask)
+                return StretchResponse(
+                    bounds=bounds,
+                    overlay_base64=base64.b64encode(png).decode("ascii"),
+                    histogram=hist,
+                    p_low=request.p_low,
+                    p_high=request.p_high,
+                    gamma=request.gamma,
+                    brightness=request.brightness,
+                    contrast=request.contrast,
+                    message=(
+                        f"Visual stretch · γ={request.gamma} · "
+                        f"brightness={request.brightness} · contrast={request.contrast}"
+                    ),
+                )
+
         bands, bounds = self._load_bands(request.scene_id, request.bbox, request.size)
         r = self._pick(bands, "red")
         g = self._pick(bands, "green")
         b = self._pick(bands, "blue")
-        valid_mask = np.isfinite(r) | np.isfinite(g) | np.isfinite(b)
+        valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
         rgb = self._stack_stretch(
             r, g, b,
-            mode="percentile",
+            mode="joint_land",
             p_low=request.p_low,
             p_high=request.p_high,
             gamma=request.gamma,
@@ -268,12 +311,7 @@ class CompositeService:
             contrast=request.contrast,
         )
         hist = self._rgb_histogram(rgb)
-        # Also histogram of raw reflectance for the chart
-        raw_hist = self._channel_histograms(
-            self._pick(bands, "red"),
-            self._pick(bands, "green"),
-            self._pick(bands, "blue"),
-        )
+        raw_hist = self._channel_histograms(r, g, b)
         hist["raw"] = raw_hist
         png = self._rgb_to_png(rgb, valid_mask=valid_mask)
         return StretchResponse(
@@ -291,6 +329,59 @@ class CompositeService:
             ),
         )
 
+    def _rgb_legend(self, label: str, formula: str) -> LegendInfo:
+        return LegendInfo(
+            min=0,
+            max=255,
+            unit="DN",
+            label=label,
+            formula=formula,
+            stops=[
+                ColormapStop(value=0, color="#000000"),
+                ColormapStop(value=128, color="#808080"),
+                ColormapStop(value=255, color="#ffffff"),
+            ],
+        )
+
+    def _load_visual_rgb(
+        self, scene_id: str, bbox: list[float] | None, size: int
+    ) -> tuple[np.ndarray, list[float], np.ndarray] | None:
+        try:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            imagery = SceneImageryService()
+            layer = imagery.get_layer(scene_id)
+            if not layer:
+                return None
+            bounds = imagery.clip_bounds_to_layer(layer, bbox)
+            result = imagery.read_visual_rgb(scene_id, bounds, size=size)
+            if result is None:
+                return None
+            rgb, bounds = result
+            valid = np.any(rgb > 0.01, axis=2) & np.all(np.isfinite(rgb), axis=2)
+            return rgb, bounds, valid
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Visual composite load failed: {}", exc)
+            return None
+
+    @staticmethod
+    def _polish_visual(
+        rgb: np.ndarray, gamma: float, brightness: float, contrast: float
+    ) -> np.ndarray:
+        """Very light polish on TCI/visual — keep ESA/USGS color balance intact."""
+        out = np.clip(rgb.astype(np.float64), 0, 1)
+        # TCI is already display-ready; only apply mild user adjustments.
+        g = float(gamma) if gamma and abs(gamma - 1.0) > 1e-3 else 1.0
+        if abs(g - 1.0) > 1e-3:
+            out = np.power(out, 1.0 / max(0.85, min(g, 1.25)))
+        c = float(contrast) if contrast else 1.0
+        b = float(brightness) if brightness else 1.0
+        if abs(c - 1.0) > 1e-3:
+            out = (out - 0.5) * max(0.85, min(c, 1.2)) + 0.5
+        if abs(b - 1.0) > 1e-3:
+            out = out * max(0.85, min(b, 1.15))
+        return np.clip(out, 0, 1)
+
     def _load_bands(
         self, scene_id: str | None, bbox: list[float] | None, size: int
     ) -> tuple[dict[str, np.ndarray], list[float]]:
@@ -300,9 +391,10 @@ class CompositeService:
                 from app.services.scene_imagery_service import SceneImageryService
 
                 imagery = SceneImageryService()
-                bands, bounds, _fp, _layer = imagery.load_analysis_bands(scene_id, size=size)
+                bands, bounds, _fp, _layer = imagery.load_analysis_bands(
+                    scene_id, size=size, bounds=bbox
+                )
                 if bands:
-                    # Ensure swir2 alias
                     if "swir2" not in bands and "swir" in bands:
                         bands["swir2"] = bands["swir"]
                     return bands, bounds
@@ -311,7 +403,9 @@ class CompositeService:
 
         from app.services.analytics_service import AnalyticsService
 
-        synth = AnalyticsService()._synthetic_bands(size=size, seed=hash(scene_id or "comp") % (2**31))
+        synth = AnalyticsService()._synthetic_bands(
+            size=size, seed=hash(scene_id or "comp") % (2**31)
+        )
         return synth, [float(x) for x in bounds]
 
     def _pick(self, bands: dict[str, np.ndarray], key: str) -> np.ndarray:
@@ -334,6 +428,25 @@ class CompositeService:
             return np.zeros_like(arr, dtype=np.float64)
         raise ValidationError(f"Band '{key}' not available")
 
+    @staticmethod
+    def _land_mask(stacked: np.ndarray) -> np.ndarray:
+        """Pixels used for stretch stats — exclude nodata and bright clouds/snow."""
+        finite = np.all(np.isfinite(stacked), axis=2)
+        if not finite.any():
+            return finite
+        # Brightness in reflectance units (or normalized visual)
+        bright = np.nanmean(stacked, axis=2)
+        vals = bright[finite]
+        # Drop the brightest ~8% (clouds/snow) from statistics so land isn't crushed
+        cloud_cut = float(np.percentile(vals, 92))
+        # Also drop near-zero fill
+        dark_cut = float(np.percentile(vals, 2))
+        land = finite & (bright >= dark_cut) & (bright <= cloud_cut)
+        # Fallback if too aggressive
+        if land.sum() < max(64, int(0.05 * finite.sum())):
+            land = finite & (bright > 0)
+        return land
+
     def _stack_stretch(
         self,
         r: np.ndarray,
@@ -347,9 +460,17 @@ class CompositeService:
         brightness: float,
         contrast: float,
     ) -> np.ndarray:
-        stacked = np.stack([r, g, b], axis=-1)
-        valid = np.isfinite(stacked)
+        stacked = np.stack(
+            [r.astype(np.float64), g.astype(np.float64), b.astype(np.float64)],
+            axis=-1,
+        )
+        # Reflectance bands should already be 0–1; clip wild values
+        if np.nanmax(stacked) > 1.5:
+            stacked = stacked / 10000.0
+        stacked = np.clip(stacked, 0, 1)
+        finite = np.all(np.isfinite(stacked), axis=2)
         out = np.zeros_like(stacked, dtype=np.float64)
+
         if mode == "none":
             out = np.nan_to_num(stacked, nan=0.0)
             out = np.clip(out, 0, 1)
@@ -362,24 +483,41 @@ class CompositeService:
                 lo, hi = float(np.nanmin(ch)), float(np.nanmax(ch))
                 out[:, :, i] = np.clip((ch - lo) / (hi - lo + 1e-9), 0, 1)
                 out[:, :, i][~m] = 0
-        else:  # percentile — per-channel robust stretch (clearer FCC / composites)
-            for i in range(3):
-                ch = stacked[:, :, i]
-                m = np.isfinite(ch)
-                vals = ch[m]
-                if vals.size == 0:
-                    continue
+        elif mode in {"joint_land", "percentile"}:
+            # Shared stretch across RGB using land pixels (natural color balance)
+            land = self._land_mask(stacked)
+            vals = stacked[land]
+            if vals.size == 0:
+                vals = stacked[finite]
+            if vals.size:
                 lo = float(np.percentile(vals, p_low))
                 hi = float(np.percentile(vals, p_high))
+                # Cap hi so bright clouds don't force land into darkness
+                hi = min(hi, max(lo + 0.05, float(np.percentile(vals, 90)) * 1.15, 0.35))
+                if hi <= lo:
+                    hi = lo + 1e-6
+                out = np.clip((stacked - lo) / (hi - lo), 0, 1)
+                out[~finite] = 0
+        else:  # channel_land — per-channel on land (FCC / thematic)
+            land = self._land_mask(stacked)
+            for i in range(3):
+                ch = stacked[:, :, i]
+                sample = ch[land & np.isfinite(ch)]
+                if sample.size == 0:
+                    sample = ch[finite]
+                if sample.size == 0:
+                    continue
+                lo = float(np.percentile(sample, p_low))
+                hi = float(np.percentile(sample, p_high))
+                hi = min(hi, max(lo + 0.05, float(np.percentile(sample, 90)) * 1.2, 0.45))
                 if hi <= lo:
                     hi = lo + 1e-6
                 out[:, :, i] = np.clip((ch - lo) / (hi - lo), 0, 1)
-                out[:, :, i][~m] = 0
+                out[:, :, i][~finite] = 0
 
-        if abs(gamma - 1.0) > 1e-6:
-            out = np.power(np.clip(out, 0, 1), 1.0 / gamma)
-
-        # brightness / contrast as linear ops in [0,1]
+        # Midtone lift — EO reflectance often looks dark without gamma > 1
+        g = gamma if gamma and gamma > 0 else 1.15
+        out = np.power(np.clip(out, 0, 1), 1.0 / g)
         out = (out - 0.5) * contrast + 0.5
         out = out * brightness
         return np.clip(out, 0, 1)
@@ -387,13 +525,13 @@ class CompositeService:
     def _rgb_to_png(self, rgb: np.ndarray, valid_mask: np.ndarray | None = None) -> bytes:
         u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
         if valid_mask is None:
-            # Keep dark-but-valid land/water; only hide empty corners
-            valid_mask = np.any(u8 > 0, axis=2) | (rgb.sum(axis=2) > 0)
-        alpha = np.where(valid_mask, 245, 0).astype(np.uint8)
+            valid_mask = np.any(u8 > 2, axis=2)
+        alpha = np.where(valid_mask, 255, 0).astype(np.uint8)
         rgba = np.dstack([u8, alpha])
         img = Image.fromarray(rgba, mode="RGBA")
+        # Light sharpen only — heavy unsharp made composites look crunchy/blocky
         try:
-            img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=110, threshold=2))
+            img = img.filter(ImageFilter.UnsharpMask(radius=0.8, percent=80, threshold=3))
         except Exception:  # noqa: BLE001
             pass
         buf = io.BytesIO()
