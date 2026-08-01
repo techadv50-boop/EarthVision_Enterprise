@@ -413,7 +413,8 @@ class ClassificationService:
         ndsi = (green - swir1) / (green + swir1 + eps)
         ndbi = (swir1 - nir) / (swir1 + nir + eps)
         bu = ndbi - ndvi
-        bsi = ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) + eps)
+        # BSI (Rikimaru): ((SWIR1+RED)−(NIR+GREEN)) / ((SWIR1+RED)+(NIR+GREEN))
+        bsi = ((swir1 + red) - (nir + green)) / ((swir1 + red) + (nir + green) + eps)
         awei = 4.0 * (green - swir1) - (0.25 * nir + 2.75 * swir2)
         brightness = (blue + green + red) / 3.0
         dark_ir = 1.0 - np.clip((nir + swir1) * 0.5 / 0.25, 0, 1)

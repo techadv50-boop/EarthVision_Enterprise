@@ -77,7 +77,17 @@ LANDSAT_BAND_FILES: dict[str, str] = {
     "swir2": "SR_B7.TIF",
     "lwir11": "ST_B10.TIF",
     "thermal": "ST_B10.TIF",
+    "qa_pixel": "QA_PIXEL.TIF",
 }
+
+# Landsat Collection-2 Level-2 scale / offset (USGS)
+LANDSAT_C2_SR_SCALE = 0.0000275
+LANDSAT_C2_SR_OFFSET = -0.2
+LANDSAT_C2_ST_SCALE = 0.00341802
+LANDSAT_C2_ST_OFFSET = 149.0
+# QA_PIXEL bits to treat as invalid for optical indices (C2 bitfield)
+# 0=Fill, 1=Dilated Cloud, 2=Cirrus, 3=Cloud, 4=Cloud Shadow
+LANDSAT_QA_INVALID_MASK = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4)
 
 
 class SceneImageryService:
@@ -415,8 +425,7 @@ class SceneImageryService:
                     analysis_bands["swir"] = analysis_bands["swir16"]
                 if "swir22" in analysis_bands:
                     analysis_bands["swir2"] = analysis_bands["swir22"]
-                elif "swir" in analysis_bands:
-                    analysis_bands["swir2"] = analysis_bands["swir"]
+                # Do not alias SWIR1→SWIR2 (NBR needs distinct SWIR2 / B12)
                 if "nir08" in analysis_bands and "nir" not in analysis_bands:
                     analysis_bands["nir"] = analysis_bands["nir08"]
                 return {
@@ -581,14 +590,20 @@ class SceneImageryService:
                         assets["swir22"],
                         fallback_filename=LANDSAT_BAND_FILES.get("swir22"),
                     )
-                elif analysis_bands.get("swir"):
-                    analysis_bands["swir2"] = analysis_bands["swir"]
+                # Do not alias SWIR1→SWIR2 — NBR/burn composites need true B7
                 if assets.get("lwir11", {}).get("href"):
                     analysis_bands["thermal"] = assets["lwir11"]["href"]
                     download_bands["lwir11"] = self._stac_band_meta(
                         "lwir11",
                         assets["lwir11"],
                         fallback_filename=LANDSAT_BAND_FILES.get("lwir11"),
+                    )
+                if assets.get("qa_pixel", {}).get("href"):
+                    analysis_bands["qa_pixel"] = assets["qa_pixel"]["href"]
+                    download_bands["qa_pixel"] = self._stac_band_meta(
+                        "qa_pixel",
+                        assets["qa_pixel"],
+                        fallback_filename=LANDSAT_BAND_FILES.get("qa_pixel"),
                     )
                 stac_id = str(feat.get("id") or "")
                 color_formula = "gamma RGB 2.7, saturation 1.5, sigmoidal RGB 15 0.35"
@@ -1155,10 +1170,20 @@ class SceneImageryService:
                 pass
 
         if reflectance_scale == "landsat_c2_sr":
-            data = data * 0.0000275 - 0.2
+            # USGS C2 L2 surface reflectance: ρ = DN × 0.0000275 − 0.2
+            data = data * LANDSAT_C2_SR_SCALE + LANDSAT_C2_SR_OFFSET
             data[nodata_mask | (data < 0)] = np.nan
             data = np.clip(data, 0, 1)
             data[nodata_mask | ~np.isfinite(data)] = np.nan
+        elif reflectance_scale == "landsat_c2_st":
+            # USGS C2 L2 surface temperature ST_B10: Kelvin = DN × 0.00341802 + 149
+            # Valid DN range starts at 293; fill = 0.
+            dn = data
+            invalid = nodata_mask | (dn < 293) | ~np.isfinite(dn)
+            kelvin = dn * LANDSAT_C2_ST_SCALE + LANDSAT_C2_ST_OFFSET
+            celsius = kelvin - 273.15
+            celsius[invalid] = np.nan
+            data = celsius
         elif reflectance_scale == "sentinel2_l2a":
             finite = data[np.isfinite(data) & ~nodata_mask]
             if finite.size and float(np.nanmax(finite)) > 1.5:
@@ -1309,7 +1334,8 @@ class SceneImageryService:
         bounds = self.clip_bounds_to_layer(layer, bounds)
         analysis = layer.get("analysis_bands") or {}
         sign = layer.get("sign")
-        scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else "sentinel2_l2a"
+        is_landsat = layer.get("source") == "landsat_c2_l2"
+        scale = "landsat_c2_sr" if is_landsat else "sentinel2_l2a"
         out_shape = self.analysis_grid_shape(bounds, max_edge=size)
 
         bands: dict[str, np.ndarray] = {}
@@ -1329,6 +1355,7 @@ class SceneImageryService:
             "swir2",
             "swir22",
             "thermal",
+            "qa_pixel",
             "vv",
             "vh",
         ):
@@ -1336,33 +1363,52 @@ class SceneImageryService:
             if not href:
                 continue
             try:
-                if name in {"vv", "vh", "thermal"}:
-                    bands[name] = self.read_band_grid(
-                        href,
-                        bounds,
-                        size,
-                        sign=sign,
-                        reflectance_scale=None,
-                        out_shape=out_shape,
-                    )
+                if name in {"vv", "vh"}:
+                    band_scale = None
+                elif name == "thermal" and is_landsat:
+                    # ST_B10 → °C (USGS C2 L2 surface temperature)
+                    band_scale = "landsat_c2_st"
+                elif name == "thermal":
+                    band_scale = None
+                elif name == "qa_pixel":
+                    band_scale = None
                 else:
-                    bands[name] = self.read_band_grid(
-                        href,
-                        bounds,
-                        size,
-                        sign=sign,
-                        reflectance_scale=scale,
-                        out_shape=out_shape,
-                    )
+                    band_scale = scale
+                bands[name] = self.read_band_grid(
+                    href,
+                    bounds,
+                    size,
+                    sign=sign,
+                    reflectance_scale=band_scale,
+                    out_shape=out_shape,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to load analysis band {} for {}: {}", name, scene_id, exc)
 
-        if "swir2" not in bands and "swir" in bands:
-            bands["swir2"] = bands["swir"]
+        # Alias STAC common-name duplicates only (same physical band)
         if "swir" not in bands and "swir16" in bands:
             bands["swir"] = bands["swir16"]
+        if "swir2" not in bands and "swir22" in bands:
+            bands["swir2"] = bands["swir22"]
         if "nir" not in bands and "nir08" in bands:
             bands["nir"] = bands["nir08"]
+        # Never substitute SWIR1 for SWIR2 — breaks NBR accuracy on Landsat-8 B6 vs B7
+
+        # Apply Landsat QA_PIXEL cloud / shadow / fill mask to optical + thermal
+        qa = bands.get("qa_pixel")
+        if qa is not None and is_landsat:
+            try:
+                invalid = (qa.astype(np.uint16) & LANDSAT_QA_INVALID_MASK) != 0
+                for key, arr in list(bands.items()):
+                    if key == "qa_pixel":
+                        continue
+                    if arr.shape != invalid.shape:
+                        continue
+                    masked = arr.astype(np.float64, copy=True)
+                    masked[invalid] = np.nan
+                    bands[key] = masked
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("QA_PIXEL mask failed for {}: {}", scene_id, exc)
 
         return bands, bounds, layer.get("footprint"), layer
 

@@ -155,8 +155,8 @@ INDEX_THEMATIC: dict[str, dict[str, str]] = {
         "colormap": "RdYlBu (−1…1)",
     },
     "LST": {
-        "formula": "BT = K2 / ln(K1/Lλ + 1) − 273.15 °C  (Landsat TIRS)",
-        "bands": "Thermal (Landsat ST_B10 / lwir11)",
+        "formula": "LST(°C) = DN×0.00341802 + 149 − 273.15  (Landsat C2 L2 ST_B10)",
+        "bands": "Thermal ST_B10 / lwir11 (Landsat-8/9 Collection-2 Level-2)",
         "thematic_rgb": "True Color underlay + thermal colormap",
         "colormap": "Thermal (°C)",
     },
@@ -498,8 +498,6 @@ class CompositeService:
                     scene_id, size=size, bounds=bbox
                 )
                 if bands:
-                    if "swir2" not in bands and "swir" in bands:
-                        bands["swir2"] = bands["swir"]
                     return bands, bounds
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Composite band load failed: {}", exc)

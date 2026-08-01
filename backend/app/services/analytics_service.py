@@ -70,12 +70,12 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "ref": "Rikimaru et al. / bare-soil index",
     },
     "LST": {
-        "formula": "BT = K2 / ln(K1/Lλ + 1) − 273.15  (Landsat TIRS)",
+        "formula": "LST(°C) = DN×0.00341802 + 149 − 273.15  (Landsat C2 L2 ST_B10)",
         "label": "LST",
         "unit": "°C",
-        "range": (-10.0, 55.0),
+        "range": (-40.0, 80.0),
         "cmap": "thermal",
-        "ref": "Planck / Landsat Collection 2 TIRS",
+        "ref": "USGS Landsat Collection 2 Level-2 Surface Temperature",
     },
     "EVI": {
         "formula": "2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1)",
@@ -90,7 +90,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDMI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
-        "cmap": "blues",
+        "cmap": "brbg",
         "ref": "Gao 1996 / moisture index",
     },
     "NBR": {
@@ -102,6 +102,9 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "ref": "Key & Benson / burn ratio",
     },
 }
+
+# Landsat-8 OLI/TIRS band cheat-sheet (Collection-2 Level-2)
+# B2 blue, B3 green, B4 red, B5 nir, B6 swir1, B7 swir2, ST_B10 thermal (°C after scale)
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -183,24 +186,34 @@ class AnalyticsService:
         self,
         thermal: np.ndarray,
         *,
-        ml: float = 0.00341802,
-        al: float = 149.0,
-        k1: float = 774.8853,
-        k2: float = 1321.0789,
+        scale: float = 0.00341802,
+        offset: float = 149.0,
     ) -> np.ndarray:
         """
-        Land Surface Temperature (°C) from Landsat TIRS Band 10 radiance.
+        Land Surface Temperature (°C) from Landsat Collection-2 Level-2 ST_B10.
 
-        Lλ = ML * Qcal + AL
-        BT(K) = K2 / ln(K1/Lλ + 1)
-        LST(°C) = BT − 273.15
+        Planetary Computer ``lwir11`` / USGS ``ST_B10`` is atmospherically
+        corrected surface temperature stored as scaled Kelvin integers:
+
+            Kelvin = DN × 0.00341802 + 149.0
+            LST(°C) = Kelvin − 273.15
+
+        Also accepts arrays already in Kelvin (~200–400) or °C (< ~100),
+        including pre-scaled Celsius from ``load_analysis_bands``.
         """
-        radiance = thermal.astype(np.float64) * ml + al
-        with np.errstate(divide="ignore", invalid="ignore"):
-            bt_k = k2 / np.log((k1 / np.clip(radiance, 1e-6, None)) + 1.0)
-            lst_c = bt_k - 273.15
-            lst_c[~np.isfinite(lst_c)] = np.nan
-        return lst_c
+        t = thermal.astype(np.float64)
+        if not np.isfinite(t).any():
+            return t
+        tmax = float(np.nanmax(t))
+        if tmax > 400:
+            # Scaled integer DN (typical ST_B10 range ~20k–50k)
+            kelvin = t * scale + offset
+            lst_c = kelvin - 273.15
+            lst_c[(t < 293) | ~np.isfinite(t)] = np.nan
+            return lst_c
+        if tmax > 200:
+            return t - 273.15  # already Kelvin
+        return t  # already Celsius
 
     def _synthetic_bands(self, size: int = 256, seed: int = 42) -> dict[str, np.ndarray]:
         rng = np.random.default_rng(seed)
@@ -253,12 +266,12 @@ class AnalyticsService:
             0,
             1,
         )
-        # Thermal as radiance-ish DN range used by compute_lst
+        # Landsat C2 L2 ST_B10-like scaled Kelvin DN (USGS scale → ~280–320 K)
         thermal = np.clip(
-            28000 + 2500 * urban - 1800 * water - 900 * veg + 800 * soil
+            38000 + 2500 * urban - 1800 * water - 900 * veg + 800 * soil
             + rng.normal(0, 120, (size, size)),
-            20000,
-            45000,
+            25000,
+            52000,
         )
         return {
             "blue": blue,
@@ -551,13 +564,33 @@ class AnalyticsService:
                 imagery = SceneImageryService()
                 real, _bounds, _fp, _layer = imagery.load_analysis_bands(scene_id, size=size)
                 if real:
-                    return self._index_from_bands(index, real, L=L, scene_id=scene_id, size=size)
+                    return self._index_from_bands(
+                        index,
+                        real,
+                        L=L,
+                        scene_id=scene_id,
+                        size=size,
+                        require_real=True,
+                    )
             except ValidationError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Real-band index fallback for {}: {}", scene_id, exc)
         bands = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
         return self._index_from_bands(index, bands, L=L, scene_id=scene_id, size=size)
+
+    # Required physical bands per index (Landsat-8: B2 blue…B7 swir2, ST_B10 thermal)
+    INDEX_REQUIRED_BANDS: dict[str, tuple[str, ...]] = {
+        "NDVI": ("red", "nir"),
+        "NDWI": ("green", "nir"),
+        "NDBI": ("swir", "nir"),
+        "SAVI": ("red", "nir"),
+        "BSI": ("red", "green", "nir", "swir"),
+        "EVI": ("red", "nir", "blue"),
+        "NDMI": ("nir", "swir"),
+        "NBR": ("nir", "swir2"),
+        "LST": ("thermal",),
+    }
 
     def _index_from_bands(
         self,
@@ -567,6 +600,7 @@ class AnalyticsService:
         L: float = 0.5,
         scene_id: str | None = None,
         size: int = 1024,
+        require_real: bool = False,
     ) -> np.ndarray:
         # Prefer the native loaded band shape (aspect-aware). Only resize if mismatched.
         sample = next((a for a in bands.values() if a is not None and a.size), None)
@@ -577,9 +611,27 @@ class AnalyticsService:
             seed=hash(scene_id or "default") % (2**31),
         )
 
+        required = self.INDEX_REQUIRED_BANDS.get(index, ())
+        if require_real:
+            missing = [
+                name
+                for name in required
+                if bands.get(name) is None or not np.isfinite(bands[name]).any()
+            ]
+            if missing:
+                raise ValidationError(
+                    f"{index} needs band(s) {', '.join(missing)} on this scene. "
+                    "For Landsat-8 use OLI/TIRS Collection-2 Level-2 "
+                    "(B2–B7 / ST_B10)."
+                )
+
         def band(name: str) -> np.ndarray:
             arr = bands.get(name)
             if arr is None or not np.isfinite(arr).any():
+                if require_real:
+                    raise ValidationError(
+                        f"{index} is missing required band '{name}'."
+                    )
                 if name == "swir2":
                     arr = synth.get("swir2", synth["swir"])
                 else:
@@ -626,15 +678,11 @@ class AnalyticsService:
         if index == "LST":
             thermal = bands.get("thermal")
             if thermal is not None and np.isfinite(thermal).any():
-                t = thermal.astype(np.float64)
-                # Landsat Collection-2 surface temperature may already be Kelvin or °C.
-                # DN radiance path: values typically 20k–45k → use Planck conversion.
-                tmax = float(np.nanmax(t))
-                if tmax > 400:
-                    return self.compute_lst(t)
-                if tmax > 200:  # Kelvin
-                    return t - 273.15
-                return t  # already °C
+                return self.compute_lst(thermal)
+            if require_real:
+                raise ValidationError(
+                    "LST needs Landsat-8/9 ST_B10 (lwir11) thermal band."
+                )
             return self.compute_lst(synth["thermal"])
         raise ValidationError(f"Unsupported index: {index}")
 
@@ -690,7 +738,12 @@ class AnalyticsService:
 
         if real_bands:
             result = self._index_from_bands(
-                index, real_bands, L=request.L, scene_id=request.scene_id, size=size
+                index,
+                real_bands,
+                L=request.L,
+                scene_id=request.scene_id,
+                size=size,
+                require_real=True,
             )
             data_source = "scene_bands"
         else:

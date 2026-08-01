@@ -371,8 +371,8 @@ INDEX_BAND_NOTES: dict[str, dict[str, str]] = {
         "MODIS": "B02 + B07",
     },
     "LST": {
-        "LANDSAT-8": "ST_B10 (TIRS)",
-        "LANDSAT-9": "ST_B10 (TIRS)",
+        "LANDSAT-8": "ST_B10 (C2 L2 surface temp → °C)",
+        "LANDSAT-9": "ST_B10 (C2 L2 surface temp → °C)",
     },
 }
 
