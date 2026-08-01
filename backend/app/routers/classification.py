@@ -74,11 +74,28 @@ async def export_classify_geotiff(
     data: ClassificationRequest, user: CurrentUser
 ) -> Response:
     from app.services.geotiff_export import png_bytes_to_geotiff
+    from app.services.map_cartography import decorate_classification_map
 
     result = ClassificationService().classify(data)
-    tif, filename = png_bytes_to_geotiff(
+    legend = [
+        {
+            "label": c.label,
+            "name": c.name,
+            "color": c.color,
+            "area_km2": c.area_km2,
+        }
+        for c in result.classes
+    ]
+    png, bounds = decorate_classification_map(
         base64.b64decode(result.overlay_base64),
         list(result.bounds),
+        legend,
+        title=f"Land Cover Classification ({data.n_classes}-class)",
+        total_area_km2=float(result.total_area_km2),
+    )
+    tif, filename = png_bytes_to_geotiff(
+        png,
+        bounds,
         filename=f"lulc{data.n_classes}_{data.scene_id}.tif",
     )
     return Response(

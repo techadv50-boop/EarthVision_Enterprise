@@ -25,6 +25,15 @@ from app.services.analytics_service import INDEX_META, AnalyticsService
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 
+class LegendItemExport(BaseModel):
+    """Legend row for cartographic GeoTIFF decoration."""
+
+    label: str
+    color: str
+    area_km2: float | None = None
+    name: str | None = None
+
+
 class GeoTiffExportRequest(BaseModel):
     """Convert any procedure overlay (or regenerate) into a GeoTIFF download."""
 
@@ -49,6 +58,11 @@ class GeoTiffExportRequest(BaseModel):
     p_low: float = 2.0
     p_high: float = 98.0
     dem_grid: list[list[float]] | None = None
+    # Cartography (classification map sheets)
+    decorate: bool = False
+    title: str | None = None
+    legend_items: list[LegendItemExport] | None = None
+    total_area_km2: float | None = None
 
 
 
@@ -296,12 +310,37 @@ async def export_geotiff(data: GeoTiffExportRequest, user: CurrentUser) -> Respo
         )
         png = base64.b64decode(result.overlay_base64)
         bounds = list(result.bounds)
+        if not data.legend_items:
+            data.legend_items = [
+                LegendItemExport(
+                    label=c.label,
+                    name=c.name,
+                    color=c.color,
+                    area_km2=c.area_km2,
+                )
+                for c in result.classes
+            ]
+        if data.total_area_km2 is None:
+            data.total_area_km2 = float(result.total_area_km2)
+        data.decorate = True
     else:
         from app.core.exceptions import ValidationError
 
         raise ValidationError(
             "Provide overlay_base64 (or dem_grid), or set procedure to "
             "composite/index/stretch/change/classify"
+        )
+
+    if data.decorate and png is not None:
+        from app.services.map_cartography import decorate_classification_map
+
+        legend = [item.model_dump() for item in (data.legend_items or [])]
+        png, bounds = decorate_classification_map(
+            png,
+            bounds,
+            legend,
+            title=data.title or "Land Cover Classification",
+            total_area_km2=data.total_area_km2,
         )
 
     tif, filename = png_bytes_to_geotiff(png, bounds, filename=data.filename)

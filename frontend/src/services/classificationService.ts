@@ -226,6 +226,15 @@ export const classificationService = {
         overlay_base64: overlay,
         procedure: 'overlay',
         scene_id: sceneId,
+        decorate: true,
+        title: `Land Cover Classification (${n}-class)`,
+        total_area_km2: result.total_area_km2,
+        legend_items: result.classes.map((c) => ({
+          label: c.label,
+          name: c.name,
+          color: c.color,
+          area_km2: c.area_km2,
+        })),
       },
       { responseType: 'blob' },
     );
