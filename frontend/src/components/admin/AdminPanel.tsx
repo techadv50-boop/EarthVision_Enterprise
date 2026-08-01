@@ -143,11 +143,12 @@ export function AdminPanel({ onClose, initialTab = 'satellites' }: Props) {
           <div>
             <h2 className="flex items-center gap-2 font-display text-lg font-semibold">
               <Shield className="h-5 w-5 text-[var(--accent)]" />
-              Admin
+              Admin · Satellite APIs
             </h2>
             <p className="mt-1 text-xs text-[var(--muted)]">
-              Add satellite catalog APIs here — enabled satellites appear for every client
-              account in Find scenes.
+              Admin only. Use the <strong>Satellites / APIs</strong> tab to add a new catalog
+              API (base URL, token, credentials). Enabled satellites appear for every client
+              in Find scenes.
             </p>
           </div>
           <button type="button" className="ev-btn-ghost p-2" onClick={onClose} title="Close">
@@ -160,7 +161,7 @@ export function AdminPanel({ onClose, initialTab = 'satellites' }: Props) {
             type="button"
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
               tab === 'satellites'
-                ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+                ? 'bg-[var(--accent)] text-white'
                 : 'text-[var(--muted)] hover:bg-[var(--bg)]'
             }`}
             onClick={() => setTab('satellites')}

@@ -116,6 +116,8 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [adminTab, setAdminTab] = useState<'satellites' | 'clients'>('satellites');
+  const [satelliteRefreshKey, setSatelliteRefreshKey] = useState(0);
   const [geotiffBusy, setGeotiffBusy] = useState(false);
   const [catalogFilters, setCatalogFilters] = useState<CatalogFilters>(() => {
     const end = new Date();
@@ -1255,11 +1257,14 @@ export function WorkspacePage() {
             <button
               type="button"
               className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white"
-              onClick={() => setAdminOpen(true)}
-              title="Admin: add satellite APIs & manage clients"
+              onClick={() => {
+                setAdminTab('satellites');
+                setAdminOpen(true);
+              }}
+              title="Admin only: add satellite catalog APIs"
             >
               <Shield className="h-4 w-4" />
-              <span className="hidden sm:inline">Admin · Satellites</span>
+              <span>Add Satellite API</span>
             </button>
           )}
           <button
@@ -1283,7 +1288,16 @@ export function WorkspacePage() {
         </div>
       </header>
 
-      {adminOpen && isAdmin && <AdminPanel onClose={() => setAdminOpen(false)} />}
+      {adminOpen && isAdmin && (
+        <AdminPanel
+          key={adminTab}
+          initialTab={adminTab}
+          onClose={() => {
+            setAdminOpen(false);
+            setSatelliteRefreshKey((n) => n + 1);
+          }}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[min(21rem,100%)] shrink-0 flex-col gap-3 overflow-y-auto border-r border-[var(--line)] bg-white p-3 sm:p-4">
@@ -1299,6 +1313,16 @@ export function WorkspacePage() {
               busy={loadingScenes}
               filters={catalogFilters}
               onFiltersChange={setCatalogFilters}
+              isAdmin={isAdmin}
+              satelliteRefreshKey={satelliteRefreshKey}
+              onOpenSatelliteAdmin={
+                isAdmin
+                  ? () => {
+                      setAdminTab('satellites');
+                      setAdminOpen(true);
+                    }
+                  : undefined
+              }
             />
           )}
 

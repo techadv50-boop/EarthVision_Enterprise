@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Crosshair, Loader2, MapPin, Search } from 'lucide-react';
+import { Crosshair, Loader2, MapPin, Plus, Search, Shield } from 'lucide-react';
 import { gisService, type GeocodeResult } from '../../services/gisService';
 import { getErrorMessage } from '../../services/api';
 import type { CollectionName } from '../../services/catalogService';
@@ -79,6 +79,11 @@ interface Props {
   busy?: boolean;
   filters: CatalogFilters;
   onFiltersChange: (filters: CatalogFilters) => void;
+  /** Admin-only: show entry point to add satellite catalog APIs. */
+  isAdmin?: boolean;
+  onOpenSatelliteAdmin?: () => void;
+  /** Bump to reload the enabled satellite list after admin changes. */
+  satelliteRefreshKey?: number;
 }
 
 function resultToPlace(r: GeocodeResult): PlaceSelection {
@@ -127,7 +132,15 @@ function placeFromCoordinates(
   };
 }
 
-export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
+export function PlaceStep({
+  onSelect,
+  busy,
+  filters,
+  onFiltersChange,
+  isAdmin = false,
+  onOpenSatelliteAdmin,
+  satelliteRefreshKey = 0,
+}: Props) {
   const [query, setQuery] = useState('');
   const [latInput, setLatInput] = useState('');
   const [lonInput, setLonInput] = useState('');
@@ -155,7 +168,7 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [satelliteRefreshKey]);
 
   const satelliteSelected = Boolean(filters.satelliteId);
   const { startDate, endDate } = filters;
@@ -260,8 +273,20 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
       </div>
 
       <div className="space-y-2">
-        <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-          1. Satellite
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            1. Satellite
+          </div>
+          {isAdmin && onOpenSatelliteAdmin && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)] hover:underline"
+              onClick={onOpenSatelliteAdmin}
+            >
+              <Plus className="h-3 w-3" />
+              Add API
+            </button>
+          )}
         </div>
         {satsLoading ? (
           <div className="flex items-center gap-2 py-2 text-xs text-[var(--muted)]">
@@ -288,6 +313,24 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
               );
             })}
           </div>
+        )}
+        {isAdmin && onOpenSatelliteAdmin && (
+          <button
+            type="button"
+            onClick={onOpenSatelliteAdmin}
+            className="flex w-full items-start gap-2 rounded-lg border border-dashed border-[var(--accent)]/50 bg-[var(--accent-soft)]/50 px-3 py-2.5 text-left transition hover:bg-[var(--accent-soft)]"
+          >
+            <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
+            <span>
+              <span className="block text-sm font-semibold text-[var(--accent)]">
+                Admin · Add satellite API
+              </span>
+              <span className="mt-0.5 block text-[11px] text-[var(--muted)]">
+                Register a new catalog API (URL, token, credentials). Visible to admin only;
+                enabled satellites appear here for all clients.
+              </span>
+            </span>
+          </button>
         )}
       </div>
 
