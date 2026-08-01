@@ -16,6 +16,15 @@ OPTICAL_SWIR_FAMILY = (
 # LST uses Landsat TIRS in our pipeline
 THERMAL_FAMILY = ("LANDSAT-8", "LANDSAT-9")
 
+# Catalog satellites with no Image Processing band pipeline in this app
+# (S3 OLCI/SLSTR exist scientifically but are not wired for land RGB/indices here)
+NO_IMAGE_PROCESSING_FAMILY = (
+    "SENTINEL-1",
+    "SENTINEL-3",
+    "SENTINEL-5P",
+    "SMOS",
+)
+
 
 def normalize_satellite_family(collection: str | None) -> str:
     """Map catalog collection ids → capability family."""
@@ -26,7 +35,8 @@ def normalize_satellite_family(collection: str | None) -> str:
         return "SENTINEL-2"
     if c.startswith("S1") or "SENTINEL-1" in c:
         return "SENTINEL-1"
-    if "SENTINEL-3" in c or c.startswith("S3"):
+    # Match SENTINEL-3 before bare "S3" so we don't steal unrelated ids
+    if "SENTINEL-3" in c or c in {"S3", "OLCI", "SLSTR"} or c.startswith("S3-"):
         return "SENTINEL-3"
     if "SENTINEL-5" in c or "S5P" in c:
         return "SENTINEL-5P"
@@ -424,16 +434,49 @@ def index_applicable(index_id: str, family: str) -> bool:
     return family in allowed
 
 
+def image_processing_applicable(family: str) -> bool:
+    """True when RGB composites / optical indices can run for this family."""
+    return family in OPTICAL_SWIR_FAMILY
+
+
+def unsupported_image_processing_reason(family: str) -> str | None:
+    """Human-readable why Image Processing is off, or None if supported."""
+    if family in OPTICAL_SWIR_FAMILY:
+        return None
+    return {
+        "SENTINEL-1": (
+            "Sentinel-1 GRD is SAR (radar) — no optical RGB / SWIR / thermal bands "
+            "for composites or spectral indices in this app."
+        ),
+        "SENTINEL-3": (
+            "Sentinel-3 (OLCI/SLSTR) is not wired for land optical composites or "
+            "indices in this app. Use Sentinel-2 or Landsat for NDVI/NDWI/etc."
+        ),
+        "SENTINEL-5P": (
+            "Sentinel-5P is an atmospheric-chemistry mission — land optical "
+            "composites and indices are not applicable here."
+        ),
+        "SMOS": (
+            "SMOS is passive microwave soil-moisture — optical Image Processing "
+            "tools are not applicable."
+        ),
+    }.get(
+        family,
+        f"{family_label(family)} does not support optical Image Processing tools "
+        "in this app. Use Sentinel-2 or Landsat.",
+    )
+
+
 def capability_summary(family: str) -> dict[str, Any]:
-    optical = family in OPTICAL_SWIR_FAMILY
+    optical = image_processing_applicable(family)
     return {
         "family": family,
         "label": family_label(family),
         "optical_swir": optical,
         "thermal_lst": family in THERMAL_FAMILY,
-        # Sentinel-1 GRD is SAR — no Image Processing optical tools apply
         "image_processing": optical,
         "sar_only": family == "SENTINEL-1",
+        "disabled_reason": unsupported_image_processing_reason(family),
         "composites": [
             pid for pid in COMPOSITE_BAND_CODES if family in COMPOSITE_BAND_CODES[pid]
         ],

@@ -28,6 +28,7 @@ from app.services.satellite_bands import (
     composite_for_family,
     family_label,
     normalize_satellite_family,
+    unsupported_image_processing_reason,
 )
 
 # Standard remote-sensing RGB band combinations (sensor-accurate codes in satellite_bands)
@@ -184,7 +185,7 @@ class CompositeService:
             enabled = True if family is None else family in applicable
             reason = None
             if family and not enabled:
-                reason = (
+                reason = unsupported_image_processing_reason(family) or (
                     f"Not applicable to {family_label(family)} — needs optical "
                     f"SWIR/VIS bands (supported: {', '.join(family_label(f) for f in applicable)})"
                 )
@@ -230,7 +231,7 @@ class CompositeService:
                 if k == "LST":
                     reason = "LST requires Landsat-8/9 thermal (TIRS) in this app"
                 else:
-                    reason = (
+                    reason = unsupported_image_processing_reason(family) or (
                         f"Not applicable to {family_label(family)} — needs optical "
                         f"multispectral bands"
                     )
@@ -345,11 +346,10 @@ class CompositeService:
 
     def stretch_scene(self, request: StretchRequest) -> StretchResponse:
         family = self._resolve_family(request.scene_id, None)
-        if family == "SENTINEL-1":
-            raise ValidationError(
-                "Sentinel-1 SAR does not support optical histogram stretch. "
-                "Use a Sentinel-2 or Landsat scene."
-            )
+        if family:
+            blocked = unsupported_image_processing_reason(family)
+            if blocked:
+                raise ValidationError(blocked)
         bands, bounds = self._load_bands(
             request.scene_id, request.bbox, max(request.size, 1280)
         )

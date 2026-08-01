@@ -142,6 +142,12 @@ class SceneImageryService:
             return "SENTINEL-2"
         if c.startswith("S1") or "SENTINEL-1" in c:
             return "SENTINEL-1"
+        if "SENTINEL-3" in c or c in {"S3", "OLCI", "SLSTR"} or c.startswith("S3-"):
+            return "SENTINEL-3"
+        if "SENTINEL-5" in c or "S5P" in c:
+            return "SENTINEL-5P"
+        if "SMOS" in c:
+            return "SMOS"
         if "LANDSAT-8" in c or c in {"LC08", "L8"}:
             return "LANDSAT-8"
         if "LANDSAT-9" in c or c in {"LC09", "L9"}:
@@ -798,8 +804,18 @@ class SceneImageryService:
             match = self.find_landsat(search_bbox, sensing_time, cloud_cover, coll)
         elif coll == "MODIS":
             match = self.find_modis(search_bbox, sensing_time, platform_hint=collection)
+        elif coll in {"SENTINEL-3", "SENTINEL-5P", "SMOS"}:
+            # Do not silently remap to Sentinel-2 — that would fake optical tools.
+            from app.services.satellite_bands import unsupported_image_processing_reason
+
+            raise ValidationError(
+                unsupported_image_processing_reason(coll)
+                or f"{coll} imagery is not available for map eye-load / indices in this app."
+            )
+        elif coll == "SENTINEL-2":
+            match = self.find_sentinel2(search_bbox, sensing_time, cloud_cover)
         else:
-            # SENTINEL-2 and other optical defaults
+            # Unknown optical-ish collections: try Sentinel-2 L2A, keep original label
             match = self.find_sentinel2(search_bbox, sensing_time, cloud_cover)
             coll = "SENTINEL-2"
 

@@ -32,21 +32,76 @@ const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapNam
   { id: 'LST', label: 'LST', defaultRamp: 'thermal' },
 ];
 
-/** Sentinel-1 GRD SAR — no optical RGB / spectral-index tools apply. */
-function isSentinel1Sar(collection?: string | null): boolean {
+type SensorFamily =
+  | 'optical'
+  | 'sentinel-1'
+  | 'sentinel-3'
+  | 'sentinel-5p'
+  | 'smos'
+  | 'unknown';
+
+function sensorFamily(collection?: string | null): SensorFamily {
   const c = (collection || '').toUpperCase().replace(/_/g, '-');
-  return c.includes('SENTINEL-1') || c.startsWith('S1');
+  if (!c) return 'unknown';
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) return 'sentinel-1';
+  if (
+    c.includes('SENTINEL-3') ||
+    c === 'S3' ||
+    c === 'OLCI' ||
+    c === 'SLSTR' ||
+    c.startsWith('S3-')
+  ) {
+    return 'sentinel-3';
+  }
+  if (c.includes('SENTINEL-5') || c.includes('S5P')) return 'sentinel-5p';
+  if (c.includes('SMOS')) return 'smos';
+  if (
+    c.includes('SENTINEL-2') ||
+    c.startsWith('S2') ||
+    c.includes('LANDSAT') ||
+    c.includes('MODIS') ||
+    c === 'TERRA' ||
+    c === 'AQUA' ||
+    c === 'TERRAAQUA'
+  ) {
+    return 'optical';
+  }
+  return 'unknown';
 }
 
 /** Optical multispectral families that support RGB composites / most indices. */
 function isOpticalMultispectral(collection?: string | null): boolean {
-  const c = (collection || '').toUpperCase().replace(/_/g, '-');
-  if (!c) return true; // no scene yet — leave tools available
-  if (isSentinel1Sar(c)) return false;
-  if (c.includes('SENTINEL-3') || c.startsWith('S3')) return false;
-  if (c.includes('SENTINEL-5') || c.includes('S5P')) return false;
-  if (c.includes('SMOS')) return false;
-  return true;
+  return sensorFamily(collection) === 'optical' || sensorFamily(collection) === 'unknown';
+}
+
+function toolsOffNotice(family: SensorFamily): string | null {
+  switch (family) {
+    case 'sentinel-1':
+      return (
+        'Sentinel-1 SAR — Image Processing tools are off. GRD is single-polarization ' +
+        'radar (no optical RGB / SWIR / thermal bands), so true color, false color, ' +
+        'spectral indices, classification, histogram stretch, and related exports do ' +
+        'not apply. SAR ship tools stay under Maritime when unlocked.'
+      );
+    case 'sentinel-3':
+      return (
+        'Sentinel-3 (OLCI/SLSTR) — Image Processing tools are off. This app does not ' +
+        'load Sentinel-3 land optical analysis bands for composites or indices ' +
+        '(NDVI, NDWI, NDBI, …). Use Sentinel-2 or Landsat for those tools.'
+      );
+    case 'sentinel-5p':
+      return (
+        'Sentinel-5P — Image Processing tools are off. Atmospheric-chemistry products ' +
+        'are not used for land optical composites or spectral indices here.'
+      );
+    case 'smos':
+      return (
+        'SMOS — Image Processing tools are off. Passive microwave soil-moisture data ' +
+        'does not support optical RGB composites or spectral indices.'
+      );
+    default:
+      return null;
+  }
 }
 
 interface Props {
@@ -230,9 +285,10 @@ export function ImageProcessingPanel({
     );
   };
 
-  const sarOnly = isSentinel1Sar(sceneCollection);
-  const opticalOk = isOpticalMultispectral(sceneCollection) && !sarOnly;
-  const toolsOff = sarOnly || !opticalOk;
+  const family = sensorFamily(sceneCollection);
+  const opticalOk = isOpticalMultispectral(sceneCollection);
+  const toolsOff = Boolean(sceneCollection) && family !== 'optical' && family !== 'unknown';
+  const offNotice = toolsOffNotice(family);
   const activeThematic = thematic.find((t) => t.id === indexResult?.index);
   const activeIndexMeta = INDEX_LIST.find((i) => i.id === indexResult?.index);
   const selectedRamp =
@@ -249,13 +305,9 @@ export function ImageProcessingPanel({
 
   return (
     <div className="mb-3 space-y-3 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/30 p-2">
-      {sarOnly ? (
+      {offNotice ? (
         <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
-          <strong>Sentinel-1 SAR</strong> — Image Processing tools are off. GRD is
-          single-polarization radar (no optical RGB / SWIR / thermal bands), so true
-          color, false color, spectral indices, classification, histogram stretch, and
-          related exports do not apply. Use the grayscale scene on the map; SAR ship
-          tools stay under Maritime when unlocked.
+          {offNotice}
         </p>
       ) : (
         <>
@@ -321,7 +373,7 @@ export function ImageProcessingPanel({
                 disabled={loading || !enabled || toolsOff}
                 title={
                   toolsOff
-                    ? 'Not applicable to Sentinel-1 SAR'
+                    ? offNotice || 'Not applicable to this satellite'
                     : enabled
                       ? p.use || p.formula
                       : p.disabled_reason || 'Not applicable'

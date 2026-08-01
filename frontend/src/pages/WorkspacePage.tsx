@@ -58,10 +58,29 @@ function sceneBounds(
   );
 }
 
-/** Sentinel-1 GRD — no optical Image Processing tools apply. */
-function isSentinel1Collection(collection?: string | null): boolean {
+/** Sensors with no optical Image Processing pipeline in this app. */
+function opticalProcessingBlockReason(collection?: string | null): string | null {
   const c = (collection || '').toUpperCase().replace(/_/g, '-');
-  return c.includes('SENTINEL-1') || c.startsWith('S1');
+  if (!c) return null;
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) {
+    return 'Sentinel-1 SAR does not support optical Image Processing tools. Use Sentinel-2 or Landsat.';
+  }
+  if (
+    c.includes('SENTINEL-3') ||
+    c === 'S3' ||
+    c === 'OLCI' ||
+    c === 'SLSTR' ||
+    c.startsWith('S3-')
+  ) {
+    return 'Sentinel-3 is not wired for land optical composites/indices in this app. Use Sentinel-2 or Landsat.';
+  }
+  if (c.includes('SENTINEL-5') || c.includes('S5P')) {
+    return 'Sentinel-5P atmospheric products do not support land optical Image Processing tools.';
+  }
+  if (c.includes('SMOS')) {
+    return 'SMOS does not support optical Image Processing tools. Use Sentinel-2 or Landsat.';
+  }
+  return null;
 }
 
 function aoiBbox(
@@ -477,11 +496,12 @@ export function WorkspacePage() {
       setError('Show a satellite scene first (eye icon)');
       return;
     }
-    if (isSentinel1Collection(focusScene.collection)) {
-      setError(
-        'Sentinel-1 SAR does not support optical indices (NDVI, NDWI, …). Use Sentinel-2 or Landsat.',
-      );
-      return;
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
     }
     setToolLoading(true);
     setToolStatus(`Computing ${index} on scene…`);
@@ -925,11 +945,12 @@ export function WorkspacePage() {
       setError('Show a satellite scene first (eye icon)');
       return;
     }
-    if (isSentinel1Collection(focusScene.collection)) {
-      setError(
-        'Sentinel-1 SAR does not support unsupervised optical classification. Use Sentinel-2 or Landsat.',
-      );
-      return;
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
     }
     const nClasses = opts?.n_classes ?? 6;
     setToolLoading(true);
@@ -981,11 +1002,12 @@ export function WorkspacePage() {
       setError('Show a satellite scene first (eye icon)');
       return;
     }
-    if (isSentinel1Collection(focusScene.collection)) {
-      setError(
-        'Sentinel-1 SAR has no optical RGB bands — band composites are not applicable.',
-      );
-      return;
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
     }
     setToolLoading(true);
     setActiveToolId(`composite-${preset}`);
@@ -1038,11 +1060,12 @@ export function WorkspacePage() {
       setError('Show a satellite scene first (eye icon)');
       return;
     }
-    if (isSentinel1Collection(focusScene.collection)) {
-      setError(
-        'Sentinel-1 SAR grayscale intensity does not use optical histogram stretch tools.',
-      );
-      return;
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
     }
     setToolLoading(true);
     setActiveToolId('histogram');
