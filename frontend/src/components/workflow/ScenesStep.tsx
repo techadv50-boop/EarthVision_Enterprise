@@ -118,7 +118,6 @@ export function ScenesStep({
                         <div className="truncate text-sm font-medium">{scene.name}</div>
                         <div className="mt-0.5 text-xs text-[var(--muted)]">
                           {formatDate(scene.sensing_time)}
-                          {scene.cloud_cover != null && ` · ${scene.cloud_cover}% cloud`}
                         </div>
                       </div>
                     </div>
