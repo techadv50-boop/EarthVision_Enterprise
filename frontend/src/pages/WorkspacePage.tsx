@@ -256,11 +256,17 @@ export function WorkspacePage() {
   }, [allowedTools]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
+    // Prefer the user's place / drawn AOI so composites stay sharp.
+    // Scene STAC bounds are a whole tile (~100 km) and make true-color look blocky/washed out.
+    if (place || aoiGeoJson) {
+      const fallback = (place?.bbox ??
+        ([74.15, 31.35, 74.55, 31.7] as [number, number, number, number]));
+      return aoiBbox(aoiGeoJson, fallback);
+    }
     const sceneOverlay = focusScene
       ? overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
       : null;
     if (sceneOverlay?.bounds) return sceneOverlay.bounds;
-    if (place) return aoiBbox(aoiGeoJson, place.bbox);
     return [74.15, 31.35, 74.55, 31.7];
   }, [aoiGeoJson, focusScene, overlays, place]);
 
@@ -854,7 +860,8 @@ export function WorkspacePage() {
         sceneId: focusScene?.id,
         url: compositeService.toDataUrl(result.overlay_base64),
         bounds: result.bounds as [number, number, number, number],
-        opacity: layerOpacity,
+        // RGB composites should be fully opaque for natural color
+        opacity: 1,
         label: result.label,
         visible: true,
       });

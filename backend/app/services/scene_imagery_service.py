@@ -751,19 +751,20 @@ class SceneImageryService:
             valid_mask = np.any(np.isfinite(stacked) & (stacked > 0), axis=0)
             stretched = np.zeros_like(stacked)
             if valid_mask.any():
-                # Per-channel robust stretch → clearer contrast without washing midtones
-                for i in range(stacked.shape[0]):
-                    ch = stacked[i]
-                    vals = ch[valid_mask & np.isfinite(ch)]
-                    if vals.size == 0:
-                        continue
-                    lo = float(np.percentile(vals, 1))
-                    hi = float(np.percentile(vals, 99))
-                    if hi <= lo:
-                        hi = lo + 1e-6
-                    stretched[i] = np.clip((ch - lo) / (hi - lo), 0, 1)
-                # Mild display gamma for natural EO look
-                stretched = np.power(stretched, 1.0 / 1.05)
+                # Joint stretch keeps natural color balance for true-color tiles
+                vals = stacked[:, valid_mask]
+                lo = float(np.percentile(vals, 2))
+                hi = float(np.percentile(vals, 98))
+                # Soft-cap highlights (clouds) so land midtones stay visible
+                if stacked.max() > 1.5:
+                    # DN / reflectance*10000 path
+                    hi = min(hi, max(lo + 1.0, float(np.percentile(vals, 90)) * 1.15))
+                else:
+                    hi = min(hi, max(lo + 0.04, 0.35 if stacked.max() <= 1.5 else hi))
+                if hi <= lo:
+                    hi = lo + 1e-6
+                stretched = np.clip((stacked - lo) / (hi - lo), 0, 1)
+                stretched = np.power(stretched, 1.0 / 1.15)
             rgb_u8 = (stretched * 255).astype(np.uint8)
             alpha = np.where(valid_mask, 255, 0).astype(np.uint8)
 

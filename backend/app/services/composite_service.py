@@ -210,52 +210,40 @@ class CompositeService:
         else:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
 
-        # True color: prefer ESA/USGS visual COG (already display-balanced) over AOI.
-        if preset_id == "true_color" and request.scene_id:
-            visual = self._load_visual_rgb(request.scene_id, request.bbox, request.size)
-            if visual is not None:
-                rgb, bounds, valid_mask = visual
-                # Keep TCI color balance; only apply mild user brightness/contrast
-                # (ignore aggressive gamma meant for raw reflectance bands).
-                rgb = self._polish_visual(
-                    rgb,
-                    gamma=1.0,
-                    brightness=min(request.brightness or 1.0, 1.1),
-                    contrast=min(request.contrast or 1.0, 1.15),
-                )
-                hist = self._rgb_histogram(rgb)
-                png = self._rgb_to_png(rgb, valid_mask=valid_mask)
-                return CompositeResponse(
-                    preset=preset_id,
-                    label=label,
-                    bands=display,
-                    band_keys=band_keys,
-                    formula=formula + " · visual/TCI",
-                    bounds=bounds,
-                    overlay_base64=base64.b64encode(png).decode("ascii"),
-                    histogram=hist,
-                    legend=self._rgb_legend(label, formula),
-                    message=f"{label} · visual product (AOI)",
-                    stretch="visual",
-                )
-
-        bands, bounds = self._load_bands(request.scene_id, request.bbox, request.size)
+        # True color: build from surface-reflectance RGB with EO display stretch.
+        # (Raw TCI-as-is washes out on cloudy AOIs; full-scene bounds look blocky.)
+        size = max(request.size, 1280) if preset_id == "true_color" else request.size
+        bands, bounds = self._load_bands(request.scene_id, request.bbox, size)
         r = self._pick(bands, keys[0])
         g = self._pick(bands, keys[1])
         b = self._pick(bands, keys[2])
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
 
-        # True color → joint + cloud-robust; false color → per-channel on land pixels
-        stretch_mode = "joint_land" if preset_id == "true_color" else "channel_land"
-        rgb = self._stack_stretch(
-            r, g, b,
-            mode=stretch_mode if request.stretch == "percentile" else request.stretch,
-            p_low=request.p_low,
-            p_high=request.p_high,
-            gamma=request.gamma,
-            brightness=request.brightness,
-            contrast=request.contrast,
-        )
+        if preset_id == "true_color":
+            rgb = self._true_color_stretch(
+                r, g, b,
+                p_low=request.p_low,
+                p_high=request.p_high,
+                gamma=1.45,
+                brightness=request.brightness,
+                contrast=request.contrast,
+            )
+            stretch_label = "true_color_eo"
+        else:
+            stretch_mode = (
+                "channel_land" if request.stretch == "percentile" else request.stretch
+            )
+            rgb = self._stack_stretch(
+                r, g, b,
+                mode=stretch_mode,
+                p_low=request.p_low,
+                p_high=request.p_high,
+                gamma=request.gamma,
+                brightness=request.brightness,
+                contrast=request.contrast,
+            )
+            stretch_label = stretch_mode
+
         hist = self._rgb_histogram(rgb)
         png = self._rgb_to_png(rgb, valid_mask=valid_mask)
         return CompositeResponse(
@@ -268,48 +256,37 @@ class CompositeService:
             overlay_base64=base64.b64encode(png).decode("ascii"),
             histogram=hist,
             legend=self._rgb_legend(label, formula),
-            message=f"{label} · {stretch_mode} p{request.p_low}-{request.p_high}%",
-            stretch=f"{stretch_mode} p{request.p_low}-{request.p_high} γ={request.gamma}",
+            message=f"{label} · {stretch_label} p{request.p_low}-{request.p_high}%",
+            stretch=f"{stretch_label} p{request.p_low}-{request.p_high} γ={request.gamma}",
         )
 
     def stretch_scene(self, request: StretchRequest) -> StretchResponse:
-        # Prefer visual product when stretching true-color appearance
-        if request.scene_id and request.source == "true_color":
-            visual = self._load_visual_rgb(request.scene_id, request.bbox, request.size)
-            if visual is not None:
-                rgb, bounds, valid_mask = visual
-                rgb = self._polish_visual(rgb, request.gamma, request.brightness, request.contrast)
-                hist = self._rgb_histogram(rgb)
-                png = self._rgb_to_png(rgb, valid_mask=valid_mask)
-                return StretchResponse(
-                    bounds=bounds,
-                    overlay_base64=base64.b64encode(png).decode("ascii"),
-                    histogram=hist,
-                    p_low=request.p_low,
-                    p_high=request.p_high,
-                    gamma=request.gamma,
-                    brightness=request.brightness,
-                    contrast=request.contrast,
-                    message=(
-                        f"Visual stretch · γ={request.gamma} · "
-                        f"brightness={request.brightness} · contrast={request.contrast}"
-                    ),
-                )
-
-        bands, bounds = self._load_bands(request.scene_id, request.bbox, request.size)
+        bands, bounds = self._load_bands(
+            request.scene_id, request.bbox, max(request.size, 1280)
+        )
         r = self._pick(bands, "red")
         g = self._pick(bands, "green")
         b = self._pick(bands, "blue")
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
-        rgb = self._stack_stretch(
-            r, g, b,
-            mode="joint_land",
-            p_low=request.p_low,
-            p_high=request.p_high,
-            gamma=request.gamma,
-            brightness=request.brightness,
-            contrast=request.contrast,
-        )
+        if request.source == "true_color":
+            rgb = self._true_color_stretch(
+                r, g, b,
+                p_low=request.p_low,
+                p_high=request.p_high,
+                gamma=max(request.gamma, 1.6),
+                brightness=request.brightness,
+                contrast=request.contrast,
+            )
+        else:
+            rgb = self._stack_stretch(
+                r, g, b,
+                mode="joint_land",
+                p_low=request.p_low,
+                p_high=request.p_high,
+                gamma=request.gamma,
+                brightness=request.brightness,
+                contrast=request.contrast,
+            )
         hist = self._rgb_histogram(rgb)
         raw_hist = self._channel_histograms(r, g, b)
         hist["raw"] = raw_hist
@@ -364,22 +341,68 @@ class CompositeService:
             logger.warning("Visual composite load failed: {}", exc)
             return None
 
-    @staticmethod
-    def _polish_visual(
-        rgb: np.ndarray, gamma: float, brightness: float, contrast: float
+    def _true_color_stretch(
+        self,
+        r: np.ndarray,
+        g: np.ndarray,
+        b: np.ndarray,
+        *,
+        p_low: float,
+        p_high: float,
+        gamma: float,
+        brightness: float,
+        contrast: float,
     ) -> np.ndarray:
-        """Very light polish on TCI/visual — keep ESA/USGS color balance intact."""
-        out = np.clip(rgb.astype(np.float64), 0, 1)
-        # TCI is already display-ready; only apply mild user adjustments.
-        g = float(gamma) if gamma and abs(gamma - 1.0) > 1e-3 else 1.0
-        if abs(g - 1.0) > 1e-3:
-            out = np.power(out, 1.0 / max(0.85, min(g, 1.25)))
-        c = float(contrast) if contrast else 1.0
-        b = float(brightness) if brightness else 1.0
-        if abs(c - 1.0) > 1e-3:
-            out = (out - 0.5) * max(0.85, min(c, 1.2)) + 0.5
-        if abs(b - 1.0) > 1e-3:
-            out = out * max(0.85, min(b, 1.15))
+        """Natural-looking S2/Landsat true color from surface reflectance.
+
+        Stretch statistics are computed on land (cloud/snow excluded), with a soft
+        knee on highlights so bright clouds don't wash the whole composite out.
+        """
+        stacked = np.stack(
+            [r.astype(np.float64), g.astype(np.float64), b.astype(np.float64)],
+            axis=-1,
+        )
+        if np.nanmax(stacked) > 1.5:
+            stacked = stacked / 10000.0
+        stacked = np.clip(stacked, 0, 1)
+        finite = np.all(np.isfinite(stacked), axis=2)
+        bright = np.nanmean(stacked, axis=2)
+        # Cloud / bright roof mask for statistics only
+        cloud = finite & ((stacked[:, :, 2] > 0.25) | (bright > 0.28))
+        land = finite & ~cloud
+        if land.sum() < max(64, int(0.08 * max(1, finite.sum()))):
+            land = self._land_mask(stacked)
+
+        vals = stacked[land]
+        if vals.size == 0:
+            vals = stacked[finite]
+        if vals.size == 0:
+            return np.zeros_like(stacked)
+
+        lo = float(np.percentile(vals, p_low))
+        hi = float(np.percentile(vals, p_high))
+        hi = min(max(hi, lo + 0.04), 0.24)
+        lo = max(0.0, min(lo, hi - 0.03))
+
+        norm = (stacked - lo) / (hi - lo + 1e-9)
+        # Soft knee above 1.0 keeps cloud structure without crushing land
+        over = norm > 1.0
+        norm = np.where(over, 1.0 + 0.25 * np.tanh(norm - 1.0), np.clip(norm, 0, 1))
+        norm = np.clip(norm, 0, 1.2) / 1.2
+        norm[~finite] = 0
+
+        g = float(gamma) if gamma and gamma > 0 else 1.45
+        # Keep gamma moderate — too high re-washes urban surfaces
+        out = np.power(np.clip(norm, 0, 1), 1.0 / max(1.2, min(g, 1.7)))
+
+        # Mild saturation so vegetation/urban read clearer
+        mean = out.mean(axis=2, keepdims=True)
+        out = np.clip(mean + (out - mean) * 1.12, 0, 1)
+
+        c = float(contrast) if contrast else 1.05
+        bval = float(brightness) if brightness else 1.0
+        out = (out - 0.5) * max(0.9, min(c, 1.15)) + 0.5
+        out = out * max(0.9, min(bval, 1.1))
         return np.clip(out, 0, 1)
 
     def _load_bands(
