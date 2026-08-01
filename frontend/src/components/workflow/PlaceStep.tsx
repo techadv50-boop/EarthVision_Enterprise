@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { MapPin, Search } from 'lucide-react';
 import { gisService, type GeocodeResult } from '../../services/gisService';
 import { getErrorMessage } from '../../services/api';
+import type { CollectionName } from '../../services/catalogService';
 import type { PlaceSelection } from '../../store/workflowStore';
 
 const QUICK_PLACES: PlaceSelection[] = [
@@ -36,11 +37,33 @@ export interface SceneDateRange {
   endDate: string;
 }
 
+export interface SatelliteOption {
+  id: string;
+  label: string;
+  collections: CollectionName[];
+}
+
+export const SATELLITE_OPTIONS: SatelliteOption[] = [
+  { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'] },
+  { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'] },
+  { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'] },
+  { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'] },
+  { id: 'OTHERS', label: 'Others', collections: ['MODIS'] },
+];
+
+export interface CatalogFilters {
+  satelliteId: string;
+  satelliteLabel: string;
+  collections: CollectionName[];
+  startDate: string;
+  endDate: string;
+}
+
 interface Props {
-  onSelect: (place: PlaceSelection, range: SceneDateRange) => void;
+  onSelect: (place: PlaceSelection, filters: CatalogFilters) => void;
   busy?: boolean;
-  dateRange: SceneDateRange;
-  onDateRangeChange: (range: SceneDateRange) => void;
+  filters: CatalogFilters;
+  onFiltersChange: (filters: CatalogFilters) => void;
 }
 
 function resultToPlace(r: GeocodeResult): PlaceSelection {
@@ -62,37 +85,53 @@ function resultToPlace(r: GeocodeResult): PlaceSelection {
   };
 }
 
-export function PlaceStep({
-  onSelect,
-  busy,
-  dateRange,
-  onDateRangeChange,
-}: Props) {
+export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
   const [query, setQuery] = useState('Lahore');
   const [results, setResults] = useState<GeocodeResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { startDate, endDate } = dateRange;
+  const satelliteSelected = Boolean(filters.satelliteId);
+  const { startDate, endDate } = filters;
   const rangeError =
     startDate && endDate && startDate > endDate
       ? 'From date must be on or before To date'
       : null;
+  const canSearchPlace =
+    satelliteSelected && Boolean(startDate) && Boolean(endDate) && !rangeError;
+
+  const pickSatellite = (option: SatelliteOption) => {
+    setError(null);
+    onFiltersChange({
+      ...filters,
+      satelliteId: option.id,
+      satelliteLabel: option.label,
+      collections: option.collections,
+    });
+  };
 
   const selectPlace = (place: PlaceSelection) => {
+    if (!filters.satelliteId) {
+      setError('Select a satellite first');
+      return;
+    }
     if (rangeError || !startDate || !endDate) {
       setError(rangeError || 'Choose a From and To date for scenes');
       return;
     }
     setError(null);
-    onSelect(place, { startDate, endDate });
+    onSelect(place, filters);
   };
 
   const search = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!query.trim()) return;
-    if (rangeError || !startDate || !endDate) {
-      setError(rangeError || 'Choose a From and To date for scenes');
+    if (!canSearchPlace) {
+      setError(
+        !filters.satelliteId
+          ? 'Select a satellite first'
+          : rangeError || 'Choose a From and To date for scenes',
+      );
       return;
     }
     setLoading(true);
@@ -111,100 +150,139 @@ export function PlaceStep({
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="font-display text-lg font-semibold text-[var(--ink)]">Choose a place</h2>
+        <h2 className="font-display text-lg font-semibold text-[var(--ink)]">Find scenes</h2>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Set the date range, then search a city or click the map to load matching scenes.
+          Choose a satellite first, then the date range, then a place.
         </p>
       </div>
 
       <div className="space-y-2">
         <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-          Scene date range
+          1. Satellite
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <label className="block">
-            <span className="mb-1 block text-[11px] text-[var(--muted)]">From</span>
-            <input
-              type="date"
-              className="ev-input text-sm"
-              value={startDate}
-              max={endDate || undefined}
-              onChange={(e) =>
-                onDateRangeChange({ startDate: e.target.value, endDate })
-              }
-              disabled={busy}
-              required
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-[11px] text-[var(--muted)]">To</span>
-            <input
-              type="date"
-              className="ev-input text-sm"
-              value={endDate}
-              min={startDate || undefined}
-              onChange={(e) =>
-                onDateRangeChange({ startDate, endDate: e.target.value })
-              }
-              disabled={busy}
-              required
-            />
-          </label>
+          {SATELLITE_OPTIONS.map((option) => {
+            const active = filters.satelliteId === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                disabled={busy}
+                onClick={() => pickSatellite(option)}
+                className={`rounded-lg border px-3 py-2 text-left text-sm font-medium transition ${
+                  active
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/30'
+                    : 'border-[var(--line)] bg-white text-[var(--ink)] hover:bg-[var(--accent-soft)]/50'
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
         </div>
-        {rangeError && <p className="text-xs text-red-600">{rangeError}</p>}
       </div>
 
-      <form onSubmit={search} className="flex gap-2">
-        <input
-          className="ev-input"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="e.g. Lahore"
-          disabled={busy}
-        />
-        <button
-          type="submit"
-          className="ev-btn-primary shrink-0"
-          disabled={loading || busy || Boolean(rangeError)}
-        >
-          <Search className="h-4 w-4" />
-          {loading ? '…' : 'Search'}
-        </button>
-      </form>
+      {satelliteSelected && (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            2. Date range
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-[var(--muted)]">From</span>
+              <input
+                type="date"
+                className="ev-input text-sm"
+                value={startDate}
+                max={endDate || undefined}
+                onChange={(e) =>
+                  onFiltersChange({ ...filters, startDate: e.target.value })
+                }
+                disabled={busy}
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-[var(--muted)]">To</span>
+              <input
+                type="date"
+                className="ev-input text-sm"
+                value={endDate}
+                min={startDate || undefined}
+                onChange={(e) =>
+                  onFiltersChange({ ...filters, endDate: e.target.value })
+                }
+                disabled={busy}
+                required
+              />
+            </label>
+          </div>
+          {rangeError && <p className="text-xs text-red-600">{rangeError}</p>}
+        </div>
+      )}
+
+      {canSearchPlace && (
+        <div className="space-y-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            3. Place
+          </div>
+          <form onSubmit={search} className="flex gap-2">
+            <input
+              className="ev-input"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="e.g. Lahore"
+              disabled={busy}
+            />
+            <button
+              type="submit"
+              className="ev-btn-primary shrink-0"
+              disabled={loading || busy}
+            >
+              <Search className="h-4 w-4" />
+              {loading ? '…' : 'Search'}
+            </button>
+          </form>
+
+          <div className="flex flex-wrap gap-2">
+            {QUICK_PLACES.map((p) => (
+              <button
+                key={p.name}
+                type="button"
+                className="rounded-full border border-[var(--line)] bg-[var(--accent-soft)] px-3 py-1 text-xs font-medium text-[var(--accent)] hover:brightness-95"
+                onClick={() => selectPlace(p)}
+                disabled={busy}
+              >
+                {p.name.split(',')[0]}
+              </button>
+            ))}
+          </div>
+
+          <p className="text-[11px] text-[var(--muted)]">
+            Or click the map to use that location.
+          </p>
+
+          {results.length > 0 && (
+            <ul className="max-h-48 space-y-1 overflow-y-auto">
+              {results.map((r) => (
+                <li key={`${r.longitude}-${r.latitude}-${r.display_name}`}>
+                  <button
+                    type="button"
+                    className="flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-[var(--accent-soft)]"
+                    onClick={() => selectPlace(resultToPlace(r))}
+                    disabled={busy}
+                  >
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
+                    <span>{r.display_name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {error && <p className="text-xs text-red-600">{error}</p>}
-
-      <div className="flex flex-wrap gap-2">
-        {QUICK_PLACES.map((p) => (
-          <button
-            key={p.name}
-            type="button"
-            className="rounded-full border border-[var(--line)] bg-[var(--accent-soft)] px-3 py-1 text-xs font-medium text-[var(--accent)] hover:brightness-95"
-            onClick={() => selectPlace(p)}
-            disabled={busy || Boolean(rangeError)}
-          >
-            {p.name.split(',')[0]}
-          </button>
-        ))}
-      </div>
-
-      {results.length > 0 && (
-        <ul className="max-h-48 space-y-1 overflow-y-auto">
-          {results.map((r) => (
-            <li key={`${r.longitude}-${r.latitude}-${r.display_name}`}>
-              <button
-                type="button"
-                className="flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-[var(--accent-soft)]"
-                onClick={() => selectPlace(resultToPlace(r))}
-                disabled={busy || Boolean(rangeError)}
-              >
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
-                <span>{r.display_name}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }
