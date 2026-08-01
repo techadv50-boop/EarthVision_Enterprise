@@ -80,7 +80,9 @@ export function ScenesStep({
 
       {!loading && scenes.length === 0 && (
         <div className="rounded-lg bg-[var(--accent-soft)] p-4 text-sm text-[var(--accent)]">
-          No scenes found. Try another place or AOI.
+          No scenes found for this date range
+          {dateFrom && dateTo ? ` (${formatDate(dateFrom)} → ${formatDate(dateTo)})` : ''}.
+          Try different From/To dates or another area.
         </div>
       )}
 
