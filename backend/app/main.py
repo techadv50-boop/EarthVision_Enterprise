@@ -1,4 +1,4 @@
-"""EarthVision Enterprise — FastAPI application entrypoint."""
+"""SAT EYE — Eye In Sky FastAPI application entrypoint."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "EarthVision Enterprise — Commercial Earth Observation Platform. "
+            "SAT EYE — Eye In Sky commercial Earth observation platform. "
             "Satellite imagery search, GIS analysis, remote sensing analytics, "
             "and machine learning for geospatial intelligence."
         ),

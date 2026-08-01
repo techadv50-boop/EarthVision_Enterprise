@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the EarthVision Enterprise API server."""
+"""Run the SAT EYE API server."""
 
 import uvicorn
 

@@ -11,7 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """EarthVision Enterprise runtime configuration."""
+    """SAT EYE runtime configuration."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     # Application
-    app_name: str = "EarthVision Enterprise"
+    app_name: str = "SAT EYE"
     app_version: str = "1.0.0"
     environment: Literal["development", "staging", "production"] = "development"
     debug: bool = True

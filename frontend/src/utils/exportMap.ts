@@ -14,7 +14,7 @@ interface ExportOptions {
  * north arrow, scale note, legend, grid (already on map), and title.
  */
 export async function exportMapJpeg(options: ExportOptions): Promise<void> {
-  const { mapElement, title = 'EarthVision Map', placeName, legend, filename } = options;
+  const { mapElement, title = 'SAT EYE Map', placeName, legend, filename } = options;
 
   const canvas = await html2canvas(mapElement, {
     useCORS: true,
@@ -114,6 +114,6 @@ export async function exportMapJpeg(options: ExportOptions): Promise<void> {
 
   const a = document.createElement('a');
   a.href = out.toDataURL('image/jpeg', 0.92);
-  a.download = filename || `earthvision-map-${Date.now()}.jpg`;
+  a.download = filename || `sateye-map-${Date.now()}.jpg`;
   a.click();
 }

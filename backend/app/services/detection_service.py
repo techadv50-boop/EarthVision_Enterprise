@@ -1,4 +1,4 @@
-"""Spectral-index–guided AI / maritime / air-domain detectors for Light Explorer."""
+"""Spectral-index–guided AI / maritime / air-domain detectors for Eye In Sky."""
 
 from __future__ import annotations
 

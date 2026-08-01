@@ -532,7 +532,7 @@ def decorate_classification_map(
         )
         draw.text((hx, tot_y), tot_txt, fill=(15, 23, 42, 255), font=font_legend_title)
 
-    footer = "EarthVision Enterprise  ·  EPSG:4326  ·  Grid: left & bottom"
+    footer = "SAT EYE  ·  Eye In Sky  ·  EPSG:4326  ·  Grid: left & bottom"
     fw, fh = _text_size(draw, footer, font_footer)
     draw.text(
         ((canvas_w - fw) // 2, canvas_h - fh - 10),

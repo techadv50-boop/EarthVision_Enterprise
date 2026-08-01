@@ -36,7 +36,7 @@ async def bootstrap_admin(session: AsyncSession) -> None:
         account_status=AccountStatus.APPROVED.value,
         allowed_tools=None,
         allowed_satellites=None,
-        organization="EarthVision Technologies",
+        organization="SAT EYE",
     )
     session.add(admin)
     await session.flush()

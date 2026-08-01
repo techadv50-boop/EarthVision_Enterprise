@@ -38,7 +38,7 @@ class GeoTiffExportRequest(BaseModel):
     """Convert any procedure overlay (or regenerate) into a GeoTIFF download."""
 
     bounds: list[float] = Field(..., description="[west,south,east,north]")
-    filename: str = "earthvision_overlay.tif"
+    filename: str = "sateye_overlay.tif"
     overlay_base64: str | None = None
     # Optional regenerate shortcuts (used when overlay_base64 omitted)
     procedure: Literal[
@@ -351,7 +351,7 @@ async def export_geotiff(data: GeoTiffExportRequest, user: CurrentUser) -> Respo
         from app.services.geotiff_export import _safe_filename
 
         png_name = _safe_filename(
-            (data.filename or "earthvision_map").rsplit(".", 1)[0] + ".png",
+            (data.filename or "sateye_map").rsplit(".", 1)[0] + ".png",
             ext="png",
         )
         return Response(

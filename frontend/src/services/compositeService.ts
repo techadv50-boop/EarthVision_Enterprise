@@ -186,7 +186,7 @@ export const compositeService = {
     });
     const disposition = String(headers['content-disposition'] || '');
     const match = /filename="?([^";]+)"?/i.exec(disposition);
-    const filename = match?.[1] || payload.filename || 'earthvision.tif';
+    const filename = match?.[1] || payload.filename || 'sateye.tif';
     downloadBlob(data as Blob, filename);
   },
 

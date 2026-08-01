@@ -1375,10 +1375,10 @@ export function WorkspacePage() {
         lastLegend || changeResult?.legend || indexResult?.legend || null;
       await exportMapJpeg({
         mapElement,
-        title: 'EarthVision Map Export',
+        title: 'SAT EYE Map Export',
         placeName: place?.name,
         legend,
-        filename: `earthvision-${(place?.name || 'map').replace(/\W+/g, '_').slice(0, 40)}.jpg`,
+        filename: `sateye-${(place?.name || 'map').replace(/\W+/g, '_').slice(0, 40)}.jpg`,
       });
     } catch (err) {
       setError(getErrorMessage(err));
@@ -1399,10 +1399,10 @@ export function WorkspacePage() {
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-3 py-2 sm:px-4">
         <div className="min-w-0">
           <div className="font-display text-sm font-semibold tracking-wide sm:text-base">
-            EarthVision
+            SAT EYE
           </div>
           <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">
-            Light Explorer
+            Eye In Sky
           </div>
         </div>
 

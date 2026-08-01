@@ -14,7 +14,7 @@ from app.core.exceptions import ValidationError
 
 def _safe_filename(name: str, ext: str = "tif") -> str:
     """Sanitize a download filename while preserving real extensions (.tif/.tiff/.zip)."""
-    base = re.sub(r"[^\w.\-]+", "_", (name or "earthvision").strip())[:160] or "earthvision"
+    base = re.sub(r"[^\w.\-]+", "_", (name or "sateye").strip())[:160] or "sateye"
     lower = base.lower()
     if lower.endswith((".tif", ".tiff", ".zip", ".png", ".jp2")):
         return base
@@ -69,7 +69,7 @@ def png_bytes_to_geotiff(
             dst.write(bands)
             dst.update_tags(
                 AREA_OR_POINT="Area",
-                TIFFTAG_SOFTWARE="EarthVision Enterprise",
+                TIFFTAG_SOFTWARE="SAT EYE",
             )
             # Mark alpha as undefined photometric extra band
             dst.colorinterp = [
@@ -120,7 +120,7 @@ def dem_grid_to_geotiff(
             dst.write(arr, 1)
             dst.update_tags(
                 AREA_OR_POINT="Area",
-                TIFFTAG_SOFTWARE="EarthVision Enterprise",
+                TIFFTAG_SOFTWARE="SAT EYE",
                 UNIT="meters",
             )
         return mem.read(), _safe_filename(filename)
@@ -182,7 +182,7 @@ def band_arrays_to_geotiff(
                 dst.set_band_description(i, name)
             dst.update_tags(
                 AREA_OR_POINT="Area",
-                TIFFTAG_SOFTWARE="EarthVision Enterprise",
+                TIFFTAG_SOFTWARE="SAT EYE",
                 BANDS=",".join(order),
             )
         return mem.read(), _safe_filename(filename)
@@ -206,7 +206,7 @@ def decode_overlay_png(
 
 
 def export_meta_tags(extra: dict[str, Any] | None = None) -> dict[str, str]:
-    tags = {"TIFFTAG_SOFTWARE": "EarthVision Enterprise"}
+    tags = {"TIFFTAG_SOFTWARE": "SAT EYE"}
     if extra:
         for k, v in extra.items():
             if v is None:

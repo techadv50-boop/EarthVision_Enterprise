@@ -1,4 +1,4 @@
-"""Object / domain detection schemas for Light Explorer toolbox tools."""
+"""Object / domain detection schemas for Eye In Sky toolbox tools."""
 
 from __future__ import annotations
 

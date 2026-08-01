@@ -1,4 +1,4 @@
-/** Light Explorer toolbox catalog — maps UI tools to runnable actions. */
+/** Eye In Sky toolbox catalog — maps UI tools to runnable actions. */
 
 export type ToolboxId =
   | 'navigation'

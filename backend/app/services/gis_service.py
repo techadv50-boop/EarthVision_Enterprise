@@ -34,7 +34,7 @@ class GISService:
             "limit": request.limit,
             "addressdetails": 1,
         }
-        headers = {"User-Agent": "EarthVisionEnterprise/1.0 (commercial-eo-platform)"}
+        headers = {"User-Agent": "SAT-EYE/1.0 (commercial-eo-platform)"}
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 response = await client.get(url, params=params, headers=headers)
@@ -135,7 +135,7 @@ class GISService:
     async def reverse_geocode(self, longitude: float, latitude: float) -> GeocodeResult:
         url = f"{self.settings.nominatim_url}/reverse"
         params = {"lon": longitude, "lat": latitude, "format": "json"}
-        headers = {"User-Agent": "EarthVisionEnterprise/1.0"}
+        headers = {"User-Agent": "SAT-EYE/1.0"}
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(url, params=params, headers=headers)
