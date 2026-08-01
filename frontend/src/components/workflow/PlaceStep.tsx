@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Loader2, MapPin, Search } from 'lucide-react';
+import { Crosshair, Loader2, MapPin, Search } from 'lucide-react';
 import { gisService, type GeocodeResult } from '../../services/gisService';
 import { getErrorMessage } from '../../services/api';
 import type { CollectionName } from '../../services/catalogService';
 import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import type { PlaceSelection } from '../../store/workflowStore';
+
+/** Half-width of the search window around a point (degrees ≈ 20 km at mid-latitudes). */
+const DEFAULT_COORD_PAD = 0.2;
 
 const QUICK_PLACES: PlaceSelection[] = [
   {
@@ -106,8 +109,28 @@ function toOptions(rows: SatellitePublic[]): SatelliteOption[] {
   }));
 }
 
+function parseCoord(raw: string): number | null {
+  const n = Number(String(raw).trim().replace(/°/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function placeFromCoordinates(
+  latitude: number,
+  longitude: number,
+  pad = DEFAULT_COORD_PAD,
+): PlaceSelection {
+  return {
+    name: `${latitude.toFixed(4)}°, ${longitude.toFixed(4)}°`,
+    longitude,
+    latitude,
+    bbox: [longitude - pad, latitude - pad, longitude + pad, latitude + pad],
+  };
+}
+
 export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
-  const [query, setQuery] = useState('Lahore');
+  const [query, setQuery] = useState('');
+  const [latInput, setLatInput] = useState('');
+  const [lonInput, setLonInput] = useState('');
   const [results, setResults] = useState<GeocodeResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,9 +190,41 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
     onSelect(place, filters);
   };
 
+  const searchByCoordinates = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!canSearchPlace) {
+      setError(
+        !filters.satelliteId
+          ? 'Select a satellite first'
+          : rangeError || 'Choose a From and To date for scenes',
+      );
+      return;
+    }
+    const lat = parseCoord(latInput);
+    const lon = parseCoord(lonInput);
+    if (lat == null || lon == null) {
+      setError('Enter both latitude and longitude to search an area');
+      return;
+    }
+    if (lat < -90 || lat > 90) {
+      setError('Latitude must be between −90 and 90');
+      return;
+    }
+    if (lon < -180 || lon > 180) {
+      setError('Longitude must be between −180 and 180');
+      return;
+    }
+    setError(null);
+    setResults([]);
+    selectPlace(placeFromCoordinates(lat, lon));
+  };
+
   const search = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!query.trim()) return;
+    if (!query.trim()) {
+      setError('Enter a place name, or add coordinates below to search an area');
+      return;
+    }
     if (!canSearchPlace) {
       setError(
         !filters.satelliteId
@@ -183,7 +238,11 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
     try {
       const data = await gisService.geocode(query.trim(), 6);
       setResults(data);
-      if (data.length === 1) selectPlace(resultToPlace(data[0]));
+      if (data.length === 0) {
+        setError('No places found — try coordinates instead (latitude & longitude)');
+      } else if (data.length === 1) {
+        selectPlace(resultToPlace(data[0]));
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -196,7 +255,7 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
       <div>
         <h2 className="font-display text-lg font-semibold text-[var(--ink)]">Find scenes</h2>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Choose a satellite first, then the date range, then a place.
+          Choose a satellite and date range, then add coordinates to search an area.
         </p>
       </div>
 
@@ -274,14 +333,67 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
       {canSearchPlace && (
         <div className="space-y-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            3. Place
+            3. Area
           </div>
+
+          <div className="rounded-lg border border-[var(--accent)]/35 bg-[var(--accent-soft)]/40 px-3 py-3">
+            <p className="text-sm font-medium text-[var(--ink)]">
+              Add coordinates to search an area
+            </p>
+            <p className="mt-0.5 text-[11px] text-[var(--muted)]">
+              Enter latitude and longitude (WGS84). Decimal degrees, e.g. 31.5204, 74.3587.
+            </p>
+            <form onSubmit={searchByCoordinates} className="mt-3 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-[11px] text-[var(--muted)]">Latitude</span>
+                  <input
+                    className="ev-input text-sm"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="e.g. 31.5204"
+                    value={latInput}
+                    onChange={(e) => setLatInput(e.target.value)}
+                    disabled={busy}
+                    aria-label="Latitude"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] text-[var(--muted)]">Longitude</span>
+                  <input
+                    className="ev-input text-sm"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="e.g. 74.3587"
+                    value={lonInput}
+                    onChange={(e) => setLonInput(e.target.value)}
+                    disabled={busy}
+                    aria-label="Longitude"
+                  />
+                </label>
+              </div>
+              <button
+                type="submit"
+                className="ev-btn-primary w-full justify-center"
+                disabled={busy}
+              >
+                <Crosshair className="h-4 w-4" />
+                Search this area
+              </button>
+            </form>
+          </div>
+
+          <div className="relative py-1 text-center text-[11px] uppercase tracking-wide text-[var(--muted)]">
+            <span className="bg-[var(--panel,#fff)] px-2 relative z-[1]">or</span>
+            <span className="absolute inset-x-0 top-1/2 h-px bg-[var(--line)]" aria-hidden />
+          </div>
+
           <form onSubmit={search} className="flex gap-2">
             <input
               className="ev-input"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g. Lahore"
+              placeholder="Search by place name"
               disabled={busy}
             />
             <button
@@ -309,7 +421,7 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
           </div>
 
           <p className="text-[11px] text-[var(--muted)]">
-            Or click the map to use that location.
+            Or click the map to drop a point and search that location.
           </p>
 
           {results.length > 0 && (
