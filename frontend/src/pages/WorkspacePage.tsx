@@ -850,14 +850,18 @@ export function WorkspacePage() {
     }
   };
 
-  const runClassification = async () => {
+  const runClassification = async (opts?: {
+    n_classes?: import('../services/classificationService').ClassCount;
+    class_styles?: import('../services/classificationService').ClassStyle[];
+  }) => {
     if (!focusScene) {
       setError('Show a satellite scene first (eye icon)');
       return;
     }
+    const nClasses = opts?.n_classes ?? 6;
     setToolLoading(true);
     setActiveToolId('unsupervised_classify');
-    setToolStatus('Unsupervised classification (ensemble)…');
+    setToolStatus(`Unsupervised classification (${nClasses} classes)…`);
     setError(null);
     try {
       const sceneOverlay = overlays.find(
@@ -870,7 +874,9 @@ export function WorkspacePage() {
       const result = await classificationService.classify({
         scene_id: focusScene.id,
         bbox: [...bounds],
-        size: 1536,
+        size: 1792,
+        n_classes: nClasses,
+        class_styles: opts?.class_styles,
       });
       setClassificationResult(result);
       setLastLegend(result.legend);
@@ -884,7 +890,7 @@ export function WorkspacePage() {
         bounds: (result.bounds as [number, number, number, number]) ?? bounds,
         footprint: sceneOverlay?.footprint ?? null,
         opacity: 1,
-        label: 'LULC 6-class (opaque)',
+        label: `LULC ${nClasses}-class (opaque)`,
         visible: true,
       });
       useWorkflowStore.getState().setExpandedToolbox('image');
@@ -1544,7 +1550,7 @@ export function WorkspacePage() {
               colormap={selectedColormap}
               onComposite={(preset) => void runComposite(preset)}
               onIndexTool={(index) => void runIndex(index)}
-              onClassify={() => void runClassification()}
+              onClassify={(opts) => void runClassification(opts)}
               onColormapChange={(cmap) => {
                 setSelectedColormap(cmap);
                 if (indexResult?.index) {
@@ -1586,7 +1592,7 @@ export function WorkspacePage() {
                   .downloadGeotiff(classificationResult, focusScene.id)
                   .then(() =>
                     setLastMessage(
-                      `Downloaded GeoTIFF · LULC 6-class (${classificationResult.total_area_km2} km²)`,
+                      `Downloaded GeoTIFF · LULC ${classificationResult.classes.length}-class (${classificationResult.total_area_km2} km²)`,
                     ),
                   )
                   .catch((err) => setError(getErrorMessage(err)))

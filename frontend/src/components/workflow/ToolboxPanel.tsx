@@ -97,7 +97,10 @@ interface Props {
   colormap?: ColormapName | string | null;
   onComposite?: (preset: CompositePreset) => void;
   onIndexTool?: (index: IndexName) => void;
-  onClassify?: () => void;
+  onClassify?: (opts: {
+    n_classes: import('../../services/classificationService').ClassCount;
+    class_styles: import('../../services/classificationService').ClassStyle[];
+  }) => void;
   onColormapChange?: (cmap: ColormapName) => void;
   onStretch?: () => void;
   onStretchParams?: (patch: Record<string, number>) => void;
@@ -346,7 +349,7 @@ export function ToolboxPanel({
             colormap={colormap}
             onComposite={onComposite}
             onIndex={onIndexTool}
-            onClassify={() => onClassify?.()}
+            onClassify={(opts) => onClassify?.(opts)}
             onColormapChange={onColormapChange}
             onStretch={onStretch}
             onStretchParams={(patch) => onStretchParams?.(patch)}

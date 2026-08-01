@@ -10,7 +10,15 @@ import type {
 import { compositeService } from '../../services/compositeService';
 import type { IndexName, IndexResult, ColormapInfo, ColormapName } from '../../services/analyticsService';
 import { analyticsService } from '../../services/analyticsService';
-import type { ClassificationResult } from '../../services/classificationService';
+import type {
+  ClassCount,
+  ClassStyle,
+  ClassificationResult,
+} from '../../services/classificationService';
+import {
+  DEFAULT_CLASS_STYLES,
+  stylesForCount,
+} from '../../services/classificationService';
 
 const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapName }> = [
   { id: 'NDVI', label: 'NDVI', defaultRamp: 'rdylgn' },
@@ -36,7 +44,7 @@ interface Props {
   colormap?: ColormapName | string | null;
   onComposite: (preset: CompositePreset) => void;
   onIndex: (index: IndexName) => void;
-  onClassify?: () => void;
+  onClassify?: (opts: { n_classes: ClassCount; class_styles: ClassStyle[] }) => void;
   onColormapChange?: (cmap: ColormapName) => void;
   onStretch: () => void;
   onStretchParams: (patch: Partial<Props['stretchParams']>) => void;
@@ -155,12 +163,25 @@ export function ImageProcessingPanel({
   const [presets, setPresets] = useState<CompositePresetInfo[]>([]);
   const [thematic, setThematic] = useState<IndexThematicInfo[]>([]);
   const [ramps, setRamps] = useState<ColormapInfo[]>([]);
+  const [nClasses, setNClasses] = useState<ClassCount>(6);
+  const [allStyles, setAllStyles] = useState<ClassStyle[]>(DEFAULT_CLASS_STYLES);
+
+  const activeStyles = useMemo(
+    () => stylesForCount(nClasses, allStyles),
+    [nClasses, allStyles],
+  );
 
   useEffect(() => {
     void compositeService.listPresets().then(setPresets).catch(() => setPresets([]));
     void compositeService.listIndexThematic().then(setThematic).catch(() => setThematic([]));
     void analyticsService.listColormaps().then(setRamps).catch(() => setRamps([]));
   }, []);
+
+  const updateStyle = (name: string, patch: Partial<ClassStyle>) => {
+    setAllStyles((prev) =>
+      prev.map((s) => (s.name === name ? { ...s, ...patch } : s)),
+    );
+  };
 
   const activeThematic = thematic.find((t) => t.id === indexResult?.index);
   const activeIndexMeta = INDEX_LIST.find((i) => i.id === indexResult?.index);
@@ -247,21 +268,95 @@ export function ImageProcessingPanel({
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
           Unsupervised classification
         </h3>
-        <p className="mb-1 text-[10px] text-[var(--muted)]">
-          Full-scene 6-class map at <strong>100% opacity</strong> (high-contrast
-          colors): Snow / Bare Soil / Built-up / Vegetation / Water / Roads
+        <p className="mb-1.5 text-[10px] text-[var(--muted)]">
+          Choose how many classes, pick your own colors, then run. Map renders at{' '}
+          <strong>100% opacity</strong> over the full scene.
         </p>
+
+        <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
+          Number of classes
+        </label>
+        <div className="mb-2 grid grid-cols-4 gap-1">
+          {([3, 4, 5, 6] as ClassCount[]).map((n) => (
+            <button
+              key={n}
+              type="button"
+              disabled={loading}
+              onClick={() => setNClasses(n)}
+              className={`rounded border px-1 py-1.5 text-[11px] font-semibold ${
+                nClasses === n
+                  ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                  : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+              }`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+
+        <div className="mb-1 flex items-center justify-between">
+          <label className="text-[10px] font-medium text-[var(--muted)]">
+            Assign colors
+          </label>
+          <button
+            type="button"
+            className="text-[10px] text-[var(--accent)] underline-offset-2 hover:underline"
+            onClick={() => setAllStyles(DEFAULT_CLASS_STYLES.map((s) => ({ ...s })))}
+          >
+            Reset defaults
+          </button>
+        </div>
+        <div className="mb-2 space-y-1 rounded border border-[var(--line)] bg-white p-1.5">
+          {activeStyles.map((s) => (
+            <div
+              key={s.name}
+              className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-[var(--surface-2,#f8fafc)]"
+            >
+              <input
+                type="color"
+                value={s.color}
+                aria-label={`Color for ${s.label}`}
+                className="h-7 w-8 cursor-pointer rounded border border-[var(--line)] bg-transparent p-0"
+                onChange={(e) => updateStyle(s.name, { color: e.target.value.toUpperCase() })}
+              />
+              <input
+                type="text"
+                value={s.color}
+                spellCheck={false}
+                className="w-[72px] rounded border border-[var(--line)] px-1 py-0.5 font-mono text-[10px]"
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  if (/^#?[0-9a-fA-F]{6}$/.test(v)) {
+                    updateStyle(s.name, {
+                      color: (v.startsWith('#') ? v : `#${v}`).toUpperCase(),
+                    });
+                  }
+                }}
+              />
+              <input
+                type="text"
+                value={s.label}
+                className="min-w-0 flex-1 rounded border border-[var(--line)] px-1.5 py-0.5 text-[11px]"
+                onChange={(e) => updateStyle(s.name, { label: e.target.value })}
+                aria-label={`Label for ${s.name}`}
+              />
+            </div>
+          ))}
+        </div>
+
         <button
           type="button"
           disabled={loading || !onClassify}
-          onClick={() => onClassify?.()}
+          onClick={() =>
+            onClassify?.({ n_classes: nClasses, class_styles: activeStyles })
+          }
           className={`w-full rounded-lg border px-2 py-2 text-left text-[11px] font-semibold ${
             activeToolId === 'unsupervised_classify' || classificationResult
               ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
               : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
           }`}
         >
-          Run 6-class unsupervised classify
+          Run {nClasses}-class unsupervised classify
         </button>
         {classificationResult && (
           <div className="mt-2 space-y-2 rounded border border-[var(--line)] bg-white p-2">

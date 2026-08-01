@@ -38,7 +38,7 @@ ROADS = 5
 NODATA = 255
 N_CLASSES = 6
 
-# High-contrast categorical palette (fully opaque map rendering).
+# Default high-contrast palette (users may override any color).
 CLASS_META: dict[int, dict[str, str]] = {
     SNOW: {"name": "snow", "label": "Snow", "color": "#F8FAFC"},
     BARE_SOIL: {"name": "bare_soil", "label": "Bare Soil", "color": "#F0C040"},
@@ -48,12 +48,25 @@ CLASS_META: dict[int, dict[str, str]] = {
     ROADS: {"name": "roads", "label": "Roads", "color": "#111827"},
 }
 
+NAME_TO_ID: dict[str, int] = {m["name"]: cid for cid, m in CLASS_META.items()}
+
+# Which semantic classes are kept for each n_classes preset
+CLASS_PRESETS: dict[int, list[str]] = {
+    3: ["vegetation", "bare_soil", "water"],
+    4: ["vegetation", "bare_soil", "built_up", "water"],
+    5: ["bare_soil", "built_up", "vegetation", "water", "roads"],
+    6: ["snow", "bare_soil", "built_up", "vegetation", "water", "roads"],
+}
+
 # Backward-compatible aliases used by older helpers / tests
 SOIL = BARE_SOIL
 
 
 class ClassificationService:
     def classify(self, request: ClassificationRequest) -> ClassificationResponse:
+        n_classes = int(np.clip(int(request.n_classes), 3, 6))
+        active_meta = self._resolve_active_meta(n_classes, request.class_styles)
+
         size = max(int(request.size), 1536)
         bands, bounds, footprint = self._load_bands(
             request.scene_id, request.bbox, size
@@ -103,8 +116,11 @@ class ClassificationService:
         amalgam = self._recover_dark_water(amalgam, features, valid, thresholds)
         amalgam = self._strip_false_vegetation(amalgam, features, valid, thresholds)
 
-        stats, total_km2 = self._area_stats(amalgam, valid, bounds)
-        overlay = self._class_map_to_png(amalgam, valid)
+        # Collapse to the requested number of classes, then render with user colors
+        amalgam = self._collapse_to_n_classes(amalgam, n_classes)
+        stats, total_km2 = self._area_stats(amalgam, valid, bounds, active_meta)
+        overlay = self._class_map_to_png(amalgam, valid, active_meta)
+        labels = " / ".join(m["label"] for m in active_meta.values())
 
         return ClassificationResponse(
             scene_id=request.scene_id,
@@ -114,14 +130,14 @@ class ClassificationService:
             valid_pixels=int(valid.sum()),
             bounds=[float(x) for x in bounds],
             overlay_base64=base64.b64encode(overlay).decode("ascii"),
-            legend=self._legend(),
+            legend=self._legend(active_meta),
             formula=(
-                "6-class unsupervised LULC: Snow / Bare Soil / Built-up / Vegetation / "
-                "Water / Roads — adaptive spectral rules ⊕ over-clustered K-means ⊕ "
-                "OBIA-like majority ⊕ canal/road linear enhancement ⊕ wet-channel growth"
+                f"{n_classes}-class unsupervised LULC ({labels}) — adaptive spectral "
+                "rules ⊕ over-clustered K-means ⊕ OBIA-like majority ⊕ canal/road "
+                "linear enhancement ⊕ wet-channel growth (user-selectable colors)"
             ),
             message=(
-                f"Classified into {N_CLASSES} classes · agreement {agreement:.0f}% · "
+                f"Classified into {n_classes} classes · agreement {agreement:.0f}% · "
                 f"total {total_km2:.2f} km²"
             ),
             agreement_percent=round(float(agreement), 1),
@@ -132,13 +148,68 @@ class ClassificationService:
                     "obia_like",
                     "linear_roads_canals",
                 ],
-                "n_classes": N_CLASSES,
+                "n_classes": n_classes,
+                "active_classes": [m["name"] for m in active_meta.values()],
                 "thresholds": {k: round(float(v), 4) for k, v in thresholds.items()},
                 "cloud_pixels": int(cloud.sum()),
-                "colors": {m["name"]: m["color"] for m in CLASS_META.values()},
+                "colors": {m["name"]: m["color"] for m in active_meta.values()},
                 "footprint_clipped": bool(footprint),
             },
         )
+
+    def _resolve_active_meta(
+        self,
+        n_classes: int,
+        class_styles: list | None,
+    ) -> dict[int, dict[str, str]]:
+        names = CLASS_PRESETS.get(n_classes, CLASS_PRESETS[6])
+        overrides: dict[str, dict[str, str]] = {}
+        if class_styles:
+            for style in class_styles:
+                name = getattr(style, "name", None) or (
+                    style.get("name") if isinstance(style, dict) else None
+                )
+                if not name:
+                    continue
+                name = str(name).strip().lower().replace(" ", "_").replace("-", "_")
+                entry: dict[str, str] = {}
+                label = getattr(style, "label", None) if not isinstance(style, dict) else style.get("label")
+                color = getattr(style, "color", None) if not isinstance(style, dict) else style.get("color")
+                if label:
+                    entry["label"] = str(label)
+                if color:
+                    c = str(color).strip()
+                    if not c.startswith("#"):
+                        c = f"#{c}"
+                    entry["color"] = c.upper()
+                if entry:
+                    overrides[name] = entry
+
+        active: dict[int, dict[str, str]] = {}
+        for name in names:
+            cid = NAME_TO_ID.get(name)
+            if cid is None:
+                continue
+            base = dict(CLASS_META[cid])
+            if name in overrides:
+                base.update(overrides[name])
+            active[cid] = base
+        if not active:
+            return {cid: dict(meta) for cid, meta in CLASS_META.items()}
+        return active
+
+    def _collapse_to_n_classes(self, class_map: np.ndarray, n_classes: int) -> np.ndarray:
+        """Merge full 6-class map down to the requested preset."""
+        out = class_map.copy()
+        if n_classes <= 5:
+            out[out == SNOW] = BARE_SOIL
+        if n_classes <= 4:
+            out[out == ROADS] = BUILT_UP
+        if n_classes <= 3:
+            out[out == BUILT_UP] = BARE_SOIL
+            out[out == ROADS] = BARE_SOIL
+            out[out == SNOW] = BARE_SOIL
+        return out
 
     def results_csv(self, result: ClassificationResponse) -> str:
         rows = ["class_id,name,label,color,pixels,percent,area_km2"]
@@ -1351,13 +1422,18 @@ class ClassificationService:
         return (px_h_m * px_w_m) / 1_000_000.0
 
     def _area_stats(
-        self, class_map: np.ndarray, valid: np.ndarray, bounds: list[float]
+        self,
+        class_map: np.ndarray,
+        valid: np.ndarray,
+        bounds: list[float],
+        active_meta: dict[int, dict[str, str]] | None = None,
     ) -> tuple[list[ClassAreaStat], float]:
+        meta_map = active_meta or CLASS_META
         px_km2 = self._pixel_area_km2(bounds, class_map.shape)
         valid_n = int(valid.sum())
         stats: list[ClassAreaStat] = []
         total_km2 = 0.0
-        for cid, meta in CLASS_META.items():
+        for cid, meta in meta_map.items():
             n = int(((class_map == cid) & valid).sum())
             area = n * px_km2
             total_km2 += area
@@ -1380,11 +1456,17 @@ class ClassificationService:
         h = hex_color.lstrip("#")
         return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
-    def _class_map_to_png(self, class_map: np.ndarray, valid: np.ndarray) -> bytes:
+    def _class_map_to_png(
+        self,
+        class_map: np.ndarray,
+        valid: np.ndarray,
+        active_meta: dict[int, dict[str, str]] | None = None,
+    ) -> bytes:
         """Render a sharp, fully opaque categorical PNG (no soft alpha / blur)."""
+        meta_map = active_meta or CLASS_META
         h, w = class_map.shape
         rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        for cid, meta in CLASS_META.items():
+        for cid, meta in meta_map.items():
             r, g, b = self._hex_to_rgb(meta["color"])
             mask = (class_map == cid) & valid
             rgba[mask, 0] = r
@@ -1398,16 +1480,21 @@ class ClassificationService:
         img.save(buf, format="PNG", compress_level=6, optimize=False)
         return buf.getvalue()
 
-    def _legend(self) -> LegendInfo:
+    def _legend(
+        self, active_meta: dict[int, dict[str, str]] | None = None
+    ) -> LegendInfo:
+        meta_map = active_meta or CLASS_META
+        n = len(meta_map)
+        labels = " / ".join(m["label"] for m in meta_map.values())
         return LegendInfo(
             min=0,
-            max=float(N_CLASSES - 1),
+            max=float(max(meta_map.keys()) if meta_map else n - 1),
             unit="class",
-            label="Land cover (6 classes)",
-            formula="Snow / Bare Soil / Built-up / Vegetation / Water / Roads",
-            colormap="lulc6",
+            label=f"Land cover ({n} classes)",
+            formula=labels,
+            colormap=f"lulc{n}",
             stops=[
                 ColormapStop(value=float(cid), color=meta["color"])
-                for cid, meta in CLASS_META.items()
+                for cid, meta in meta_map.items()
             ],
         )
