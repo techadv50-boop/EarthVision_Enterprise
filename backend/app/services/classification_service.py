@@ -158,7 +158,7 @@ class ClassificationService:
             ),
             message=(
                 f"Classified into {n_classes} classes · agreement {agreement:.0f}% · "
-                f"total {total_km2:.2f} km² · recolor anytime without re-running"
+                f"total {int(round(total_km2))} km² · recolor anytime without re-running"
             ),
             agreement_percent=round(float(agreement), 1),
             metadata={
@@ -288,9 +288,9 @@ class ClassificationService:
         for c in result.classes:
             rows.append(
                 f"{c.class_id},{c.name},{c.label},{c.color},{c.pixels},"
-                f"{c.percent:.4f},{c.area_km2:.6f}"
+                f"{c.percent:.4f},{int(round(c.area_km2))}"
             )
-        rows.append(f",,,TOTAL,,,{result.total_area_km2:.6f}")
+        rows.append(f",,,TOTAL,,,{int(round(result.total_area_km2))}")
         rows.append(f"algorithm,,,{result.algorithm},,,")
         rows.append(f"agreement_percent,,,{result.agreement_percent},,,")
         rows.append(f"valid_pixels,,,{result.valid_pixels},,,")
@@ -1600,10 +1600,10 @@ class ClassificationService:
                     color=meta["color"],
                     pixels=n,
                     percent=round(pct, 2),
-                    area_km2=round(area, 4),
+                    area_km2=float(int(round(area))),
                 )
             )
-        return stats, round(total_km2, 4)
+        return stats, float(int(round(total_km2)))
 
     # ------------------------------------------------------------- render
     def _hex_to_rgb(self, hex_color: str) -> tuple[int, int, int]:

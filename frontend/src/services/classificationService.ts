@@ -199,9 +199,9 @@ export const classificationService = {
       'class_id,name,label,color,pixels,percent,area_km2',
       ...result.classes.map(
         (c) =>
-          `${c.class_id},${c.name},"${c.label}",${c.color},${c.pixels},${c.percent},${c.area_km2}`,
+          `${c.class_id},${c.name},"${c.label}",${c.color},${c.pixels},${c.percent},${Math.round(c.area_km2)}`,
       ),
-      `,,,TOTAL,,,${result.total_area_km2}`,
+      `,,,TOTAL,,,${Math.round(result.total_area_km2)}`,
       `algorithm,,,${result.algorithm},,,`,
       `agreement_percent,,,${result.agreement_percent ?? ''},,,`,
       `valid_pixels,,,${result.valid_pixels},,,`,

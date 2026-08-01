@@ -440,14 +440,14 @@ export function ImageProcessingPanel({
                       </span>
                     </td>
                     <td className="py-0.5">{c.percent.toFixed(1)}</td>
-                    <td className="py-0.5 font-medium">{c.area_km2.toFixed(3)}</td>
+                    <td className="py-0.5 font-medium">{Math.round(c.area_km2)}</td>
                   </tr>
                 ))}
                 <tr className="border-t border-[var(--line)] font-semibold">
                   <td className="py-0.5">Total</td>
                   <td className="py-0.5">100</td>
                   <td className="py-0.5">
-                    {classificationResult.total_area_km2.toFixed(3)}
+                    {Math.round(classificationResult.total_area_km2)}
                   </td>
                 </tr>
               </tbody>

@@ -84,6 +84,14 @@ def _format_coord(value: float, is_lon: bool) -> str:
     return f"{abs(value):.3f}° {hemi}"
 
 
+def _format_area_km2(value: Any) -> str:
+    """Round area to a whole km² with no decimal places."""
+    try:
+        return f"{int(round(float(value)))} km²"
+    except (TypeError, ValueError):
+        return "— km²"
+
+
 def _grid_step(span: float) -> float:
     """Nice tick step for a geographic span in degrees."""
     if span <= 0:
@@ -236,17 +244,14 @@ def decorate_classification_map(
     legend_inner_pad = 32
     swatch = max(22, min(28, sz_legend + 2))
     longest_label = "Cropland"
-    longest_area = "999.999 km²"
+    longest_area = "9999 km²"
     for it in items:
         lab = str(it.get("label") or it.get("name") or "Class")
         if len(lab) > len(longest_label):
             longest_label = lab
-        try:
-            at = f"{float(it.get('area_km2') or 0):.3f} km²"
-            if len(at) > len(longest_area):
-                longest_area = at
-        except (TypeError, ValueError):
-            pass
+        at = _format_area_km2(it.get("area_km2"))
+        if len(at) > len(longest_area):
+            longest_area = at
     lab_w, _ = _text_size(probe, longest_label[:22], font_legend)
     area_w, _ = _text_size(probe, longest_area, font_legend)
     legend_w = max(
@@ -490,11 +495,11 @@ def decorate_classification_map(
             break
         color = _hex_rgb(str(item.get("color") or "#888888"))
         label = str(item.get("label") or item.get("name") or "Class")[:22]
-        area = item.get("area_km2")
-        try:
-            area_txt = f"{float(area):.3f} km²" if area is not None else "— km²"
-        except (TypeError, ValueError):
-            area_txt = "— km²"
+        area_txt = (
+            _format_area_km2(item.get("area_km2"))
+            if item.get("area_km2") is not None
+            else "— km²"
+        )
 
         sw_y = row_y + max(0, (row_content - swatch) // 2)
         draw.rounded_rectangle(
@@ -517,7 +522,7 @@ def decorate_classification_map(
         row_y += row_h
 
     if total_area_km2 is not None:
-        tot_txt = f"Total   {float(total_area_km2):.3f} km²"
+        tot_txt = f"Total   {_format_area_km2(total_area_km2)}"
         _, tth = _text_size(draw, tot_txt, font_legend_title)
         tot_y = ly1 - legend_inner_pad - tth - 4
         draw.line(

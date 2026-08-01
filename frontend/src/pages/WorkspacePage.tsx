@@ -1119,7 +1119,7 @@ export function WorkspacePage() {
           sceneId,
         );
         setLastMessage(
-          `Downloaded GeoTIFF · LULC map sheet with legend (${classificationResult.total_area_km2} km²)`,
+          `Downloaded GeoTIFF · LULC map sheet with legend (${Math.round(classificationResult.total_area_km2)} km²)`,
         );
         return;
       }
@@ -1683,7 +1683,7 @@ export function WorkspacePage() {
                   .downloadGeotiff(classificationResult, focusScene.id)
                   .then(() =>
                     setLastMessage(
-                      `Downloaded GeoTIFF · LULC ${classificationResult.classes.length}-class (${classificationResult.total_area_km2} km²)`,
+                      `Downloaded GeoTIFF · LULC ${classificationResult.classes.length}-class (${Math.round(classificationResult.total_area_km2)} km²)`,
                     ),
                   )
                   .catch((err) => setError(getErrorMessage(err)))
