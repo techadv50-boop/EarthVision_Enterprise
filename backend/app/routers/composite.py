@@ -20,14 +20,21 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 
 @router.get("/composites")
-async def list_composites(user: CurrentUser) -> list[dict]:
-    return CompositeService().list_presets()
+async def list_composites(
+    user: CurrentUser,
+    collection: str | None = None,
+) -> list[dict]:
+    """List RGB composites; pass ``collection`` to enable/disable per satellite."""
+    return CompositeService().list_presets(collection=collection)
 
 
 @router.get("/index-thematic")
-async def list_index_thematic(user: CurrentUser) -> list[dict]:
-    """Band combinations + formulas for thematic index maps."""
-    return CompositeService().list_index_thematic()
+async def list_index_thematic(
+    user: CurrentUser,
+    collection: str | None = None,
+) -> list[dict]:
+    """Band combinations + formulas for thematic index maps (satellite-aware)."""
+    return CompositeService().list_index_thematic(collection=collection)
 
 
 @router.post("/composite", response_model=CompositeResponse)

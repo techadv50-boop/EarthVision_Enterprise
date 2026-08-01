@@ -58,6 +58,8 @@ interface Props {
   overlays: MapOverlay[];
   layerOpacity: number;
   hasScene: boolean;
+  /** Active scene collection for satellite-aware indicator gating. */
+  sceneCollection?: string | null;
   hasDrawn: boolean;
   drawnType?: string | null;
   bufferLoading?: boolean;
@@ -133,6 +135,7 @@ export function ToolboxPanel({
   overlays,
   layerOpacity,
   hasScene,
+  sceneCollection = null,
   hasDrawn,
   drawnType,
   bufferLoading,
@@ -343,6 +346,7 @@ export function ToolboxPanel({
         {activeBox.id === 'image' && onComposite && onIndexTool && onStretch && (
           <ImageProcessingPanel
             hasScene={hasScene}
+            sceneCollection={sceneCollection}
             loading={loading || !actionsEnabled}
             activeToolId={activeToolId}
             indexResult={indexResult}

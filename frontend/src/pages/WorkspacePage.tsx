@@ -976,6 +976,7 @@ export function WorkspacePage() {
       const result = await compositeService.render({
         preset,
         scene_id: focusScene.id,
+        collection: focusScene.collection,
         bbox: [...bounds],
         size: 1280,
         ...stretchParams,
@@ -1609,6 +1610,7 @@ export function WorkspacePage() {
               overlays={overlays}
               layerOpacity={layerOpacity}
               hasScene={hasVisibleScene}
+              sceneCollection={focusScene?.collection ?? null}
               hasDrawn={Boolean(drawnFeature)}
               drawnType={drawnFeature?.type ?? null}
               bufferLoading={bufferLoading}

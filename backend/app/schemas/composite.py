@@ -25,6 +25,10 @@ CompositePreset = Literal[
 
 class CompositeRequest(BaseModel):
     scene_id: str | None = None
+    collection: str | None = Field(
+        default=None,
+        description="Satellite/collection id used to validate & label band formulas",
+    )
     bbox: list[float] | None = Field(default=None, description="[west,south,east,north]")
     preset: CompositePreset = "false_color_infrared"
     # Optional custom band mapping (overrides preset)

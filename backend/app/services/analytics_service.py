@@ -78,7 +78,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "ref": "Planck / Landsat Collection 2 TIRS",
     },
     "EVI": {
-        "formula": "2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*GREEN + 1)",
+        "formula": "2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1)",
         "label": "EVI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
@@ -155,16 +155,16 @@ class AnalyticsService:
         return np.clip(self._safe_divide(num, den), -1.0, 1.0)
 
     def compute_evi(
-        self, red: np.ndarray, nir: np.ndarray, green: np.ndarray
+        self, red: np.ndarray, nir: np.ndarray, blue: np.ndarray
     ) -> np.ndarray:
-        """EVI = 2.5 * (NIR − RED) / (NIR + 6*RED − 7.5*GREEN + 1)."""
-        r, n, g = (
+        """EVI = 2.5 * (NIR − RED) / (NIR + 6*RED − 7.5*BLUE + 1) (Huete 2002)."""
+        r, n, b = (
             red.astype(np.float64),
             nir.astype(np.float64),
-            green.astype(np.float64),
+            blue.astype(np.float64),
         )
         return np.clip(
-            2.5 * self._safe_divide(n - r, n + 6.0 * r - 7.5 * g + 1.0),
+            2.5 * self._safe_divide(n - r, n + 6.0 * r - 7.5 * b + 1.0),
             -1.0,
             1.0,
         )
@@ -618,7 +618,7 @@ class AnalyticsService:
         if index == "BSI":
             return self.compute_bsi(band("red"), band("green"), band("nir"), band("swir"))
         if index == "EVI":
-            return self.compute_evi(band("red"), band("nir"), band("green"))
+            return self.compute_evi(band("red"), band("nir"), band("blue"))
         if index == "NDMI":
             return self.compute_ndmi(band("nir"), band("swir"))
         if index == "NBR":
@@ -649,6 +649,11 @@ class AnalyticsService:
 
         if request.scene_id:
             from app.services.scene_imagery_service import SceneImageryService
+            from app.services.satellite_bands import (
+                family_label,
+                index_applicable,
+                normalize_satellite_family,
+            )
 
             imagery = SceneImageryService()
             layer = imagery.get_layer(request.scene_id)
@@ -656,6 +661,19 @@ class AnalyticsService:
                 bounds = [float(x) for x in layer["bounds"]]
                 footprint = layer.get("footprint") or footprint
                 layer_meta = layer
+                family = normalize_satellite_family(
+                    str(layer.get("collection") or "")
+                )
+                if family != "UNKNOWN" and not index_applicable(index, family):
+                    if index == "LST":
+                        raise ValidationError(
+                            f"LST requires Landsat-8/9 thermal (TIRS); "
+                            f"not applicable to {family_label(family)}."
+                        )
+                    raise ValidationError(
+                        f"{index} is not applicable to {family_label(family)}. "
+                        "Use Sentinel-2, Landsat-7/8/9, or MODIS optical scenes."
+                    )
                 if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
                     raise ValidationError(
                         "Sentinel-1 SAR does not support optical indices. "
@@ -1053,7 +1071,7 @@ class AnalyticsService:
                     ]
                 ),
                 "EVI": float(
-                    self.compute_evi(bands["red"], bands["nir"], bands["green"])[py, px]
+                    self.compute_evi(bands["red"], bands["nir"], bands["blue"])[py, px]
                 ),
                 "NDMI": float(self.compute_ndmi(bands["nir"], bands["swir"])[py, px]),
                 "NBR": float(self.compute_nbr(bands["nir"], bands["swir2"])[py, px]),

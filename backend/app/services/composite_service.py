@@ -18,96 +18,87 @@ from app.schemas.composite import (
     StretchRequest,
     StretchResponse,
 )
+from app.services.satellite_bands import (
+    COMPOSITE_BAND_CODES,
+    COMPOSITE_REQUIRED_KEYS,
+    INDEX_APPLICABLE,
+    INDEX_BAND_NOTES,
+    OPTICAL_SWIR_FAMILY,
+    composite_applicable_families,
+    composite_for_family,
+    family_label,
+    normalize_satellite_family,
+)
 
-# Standard remote-sensing RGB band combinations (Sentinel-2 / Landsat OLI mapping)
+# Standard remote-sensing RGB band combinations (sensor-accurate codes in satellite_bands)
 COMPOSITE_PRESETS: dict[str, dict[str, Any]] = {
     "true_color": {
         "label": "True Color (Natural)",
-        "keys": ("red", "green", "blue"),
+        "keys": COMPOSITE_REQUIRED_KEYS["true_color"],
         "display": {"R": "Red", "G": "Green", "B": "Blue"},
-        "s2": "B04-B03-B02",
-        "landsat": "B4-B3-B2",
         "formula": "R=Red, G=Green, B=Blue — natural color",
         "use": "General mapping, visual interpretation",
     },
     "false_color_infrared": {
         "label": "False Color Infrared (FCC)",
-        "keys": ("nir", "red", "green"),
+        "keys": COMPOSITE_REQUIRED_KEYS["false_color_infrared"],
         "display": {"R": "NIR", "G": "Red", "B": "Green"},
-        "s2": "B08-B04-B03",
-        "landsat": "B5-B4-B3",
         "formula": "R=NIR, G=Red, B=Green — vegetation appears bright red",
         "use": "Vegetation vigor, land/water contrast (classic FCC)",
     },
     "false_color_agriculture": {
         "label": "Agriculture / SWIR",
-        "keys": ("swir", "nir", "blue"),
+        "keys": COMPOSITE_REQUIRED_KEYS["false_color_agriculture"],
         "display": {"R": "SWIR1", "G": "NIR", "B": "Blue"},
-        "s2": "B11-B08-B02",
-        "landsat": "B6-B5-B2",
         "formula": "R=SWIR1, G=NIR, B=Blue — crops & soils",
         "use": "Crop health, bare soil vs vegetation",
     },
     "false_color_urban": {
         "label": "Urban / Built-up",
-        "keys": ("swir", "nir", "red"),
+        "keys": COMPOSITE_REQUIRED_KEYS["false_color_urban"],
         "display": {"R": "SWIR1", "G": "NIR", "B": "Red"},
-        "s2": "B11-B08-B04",
-        "landsat": "B6-B5-B4",
         "formula": "R=SWIR1, G=NIR, B=Red — built-up bright",
         "use": "Urban fabric, impervious surfaces (pairs with NDBI)",
     },
     "swir_composite": {
         "label": "SWIR Composite",
-        "keys": ("swir2", "swir", "red"),
+        "keys": COMPOSITE_REQUIRED_KEYS["swir_composite"],
         "display": {"R": "SWIR2", "G": "SWIR1", "B": "Red"},
-        "s2": "B12-B11-B04",
-        "landsat": "B7-B6-B4",
         "formula": "R=SWIR2, G=SWIR1, B=Red — moisture & geology",
         "use": "Soil moisture, lithology, burn scars",
     },
     "geology": {
         "label": "Geology / Lithology",
-        "keys": ("swir2", "swir", "blue"),
+        "keys": COMPOSITE_REQUIRED_KEYS["geology"],
         "display": {"R": "SWIR2", "G": "SWIR1", "B": "Blue"},
-        "s2": "B12-B11-B02",
-        "landsat": "B7-B6-B2",
         "formula": "R=SWIR2, G=SWIR1, B=Blue — rock & soil types",
         "use": "Geological mapping",
     },
     "atmospheric_penetration": {
         "label": "Atmospheric Penetration",
-        "keys": ("swir2", "swir", "nir"),
+        "keys": COMPOSITE_REQUIRED_KEYS["atmospheric_penetration"],
         "display": {"R": "SWIR2", "G": "SWIR1", "B": "NIR"},
-        "s2": "B12-B11-B08",
-        "landsat": "B7-B6-B5",
         "formula": "R=SWIR2, G=SWIR1, B=NIR — haze penetration",
         "use": "Smoke/haze penetration, fire mapping",
     },
     "land_water": {
         "label": "Land / Water",
-        "keys": ("nir", "swir", "red"),
+        "keys": COMPOSITE_REQUIRED_KEYS["land_water"],
         "display": {"R": "NIR", "G": "SWIR1", "B": "Red"},
-        "s2": "B08-B11-B04",
-        "landsat": "B5-B6-B4",
         "formula": "R=NIR, G=SWIR1, B=Red — water dark, land bright",
         "use": "Shorelines, flooding (pairs with NDWI)",
     },
     "vegetation_health": {
         "label": "Vegetation Health (NIR-focused)",
-        "keys": ("nir", "swir", "green"),
+        "keys": COMPOSITE_REQUIRED_KEYS["vegetation_health"],
         "display": {"R": "NIR", "G": "SWIR1", "B": "Green"},
-        "s2": "B08-B11-B03",
-        "landsat": "B5-B6-B3",
         "formula": "R=NIR, G=SWIR1, B=Green — healthy veg bright",
         "use": "Vegetation stress (pairs with NDVI / NDMI)",
     },
     "burn_severity": {
         "label": "Burn Severity Preview",
-        "keys": ("swir2", "nir", "green"),
+        "keys": COMPOSITE_REQUIRED_KEYS["burn_severity"],
         "display": {"R": "SWIR2", "G": "NIR", "B": "Green"},
-        "s2": "B12-B08-B03",
-        "landsat": "B7-B5-B3",
         "formula": "R=SWIR2, G=NIR, B=Green — burns magenta/red",
         "use": "Fire scars (pairs with NBR)",
     },
@@ -146,8 +137,8 @@ INDEX_THEMATIC: dict[str, dict[str, str]] = {
         "colormap": "Soil browns (−1…1)",
     },
     "EVI": {
-        "formula": "2.5 × (NIR−RED) / (NIR + 6·RED − 7.5·GREEN + 1)",
-        "bands": "NIR + Red + Green (S2: B08+B04+B03)",
+        "formula": "2.5 × (NIR−RED) / (NIR + 6·RED − 7.5·BLUE + 1)",
+        "bands": "NIR + Red + Blue (S2: B08+B04+B02 · LS8: B5+B4+B2)",
         "thematic_rgb": "False Color Infrared (NIR-Red-Green)",
         "colormap": "RdYlGn (−1…1)",
     },
@@ -175,26 +166,89 @@ INDEX_THEMATIC: dict[str, dict[str, str]] = {
 class CompositeService:
     """Build RGB composites and stretch previews from scene analysis bands."""
 
-    def list_presets(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": key,
-                "label": meta["label"],
-                "formula": meta["formula"],
-                "use": meta["use"],
-                "sentinel2": meta["s2"],
-                "landsat": meta["landsat"],
-                "bands": meta["display"],
-            }
-            for key, meta in COMPOSITE_PRESETS.items()
-        ]
+    def list_presets(self, collection: str | None = None) -> list[dict[str, Any]]:
+        family = normalize_satellite_family(collection) if collection else None
+        out: list[dict[str, Any]] = []
+        for key, meta in COMPOSITE_PRESETS.items():
+            applicable = composite_applicable_families(key)
+            sat_bands = COMPOSITE_BAND_CODES.get(key) or {}
+            active = composite_for_family(key, family) if family else None
+            # Default display codes: S2 / Landsat-8 / MODIS for UI cards
+            s2 = (sat_bands.get("SENTINEL-2") or {}).get("codes", "")
+            ls8 = (sat_bands.get("LANDSAT-8") or {}).get("codes", "")
+            l7 = (sat_bands.get("LANDSAT-7") or {}).get("codes", "")
+            modis = (sat_bands.get("MODIS") or {}).get("codes", "")
+            formula = (active or {}).get("formula") or meta["formula"]
+            codes = (active or {}).get("codes") or s2
+            enabled = True if family is None else family in applicable
+            reason = None
+            if family and not enabled:
+                reason = (
+                    f"Not applicable to {family_label(family)} — needs optical "
+                    f"SWIR/VIS bands (supported: {', '.join(family_label(f) for f in applicable)})"
+                )
+            out.append(
+                {
+                    "id": key,
+                    "label": meta["label"],
+                    "formula": formula,
+                    "use": meta["use"],
+                    "sentinel2": s2,
+                    "landsat": ls8,
+                    "landsat7": l7,
+                    "modis": modis,
+                    "bands": meta["display"],
+                    "applicable": applicable,
+                    "enabled": enabled,
+                    "disabled_reason": reason,
+                    "active_codes": codes if enabled else None,
+                    "active_family": family if family and family != "UNKNOWN" else None,
+                    "satellite_formulas": {
+                        fam: {
+                            "codes": info["codes"],
+                            "formula": info["formula"],
+                        }
+                        for fam, info in sat_bands.items()
+                    },
+                }
+            )
+        return out
 
-    def list_index_thematic(self) -> list[dict[str, str]]:
-        return [{"id": k, **v} for k, v in INDEX_THEMATIC.items()]
+    def list_index_thematic(self, collection: str | None = None) -> list[dict[str, Any]]:
+        family = normalize_satellite_family(collection) if collection else None
+        rows: list[dict[str, Any]] = []
+        for k, v in INDEX_THEMATIC.items():
+            applicable = list(INDEX_APPLICABLE.get(k, OPTICAL_SWIR_FAMILY))
+            enabled = True if family is None else family in applicable
+            notes = INDEX_BAND_NOTES.get(k) or {}
+            band_note = notes.get(family or "", v.get("bands", ""))
+            reason = None
+            if family and not enabled:
+                if k == "LST":
+                    reason = "LST requires Landsat-8/9 thermal (TIRS) in this app"
+                else:
+                    reason = (
+                        f"Not applicable to {family_label(family)} — needs optical "
+                        f"multispectral bands"
+                    )
+            rows.append(
+                {
+                    "id": k,
+                    **v,
+                    "bands": band_note or v.get("bands", ""),
+                    "applicable": applicable,
+                    "enabled": enabled,
+                    "disabled_reason": reason,
+                    "satellite_bands": notes,
+                }
+            )
+        return rows
 
     def render_composite(self, request: CompositeRequest) -> CompositeResponse:
         preset_id = request.preset
         meta = COMPOSITE_PRESETS.get(preset_id)
+        family = self._resolve_family(request.scene_id, request.collection)
+
         if request.red_band and request.green_band and request.blue_band:
             keys = (request.red_band, request.green_band, request.blue_band)
             label = f"Custom ({keys[0]}-{keys[1]}-{keys[2]})"
@@ -202,10 +256,17 @@ class CompositeService:
             formula = f"R={keys[0]}, G={keys[1]}, B={keys[2]}"
             band_keys = {"R": keys[0], "G": keys[1], "B": keys[2]}
         elif meta:
+            applicable = composite_applicable_families(preset_id)
+            if family and family not in applicable and family != "UNKNOWN":
+                raise ValidationError(
+                    f"'{meta['label']}' is not applicable to {family_label(family)}. "
+                    f"Use with: {', '.join(family_label(f) for f in applicable)}."
+                )
             keys = meta["keys"]
             label = meta["label"]
             display = meta["display"]
-            formula = meta["formula"]
+            sat = composite_for_family(preset_id, family) if family else None
+            formula = (sat or {}).get("formula") or meta["formula"]
             band_keys = {"R": keys[0], "G": keys[1], "B": keys[2]}
         else:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
@@ -214,9 +275,9 @@ class CompositeService:
         # Extent follows the scene layer bounds passed by the client (original image).
         size = max(request.size, 1280)
         bands, bounds = self._load_bands(request.scene_id, request.bbox, size)
-        r = self._pick(bands, keys[0])
-        g = self._pick(bands, keys[1])
-        b = self._pick(bands, keys[2])
+        r = self._pick(bands, keys[0], required=True)
+        g = self._pick(bands, keys[1], required=True)
+        b = self._pick(bands, keys[2], required=True)
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
 
         if preset_id == "true_color":
@@ -256,9 +317,28 @@ class CompositeService:
             overlay_base64=base64.b64encode(png).decode("ascii"),
             histogram=hist,
             legend=self._rgb_legend(label, formula),
-            message=f"{label} · {stretch_label} p{request.p_low}-{request.p_high}%",
+            message=(
+                f"{label} · {family_label(family) if family else 'scene'} · "
+                f"{stretch_label} p{request.p_low}-{request.p_high}%"
+            ),
             stretch=f"{stretch_label} p{request.p_low}-{request.p_high} γ={request.gamma}",
         )
+
+    def _resolve_family(self, scene_id: str | None, collection: str | None) -> str | None:
+        if collection:
+            fam = normalize_satellite_family(collection)
+            if fam != "UNKNOWN":
+                return fam
+        if scene_id:
+            try:
+                from app.services.scene_imagery_service import SceneImageryService
+
+                layer = SceneImageryService().get_layer(scene_id)
+                if layer and layer.get("collection"):
+                    return normalize_satellite_family(str(layer["collection"]))
+            except Exception:  # noqa: BLE001
+                pass
+        return None
 
     def stretch_scene(self, request: StretchRequest) -> StretchResponse:
         bands, bounds = self._load_bands(
@@ -431,22 +511,34 @@ class CompositeService:
         )
         return synth, [float(x) for x in bounds]
 
-    def _pick(self, bands: dict[str, np.ndarray], key: str) -> np.ndarray:
+    def _pick(
+        self,
+        bands: dict[str, np.ndarray],
+        key: str,
+        *,
+        required: bool = False,
+    ) -> np.ndarray:
         if key in bands:
             return bands[key].astype(np.float64)
-        # Fallbacks
+        # Naming aliases only (never substitute a different spectral region)
         aliases = {
-            "swir2": ["swir2", "swir", "nir"],
-            "swir": ["swir", "swir2", "red"],
-            "nir": ["nir", "green"],
-            "red": ["red", "nir"],
-            "green": ["green", "blue"],
-            "blue": ["blue", "green"],
+            "swir2": ["swir2", "swir22"],
+            "swir": ["swir", "swir16"],
+            "nir": ["nir", "nir08"],
+            "red": ["red"],
+            "green": ["green"],
+            "blue": ["blue"],
+            "thermal": ["thermal", "lwir11"],
         }
         for alt in aliases.get(key, [key]):
             if alt in bands:
                 return bands[alt].astype(np.float64)
-        # Last resort: zeros matching any available band shape
+        if required:
+            available = ", ".join(sorted(bands.keys())) or "none"
+            raise ValidationError(
+                f"Required band '{key}' is not available for this satellite "
+                f"(have: {available}). Choose a composite that matches the sensor."
+            )
         for arr in bands.values():
             return np.zeros_like(arr, dtype=np.float64)
         raise ValidationError(f"Band '{key}' not available")

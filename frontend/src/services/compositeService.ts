@@ -20,7 +20,15 @@ export interface CompositePresetInfo {
   use: string;
   sentinel2: string;
   landsat: string;
+  landsat7?: string;
+  modis?: string;
   bands: { R: string; G: string; B: string };
+  applicable?: string[];
+  enabled?: boolean;
+  disabled_reason?: string | null;
+  active_codes?: string | null;
+  active_family?: string | null;
+  satellite_formulas?: Record<string, { codes: string; formula: string }>;
 }
 
 export interface IndexThematicInfo {
@@ -29,6 +37,10 @@ export interface IndexThematicInfo {
   bands: string;
   thematic_rgb: string;
   colormap: string;
+  applicable?: string[];
+  enabled?: boolean;
+  disabled_reason?: string | null;
+  satellite_bands?: Record<string, string>;
 }
 
 export interface CompositeResult {
@@ -77,19 +89,26 @@ function downloadBlob(blob: Blob, filename: string) {
 export const compositeService = {
   toDataUrl,
 
-  async listPresets(): Promise<CompositePresetInfo[]> {
-    const { data } = await api.get('/analytics/composites');
+  async listPresets(opts?: { collection?: string | null }): Promise<CompositePresetInfo[]> {
+    const { data } = await api.get('/analytics/composites', {
+      params: opts?.collection ? { collection: opts.collection } : undefined,
+    });
     return data;
   },
 
-  async listIndexThematic(): Promise<IndexThematicInfo[]> {
-    const { data } = await api.get('/analytics/index-thematic');
+  async listIndexThematic(opts?: {
+    collection?: string | null;
+  }): Promise<IndexThematicInfo[]> {
+    const { data } = await api.get('/analytics/index-thematic', {
+      params: opts?.collection ? { collection: opts.collection } : undefined,
+    });
     return data;
   },
 
   async render(payload: {
     preset: CompositePreset;
     scene_id?: string;
+    collection?: string;
     bbox?: number[];
     size?: number;
     p_low?: number;

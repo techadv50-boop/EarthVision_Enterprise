@@ -32,8 +32,21 @@ const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapNam
   { id: 'LST', label: 'LST', defaultRamp: 'thermal' },
 ];
 
+/** Optical multispectral families that support RGB composites / most indices. */
+function isOpticalMultispectral(collection?: string | null): boolean {
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  if (!c) return true; // no scene yet — leave tools available
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) return false;
+  if (c.includes('SENTINEL-3') || c.startsWith('S3')) return false;
+  if (c.includes('SENTINEL-5') || c.includes('S5P')) return false;
+  if (c.includes('SMOS')) return false;
+  return true;
+}
+
 interface Props {
   hasScene: boolean;
+  /** Active scene collection id (e.g. SENTINEL-2, LANDSAT-8) for indicator gating. */
+  sceneCollection?: string | null;
   loading: boolean;
   activeToolId: string | null;
   indexResult: IndexResult | null;
@@ -131,8 +144,23 @@ function HistogramChart({
   );
 }
 
+function bandCodesLine(p: CompositePresetInfo): string {
+  if (p.enabled !== false && p.active_codes) {
+    const fam = p.active_family ? `${p.active_family} ` : '';
+    return `${fam}${p.active_codes}`;
+  }
+  const parts = [
+    p.sentinel2 ? `S2 ${p.sentinel2}` : '',
+    p.landsat ? `L8 ${p.landsat}` : '',
+    p.landsat7 ? `L7 ${p.landsat7}` : '',
+    p.modis ? `MODIS ${p.modis}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
 export function ImageProcessingPanel({
   hasScene,
+  sceneCollection = null,
   loading,
   activeToolId,
   indexResult,
@@ -175,8 +203,17 @@ export function ImageProcessingPanel({
   );
 
   useEffect(() => {
-    void compositeService.listPresets().then(setPresets).catch(() => setPresets([]));
-    void compositeService.listIndexThematic().then(setThematic).catch(() => setThematic([]));
+    void compositeService
+      .listPresets({ collection: sceneCollection })
+      .then(setPresets)
+      .catch(() => setPresets([]));
+    void compositeService
+      .listIndexThematic({ collection: sceneCollection })
+      .then(setThematic)
+      .catch(() => setThematic([]));
+  }, [sceneCollection]);
+
+  useEffect(() => {
     void analyticsService.listColormaps().then(setRamps).catch(() => setRamps([]));
   }, []);
 
@@ -186,6 +223,7 @@ export function ImageProcessingPanel({
     );
   };
 
+  const opticalOk = isOpticalMultispectral(sceneCollection);
   const activeThematic = thematic.find((t) => t.id === indexResult?.index);
   const activeIndexMeta = INDEX_LIST.find((i) => i.id === indexResult?.index);
   const selectedRamp =
@@ -204,7 +242,13 @@ export function ImageProcessingPanel({
     <div className="mb-3 space-y-3 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/30 p-2">
       {!hasScene && (
         <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
-          Toggle a Sentinel-2 / Landsat scene eye for best results. Tools can still run on the AOI.
+          Toggle a Sentinel-2 / Landsat / MODIS scene eye for best results. Tools can still run on the AOI.
+        </p>
+      )}
+      {sceneCollection && (
+        <p className="rounded border border-[var(--line)] bg-white px-2 py-1 text-[10px] text-[var(--muted)]">
+          Indicators filtered for <strong className="text-[var(--ink,#0f172a)]">{sceneCollection}</strong>
+          — unavailable composites/indices are dimmed.
         </p>
       )}
 
@@ -214,7 +258,7 @@ export function ImageProcessingPanel({
           Band combinations (RGB)
         </h3>
         <p className="mb-1 text-[10px] text-[var(--muted)]">
-          False color infrared default: <strong>R=NIR, G=Red, B=Green</strong> (veg = red)
+          Formulas use sensor-accurate band codes for the active satellite.
         </p>
         <div className="grid grid-cols-1 gap-1">
           {(presets.length
@@ -228,6 +272,7 @@ export function ImageProcessingPanel({
                   sentinel2: 'B04-B03-B02',
                   landsat: 'B4-B3-B2',
                   bands: { R: 'Red', G: 'Green', B: 'Blue' },
+                  enabled: true,
                 },
                 {
                   id: 'false_color_infrared' as CompositePreset,
@@ -237,28 +282,40 @@ export function ImageProcessingPanel({
                   sentinel2: 'B08-B04-B03',
                   landsat: 'B5-B4-B3',
                   bands: { R: 'NIR', G: 'Red', B: 'Green' },
+                  enabled: true,
                 },
               ]
           ).map((p) => {
             const active = activeToolId === `composite-${p.id}` || compositeResult?.preset === p.id;
+            const enabled = p.enabled !== false;
             return (
               <button
                 key={p.id}
                 type="button"
-                disabled={loading}
+                disabled={loading || !enabled}
+                title={enabled ? p.use || p.formula : p.disabled_reason || 'Not applicable'}
                 onClick={() => onComposite(p.id)}
                 className={`rounded-lg border px-2 py-1.5 text-left text-[11px] ${
-                  active
-                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                    : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+                  !enabled
+                    ? 'cursor-not-allowed border-[var(--line)] bg-[var(--bg)] opacity-45'
+                    : active
+                      ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                      : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
                 }`}
               >
-                <div className="font-semibold">{p.label}</div>
-                <div className={`font-mono text-[9px] ${active ? 'text-white/80' : 'text-[var(--muted)]'}`}>
+                <div className="font-semibold">
+                  {p.label}
+                  {!enabled && (
+                    <span className="ml-1 text-[9px] font-normal uppercase tracking-wide">
+                      off
+                    </span>
+                  )}
+                </div>
+                <div className={`font-mono text-[9px] ${active && enabled ? 'text-white/80' : 'text-[var(--muted)]'}`}>
                   {p.formula}
                 </div>
-                <div className={`text-[9px] ${active ? 'text-white/70' : 'text-[var(--muted)]'}`}>
-                  S2 {p.sentinel2} · LS {p.landsat}
+                <div className={`text-[9px] ${active && enabled ? 'text-white/70' : 'text-[var(--muted)]'}`}>
+                  {enabled ? bandCodesLine(p) : p.disabled_reason || 'Not applicable to this satellite'}
                 </div>
               </button>
             );
@@ -349,17 +406,26 @@ export function ImageProcessingPanel({
 
         <button
           type="button"
-          disabled={loading || !onClassify}
+          disabled={loading || !onClassify || !opticalOk}
+          title={
+            opticalOk
+              ? undefined
+              : 'Unsupervised classify needs optical multispectral bands (S2 / Landsat / MODIS)'
+          }
           onClick={() =>
             onClassify?.({ n_classes: nClasses, class_styles: activeStyles })
           }
           className={`w-full rounded-lg border px-2 py-2 text-left text-[11px] font-semibold ${
-            activeToolId === 'unsupervised_classify' || classificationResult
-              ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-              : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+            !opticalOk
+              ? 'cursor-not-allowed border-[var(--line)] bg-[var(--bg)] opacity-45'
+              : activeToolId === 'unsupervised_classify' || classificationResult
+                ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
           }`}
         >
-          Run {nClasses}-class unsupervised classify
+          {opticalOk
+            ? `Run ${nClasses}-class unsupervised classify`
+            : 'Unsupervised classify (off for this satellite)'}
         </button>
         {classificationResult && (
           <div className="mt-2 space-y-2 rounded border border-[var(--line)] bg-white p-2">
@@ -489,17 +555,25 @@ export function ImageProcessingPanel({
         <div className="mt-1 grid grid-cols-3 gap-1">
           {INDEX_LIST.map((idx) => {
             const them = thematic.find((t) => t.id === idx.id);
+            const enabled = them?.enabled !== false;
+            const tip = them
+              ? enabled
+                ? `${them.formula}\nBands: ${them.bands}`
+                : them.disabled_reason || 'Not applicable'
+              : idx.label;
             return (
               <button
                 key={idx.id}
                 type="button"
-                title={them ? `${them.formula}\nBands: ${them.bands}` : idx.label}
-                disabled={loading}
+                title={tip}
+                disabled={loading || !enabled}
                 onClick={() => onIndex(idx.id)}
                 className={`rounded-lg border px-1.5 py-1.5 text-[11px] font-semibold ${
-                  indexResult?.index === idx.id
-                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                    : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+                  !enabled
+                    ? 'cursor-not-allowed border-[var(--line)] bg-[var(--bg)] opacity-40'
+                    : indexResult?.index === idx.id
+                      ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                      : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
                 }`}
               >
                 {idx.label}
