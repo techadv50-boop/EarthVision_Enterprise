@@ -1134,15 +1134,7 @@ export function WorkspacePage() {
       return;
     }
 
-    if (action.type === 'detection') {
-      await runDetection(action.task);
-      return;
-    }
-
-    if (action.type === 'change') {
-      await runChange(action.mode);
-      return;
-    }
+    // detection / change are blocked above (AI / Maritime / Air / Change inactive)
 
     if (action.type === 'gis') {
       await runGis(action.op);
