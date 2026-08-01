@@ -3,7 +3,7 @@ import { LogOut, Shield, Wrench } from 'lucide-react';
 import { LightMap } from '../map/LightMap';
 import { MapToolbar } from '../components/map/MapToolbar';
 import { MapLegend } from '../components/map/MapLegend';
-import { PlaceStep } from '../components/workflow/PlaceStep';
+import { PlaceStep, type SceneDateRange } from '../components/workflow/PlaceStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
 import { AdminPanel } from '../components/admin/AdminPanel';
@@ -113,6 +113,15 @@ export function WorkspacePage() {
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [geotiffBusy, setGeotiffBusy] = useState(false);
+  const [sceneDateRange, setSceneDateRange] = useState<SceneDateRange>(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setUTCDate(start.getUTCDate() - 90);
+    return {
+      startDate: start.toISOString().slice(0, 10),
+      endDate: end.toISOString().slice(0, 10),
+    };
+  });
   const [geotiffLayerId, setGeotiffLayerId] = useState<string | null>(null);
 
   const isAdmin = user?.role === 'admin';
@@ -239,7 +248,16 @@ export function WorkspacePage() {
   }, [aoiGeoJson, focusScene, overlays, place]);
 
   const loadScenesForPlace = useCallback(
-    async (selected: PlaceSelection) => {
+    async (selected: PlaceSelection, range: SceneDateRange) => {
+      if (!range.startDate || !range.endDate) {
+        setError('Choose a From and To date for scenes');
+        return;
+      }
+      if (range.startDate > range.endDate) {
+        setError('From date must be on or before To date');
+        return;
+      }
+      setSceneDateRange(range);
       setPlace(selected);
       resetFromPlace();
       setLoadingScenes(true);
@@ -248,6 +266,8 @@ export function WorkspacePage() {
         const bbox = aoiBbox(aoiGeoJson, selected.bbox);
         const result = await catalogService.search({
           collections: ['SENTINEL-1', 'SENTINEL-2', 'LANDSAT-8', 'LANDSAT-9', 'MODIS'],
+          start_date: `${range.startDate}T00:00:00.000Z`,
+          end_date: `${range.endDate}T23:59:59.000Z`,
           cloud_cover_max: 80,
           bbox: [...bbox],
           max_results: 20,
@@ -271,22 +291,28 @@ export function WorkspacePage() {
       const pad = 0.18;
       try {
         const reverse = await gisService.reverseGeocode(lon, lat);
-        await loadScenesForPlace({
-          name: reverse.display_name || `Point ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
-          longitude: lon,
-          latitude: lat,
-          bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
-        });
+        await loadScenesForPlace(
+          {
+            name: reverse.display_name || `Point ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
+            longitude: lon,
+            latitude: lat,
+            bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
+          },
+          sceneDateRange,
+        );
       } catch {
-        await loadScenesForPlace({
-          name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
-          longitude: lon,
-          latitude: lat,
-          bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
-        });
+        await loadScenesForPlace(
+          {
+            name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
+            longitude: lon,
+            latitude: lat,
+            bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
+          },
+          sceneDateRange,
+        );
       }
     },
-    [loadScenesForPlace, mapTool, step],
+    [loadScenesForPlace, mapTool, sceneDateRange, step],
   );
 
   const onDrawnFeature = useCallback(
@@ -1199,7 +1225,12 @@ export function WorkspacePage() {
           )}
 
           {step === 'place' && (
-            <PlaceStep onSelect={loadScenesForPlace} busy={loadingScenes} />
+            <PlaceStep
+              onSelect={loadScenesForPlace}
+              busy={loadingScenes}
+              dateRange={sceneDateRange}
+              onDateRangeChange={setSceneDateRange}
+            />
           )}
 
           {step === 'browse' && place && (
@@ -1210,6 +1241,8 @@ export function WorkspacePage() {
               focusSceneId={focusSceneId}
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
+              dateFrom={sceneDateRange.startDate}
+              dateTo={sceneDateRange.endDate}
               onToggleEye={onToggleEye}
               onFocus={(scene) => setFocusSceneId(scene.id)}
               onBack={backToPlace}

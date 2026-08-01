@@ -8,6 +8,8 @@ interface Props {
   focusSceneId: string | null;
   loading: boolean;
   loadingOverlayIds: string[];
+  dateFrom?: string | null;
+  dateTo?: string | null;
   onToggleEye: (scene: SceneSummary) => void;
   onFocus: (scene: SceneSummary) => void;
   onBack: () => void;
@@ -33,6 +35,8 @@ export function ScenesStep({
   focusSceneId,
   loading,
   loadingOverlayIds,
+  dateFrom,
+  dateTo,
   onToggleEye,
   onFocus,
   onBack,
@@ -41,13 +45,21 @@ export function ScenesStep({
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3">
         <button type="button" className="ev-btn-ghost mb-1 -ml-2 px-2 py-1 text-xs" onClick={onBack}>
-          <ArrowLeft className="h-3.5 w-3.5" /> Change place
+          <ArrowLeft className="h-3.5 w-3.5" /> Change place / dates
         </button>
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
           {' — '}use the eye icon to show or hide imagery on the map.
         </p>
+        {dateFrom && dateTo && (
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            Date range:{' '}
+            <span className="font-medium text-[var(--ink)]">{formatDate(dateFrom)}</span>
+            {' → '}
+            <span className="font-medium text-[var(--ink)]">{formatDate(dateTo)}</span>
+          </p>
+        )}
       </div>
 
       {loading && (
