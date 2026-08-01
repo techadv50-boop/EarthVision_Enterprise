@@ -394,13 +394,19 @@ export function WorkspacePage() {
         });
         const tileUrl =
           overlay.tile_url || analyticsService.sceneTileUrl(scene.id);
+        const coll = (scene.collection || '').toUpperCase();
         const label =
           overlay.label ||
-          (scene.collection === 'SENTINEL-1'
+          (coll === 'SENTINEL-1'
             ? 'Sentinel-1 GRD (grayscale)'
-            : scene.collection.startsWith('LANDSAT')
+            : coll.startsWith('LANDSAT')
               ? `${scene.collection} true-color`
-              : `${scene.collection} true-color (TCI)`);
+              : coll.includes('MODIS') ||
+                  coll === 'TERRA' ||
+                  coll === 'AQUA' ||
+                  coll === 'TERRAAQUA'
+                ? 'MODIS true-color'
+                : `${scene.collection} true-color (TCI)`);
         const hasDemBase = useWorkflowStore
           .getState()
           .overlays.some(

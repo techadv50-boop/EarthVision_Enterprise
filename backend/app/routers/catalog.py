@@ -124,15 +124,18 @@ class SceneOverlayBody(BaseModel):
 
 @router.post("/scenes/overlay")
 async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
-    """Prepare Sentinel-2 true-color (TCI) tiles for a scene and return map layer metadata.
+    """Prepare scene map tiles and return layer metadata.
 
-    Uses real Sentinel-2 L2A visual COGs (B04/B03/B02) served as XYZ tiles so
-    features stay sharp when zooming — not a low-res basemap PNG.
+    Sentinel-2 uses Element84 TCI COGs via our XYZ proxy.
+    Landsat / MODIS use Planetary Computer hosted XYZ tiles (fast) when available.
     """
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    layer = imagery.prepare_scene_layer(
+    layer = await run_in_threadpool(
+        imagery.prepare_scene_layer,
         data.scene_id,
         bbox=data.bbox,
         footprint=data.footprint,
@@ -163,11 +166,13 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
 
 @router.get("/scenes/{scene_id}/tiles/{z}/{x}/{y}.png")
 async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
-    """XYZ tile from the scene's Sentinel-2 true-color COG (no auth — used by Leaflet)."""
+    """XYZ tile from the scene COG proxy (no auth — used by Leaflet for S2/S1)."""
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    png = imagery.render_tile(scene_id, z, x, y)
+    png = await run_in_threadpool(imagery.render_tile, scene_id, z, x, y)
     return Response(
         content=png,
         media_type="image/png",

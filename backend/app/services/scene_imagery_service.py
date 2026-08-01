@@ -1,13 +1,16 @@
-"""Collection-aware scene imagery: S2 TCI, S1 SAR grayscale, Landsat RGB + footprints."""
+"""Collection-aware scene imagery: S2 TCI, S1 SAR, Landsat/MODIS via PC tiles."""
 
 from __future__ import annotations
 
 import json
 import math
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import numpy as np
@@ -21,6 +24,7 @@ from app.core.exceptions import ExternalServiceError, NotFoundError, ValidationE
 EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
 PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 PC_SIGN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/sign"
+PC_TILEJSON_URL = "https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json"
 
 GDAL_ENV = {
     "AWS_NO_SIGN_REQUEST": "YES",
@@ -28,10 +32,15 @@ GDAL_ENV = {
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.TIF,.tiff",
     "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
     "GDAL_HTTP_MULTIPLEX": "YES",
+    "GDAL_HTTP_MAX_RETRY": "3",
+    "GDAL_HTTP_TIMEOUT": "60",
 }
 
-# Registry schema version — bump to invalidate old all-S2 layers
-LAYER_VERSION = 4
+# Registry schema version — bump to invalidate slow Landsat self-tile layers
+LAYER_VERSION = 5
+
+# In-process SAS cache: unsigned_href -> (signed_href, expiry_epoch)
+_PC_SIGN_CACHE: dict[str, tuple[str, float]] = {}
 
 # Fallback product filenames when STAC hrefs omit a basename
 S2_BAND_FILES: dict[str, str] = {
@@ -120,8 +129,12 @@ class SceneImageryService:
             return "LANDSAT-8"
         if "LANDSAT-9" in c or c in {"LC09", "L9"}:
             return "LANDSAT-9"
+        if "LANDSAT-7" in c or c in {"LE07", "L7"}:
+            return "LANDSAT-7"
         if "LANDSAT" in c:
             return "LANDSAT-8"
+        if c in {"MODIS", "TERRAAQUA", "TERRA", "AQUA"} or "MODIS" in c:
+            return "MODIS"
         return c
 
     @staticmethod
@@ -202,11 +215,88 @@ class SceneImageryService:
             "code": Path(filename).stem,
         }
 
-    def _sign_pc(self, href: str, client: httpx.Client) -> str:
-        resp = client.get(PC_SIGN_URL, params={"href": href})
-        if resp.status_code != 200:
-            raise NotFoundError(f"Failed to sign Landsat asset ({resp.status_code})")
-        return resp.json()["href"]
+    def _sign_pc(self, href: str, client: httpx.Client | None = None) -> str:
+        """Sign a Planetary Computer blob URL, with in-memory reuse to avoid 429s."""
+        now = time.time()
+        cached = _PC_SIGN_CACHE.get(href)
+        if cached and cached[1] > now + 180:
+            return cached[0]
+
+        owns_client = client is None
+        if owns_client:
+            client = httpx.Client(timeout=45.0, follow_redirects=True)
+        assert client is not None
+        try:
+            last_status = 0
+            for attempt in range(4):
+                resp = client.get(PC_SIGN_URL, params={"href": href})
+                last_status = resp.status_code
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    signed = str(payload["href"])
+                    expiry_raw = payload.get("msft:expiry") or payload.get("expiry")
+                    expiry = now + 50 * 60
+                    if isinstance(expiry_raw, str):
+                        try:
+                            exp_dt = datetime.fromisoformat(expiry_raw.replace("Z", "+00:00"))
+                            expiry = exp_dt.timestamp()
+                        except ValueError:
+                            pass
+                    _PC_SIGN_CACHE[href] = (signed, expiry)
+                    # Cap cache size
+                    if len(_PC_SIGN_CACHE) > 512:
+                        oldest = sorted(_PC_SIGN_CACHE.items(), key=lambda kv: kv[1][1])[:128]
+                        for key, _ in oldest:
+                            _PC_SIGN_CACHE.pop(key, None)
+                    return signed
+                if resp.status_code == 429:
+                    time.sleep(0.4 * (attempt + 1))
+                    continue
+                break
+            raise NotFoundError(f"Failed to sign Landsat asset ({last_status})")
+        finally:
+            if owns_client:
+                client.close()
+
+    def _pc_xyz_template(
+        self,
+        *,
+        collection: str,
+        item_id: str,
+        assets: list[str],
+        color_formula: str | None = None,
+        tilejson_href: str | None = None,
+        client: httpx.Client | None = None,
+    ) -> str | None:
+        """Resolve a hosted XYZ tile template from Planetary Computer (fast map path)."""
+        owns = client is None
+        if owns:
+            client = httpx.Client(timeout=45.0, follow_redirects=True)
+        assert client is not None
+        try:
+            href = tilejson_href
+            if not href:
+                params = [("collection", collection), ("item", item_id)]
+                for a in assets:
+                    params.append(("assets", a))
+                if color_formula:
+                    params.append(("color_formula", color_formula))
+                q = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params)
+                href = f"{PC_TILEJSON_URL}?{q}"
+            resp = client.get(href)
+            if resp.status_code != 200:
+                logger.warning("PC tilejson {} → {}", collection, resp.status_code)
+                return None
+            tiles = (resp.json() or {}).get("tiles") or []
+            if not tiles:
+                return None
+            return str(tiles[0])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PC tilejson resolve failed: {}", exc)
+            return None
+        finally:
+            if owns:
+                client.close()
 
     def _datetime_windows(self, sensing_time: str | None) -> list[tuple[str, str]]:
         dt = self._parse_sensing_time(sensing_time)
@@ -414,7 +504,11 @@ class SceneImageryService:
         """Match Landsat C2 L2 RGB via Planetary Computer (signed COGs) + tilted footprint."""
         last_error = "empty"
         # Filter by platform when possible
-        platform_q = "landsat-8" if platform == "LANDSAT-8" else "landsat-9"
+        platform_q = {
+            "LANDSAT-8": "landsat-8",
+            "LANDSAT-9": "landsat-9",
+            "LANDSAT-7": "landsat-7",
+        }.get(platform, "landsat-8")
         with httpx.Client(timeout=60.0, follow_redirects=True) as client:
             for start, end in self._datetime_windows(sensing_time):
                 features = self._stac_search(
@@ -431,11 +525,10 @@ class SceneImageryService:
                 for feat in features:
                     props = feat.get("properties") or {}
                     plat = (props.get("platform") or "").lower()
-                    # Soft preference for requested Landsat-8 vs 9
-                    if platform == "LANDSAT-8" and "9" in plat and "8" not in plat:
-                        platform_bonus = -0.05
-                    elif platform == "LANDSAT-9" and "8" in plat and "9" not in plat:
-                        platform_bonus = -0.05
+                    # Soft preference for requested Landsat mission
+                    want = platform_q.replace("landsat-", "")
+                    if want and want not in plat and any(x in plat for x in ("7", "8", "9")):
+                        platform_bonus = -0.08
                     else:
                         platform_bonus = 0.0
                     cov = self._coverage(bbox, feat.get("bbox") or [])
@@ -497,8 +590,19 @@ class SceneImageryService:
                         assets["lwir11"],
                         fallback_filename=LANDSAT_BAND_FILES.get("lwir11"),
                     )
+                stac_id = str(feat.get("id") or "")
+                color_formula = "gamma RGB 2.7, saturation 1.5, sigmoidal RGB 15 0.35"
+                external_tile = self._pc_xyz_template(
+                    collection="landsat-c2-l2",
+                    item_id=stac_id,
+                    assets=["red", "green", "blue"],
+                    color_formula=color_formula,
+                    tilejson_href=(assets.get("tilejson") or {}).get("href"),
+                    client=client,
+                )
+                thumbnail = (assets.get("rendered_preview") or {}).get("href")
                 return {
-                    "stac_id": feat.get("id"),
+                    "stac_id": stac_id,
                     "cog_urls": {
                         "red": assets["red"]["href"],
                         "green": assets["green"]["href"],
@@ -516,8 +620,116 @@ class SceneImageryService:
                     "platform": props.get("platform") or platform_q,
                     "bands": {"R": "SR_B4.TIF", "G": "SR_B3.TIF", "B": "SR_B2.TIF"},
                     "label": f"{platform} true-color (OLI)",
+                    "external_tile_url": external_tile,
+                    "thumbnail_url": thumbnail,
                 }
         raise NotFoundError(f"No Landsat imagery found ({last_error})")
+
+    def find_modis(
+        self,
+        bbox: list[float],
+        sensing_time: str | None,
+        platform_hint: str | None = None,
+    ) -> dict[str, Any]:
+        """Match MODIS 8-day surface reflectance via Planetary Computer hosted tiles."""
+        last_error = "empty"
+        hint = (platform_hint or "").upper()
+        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+            for start, end in self._datetime_windows(sensing_time):
+                features = self._stac_search(
+                    client,
+                    PC_STAC_URL,
+                    ["modis-09A1-061"],
+                    bbox,
+                    start,
+                    end,
+                    limit=20,
+                )
+                scored: list[tuple[float, dict[str, Any]]] = []
+                for feat in features:
+                    cov = self._coverage(bbox, feat.get("bbox") or [])
+                    if cov < 0.05:
+                        continue
+                    assets = feat.get("assets") or {}
+                    # True-color-ish: B01 red, B04 green, B03 blue
+                    if not all(
+                        assets.get(k, {}).get("href")
+                        for k in ("sur_refl_b01", "sur_refl_b04", "sur_refl_b03")
+                    ):
+                        continue
+                    fid = str(feat.get("id") or "")
+                    is_aqua = fid.startswith("MYD")
+                    is_terra = fid.startswith("MOD")
+                    plat_bonus = 0.0
+                    if "AQUA" in hint and not is_aqua:
+                        plat_bonus = -0.25
+                    elif "TERRA" in hint and "AQUA" not in hint and not is_terra:
+                        plat_bonus = -0.25
+                    score = cov * 10.0 + plat_bonus
+                    scored.append((score, feat))
+                if not scored:
+                    last_error = f"no covering MODIS in {start}..{end}"
+                    continue
+                scored.sort(key=lambda t: -t[0])
+                feat = scored[0][1]
+                props = feat.get("properties") or {}
+                assets = feat.get("assets") or {}
+                stac_id = str(feat.get("id") or "")
+                analysis_bands = {
+                    "red": assets["sur_refl_b01"]["href"],
+                    "green": assets["sur_refl_b04"]["href"],
+                    "blue": assets["sur_refl_b03"]["href"],
+                    "nir": assets.get("sur_refl_b02", {}).get("href")
+                    or assets["sur_refl_b01"]["href"],
+                }
+                if assets.get("sur_refl_b06", {}).get("href"):
+                    analysis_bands["swir"] = assets["sur_refl_b06"]["href"]
+                if assets.get("sur_refl_b07", {}).get("href"):
+                    analysis_bands["swir2"] = assets["sur_refl_b07"]["href"]
+                download_bands = {
+                    k: self._stac_band_meta(k, assets[k])
+                    for k in (
+                        "sur_refl_b01",
+                        "sur_refl_b02",
+                        "sur_refl_b03",
+                        "sur_refl_b04",
+                        "sur_refl_b05",
+                        "sur_refl_b06",
+                        "sur_refl_b07",
+                    )
+                    if assets.get(k, {}).get("href")
+                }
+                external_tile = self._pc_xyz_template(
+                    collection="modis-09A1-061",
+                    item_id=stac_id,
+                    assets=["sur_refl_b01", "sur_refl_b04", "sur_refl_b03"],
+                    color_formula="gamma RGB 2.2, saturation 1.2, sigmoidal RGB 10 0.35",
+                    tilejson_href=(assets.get("tilejson") or {}).get("href"),
+                    client=client,
+                )
+                return {
+                    "stac_id": stac_id,
+                    "cog_urls": {
+                        "red": assets["sur_refl_b01"]["href"],
+                        "green": assets["sur_refl_b04"]["href"],
+                        "blue": assets["sur_refl_b03"]["href"],
+                    },
+                    "analysis_bands": analysis_bands,
+                    "download_bands": download_bands,
+                    "sign": "planetary_computer",
+                    "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
+                    "footprint": feat.get("geometry"),
+                    "datetime": props.get("datetime") or props.get("start_datetime"),
+                    "cloud_cover": props.get("eo:cloud_cover"),
+                    "render_mode": "rgb",
+                    "source": "modis_09a1",
+                    "platform": "aqua" if stac_id.startswith("MYD") else "terra",
+                    "bands": {"R": "sur_refl_b01", "G": "sur_refl_b04", "B": "sur_refl_b03"},
+                    "label": "MODIS 8-day true-color (09A1)",
+                    "external_tile_url": external_tile,
+                    "thumbnail_url": (assets.get("rendered_preview") or {}).get("href"),
+                }
+        raise NotFoundError(f"No MODIS imagery found ({last_error})")
 
     def prepare_scene_layer(
         self,
@@ -539,8 +751,10 @@ class SceneImageryService:
 
         if coll == "SENTINEL-1":
             match = self.find_sentinel1(search_bbox, sensing_time)
-        elif coll in {"LANDSAT-8", "LANDSAT-9"}:
+        elif coll in {"LANDSAT-8", "LANDSAT-9", "LANDSAT-7"}:
             match = self.find_landsat(search_bbox, sensing_time, cloud_cover, coll)
+        elif coll == "MODIS":
+            match = self.find_modis(search_bbox, sensing_time, platform_hint=collection)
         else:
             # SENTINEL-2 and other optical defaults
             match = self.find_sentinel2(search_bbox, sensing_time, cloud_cover)
@@ -549,6 +763,11 @@ class SceneImageryService:
         stac_fp = match.get("footprint")
         # Display bounds from actual STAC footprint (tilted scenes → correct envelope)
         display_bounds = self._bbox_from_footprint(stac_fp) or match.get("bbox") or search_bbox
+
+        # Prefer Planetary Computer hosted XYZ for Landsat/MODIS (avoids per-tile SAS 429s)
+        external_tiles = match.get("external_tile_url")
+        local_tiles = f"/api/v1/catalog/scenes/{scene_id}/tiles/{{z}}/{{x}}/{{y}}.png"
+        tile_template = external_tiles or local_tiles
 
         layer: dict[str, Any] = {
             "scene_id": scene_id,
@@ -569,7 +788,9 @@ class SceneImageryService:
             "acquisition_date": match.get("datetime"),
             "cloud_cover": match.get("cloud_cover"),
             "polarization": match.get("polarization"),
-            "tile_url_template": f"/api/v1/catalog/scenes/{scene_id}/tiles/{{z}}/{{x}}/{{y}}.png",
+            "thumbnail_url": match.get("thumbnail_url"),
+            "external_tile_url": external_tiles,
+            "tile_url_template": tile_template,
         }
         # Drop previous tile cache when remapping a scene
         cache_root = self._tile_cache_root(scene_id)
@@ -664,18 +885,21 @@ class SceneImageryService:
         from rasterio.warp import transform_bounds
         from rasterio.windows import from_bounds
 
-        bands: list[np.ndarray] = []
         with httpx.Client(timeout=60.0, follow_redirects=True) as client:
             signed = {k: self._sign_pc(v, client) for k, v in cog_urls.items()}
-        with rasterio.Env():
-            for name in ("red", "green", "blue"):
+
+        def _read_one(name: str) -> np.ndarray:
+            with rasterio.Env(**GDAL_ENV):
                 with rasterio.open(signed[name]) as src:
                     left, bottom, right, top = transform_bounds(
                         "EPSG:4326", src.crs, lon_min, lat_min, lon_max, lat_max
                     )
                     window = from_bounds(left, bottom, right, top, transform=src.transform)
-                    oversampling = float(window.width) < self.TILE_SIZE or float(window.height) < self.TILE_SIZE
-                    resampling = Resampling.nearest if oversampling else Resampling.cubic
+                    oversampling = (
+                        float(window.width) < self.TILE_SIZE
+                        or float(window.height) < self.TILE_SIZE
+                    )
+                    resampling = Resampling.nearest if oversampling else Resampling.bilinear
                     arr = src.read(
                         1,
                         out_shape=(self.TILE_SIZE, self.TILE_SIZE),
@@ -684,11 +908,16 @@ class SceneImageryService:
                         boundless=True,
                         fill_value=0,
                     )
-                    bands.append(arr.astype(np.float32))
+                    return arr.astype(np.float32)
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            bands = list(pool.map(_read_one, ("red", "green", "blue")))
         stacked = np.stack(bands, axis=0)
-        # Landsat C2 SR scaling
-        refl = np.clip(stacked * 0.0000275 - 0.2, 0, 1)
-        return (refl * 10000).astype(np.float32)  # keep as float reflectance*10000 for joint stretch
+        # Landsat C2 SR scaling (also works ok for MODIS-ish scaled ints after stretch)
+        if float(np.nanmax(stacked)) > 2000:
+            refl = np.clip(stacked * 0.0000275 - 0.2, 0, 1)
+            return (refl * 10000).astype(np.float32)
+        return stacked
 
     def _read_s1_gray(
         self, cog_url: str, lon_min: float, lat_min: float, lon_max: float, lat_max: float
