@@ -24,21 +24,26 @@ from app.core.exceptions import ValidationError
 from app.schemas.analytics import ColormapStop, LegendInfo
 from app.schemas.classification import (
     ClassAreaStat,
+    ClassStyle,
     ClassificationRequest,
     ClassificationResponse,
+    RecolorRequest,
+    RecolorResponse,
 )
 
-# Class ids
+# Class ids (full 8-class taxonomy)
 SNOW = 0
 BARE_SOIL = 1
 BUILT_UP = 2
 VEGETATION = 3
 WATER = 4
 ROADS = 5
+CROPLAND = 6
+WETLAND = 7
 NODATA = 255
-N_CLASSES = 6
+N_CLASSES = 8
 
-# Default high-contrast palette (users may override any color).
+# Default high-contrast palette (users may override any color, including after run).
 CLASS_META: dict[int, dict[str, str]] = {
     SNOW: {"name": "snow", "label": "Snow", "color": "#F8FAFC"},
     BARE_SOIL: {"name": "bare_soil", "label": "Bare Soil", "color": "#F0C040"},
@@ -46,6 +51,8 @@ CLASS_META: dict[int, dict[str, str]] = {
     VEGETATION: {"name": "vegetation", "label": "Vegetation", "color": "#16A34A"},
     WATER: {"name": "water", "label": "Water", "color": "#1D4ED8"},
     ROADS: {"name": "roads", "label": "Roads", "color": "#111827"},
+    CROPLAND: {"name": "cropland", "label": "Cropland", "color": "#84CC16"},
+    WETLAND: {"name": "wetland", "label": "Wetland", "color": "#0891B2"},
 }
 
 NAME_TO_ID: dict[str, int] = {m["name"]: cid for cid, m in CLASS_META.items()}
@@ -56,6 +63,17 @@ CLASS_PRESETS: dict[int, list[str]] = {
     4: ["vegetation", "bare_soil", "built_up", "water"],
     5: ["bare_soil", "built_up", "vegetation", "water", "roads"],
     6: ["snow", "bare_soil", "built_up", "vegetation", "water", "roads"],
+    7: ["snow", "bare_soil", "built_up", "vegetation", "water", "roads", "cropland"],
+    8: [
+        "snow",
+        "bare_soil",
+        "built_up",
+        "vegetation",
+        "water",
+        "roads",
+        "cropland",
+        "wetland",
+    ],
 }
 
 # Backward-compatible aliases used by older helpers / tests
@@ -64,7 +82,7 @@ SOIL = BARE_SOIL
 
 class ClassificationService:
     def classify(self, request: ClassificationRequest) -> ClassificationResponse:
-        n_classes = int(np.clip(int(request.n_classes), 3, 6))
+        n_classes = int(np.clip(int(request.n_classes), 3, 8))
         active_meta = self._resolve_active_meta(n_classes, request.class_styles)
 
         size = max(int(request.size), 1536)
@@ -120,6 +138,7 @@ class ClassificationService:
         amalgam = self._collapse_to_n_classes(amalgam, n_classes)
         stats, total_km2 = self._area_stats(amalgam, valid, bounds, active_meta)
         overlay = self._class_map_to_png(amalgam, valid, active_meta)
+        class_map_png = self._class_map_labels_png(amalgam, valid)
         labels = " / ".join(m["label"] for m in active_meta.values())
 
         return ClassificationResponse(
@@ -130,6 +149,7 @@ class ClassificationService:
             valid_pixels=int(valid.sum()),
             bounds=[float(x) for x in bounds],
             overlay_base64=base64.b64encode(overlay).decode("ascii"),
+            class_map_base64=base64.b64encode(class_map_png).decode("ascii"),
             legend=self._legend(active_meta),
             formula=(
                 f"{n_classes}-class unsupervised LULC ({labels}) — adaptive spectral "
@@ -138,7 +158,7 @@ class ClassificationService:
             ),
             message=(
                 f"Classified into {n_classes} classes · agreement {agreement:.0f}% · "
-                f"total {total_km2:.2f} km²"
+                f"total {total_km2:.2f} km² · recolor anytime without re-running"
             ),
             agreement_percent=round(float(agreement), 1),
             metadata={
@@ -155,6 +175,52 @@ class ClassificationService:
                 "colors": {m["name"]: m["color"] for m in active_meta.values()},
                 "footprint_clipped": bool(footprint),
             },
+        )
+
+    def recolor(self, request: RecolorRequest) -> RecolorResponse:
+        """Re-apply user colors to an existing class map (no reclassification)."""
+        try:
+            raw = base64.b64decode(request.class_map_base64)
+            img = Image.open(io.BytesIO(raw)).convert("L")
+            class_map = np.array(img, dtype=np.uint8)
+        except Exception as exc:  # noqa: BLE001
+            raise ValidationError(f"Invalid class map image: {exc}") from exc
+
+        active_meta: dict[int, dict[str, str]] = {}
+        for style in request.classes:
+            cid = style.class_id
+            if cid is None:
+                cid = NAME_TO_ID.get(style.name)
+            if cid is None:
+                continue
+            base = dict(CLASS_META.get(cid, {"name": style.name, "label": style.name, "color": "#888888"}))
+            if style.name:
+                base["name"] = style.name
+            if style.label:
+                base["label"] = style.label
+            if style.color:
+                base["color"] = style.color
+            active_meta[int(cid)] = base
+
+        if not active_meta:
+            raise ValidationError("No valid class styles provided for recolor")
+
+        valid = class_map != NODATA
+        overlay = self._class_map_to_png(class_map, valid, active_meta)
+        styles = [
+            ClassStyle(
+                class_id=cid,
+                name=meta["name"],
+                label=meta["label"],
+                color=meta["color"],
+            )
+            for cid, meta in active_meta.items()
+        ]
+        return RecolorResponse(
+            overlay_base64=base64.b64encode(overlay).decode("ascii"),
+            classes=styles,
+            legend=self._legend(active_meta),
+            message=f"Recolored {len(styles)} classes (classification unchanged)",
         )
 
     def _resolve_active_meta(
@@ -199,8 +265,12 @@ class ClassificationService:
         return active
 
     def _collapse_to_n_classes(self, class_map: np.ndarray, n_classes: int) -> np.ndarray:
-        """Merge full 6-class map down to the requested preset."""
+        """Merge full 8-class map down to the requested preset."""
         out = class_map.copy()
+        if n_classes <= 7:
+            out[out == WETLAND] = WATER
+        if n_classes <= 6:
+            out[out == CROPLAND] = VEGETATION
         if n_classes <= 5:
             out[out == SNOW] = BARE_SOIL
         if n_classes <= 4:
@@ -209,6 +279,8 @@ class ClassificationService:
             out[out == BUILT_UP] = BARE_SOIL
             out[out == ROADS] = BARE_SOIL
             out[out == SNOW] = BARE_SOIL
+            out[out == CROPLAND] = VEGETATION
+            out[out == WETLAND] = WATER
         return out
 
     def results_csv(self, result: ClassificationResponse) -> str:
@@ -576,10 +648,35 @@ class ClassificationService:
         )
         water = water_black | water_core | water_dark | water_turbid
 
+        # --- Wetland / wet soil (moist, not open water)
+        wetland = (
+            land
+            & ~water
+            & ~urban_like
+            & ~pitch_black
+            & (ndvi < t["veg_ndvi"] + 0.02)
+            & (nir < t["wet_nir_max"] + 0.04)
+            & (bright < 0.30)
+            & (
+                (
+                    (mndwi > t["wet_mndwi_min"])
+                    & (mndwi < t["water_mndwi"] + 0.08)
+                    & (ndvi > 0.02)
+                )
+                | (
+                    (awei > t["water_awei"] - 0.12)
+                    & (ndvi > 0.04)
+                    & (ndvi < 0.32)
+                    & (nir < 0.22)
+                )
+            )
+        )
+
         # --- Snow
         snow = (
             land
             & ~water
+            & ~wetland
             & (ndsi > t["snow_ndsi"])
             & (bright > t["snow_bright"])
             & (swir1 < 0.16)
@@ -587,38 +684,44 @@ class ClassificationService:
             & (f["blue"] > 0.22)
         )
 
-        # --- Vegetation: requires HIGH NIR (photosynthetic). Dark water has low NIR
-        # even when noisy NDVI looks "green", so NIR floor is the key guardrail.
+        # --- Dense vegetation (trees / healthy green cover): high NDVI + high NIR
         veg = (
             land
             & ~water
+            & ~wetland
             & ~snow
             & ~pitch_black
-            & (nir > 0.18)  # crops/trees are bright in NIR; canals are not
+            & (nir > 0.24)
             & (bright > 0.08)
             & (mndwi < t["water_mndwi"] + 0.02)
-            & (ndvi > t["veg_ndvi"])
-            & (evi > t["veg_evi"] * 0.75)
-            & (bsi < t["bare_bsi"] + 0.12)
+            & (ndvi > t["veg_ndvi"] + 0.05)
+            & (evi > t["veg_evi"] * 0.85)
+            & (bsi < t["bare_bsi"] + 0.08)
         )
-        veg |= (
+
+        # --- Cropland: moderate photosynthetic fields (below dense vegetation)
+        cropland = (
             land
             & ~water
+            & ~wetland
             & ~snow
-            & ~pitch_black
             & ~veg
-            & (nir > 0.22)
-            & (ndvi > t["veg_ndvi"] + 0.04)
-            & (savi > t["veg_ndvi"])
-            & (mndwi < t["water_mndwi"])
+            & ~pitch_black
+            & (nir > 0.18)
+            & (mndwi < t["water_mndwi"] + 0.02)
+            & (ndvi > t["soil_ndvi_max"] + 0.03)
+            & (ndvi <= t["veg_ndvi"] + 0.08)
+            & (evi > t["veg_evi"] * 0.45)
         )
 
         # --- Built-up first: bright roofs / dense settlement clusters
         built = (
             land
             & ~water
+            & ~wetland
             & ~snow
             & ~veg
+            & ~cropland
             & (ndvi < t["veg_ndvi"] - 0.04)
             & (mndwi < t["water_mndwi"])
             & (
@@ -641,8 +744,10 @@ class ClassificationService:
         roads = (
             land
             & ~water
+            & ~wetland
             & ~snow
             & ~veg
+            & ~cropland
             & ~built
             & (ndvi < t["soil_ndvi_max"] + 0.06)
             & (ndvi < t["veg_ndvi"] - 0.08)
@@ -660,8 +765,10 @@ class ClassificationService:
         bare = (
             land
             & ~water
+            & ~wetland
             & ~snow
             & ~veg
+            & ~cropland
             & ~roads
             & ~built
             & (
@@ -669,26 +776,41 @@ class ClassificationService:
                 | ((bsi > t["bare_bsi"] - 0.02) & (ndvi < t["veg_ndvi"] - 0.06))
             )
         )
-        leftover = land & ~water & ~snow & ~veg & ~roads & ~built & ~bare
+        leftover = (
+            land
+            & ~water
+            & ~wetland
+            & ~snow
+            & ~veg
+            & ~cropland
+            & ~roads
+            & ~built
+            & ~bare
+        )
         bare |= leftover
 
-        # Shadows → bare (unless water)
+        # Shadows → bare (unless water/wetland)
         shadow = f["shadow"] > 0.5
-        shadow_land = land & shadow & ~water
+        shadow_land = land & shadow & ~water & ~wetland
         bare |= shadow_land
         veg &= ~shadow_land
+        cropland &= ~shadow_land
 
         out[bare] = BARE_SOIL
         out[built] = BUILT_UP
         out[veg] = VEGETATION
+        out[cropland] = CROPLAND
+        out[wetland] = WETLAND
         out[snow] = SNOW
         out[water] = WATER
         out[roads] = ROADS
         out[cloud & valid] = BARE_SOIL
 
         conf[water] = np.clip((mndwi[water] - t["water_mndwi"]) / 0.25 + 0.45, 0.35, 1)
+        conf[wetland] = np.clip(0.40 + (mndwi[wetland] - t["wet_mndwi_min"]) / 0.3, 0.30, 0.85)
         conf[snow] = np.clip((ndsi[snow] - t["snow_ndsi"]) / 0.25 + 0.40, 0.30, 1)
         conf[veg] = np.clip((ndvi[veg] - t["veg_ndvi"]) / 0.30 + 0.45, 0.35, 1)
+        conf[cropland] = np.clip((ndvi[cropland] - t["soil_ndvi_max"]) / 0.30 + 0.35, 0.30, 0.85)
         conf[roads] = np.clip(0.40 + grey[roads] * 0.35 + np.maximum(0, ndbi[roads]) * 0.5, 0.30, 0.90)
         conf[built] = np.clip(0.40 + np.maximum(0, ndbi[built]) * 0.9, 0.30, 0.90)
         conf[bare] = np.clip(0.30 + np.maximum(0, bsi[bare]) * 0.5, 0.25, 0.80)
@@ -787,6 +909,14 @@ class ClassificationService:
                     - 1.2 * max(ndbi_c, 0)
                     + (0.6 if bright_c < 0.22 else -0.8)
                 ),
+                WETLAND: (
+                    1.6 * mndwi_c
+                    + 0.8 * awei_c
+                    + 0.6 * max(ndvi_c, 0)
+                    - 0.8 * nir_c
+                    - 0.6 * max(ndbi_c, 0)
+                    + (0.3 if bright_c < 0.28 else -0.4)
+                ),
                 SNOW: (
                     2.6 * ndsi_c
                     + 1.1 * bright_c
@@ -794,11 +924,19 @@ class ClassificationService:
                     - 1.0 * max(ndvi_c, 0)
                 ),
                 VEGETATION: (
-                    3.0 * ndvi_c
-                    + 1.4 * evi_c
+                    3.2 * ndvi_c
+                    + 1.6 * evi_c
                     - 1.2 * max(mndwi_c, 0)
                     - 0.8 * max(ndbi_c, 0)
                     - 0.8 * max(bsi_c, 0)
+                    + (0.4 if ndvi_c > t["veg_ndvi"] + 0.05 else -0.6)
+                ),
+                CROPLAND: (
+                    2.0 * ndvi_c
+                    + 1.0 * evi_c
+                    - 0.6 * max(mndwi_c, 0)
+                    - 0.5 * max(ndbi_c, 0)
+                    + (0.5 if t["soil_ndvi_max"] < ndvi_c < t["veg_ndvi"] + 0.08 else -0.8)
                 ),
                 ROADS: (
                     1.4 * grey_c
@@ -996,6 +1134,12 @@ class ClassificationService:
         scores[ROADS] += 0.55 * np.clip(f["grey"] - 0.4, 0, 1) * (
             f["ndvi"] < t["veg_ndvi"] - 0.06
         ) * valid
+        scores[CROPLAND] += 0.45 * np.clip(
+            (f["ndvi"] - t["soil_ndvi_max"]) / 0.25, 0, 1
+        ) * (f["ndvi"] < t["veg_ndvi"] + 0.06) * (f["nir"] > 0.18) * valid
+        scores[WETLAND] += 0.50 * np.clip(
+            (f["mndwi"] - t["wet_mndwi_min"]) / 0.2, 0, 1
+        ) * (f["ndvi"] > 0.02) * (f["ndvi"] < t["veg_ndvi"]) * valid
         scores[BARE_SOIL] += 0.40 * np.clip(
             (f["bsi"] - t["bare_bsi"]) / 0.25, 0, 1
         ) * valid
@@ -1005,6 +1149,7 @@ class ClassificationService:
 
         scores[SNOW][cloud] = -1
         scores[WATER][cloud] = -1
+        scores[WETLAND][cloud] = -1
 
         winner = np.argmax(scores, axis=0).astype(np.uint8)
         out = np.full((h, w), NODATA, dtype=np.uint8)
@@ -1310,7 +1455,7 @@ class ClassificationService:
         )
         out[urban_core] = BUILT_UP
 
-        # Dense green labeled bare → vegetation
+        # Dense green labeled bare → vegetation / cropland
         green_fill = (
             valid
             & (out == BARE_SOIL)
@@ -1320,6 +1465,15 @@ class ClassificationService:
             & (f["mndwi"] < t["water_mndwi"])
         )
         out[green_fill] = VEGETATION
+        crop_fill = (
+            valid
+            & (out == BARE_SOIL)
+            & (ndvi > t["soil_ndvi_max"] + 0.04)
+            & (ndvi <= t["veg_ndvi"] + 0.05)
+            & (f["nir"] > 0.18)
+            & (f["mndwi"] < t["water_mndwi"])
+        )
+        out[crop_fill] = CROPLAND
 
         # Compact bright settlement blobs → built-up (not roads)
         built = (
@@ -1354,15 +1508,15 @@ class ClassificationService:
         ndbi, bright, nir = f["ndbi"], f["brightness"], f["nir"]
         swir1 = f["swir1"]
 
-        # Any vegetation label on dark / low-NIR pixels is wrong (canals, shadows)
-        dark_as_veg = valid & (out == VEGETATION) & (
+        # Any vegetation/cropland label on dark / low-NIR pixels is wrong
+        dark_as_veg = valid & ((out == VEGETATION) | (out == CROPLAND)) & (
             ((bright < 0.14) & (nir < 0.14))
             | ((nir < 0.16) & (swir1 < 0.14))
             | (nir < 0.12)
         )
         out[dark_as_veg] = WATER
 
-        false_veg = valid & (out == VEGETATION) & (
+        false_veg = valid & ((out == VEGETATION) | (out == CROPLAND)) & (
             (ndvi < t["veg_ndvi"] - 0.02) | (nir < 0.20)
         )
         to_water = false_veg & (
@@ -1477,6 +1631,17 @@ class ClassificationService:
         img = Image.fromarray(rgba, mode="RGBA")
         buf = io.BytesIO()
         # compress_level only; no resampling — keep pixel-crisp class boundaries
+        img.save(buf, format="PNG", compress_level=6, optimize=False)
+        return buf.getvalue()
+
+    def _class_map_labels_png(
+        self, class_map: np.ndarray, valid: np.ndarray
+    ) -> bytes:
+        """Single-band PNG: pixel = class_id (255 = nodata) for post-run recolor."""
+        labels = class_map.copy()
+        labels[~valid] = NODATA
+        img = Image.fromarray(labels, mode="L")
+        buf = io.BytesIO()
         img.save(buf, format="PNG", compress_level=6, optimize=False)
         return buf.getvalue()
 

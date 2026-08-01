@@ -8,7 +8,12 @@ from fastapi import APIRouter
 from fastapi.responses import Response
 
 from app.core.deps import CurrentUser
-from app.schemas.classification import ClassificationRequest, ClassificationResponse
+from app.schemas.classification import (
+    ClassificationRequest,
+    ClassificationResponse,
+    RecolorRequest,
+    RecolorResponse,
+)
 from app.services.classification_service import ClassificationService
 
 router = APIRouter(prefix="/analytics", tags=["Classification"])
@@ -18,8 +23,16 @@ router = APIRouter(prefix="/analytics", tags=["Classification"])
 async def classify_unsupervised(
     data: ClassificationRequest, user: CurrentUser
 ) -> ClassificationResponse:
-    """Ensemble unsupervised classification (3–6 classes, user colors)."""
+    """Ensemble unsupervised classification (3–8 classes, user colors)."""
     return ClassificationService().classify(data)
+
+
+@router.post("/classify/recolor", response_model=RecolorResponse)
+async def recolor_classification(
+    data: RecolorRequest, user: CurrentUser
+) -> RecolorResponse:
+    """Apply new colors to an existing class map without re-running classification."""
+    return ClassificationService().recolor(data)
 
 
 @router.post("/export/classify.png")

@@ -45,6 +45,8 @@ interface Props {
   onComposite: (preset: CompositePreset) => void;
   onIndex: (index: IndexName) => void;
   onClassify?: (opts: { n_classes: ClassCount; class_styles: ClassStyle[] }) => void;
+  /** Apply new colors to an existing classification (no re-run). */
+  onRecolorClassify?: (styles: ClassStyle[]) => void;
   onColormapChange?: (cmap: ColormapName) => void;
   onStretch: () => void;
   onStretchParams: (patch: Partial<Props['stretchParams']>) => void;
@@ -142,6 +144,7 @@ export function ImageProcessingPanel({
   onComposite,
   onIndex,
   onClassify,
+  onRecolorClassify,
   onColormapChange,
   onStretch,
   onStretchParams,
@@ -269,15 +272,15 @@ export function ImageProcessingPanel({
           Unsupervised classification
         </h3>
         <p className="mb-1.5 text-[10px] text-[var(--muted)]">
-          Choose how many classes, pick your own colors, then run. Map renders at{' '}
-          <strong>100% opacity</strong> over the full scene.
+          Choose <strong>3–8</strong> classes, optionally set colors, then run. After
+          classification you can change colors anytime without re-running.
         </p>
 
         <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
           Number of classes
         </label>
-        <div className="mb-2 grid grid-cols-4 gap-1">
-          {([3, 4, 5, 6] as ClassCount[]).map((n) => (
+        <div className="mb-2 grid grid-cols-6 gap-1">
+          {([3, 4, 5, 6, 7, 8] as ClassCount[]).map((n) => (
             <button
               key={n}
               type="button"
@@ -296,7 +299,7 @@ export function ImageProcessingPanel({
 
         <div className="mb-1 flex items-center justify-between">
           <label className="text-[10px] font-medium text-[var(--muted)]">
-            Assign colors
+            Colors before run
           </label>
           <button
             type="button"
@@ -366,20 +369,56 @@ export function ImageProcessingPanel({
                 ? ` · member agreement ${classificationResult.agreement_percent}%`
                 : ''}
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {classificationResult.classes.map((c) => (
-                <span
-                  key={c.class_id}
-                  className="inline-flex items-center gap-1 rounded border border-[var(--line)] px-1.5 py-0.5 text-[10px]"
-                >
-                  <span
-                    className="inline-block h-2.5 w-2.5 rounded-sm border border-black/10"
-                    style={{ background: c.color }}
-                  />
-                  {c.label}
-                </span>
-              ))}
+
+            <div className="rounded border border-dashed border-[var(--line)] bg-[var(--surface-2,#f8fafc)] p-1.5">
+              <div className="mb-1 text-[10px] font-semibold text-[var(--ink,#0f172a)]">
+                Change colors after classification
+              </div>
+              <p className="mb-1.5 text-[9px] text-[var(--muted)]">
+                Pick new colors below — the map updates immediately (no re-classify).
+              </p>
+              <div className="space-y-1">
+                {classificationResult.classes.map((c) => (
+                  <div key={c.class_id} className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={c.color}
+                      aria-label={`Recolor ${c.label}`}
+                      className="h-7 w-8 cursor-pointer rounded border border-[var(--line)] bg-transparent p-0"
+                      disabled={!classificationResult.class_map_base64 || !onRecolorClassify}
+                      onChange={(e) => {
+                        const color = e.target.value.toUpperCase();
+                        const next = classificationResult.classes.map((row) =>
+                          row.class_id === c.class_id
+                            ? {
+                                name: row.name,
+                                label: row.label,
+                                color,
+                                class_id: row.class_id,
+                              }
+                            : {
+                                name: row.name,
+                                label: row.label,
+                                color: row.color,
+                                class_id: row.class_id,
+                              },
+                        );
+                        onRecolorClassify?.(next);
+                      }}
+                    />
+                    <span
+                      className="inline-block h-3 w-3 rounded-sm border border-black/10"
+                      style={{ background: c.color }}
+                    />
+                    <span className="min-w-0 flex-1 text-[11px]">{c.label}</span>
+                    <span className="font-mono text-[9px] text-[var(--muted)]">
+                      {c.color}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
+
             <table className="w-full text-left text-[10px]">
               <thead>
                 <tr className="text-[var(--muted)]">

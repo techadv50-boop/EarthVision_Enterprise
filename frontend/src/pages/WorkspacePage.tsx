@@ -850,6 +850,55 @@ export function WorkspacePage() {
     }
   };
 
+  const recolorClassification = async (
+    styles: import('../services/classificationService').ClassStyle[],
+  ) => {
+    if (!classificationResult?.class_map_base64 || !focusScene) {
+      setError('Run classification first, then change colors');
+      return;
+    }
+    try {
+      // Instant local recolor for the map overlay
+      const dataUrl = await classificationService.recolorLocal(
+        classificationResult.class_map_base64,
+        styles.map((s) => ({
+          class_id: s.class_id ?? 0,
+          color: s.color,
+        })),
+      );
+      const overlayB64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+      const nextClasses = classificationResult.classes.map((c) => {
+        const style = styles.find(
+          (s) => s.class_id === c.class_id || s.name === c.name,
+        );
+        return style
+          ? { ...c, color: style.color, label: style.label || c.label }
+          : c;
+      });
+      setClassificationResult({
+        ...classificationResult,
+        overlay_base64: overlayB64,
+        classes: nextClasses,
+        message: `Recolored ${nextClasses.length} classes (classification unchanged)`,
+      });
+      upsertOverlay({
+        id: `classify-${focusScene.id}`,
+        kind: 'index',
+        sceneId: focusScene.id,
+        url: dataUrl.startsWith('data:')
+          ? dataUrl
+          : classificationService.toDataUrl(overlayB64),
+        bounds: classificationResult.bounds as [number, number, number, number],
+        opacity: 1,
+        label: `LULC ${nextClasses.length}-class (opaque)`,
+        visible: true,
+      });
+      setLastMessage(`Recolored ${nextClasses.length} classes`);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  };
+
   const runClassification = async (opts?: {
     n_classes?: import('../services/classificationService').ClassCount;
     class_styles?: import('../services/classificationService').ClassStyle[];
@@ -1551,6 +1600,7 @@ export function WorkspacePage() {
               onComposite={(preset) => void runComposite(preset)}
               onIndexTool={(index) => void runIndex(index)}
               onClassify={(opts) => void runClassification(opts)}
+              onRecolorClassify={(styles) => void recolorClassification(styles)}
               onColormapChange={(cmap) => {
                 setSelectedColormap(cmap);
                 if (indexResult?.index) {

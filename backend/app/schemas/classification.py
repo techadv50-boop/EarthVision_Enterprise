@@ -10,18 +10,29 @@ from app.schemas.analytics import LegendInfo
 
 
 LandCoverClass = Literal[
-    "snow", "bare_soil", "built_up", "vegetation", "water", "roads"
+    "snow",
+    "bare_soil",
+    "built_up",
+    "vegetation",
+    "water",
+    "roads",
+    "cropland",
+    "wetland",
 ]
 
 
 class ClassStyle(BaseModel):
     """User-assigned label/color for one semantic class."""
 
-    name: str = Field(..., description="snow|bare_soil|built_up|vegetation|water|roads")
+    name: str = Field(
+        ...,
+        description="snow|bare_soil|built_up|vegetation|water|roads|cropland|wetland",
+    )
     label: str | None = None
     color: str | None = Field(
         default=None, description="Hex color #RRGGBB (user choice)"
     )
+    class_id: int | None = None
 
     @field_validator("color")
     @classmethod
@@ -33,7 +44,7 @@ class ClassStyle(BaseModel):
             s = f"#{s}"
         if len(s) != 7:
             raise ValueError("color must be #RRGGBB")
-        int(s[1:], 16)  # validate hex
+        int(s[1:], 16)
         return s.upper()
 
     @field_validator("name")
@@ -58,8 +69,8 @@ class ClassificationRequest(BaseModel):
         default=None, description="[west, south, east, north]"
     )
     size: int = Field(default=1536, ge=128, le=2048)
-    # 3–6 semantic classes (collapsed from the full 6-class taxonomy)
-    n_classes: int = Field(default=6, ge=3, le=6)
+    # 3–8 semantic classes (collapsed from the full 8-class taxonomy)
+    n_classes: int = Field(default=6, ge=3, le=8)
     # Optional user color/label overrides keyed by class name
     class_styles: list[ClassStyle] | None = None
 
@@ -72,8 +83,27 @@ class ClassificationResponse(BaseModel):
     valid_pixels: int
     bounds: list[float]
     overlay_base64: str
+    # Single-band PNG (mode L): pixel value = class_id, 255 = nodata.
+    # Used to recolor the map after classification without re-running.
+    class_map_base64: str | None = None
     legend: LegendInfo
     formula: str
     message: str
     agreement_percent: float | None = None
     metadata: dict[str, Any] | None = None
+
+
+class RecolorRequest(BaseModel):
+    """Apply new colors to an existing class map (no reclassification)."""
+
+    class_map_base64: str
+    classes: list[ClassStyle] = Field(
+        ..., description="class_id + color (+ optional label/name)"
+    )
+
+
+class RecolorResponse(BaseModel):
+    overlay_base64: str
+    classes: list[ClassStyle]
+    legend: LegendInfo
+    message: str
