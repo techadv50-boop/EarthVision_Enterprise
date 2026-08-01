@@ -256,17 +256,19 @@ export function WorkspacePage() {
   }, [allowedTools]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
-    // Prefer the user's place / drawn AOI so composites stay sharp.
-    // Scene STAC bounds are a whole tile (~100 km) and make true-color look blocky/washed out.
+    // Processed overlays must match the original scene extent on the map.
+    // Prefer the loaded scene layer bounds / STAC footprint, not the place pin AOI
+    // (place bbox is only a search window and was clipping false/true color to a small inset).
+    const sceneOverlay = focusScene
+      ? overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
+      : null;
+    if (sceneOverlay?.bounds) return sceneOverlay.bounds;
+    if (focusScene) return sceneBounds(focusScene, place);
     if (place || aoiGeoJson) {
       const fallback = (place?.bbox ??
         ([74.15, 31.35, 74.55, 31.7] as [number, number, number, number]));
       return aoiBbox(aoiGeoJson, fallback);
     }
-    const sceneOverlay = focusScene
-      ? overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
-      : null;
-    if (sceneOverlay?.bounds) return sceneOverlay.bounds;
     return [74.15, 31.35, 74.55, 31.7];
   }, [aoiGeoJson, focusScene, overlays, place]);
 
@@ -837,16 +839,25 @@ export function WorkspacePage() {
   };
 
   const runComposite = async (preset: CompositePreset) => {
+    if (!focusScene) {
+      setError('Show a satellite scene first (eye icon)');
+      return;
+    }
     setToolLoading(true);
     setActiveToolId(`composite-${preset}`);
     setToolStatus(`Rendering ${preset.replaceAll('_', ' ')}…`);
     setError(null);
     try {
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      // Always process over the same geographic extent as the original scene layer.
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
       const result = await compositeService.render({
         preset,
-        scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
-        size: 1024,
+        scene_id: focusScene.id,
+        bbox: [...bounds],
+        size: 1280,
         ...stretchParams,
       });
       setCompositeResult(result);
@@ -857,9 +868,11 @@ export function WorkspacePage() {
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
-        sceneId: focusScene?.id,
+        sceneId: focusScene.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
+        // Prefer backend bounds, but never shrink below the original scene extent.
+        bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+        footprint: sceneOverlay?.footprint ?? null,
         // RGB composites should be fully opaque for natural color
         opacity: 1,
         label: result.label,
@@ -876,15 +889,23 @@ export function WorkspacePage() {
   };
 
   const runStretch = async (params = stretchParams) => {
+    if (!focusScene) {
+      setError('Show a satellite scene first (eye icon)');
+      return;
+    }
     setToolLoading(true);
     setActiveToolId('histogram');
     setToolStatus('Applying histogram stretch…');
     setError(null);
     try {
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
       const result = await compositeService.stretch({
-        scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
-        size: 1024,
+        scene_id: focusScene.id,
+        bbox: [...bounds],
+        size: 1280,
         ...params,
       });
       setStretchResult(result);
@@ -892,9 +913,10 @@ export function WorkspacePage() {
       upsertOverlay({
         id: 'stretch-overlay',
         kind: 'index',
-        sceneId: focusScene?.id,
+        sceneId: focusScene.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
+        bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+        footprint: sceneOverlay?.footprint ?? null,
         opacity: layerOpacity,
         label: `Stretch ${params.p_low}-${params.p_high}%`,
         visible: true,

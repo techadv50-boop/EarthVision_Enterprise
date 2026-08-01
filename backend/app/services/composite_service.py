@@ -210,9 +210,9 @@ class CompositeService:
         else:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
 
-        # True color: build from surface-reflectance RGB with EO display stretch.
-        # (Raw TCI-as-is washes out on cloudy AOIs; full-scene bounds look blocky.)
-        size = max(request.size, 1280) if preset_id == "true_color" else request.size
+        # True/false color: build from surface-reflectance bands with EO stretch.
+        # Extent follows the scene layer bounds passed by the client (original image).
+        size = max(request.size, 1280)
         bands, bounds = self._load_bands(request.scene_id, request.bbox, size)
         r = self._pick(bands, keys[0])
         g = self._pick(bands, keys[1])

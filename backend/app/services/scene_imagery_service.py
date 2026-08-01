@@ -944,7 +944,12 @@ class SceneImageryService:
     def clip_bounds_to_layer(
         self, layer: dict[str, Any], bbox: list[float] | None
     ) -> list[float]:
-        """Intersect request AOI with scene bounds (keeps composites sharp on the map view)."""
+        """Intersect request bbox with the scene layer bounds.
+
+        Callers that want the original image extent should pass the scene layer
+        bounds (or omit bbox). A place-pin search window must not be used alone
+        or processed overlays shrink to a small inset on the map.
+        """
         scene = [float(x) for x in layer["bounds"]]
         if not bbox or len(bbox) != 4:
             return scene
