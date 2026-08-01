@@ -932,7 +932,7 @@ class AnalyticsService:
         scene_id: str,
         bbox: list[float] | None = None,
         footprint: dict[str, Any] | None = None,
-        size: int = 512,
+        size: int = 1024,
         red_band_path: str | None = None,
         green_band_path: str | None = None,
         blue_band_path: str | None = None,
