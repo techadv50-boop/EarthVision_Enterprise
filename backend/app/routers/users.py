@@ -8,8 +8,14 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.core.exceptions import ForbiddenError, NotFoundError
-from app.models.user import TOOLBOX_IDS, User, UserRole
-from app.schemas.user import UserCreate, UserDetail, UserListResponse, UserUpdate
+from app.models.user import TOOLBOX_IDS, AccountStatus, User, UserRole
+from app.schemas.user import (
+    AccountDecisionRequest,
+    UserCreate,
+    UserDetail,
+    UserListResponse,
+    UserUpdate,
+)
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -34,9 +40,12 @@ async def list_users(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     role: UserRole | None = None,
+    status: AccountStatus | None = None,
 ) -> UserListResponse:
     service = UserService(db)
-    items, total = await service.list_users(page=page, page_size=page_size, role=role)
+    items, total = await service.list_users(
+        page=page, page_size=page_size, role=role, status=status
+    )
     return UserListResponse(
         items=[UserDetail.model_validate(u) for u in items],
         total=total,
@@ -51,8 +60,9 @@ async def create_user(
     db: DbSession,
     _: AdminUser,
 ) -> UserDetail:
+    """Admin creates a client account (approved by default unless status is set)."""
     service = UserService(db)
-    user = await service.create(data)
+    user = await service.create(data, public_registration=False)
     return UserDetail.model_validate(user)
 
 
@@ -79,10 +89,26 @@ async def update_user(
     if current.role != UserRole.ADMIN and current.id != user_id:
         raise ForbiddenError("Cannot update other users")
     if current.role != UserRole.ADMIN:
+        # Clients may only edit their own profile fields — never privileges.
         data.role = None
         data.is_active = None
+        data.is_verified = None
         data.allowed_tools = None
+        data.allowed_satellites = None
+        data.account_status = None
     service = UserService(db)
     user = await service.update(user_id, data)
     return UserDetail.model_validate(user)
 
+
+@router.post("/{user_id}/decision", response_model=UserDetail)
+async def decide_account(
+    user_id: str,
+    data: AccountDecisionRequest,
+    db: DbSession,
+    _: AdminUser,
+) -> UserDetail:
+    """Approve, decline, or restrict a client account and assign services."""
+    service = UserService(db)
+    user = await service.decide(user_id, data)
+    return UserDetail.model_validate(user)

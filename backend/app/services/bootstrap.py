@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.security import hash_password
 from app.models.subscription import PlanTier, Subscription, SubscriptionStatus
-from app.models.user import User, UserRole
+from app.models.user import AccountStatus, User, UserRole
 
 
 async def bootstrap_admin(session: AsyncSession) -> None:
@@ -18,6 +18,11 @@ async def bootstrap_admin(session: AsyncSession) -> None:
     result = await session.execute(select(User).where(User.email == settings.admin_email))
     admin = result.scalar_one_or_none()
     if admin is not None:
+        # Keep legacy admin accounts fully unlocked after schema upgrades
+        if getattr(admin, "account_status", None) != AccountStatus.APPROVED.value:
+            admin.account_status = AccountStatus.APPROVED.value
+            admin.is_active = True
+            admin.is_verified = True
         logger.debug("Admin user already exists: {}", settings.admin_email)
         return
 
@@ -28,6 +33,9 @@ async def bootstrap_admin(session: AsyncSession) -> None:
         role=UserRole.ADMIN,
         is_active=True,
         is_verified=True,
+        account_status=AccountStatus.APPROVED.value,
+        allowed_tools=None,
+        allowed_satellites=None,
         organization="EarthVision Technologies",
     )
     session.add(admin)

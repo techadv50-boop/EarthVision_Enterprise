@@ -60,6 +60,18 @@ def _ensure_sqlite_columns(sync_conn) -> None:
         if "allowed_tools" not in columns:
             sync_conn.execute(text("ALTER TABLE users ADD COLUMN allowed_tools JSON"))
             logger.info("Added users.allowed_tools column")
+        if "allowed_satellites" not in columns:
+            sync_conn.execute(text("ALTER TABLE users ADD COLUMN allowed_satellites JSON"))
+            logger.info("Added users.allowed_satellites column")
+        if "account_status" not in columns:
+            # Existing accounts remain usable (approved). New public sign-ups use pending.
+            sync_conn.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN account_status VARCHAR(32) "
+                    "NOT NULL DEFAULT 'approved'"
+                )
+            )
+            logger.info("Added users.account_status column")
     if "satellite_providers" in tables:
         sat_cols = {c["name"] for c in inspector.get_columns("satellite_providers")}
         if "is_high_resolution" not in sat_cols:

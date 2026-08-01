@@ -248,8 +248,8 @@ export function ToolboxPanel({
         </div>
       ) : categoryLocked ? (
         <div className="shrink-0 border-b border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--muted)]">
-          {activeBox.title} is shown in the menu but stays inactive. It will unlock later with
-          high-resolution imagery APIs (Admin → Satellites / APIs).
+          {activeBox.title} is shown in the menu but stays inactive until high-resolution
+          imagery is enabled for your account.
         </div>
       ) : null}
 

@@ -156,11 +156,12 @@ export function PlaceStep({
       setSatsLoading(true);
       try {
         const rows = await satelliteService.listEnabled();
-        if (!cancelled && rows.length) {
-          setSatellites(toOptions(rows));
+        if (!cancelled) {
+          // Empty list is intentional for restricted accounts with no satellite grants.
+          setSatellites(rows.length ? toOptions(rows) : []);
         }
       } catch {
-        // Keep static fallback
+        // Keep static fallback only when the API is unreachable.
       } finally {
         if (!cancelled) setSatsLoading(false);
       }
@@ -292,7 +293,7 @@ export function PlaceStep({
           <div className="flex items-center gap-2 py-2 text-xs text-[var(--muted)]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading satellites…
           </div>
-        ) : (
+        ) : satellites.length ? (
           <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-0.5">
             {satellites.map((option) => {
               const active = filters.satelliteId === option.id;
@@ -313,6 +314,10 @@ export function PlaceStep({
               );
             })}
           </div>
+        ) : (
+          <p className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--muted)]">
+            No satellites are enabled for this account. Ask an administrator to grant access.
+          </p>
         )}
         {isAdmin && onOpenSatelliteAdmin && (
           <button

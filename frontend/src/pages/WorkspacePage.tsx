@@ -116,7 +116,7 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
-  const [adminTab, setAdminTab] = useState<'satellites' | 'clients'>('satellites');
+  const [adminTab, setAdminTab] = useState<'satellites' | 'clients'>('clients');
   const [satelliteRefreshKey, setSatelliteRefreshKey] = useState(0);
   const [geotiffBusy, setGeotiffBusy] = useState(false);
   const [catalogFilters, setCatalogFilters] = useState<CatalogFilters>(() => {
@@ -1254,18 +1254,31 @@ export function WorkspacePage() {
 
         <div className="flex items-center gap-2">
           {isAdmin && (
-            <button
-              type="button"
-              className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white"
-              onClick={() => {
-                setAdminTab('satellites');
-                setAdminOpen(true);
-              }}
-              title="Admin only: add satellite catalog APIs"
-            >
-              <Shield className="h-4 w-4" />
-              <span>Add Satellite API</span>
-            </button>
+            <>
+              <button
+                type="button"
+                className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white"
+                onClick={() => {
+                  setAdminTab('clients');
+                  setAdminOpen(true);
+                }}
+                title="Admin only: approve clients, tools, satellites"
+              >
+                <Shield className="h-4 w-4" />
+                <span>Admin · Clients</span>
+              </button>
+              <button
+                type="button"
+                className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[var(--accent-soft)]"
+                onClick={() => {
+                  setAdminTab('satellites');
+                  setAdminOpen(true);
+                }}
+                title="Admin only: add satellite catalog APIs"
+              >
+                <span>Add Satellite API</span>
+              </button>
+            </>
           )}
           <button
             type="button"

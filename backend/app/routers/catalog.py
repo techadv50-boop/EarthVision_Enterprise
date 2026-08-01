@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import FileResponse, Response
 
 from app.core.deps import CurrentUser, DbSession
+from app.models.user import UserRole
 from app.schemas.catalog import (
     CatalogSearchRequest,
     CatalogSearchResponse,
@@ -13,6 +14,7 @@ from app.schemas.catalog import (
     SceneDownloadResponse,
 )
 from app.services.copernicus_service import CopernicusCatalogService
+from app.services.satellite_provider_service import SatelliteProviderService
 from app.services.scene_service import SceneService
 from pydantic import BaseModel, Field
 from typing import Any
@@ -26,6 +28,25 @@ async def search_catalog(
     db: DbSession,
     user: CurrentUser,
 ) -> CatalogSearchResponse:
+    # Enforce per-account satellite allowlist (admin assigns satellite name keys).
+    if user.role != UserRole.ADMIN and user.allowed_satellites is not None:
+        sat_service = SatelliteProviderService(db)
+        await sat_service.ensure_builtins()
+        enabled = await sat_service.list_enabled()
+        allowed_names = set(user.allowed_satellites)
+        allowed_collections = {
+            row.collection_id for row in enabled if row.name in allowed_names
+        } | allowed_names
+        data.collections = [
+            c for c in (data.collections or []) if c in allowed_collections
+        ]
+        if not data.collections:
+            return CatalogSearchResponse(
+                total=0,
+                items=[],
+                query=data.model_dump(mode="json"),
+            )
+
     catalog = CopernicusCatalogService()
     scenes, total = await catalog.search(data)
     scene_service = SceneService(db)

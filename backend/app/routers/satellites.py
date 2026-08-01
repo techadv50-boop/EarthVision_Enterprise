@@ -28,10 +28,13 @@ async def list_enabled_satellites(
     db: DbSession,
     user: CurrentUser,
 ) -> SatelliteProviderListResponse:
-    """List enabled satellites for all authenticated clients."""
+    """List enabled satellites visible to this account (admin allowlist aware)."""
     service = SatelliteProviderService(db)
     await service.ensure_builtins()
     items = await service.list_enabled()
+    if user.role != UserRole.ADMIN and user.allowed_satellites is not None:
+        allowed = set(user.allowed_satellites)
+        items = [row for row in items if row.name in allowed]
     return SatelliteProviderListResponse(
         total=len(items),
         items=[SatelliteProviderPublic.model_validate(row) for row in items],
