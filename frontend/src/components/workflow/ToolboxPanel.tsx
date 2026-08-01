@@ -86,6 +86,7 @@ interface Props {
   indexResult?: IndexResult | null;
   compositeResult?: CompositeResult | null;
   stretchResult?: StretchResult | null;
+  classificationResult?: import('../../services/classificationService').ClassificationResult | null;
   stretchParams?: {
     p_low: number;
     p_high: number;
@@ -96,6 +97,7 @@ interface Props {
   colormap?: ColormapName | string | null;
   onComposite?: (preset: CompositePreset) => void;
   onIndexTool?: (index: IndexName) => void;
+  onClassify?: () => void;
   onColormapChange?: (cmap: ColormapName) => void;
   onStretch?: () => void;
   onStretchParams?: (patch: Record<string, number>) => void;
@@ -109,6 +111,9 @@ interface Props {
   onExportCompositeGeotiff?: () => void;
   onExportStretchGeotiff?: () => void;
   onExportOverlayGeotiff?: () => void;
+  onExportClassifyPng?: () => void;
+  onExportClassifyCsv?: () => void;
+  onExportClassifyGeotiff?: () => void;
   onDownloadLayerGeotiff?: (layer: MapOverlay) => void;
   geotiffBusy?: boolean;
   geotiffLayerId?: string | null;
@@ -147,10 +152,12 @@ export function ToolboxPanel({
   indexResult = null,
   compositeResult = null,
   stretchResult = null,
+  classificationResult = null,
   stretchParams = { p_low: 2, p_high: 98, gamma: 1, brightness: 1, contrast: 1 },
   colormap = null,
   onComposite,
   onIndexTool,
+  onClassify,
   onColormapChange,
   onStretch,
   onStretchParams,
@@ -164,6 +171,9 @@ export function ToolboxPanel({
   onExportCompositeGeotiff,
   onExportStretchGeotiff,
   onExportOverlayGeotiff,
+  onExportClassifyPng,
+  onExportClassifyCsv,
+  onExportClassifyGeotiff,
   onDownloadLayerGeotiff,
   geotiffBusy = false,
   geotiffLayerId = null,
@@ -331,10 +341,12 @@ export function ToolboxPanel({
             indexResult={indexResult}
             compositeResult={compositeResult}
             stretchResult={stretchResult}
+            classificationResult={classificationResult}
             stretchParams={stretchParams}
             colormap={colormap}
             onComposite={onComposite}
             onIndex={onIndexTool}
+            onClassify={() => onClassify?.()}
             onColormapChange={onColormapChange}
             onStretch={onStretch}
             onStretchParams={(patch) => onStretchParams?.(patch)}
@@ -348,6 +360,9 @@ export function ToolboxPanel({
             onExportCompositeGeotiff={() => onExportCompositeGeotiff?.()}
             onExportStretchGeotiff={() => onExportStretchGeotiff?.()}
             onExportOverlayGeotiff={() => onExportOverlayGeotiff?.()}
+            onExportClassifyPng={() => onExportClassifyPng?.()}
+            onExportClassifyCsv={() => onExportClassifyCsv?.()}
+            onExportClassifyGeotiff={() => onExportClassifyGeotiff?.()}
             geotiffBusy={geotiffBusy}
           />
         )}

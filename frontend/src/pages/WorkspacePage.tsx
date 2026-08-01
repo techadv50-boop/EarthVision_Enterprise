@@ -32,6 +32,10 @@ import {
   type StretchResult,
 } from '../services/compositeService';
 import {
+  classificationService,
+  type ClassificationResult,
+} from '../services/classificationService';
+import {
   terrainService,
   type TerrainProduct,
 } from '../services/terrainService';
@@ -101,6 +105,8 @@ export function WorkspacePage() {
   const [lastBufferArea, setLastBufferArea] = useState<number | null>(null);
   const [mapCommand, setMapCommand] = useState<{ id: number; type: string } | null>(null);
   const [compositeResult, setCompositeResult] = useState<CompositeResult | null>(null);
+  const [classificationResult, setClassificationResult] =
+    useState<ClassificationResult | null>(null);
   const [stretchResult, setStretchResult] = useState<StretchResult | null>(null);
   const [stretchParams, setStretchParams] = useState({
     p_low: 2,
@@ -804,6 +810,10 @@ export function WorkspacePage() {
       void runComposite('false_color_infrared');
       return;
     }
+    if (op === 'unsupervised_classify') {
+      void runClassification();
+      return;
+    }
     if (op === 'histogram') {
       void runStretch();
       return;
@@ -837,6 +847,49 @@ export function WorkspacePage() {
     }
     if (op === 'reproject' || op === 'resample') {
       setLastMessage(`${op}: display CRS EPSG:3857 / native scene resolution`);
+    }
+  };
+
+  const runClassification = async () => {
+    if (!focusScene) {
+      setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    setToolLoading(true);
+    setActiveToolId('unsupervised_classify');
+    setToolStatus('Unsupervised classification (ensemble)…');
+    setError(null);
+    try {
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      const result = await classificationService.classify({
+        scene_id: focusScene.id,
+        bbox: [...bounds],
+        size: 1024,
+      });
+      setClassificationResult(result);
+      setLastLegend(result.legend);
+      setLastMessage(result.message);
+      upsertOverlay({
+        id: `classify-${focusScene.id}`,
+        kind: 'index',
+        sceneId: focusScene.id,
+        url: classificationService.toDataUrl(result.overlay_base64),
+        bounds: result.bounds as [number, number, number, number],
+        footprint: sceneOverlay?.footprint ?? null,
+        opacity: 0.85,
+        label: 'LULC 4-class (unsupervised)',
+        visible: true,
+      });
+      useWorkflowStore.getState().setExpandedToolbox('image');
+      useWorkflowStore.getState().setToolboxOpen(true);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setToolLoading(false);
+      setToolStatus(null);
     }
   };
 
@@ -1482,10 +1535,12 @@ export function WorkspacePage() {
               indexResult={indexResult}
               compositeResult={compositeResult}
               stretchResult={stretchResult}
+              classificationResult={classificationResult}
               stretchParams={stretchParams}
               colormap={selectedColormap}
               onComposite={(preset) => void runComposite(preset)}
               onIndexTool={(index) => void runIndex(index)}
+              onClassify={() => void runClassification()}
               onColormapChange={(cmap) => {
                 setSelectedColormap(cmap);
                 if (indexResult?.index) {
@@ -1497,6 +1552,42 @@ export function WorkspacePage() {
                 setStretchParams((s) => ({ ...s, ...patch }))
               }
               onEnhance={(op) => applyProcessFilter(op)}
+              onExportClassifyPng={() => {
+                if (!classificationResult?.overlay_base64 || !focusScene) {
+                  setError('Run Unsupervised Classify first');
+                  return;
+                }
+                classificationService.downloadPngFromBase64(
+                  classificationResult.overlay_base64,
+                  `lulc4_${focusScene.id}.png`,
+                );
+              }}
+              onExportClassifyCsv={() => {
+                if (!classificationResult || !focusScene) {
+                  setError('Run Unsupervised Classify first');
+                  return;
+                }
+                classificationService.downloadCsvText(
+                  classificationService.buildResultsCsv(classificationResult),
+                  `lulc4_${focusScene.id}_areas.csv`,
+                );
+              }}
+              onExportClassifyGeotiff={() => {
+                if (!classificationResult || !focusScene) {
+                  setError('Run Unsupervised Classify first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void classificationService
+                  .downloadGeotiff(classificationResult, focusScene.id)
+                  .then(() =>
+                    setLastMessage(
+                      `Downloaded GeoTIFF · LULC 4-class (${classificationResult.total_area_km2} km²)`,
+                    ),
+                  )
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
               onExportIndexPng={() => {
                 if (!indexResult || !focusScene) {
                   setError('Compute an index first');

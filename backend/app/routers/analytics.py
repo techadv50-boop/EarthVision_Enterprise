@@ -38,6 +38,7 @@ class GeoTiffExportRequest(BaseModel):
         "index",
         "stretch",
         "change",
+        "classify",
     ] = "overlay"
     scene_id: str | None = None
     before_scene_id: str | None = None
@@ -282,11 +283,25 @@ async def export_geotiff(data: GeoTiffExportRequest, user: CurrentUser) -> Respo
         )
         png = base64.b64decode(result.overlay_base64)
         bounds = list(result.bounds)
+    elif data.procedure == "classify":
+        from app.schemas.classification import ClassificationRequest
+        from app.services.classification_service import ClassificationService
+
+        if not data.scene_id:
+            from app.core.exceptions import ValidationError
+
+            raise ValidationError("scene_id required for classify GeoTIFF")
+        result = ClassificationService().classify(
+            ClassificationRequest(scene_id=data.scene_id, bbox=bounds)
+        )
+        png = base64.b64decode(result.overlay_base64)
+        bounds = list(result.bounds)
     else:
         from app.core.exceptions import ValidationError
 
         raise ValidationError(
-            "Provide overlay_base64 (or dem_grid), or set procedure to composite/index/stretch/change"
+            "Provide overlay_base64 (or dem_grid), or set procedure to "
+            "composite/index/stretch/change/classify"
         )
 
     tif, filename = png_bytes_to_geotiff(png, bounds, filename=data.filename)

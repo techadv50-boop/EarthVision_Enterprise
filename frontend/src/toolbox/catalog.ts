@@ -103,6 +103,12 @@ export const TOOLBOXES: ToolboxDef[] = [
     tools: [
       { id: 'true_color', label: 'True Color', action: { type: 'process', op: 'true_color' }, needsScene: true },
       { id: 'false_color', label: 'False Color', action: { type: 'process', op: 'false_color' }, needsScene: true },
+      {
+        id: 'unsupervised_classify',
+        label: 'Unsupervised Classify',
+        action: { type: 'process', op: 'unsupervised_classify' },
+        needsScene: true,
+      },
       { id: 'ndvi', label: 'NDVI', action: { type: 'index', index: 'NDVI' }, needsScene: true },
       { id: 'ndwi', label: 'NDWI', action: { type: 'index', index: 'NDWI' }, needsScene: true },
       { id: 'ndbi', label: 'NDBI', action: { type: 'index', index: 'NDBI' }, needsScene: true },

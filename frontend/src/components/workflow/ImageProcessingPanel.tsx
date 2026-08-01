@@ -10,6 +10,7 @@ import type {
 import { compositeService } from '../../services/compositeService';
 import type { IndexName, IndexResult, ColormapInfo, ColormapName } from '../../services/analyticsService';
 import { analyticsService } from '../../services/analyticsService';
+import type { ClassificationResult } from '../../services/classificationService';
 
 const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapName }> = [
   { id: 'NDVI', label: 'NDVI', defaultRamp: 'rdylgn' },
@@ -30,10 +31,12 @@ interface Props {
   indexResult: IndexResult | null;
   compositeResult: CompositeResult | null;
   stretchResult: StretchResult | null;
+  classificationResult?: ClassificationResult | null;
   stretchParams: { p_low: number; p_high: number; gamma: number; brightness: number; contrast: number };
   colormap?: ColormapName | string | null;
   onComposite: (preset: CompositePreset) => void;
   onIndex: (index: IndexName) => void;
+  onClassify?: () => void;
   onColormapChange?: (cmap: ColormapName) => void;
   onStretch: () => void;
   onStretchParams: (patch: Partial<Props['stretchParams']>) => void;
@@ -47,6 +50,9 @@ interface Props {
   onExportCompositeGeotiff?: () => void;
   onExportStretchGeotiff?: () => void;
   onExportOverlayGeotiff?: () => void;
+  onExportClassifyPng?: () => void;
+  onExportClassifyCsv?: () => void;
+  onExportClassifyGeotiff?: () => void;
   geotiffBusy?: boolean;
 }
 
@@ -122,10 +128,12 @@ export function ImageProcessingPanel({
   indexResult,
   compositeResult,
   stretchResult,
+  classificationResult = null,
   stretchParams,
   colormap = null,
   onComposite,
   onIndex,
+  onClassify,
   onColormapChange,
   onStretch,
   onStretchParams,
@@ -139,6 +147,9 @@ export function ImageProcessingPanel({
   onExportCompositeGeotiff,
   onExportStretchGeotiff,
   onExportOverlayGeotiff,
+  onExportClassifyPng,
+  onExportClassifyCsv,
+  onExportClassifyGeotiff,
   geotiffBusy = false,
 }: Props) {
   const [presets, setPresets] = useState<CompositePresetInfo[]>([]);
@@ -229,6 +240,111 @@ export function ImageProcessingPanel({
             );
           })}
         </div>
+      </section>
+
+      {/* Unsupervised classification */}
+      <section>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+          Unsupervised classification
+        </h3>
+        <p className="mb-1 text-[10px] text-[var(--muted)]">
+          Ensemble amalgam of spectral rules, K-means, and OBIA-like object majority →{' '}
+          <strong>Snow / Soil (Built-up) / Vegetation / Water</strong>
+        </p>
+        <button
+          type="button"
+          disabled={loading || !onClassify}
+          onClick={() => onClassify?.()}
+          className={`w-full rounded-lg border px-2 py-2 text-left text-[11px] font-semibold ${
+            activeToolId === 'unsupervised_classify' || classificationResult
+              ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+              : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+          }`}
+        >
+          Run 4-class unsupervised classify
+        </button>
+        {classificationResult && (
+          <div className="mt-2 space-y-2 rounded border border-[var(--line)] bg-white p-2">
+            <div className="text-[10px] text-[var(--muted)]">
+              {classificationResult.message}
+              {classificationResult.agreement_percent != null
+                ? ` · member agreement ${classificationResult.agreement_percent}%`
+                : ''}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {classificationResult.classes.map((c) => (
+                <span
+                  key={c.class_id}
+                  className="inline-flex items-center gap-1 rounded border border-[var(--line)] px-1.5 py-0.5 text-[10px]"
+                >
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-sm border border-black/10"
+                    style={{ background: c.color }}
+                  />
+                  {c.label}
+                </span>
+              ))}
+            </div>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="text-[var(--muted)]">
+                  <th className="py-0.5 font-medium">Class</th>
+                  <th className="py-0.5 font-medium">%</th>
+                  <th className="py-0.5 font-medium">Area (km²)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {classificationResult.classes.map((c) => (
+                  <tr key={c.class_id} className="border-t border-[var(--line)]">
+                    <td className="py-0.5">
+                      <span className="inline-flex items-center gap-1">
+                        <span
+                          className="inline-block h-2 w-2 rounded-sm border border-black/10"
+                          style={{ background: c.color }}
+                        />
+                        {c.label}
+                      </span>
+                    </td>
+                    <td className="py-0.5">{c.percent.toFixed(1)}</td>
+                    <td className="py-0.5 font-medium">{c.area_km2.toFixed(3)}</td>
+                  </tr>
+                ))}
+                <tr className="border-t border-[var(--line)] font-semibold">
+                  <td className="py-0.5">Total</td>
+                  <td className="py-0.5">100</td>
+                  <td className="py-0.5">
+                    {classificationResult.total_area_km2.toFixed(3)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div className="grid grid-cols-3 gap-1">
+              <button
+                type="button"
+                className="ev-btn-ghost justify-center px-1 py-1 text-[10px]"
+                disabled={!classificationResult.overlay_base64}
+                onClick={() => onExportClassifyPng?.()}
+              >
+                <Download className="h-3 w-3" /> Map PNG
+              </button>
+              <button
+                type="button"
+                className="ev-btn-ghost justify-center px-1 py-1 text-[10px]"
+                onClick={() => onExportClassifyCsv?.()}
+              >
+                <Download className="h-3 w-3" /> Areas CSV
+              </button>
+              <button
+                type="button"
+                className="ev-btn-ghost justify-center px-1 py-1 text-[10px]"
+                disabled={geotiffBusy}
+                onClick={() => onExportClassifyGeotiff?.()}
+              >
+                <Download className="h-3 w-3" /> GeoTIFF
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Spectral indices */}
