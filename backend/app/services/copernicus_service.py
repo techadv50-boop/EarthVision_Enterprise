@@ -79,9 +79,16 @@ def get_token_manager() -> CopernicusTokenManager:
 COLLECTION_MAP: dict[str, str] = {
     "SENTINEL-1": "SENTINEL-1",
     "SENTINEL-2": "SENTINEL-2",
+    "SENTINEL-3": "SENTINEL-3",
+    "SENTINEL-5P": "SENTINEL-5P",
+    "LANDSAT-7": "LANDSAT-7",
     "LANDSAT-8": "LANDSAT-8",
     "LANDSAT-9": "LANDSAT-9",
-    "MODIS": "TERRA",
+    "MODIS": "TERRAAQUA",
+    "TERRAAQUA": "TERRAAQUA",
+    "TERRA": "TERRA",
+    "AQUA": "AQUA",
+    "SMOS": "SMOS",
 }
 
 

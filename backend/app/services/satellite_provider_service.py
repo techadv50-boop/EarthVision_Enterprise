@@ -30,16 +30,58 @@ BUILTIN_SATELLITES: list[dict[str, object]] = [
         "sort_order": 20,
     },
     {
+        "name": "SENTINEL-3",
+        "label": "Sentinel-3",
+        "collection_id": "SENTINEL-3",
+        "sort_order": 30,
+    },
+    {
+        "name": "SENTINEL-5P",
+        "label": "Sentinel-5P",
+        "collection_id": "SENTINEL-5P",
+        "sort_order": 40,
+    },
+    {
         "name": "LANDSAT-9",
         "label": "Landsat-9",
         "collection_id": "LANDSAT-9",
-        "sort_order": 30,
+        "sort_order": 50,
     },
     {
         "name": "LANDSAT-8",
         "label": "Landsat-8",
         "collection_id": "LANDSAT-8",
-        "sort_order": 40,
+        "sort_order": 60,
+    },
+    {
+        "name": "LANDSAT-7",
+        "label": "Landsat-7",
+        "collection_id": "LANDSAT-7",
+        "sort_order": 70,
+    },
+    {
+        "name": "MODIS",
+        "label": "MODIS (Terra+Aqua)",
+        "collection_id": "TERRAAQUA",
+        "sort_order": 80,
+    },
+    {
+        "name": "TERRA",
+        "label": "Terra MODIS",
+        "collection_id": "TERRA",
+        "sort_order": 90,
+    },
+    {
+        "name": "AQUA",
+        "label": "Aqua MODIS",
+        "collection_id": "AQUA",
+        "sort_order": 100,
+    },
+    {
+        "name": "SMOS",
+        "label": "SMOS",
+        "collection_id": "SMOS",
+        "sort_order": 110,
     },
 ]
 
@@ -76,32 +118,48 @@ class SatelliteProviderService:
         self.db = db
 
     async def ensure_builtins(self) -> None:
-        """Seed built-in satellites once; keep existing rows intact."""
+        """Seed built-in satellites; refresh label/collection/sort for builtins."""
         settings = get_settings()
-        result = await self.db.execute(select(SatelliteProvider.name))
-        existing = {row[0] for row in result.all()}
-        created = False
+        result = await self.db.execute(select(SatelliteProvider))
+        by_name = {row.name: row for row in result.scalars().all()}
+        changed = False
         for item in BUILTIN_SATELLITES:
             name = str(item["name"])
-            if name in existing:
-                continue
-            self.db.add(
-                SatelliteProvider(
-                    name=name,
-                    label=str(item["label"]),
-                    collection_id=str(item["collection_id"]),
-                    api_base_url=settings.copernicus_catalog_url,
-                    token_url=settings.copernicus_token_url,
-                    client_id=settings.copernicus_client_id,
-                    auth_username=settings.copernicus_username or None,
-                    auth_password=settings.copernicus_password or None,
-                    enabled=True,
-                    is_builtin=True,
-                    sort_order=int(item["sort_order"]),
+            label = str(item["label"])
+            collection_id = str(item["collection_id"])
+            sort_order = int(item["sort_order"])
+            existing = by_name.get(name)
+            if existing is None:
+                self.db.add(
+                    SatelliteProvider(
+                        name=name,
+                        label=label,
+                        collection_id=collection_id,
+                        api_base_url=settings.copernicus_catalog_url,
+                        token_url=settings.copernicus_token_url,
+                        client_id=settings.copernicus_client_id,
+                        auth_username=settings.copernicus_username or None,
+                        auth_password=settings.copernicus_password or None,
+                        enabled=True,
+                        is_builtin=True,
+                        sort_order=sort_order,
+                    )
                 )
-            )
-            created = True
-        if created:
+                changed = True
+                continue
+            # Keep admin enable/disable & credentials; sync catalog identity fields.
+            if (
+                existing.label != label
+                or existing.collection_id != collection_id
+                or existing.sort_order != sort_order
+                or not existing.is_builtin
+            ):
+                existing.label = label
+                existing.collection_id = collection_id
+                existing.sort_order = sort_order
+                existing.is_builtin = True
+                changed = True
+        if changed:
             await self.db.commit()
 
     async def list_enabled(self) -> list[SatelliteProvider]:

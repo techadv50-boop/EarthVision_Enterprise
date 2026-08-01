@@ -48,8 +48,15 @@ export interface SatelliteOption {
 export const SATELLITE_OPTIONS: SatelliteOption[] = [
   { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'] },
   { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'] },
+  { id: 'SENTINEL-3', label: 'Sentinel-3', collections: ['SENTINEL-3'] },
+  { id: 'SENTINEL-5P', label: 'Sentinel-5P', collections: ['SENTINEL-5P'] },
   { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'] },
   { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'] },
+  { id: 'LANDSAT-7', label: 'Landsat-7', collections: ['LANDSAT-7'] },
+  { id: 'MODIS', label: 'MODIS (Terra+Aqua)', collections: ['TERRAAQUA'] },
+  { id: 'TERRA', label: 'Terra MODIS', collections: ['TERRA'] },
+  { id: 'AQUA', label: 'Aqua MODIS', collections: ['AQUA'] },
+  { id: 'SMOS', label: 'SMOS', collections: ['SMOS'] },
 ];
 
 export interface CatalogFilters {
@@ -196,7 +203,7 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading satellites…
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-0.5">
             {satellites.map((option) => {
               const active = filters.satelliteId === option.id;
               return (

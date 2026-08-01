@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Shield, UserPlus, X, Loader2 } from 'lucide-react';
+import { Satellite, Shield, UserPlus, X, Loader2 } from 'lucide-react';
 import {
   adminService,
   type AdminUser,
@@ -17,10 +17,12 @@ type AdminTab = 'clients' | 'satellites';
 
 interface Props {
   onClose: () => void;
+  /** Opens on Satellites / APIs by default so new catalog APIs are easy to find. */
+  initialTab?: AdminTab;
 }
 
-export function AdminPanel({ onClose }: Props) {
-  const [tab, setTab] = useState<AdminTab>('clients');
+export function AdminPanel({ onClose, initialTab = 'satellites' }: Props) {
+  const [tab, setTab] = useState<AdminTab>(initialTab);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -144,7 +146,8 @@ export function AdminPanel({ onClose }: Props) {
               Admin
             </h2>
             <p className="mt-1 text-xs text-[var(--muted)]">
-              Manage client accounts and satellite catalog APIs for every client.
+              Add satellite catalog APIs here — enabled satellites appear for every client
+              account in Find scenes.
             </p>
           </div>
           <button type="button" className="ev-btn-ghost p-2" onClick={onClose} title="Close">
@@ -155,6 +158,18 @@ export function AdminPanel({ onClose }: Props) {
         <div className="mb-4 flex gap-2 border-b border-[var(--line)] pb-2">
           <button
             type="button"
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === 'satellites'
+                ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+                : 'text-[var(--muted)] hover:bg-[var(--bg)]'
+            }`}
+            onClick={() => setTab('satellites')}
+          >
+            <Satellite className="h-3.5 w-3.5" />
+            Satellites / APIs
+          </button>
+          <button
+            type="button"
             className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
               tab === 'clients'
                 ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
@@ -163,17 +178,6 @@ export function AdminPanel({ onClose }: Props) {
             onClick={() => setTab('clients')}
           >
             Client accounts
-          </button>
-          <button
-            type="button"
-            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
-              tab === 'satellites'
-                ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
-                : 'text-[var(--muted)] hover:bg-[var(--bg)]'
-            }`}
-            onClick={() => setTab('satellites')}
-          >
-            Satellites / APIs
           </button>
         </div>
 

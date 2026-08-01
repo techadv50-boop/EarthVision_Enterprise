@@ -14,6 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import {
+  EO_HIDDEN_TOOLBOXES,
   TOOLBOXES,
   type ToolboxId,
   type ToolboxTool,
@@ -67,6 +68,8 @@ interface Props {
   mapChrome?: Record<string, boolean> | null;
   /** null/undefined = all toolboxes; otherwise filter to these ids */
   allowedTools?: string[] | null;
+  /** Hide AI / Change / Maritime / Air for Sentinel, Landsat, MODIS, etc. */
+  hideEoDomainTools?: boolean;
   onExpand: (id: ToolboxId) => void;
   onTool: (tool: ToolboxTool) => void;
   onClose: () => void;
@@ -128,6 +131,7 @@ export function ToolboxPanel({
   lastMessage,
   mapChrome,
   allowedTools = null,
+  hideEoDomainTools = false,
   onExpand,
   onTool,
   onClose,
@@ -169,10 +173,17 @@ export function ToolboxPanel({
   const [algoByTask, setAlgoByTask] = useState<Record<string, string>>({});
 
   const visibleToolboxes = useMemo(() => {
-    if (allowedTools == null) return TOOLBOXES;
-    const allowed = new Set(allowedTools);
-    return TOOLBOXES.filter((b) => allowed.has(b.id));
-  }, [allowedTools]);
+    let boxes = TOOLBOXES;
+    if (allowedTools != null) {
+      const allowed = new Set(allowedTools);
+      boxes = boxes.filter((b) => allowed.has(b.id));
+    }
+    if (hideEoDomainTools) {
+      const hidden = new Set(EO_HIDDEN_TOOLBOXES);
+      boxes = boxes.filter((b) => !hidden.has(b.id));
+    }
+    return boxes;
+  }, [allowedTools, hideEoDomainTools]);
 
   const activeId = (expanded && visibleToolboxes.some((b) => b.id === expanded)
     ? expanded

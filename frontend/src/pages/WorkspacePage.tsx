@@ -42,7 +42,11 @@ import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
 import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
 import { bookmarkService } from '../services/bookmarkService';
-import { TOOLBOXES } from '../toolbox/catalog';
+import {
+  EO_HIDDEN_TOOLBOXES,
+  TOOLBOXES,
+  isStandardEoSatellite,
+} from '../toolbox/catalog';
 
 function sceneBounds(
   scene: SceneSummary,
@@ -135,13 +139,6 @@ export function WorkspacePage() {
   const isAdmin = user?.role === 'admin';
   const allowedTools =
     isAdmin || user?.allowed_tools == null ? null : user.allowed_tools;
-  const toolCount = useMemo(() => {
-    const boxes =
-      allowedTools == null
-        ? TOOLBOXES
-        : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
-    return boxes.reduce((n, b) => n + b.tools.length, 0);
-  }, [allowedTools]);
 
   const {
     step,
@@ -245,6 +242,30 @@ export function WorkspacePage() {
   );
 
   const hasVisibleScene = visibleSceneIds.length > 0;
+
+  const hideEoDomainTools = useMemo(() => {
+    if (isStandardEoSatellite(catalogFilters.satelliteId)) return true;
+    if (isStandardEoSatellite(focusScene?.collection || focusScene?.platform)) {
+      return true;
+    }
+    return scenes.some(
+      (s) =>
+        visibleSceneIds.includes(s.id) &&
+        isStandardEoSatellite(s.collection || s.platform),
+    );
+  }, [catalogFilters.satelliteId, focusScene, scenes, visibleSceneIds]);
+
+  const toolCount = useMemo(() => {
+    let boxes =
+      allowedTools == null
+        ? TOOLBOXES
+        : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
+    if (hideEoDomainTools) {
+      const hidden = new Set(EO_HIDDEN_TOOLBOXES);
+      boxes = boxes.filter((b) => !hidden.has(b.id));
+    }
+    return boxes.reduce((n, b) => n + b.tools.length, 0);
+  }, [allowedTools, hideEoDomainTools]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
     const sceneOverlay = focusScene
@@ -1209,12 +1230,12 @@ export function WorkspacePage() {
           {isAdmin && (
             <button
               type="button"
-              className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[var(--bg)]"
+              className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white"
               onClick={() => setAdminOpen(true)}
-              title="Manage client accounts"
+              title="Admin: add satellite APIs & manage clients"
             >
-              <Shield className="h-4 w-4 text-[var(--accent)]" />
-              <span className="hidden sm:inline">Admin</span>
+              <Shield className="h-4 w-4" />
+              <span className="hidden sm:inline">Admin · Satellites</span>
             </button>
           )}
           <button
@@ -1376,6 +1397,7 @@ export function WorkspacePage() {
               lastMessage={lastMessage}
               mapChrome={mapChrome}
               allowedTools={allowedTools}
+              hideEoDomainTools={hideEoDomainTools}
               onExpand={(id) => setExpandedToolbox(id)}
               onTool={onTool}
               onClose={() => setToolboxOpen(false)}

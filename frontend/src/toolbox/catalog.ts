@@ -12,6 +12,31 @@ export type ToolboxId =
   | 'gis'
   | 'measure';
 
+/** Domain tools hidden for standard EO satellites (Sentinel / Landsat / MODIS, etc.). */
+export const EO_HIDDEN_TOOLBOXES: ToolboxId[] = [
+  'ai',
+  'change',
+  'maritime',
+  'aviation',
+];
+
+/** True for catalog satellites that use standard EO imagery toolboxes only. */
+export function isStandardEoSatellite(name?: string | null): boolean {
+  if (!name) return false;
+  const n = name.toUpperCase().replace(/_/g, '-');
+  return (
+    n.includes('SENTINEL') ||
+    n.includes('LANDSAT') ||
+    n.includes('MODIS') ||
+    n.includes('TERRA') ||
+    n.includes('AQUA') ||
+    n.includes('SMOS') ||
+    n.includes('ENVISAT') ||
+    n.includes('COP-DEM') ||
+    n.includes('GLOBAL-MOSAIC')
+  );
+}
+
 export type ToolAction =
   | { type: 'map'; mode: string }
   | { type: 'toggle'; key: string }

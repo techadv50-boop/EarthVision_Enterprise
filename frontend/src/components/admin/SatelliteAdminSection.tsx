@@ -192,8 +192,9 @@ export function SatelliteAdminSection() {
         <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
           {mode === 'create' ? 'Add satellite API' : 'Edit satellite API'}
         </h3>
-        <p className="mb-3 text-[11px] text-[var(--muted)]">
-          New satellites become available to every client account in the Find scenes list.
+        <p className="mb-3 rounded-md border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-2.5 py-2 text-[11px] text-[var(--ink)]">
+          Fill the form and click <strong>Add satellite</strong>. The new option appears
+          immediately for every client in Find scenes → Satellite.
         </p>
 
         <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
