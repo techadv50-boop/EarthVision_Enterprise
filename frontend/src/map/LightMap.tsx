@@ -97,7 +97,10 @@ function CursorCoordinates({ enabled }: { enabled: boolean }) {
   });
   if (!enabled) return null;
   return (
-    <div className="pointer-events-none absolute bottom-3 left-1/2 z-[1000] -translate-x-1/2 rounded-full border border-[var(--line)] bg-white/95 px-3 py-1 font-mono text-[11px] shadow">
+    <div
+      className="pointer-events-none absolute bottom-3 right-3 z-[1000] rounded-md border border-[var(--line)] bg-white/95 px-3 py-1 font-mono text-[11px] shadow"
+      data-map-chrome="coordinates"
+    >
       {pos}
     </div>
   );

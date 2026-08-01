@@ -80,7 +80,7 @@ export function ScaleBar() {
 
   return (
     <div
-      className="pointer-events-none absolute bottom-3 left-1/2 z-[1000] -translate-x-1/2 rounded-md border border-[var(--line)] bg-white/95 px-2 py-1 shadow-sm"
+      className="pointer-events-none absolute bottom-3 left-3 z-[1000] rounded-md border border-[var(--line)] bg-white/95 px-2 py-1 shadow-sm"
       data-map-chrome="scale"
     >
       <div className="mx-auto border-b-2 border-x-2 border-[var(--ink)]" style={{ width: widthPx, height: 8 }} />
