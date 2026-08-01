@@ -69,6 +69,8 @@ def family_label(family: str) -> str:
 # USGS Collection-2 Level-2 scale factors (identical for L8 and L9):
 #   SR:  ρ = DN × 0.0000275 − 0.2
 #   ST:  Kelvin = DN × 0.00341802 + 149.0
+# Sentinel-2 L2A BOA (ESA PB ≥ 04.00 / Earth Search):
+#   ρ = DN × 0.0001 − 0.1   (SCL masks cloud/shadow/snow for indices)
 COMPOSITE_BAND_CODES: dict[str, dict[str, dict[str, str]]] = {
     "true_color": {
         "SENTINEL-2": {

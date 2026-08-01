@@ -89,6 +89,13 @@ LANDSAT_C2_ST_OFFSET = 149.0
 # 0=Fill, 1=Dilated Cloud, 2=Cirrus, 3=Cloud, 4=Cloud Shadow
 LANDSAT_QA_INVALID_MASK = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4)
 
+# Sentinel-2 L2A BOA reflectance (ESA PB ≥ 04.00 / Element84 Earth Search)
+SENTINEL2_L2A_SCALE = 0.0001
+SENTINEL2_L2A_OFFSET = -0.1
+# SCL classes to mask for optical indices (ESA Scene Classification)
+# Keep 4=vegetation, 5=not vegetated, 6=water, 7=unclassified
+S2_SCL_INVALID = frozenset({0, 1, 2, 3, 8, 9, 10, 11})
+
 
 class SceneImageryService:
     """Resolve per-collection satellite imagery and serve XYZ tiles."""
@@ -409,6 +416,7 @@ class SceneImageryService:
                     "nir09",
                     "swir16",
                     "swir22",
+                    "scl",
                 )
                 analysis_bands: dict[str, str] = {}
                 download_bands: dict[str, dict[str, Any]] = {}
@@ -428,6 +436,8 @@ class SceneImageryService:
                 # Do not alias SWIR1→SWIR2 (NBR needs distinct SWIR2 / B12)
                 if "nir08" in analysis_bands and "nir" not in analysis_bands:
                     analysis_bands["nir"] = analysis_bands["nir08"]
+                # BOA scale/offset from STAC (PB ≥ 04.00 → offset −0.1)
+                boa_scale, boa_offset = self._s2_boa_scale_offset(assets, props)
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": assets["visual"]["href"],
@@ -439,9 +449,12 @@ class SceneImageryService:
                     "datetime": props.get("datetime"),
                     "cloud_cover": props.get("eo:cloud_cover"),
                     "render_mode": "rgb",
-                    "source": "sentinel2_tci",
+                    "source": "sentinel2_l2a",
+                    "boa_scale": boa_scale,
+                    "boa_offset": boa_offset,
+                    "processing_baseline": props.get("s2:processing_baseline"),
                     "bands": {"R": "B04.tif", "G": "B03.tif", "B": "B02.tif"},
-                    "label": "Sentinel-2 true-color (TCI)",
+                    "label": "Sentinel-2 L2A true-color (TCI)",
                 }
         raise NotFoundError(f"No Sentinel-2 TCI found ({last_error})")
 
@@ -821,6 +834,9 @@ class SceneImageryService:
             "thumbnail_url": match.get("thumbnail_url"),
             "external_tile_url": external_tiles,
             "tile_url_template": tile_template,
+            "boa_scale": match.get("boa_scale"),
+            "boa_offset": match.get("boa_offset"),
+            "processing_baseline": match.get("processing_baseline"),
         }
         # Drop previous tile cache when remapping a scene
         cache_root = self._tile_cache_root(scene_id)
@@ -1128,6 +1144,33 @@ class SceneImageryService:
             width = max(64, int(round(max_edge * width_m / height_m)))
         return height, width
 
+    @staticmethod
+    def _s2_boa_scale_offset(
+        assets: dict[str, Any], props: dict[str, Any]
+    ) -> tuple[float, float]:
+        """Resolve Sentinel-2 L2A BOA scale/offset from STAC or processing baseline."""
+        scale = SENTINEL2_L2A_SCALE
+        offset = SENTINEL2_L2A_OFFSET
+        for key in ("red", "nir", "blue", "green"):
+            bands_meta = (assets.get(key) or {}).get("raster:bands") or []
+            if bands_meta and isinstance(bands_meta[0], dict):
+                try:
+                    if bands_meta[0].get("scale") is not None:
+                        scale = float(bands_meta[0]["scale"])
+                    if bands_meta[0].get("offset") is not None:
+                        offset = float(bands_meta[0]["offset"])
+                    return scale, offset
+                except (TypeError, ValueError):
+                    break
+        # ESA PB ≥ 04.00 introduced BOA_ADD_OFFSET (−1000 DN → −0.1 reflectance)
+        pb_raw = str(props.get("s2:processing_baseline") or "")
+        try:
+            if pb_raw and float(pb_raw) < 4.0:
+                offset = 0.0
+        except ValueError:
+            pass
+        return scale, offset
+
     def read_band_grid(
         self,
         href: str,
@@ -1137,6 +1180,9 @@ class SceneImageryService:
         sign: str | None = None,
         reflectance_scale: str | None = None,
         out_shape: tuple[int, int] | None = None,
+        categorical: bool = False,
+        boa_scale: float | None = None,
+        boa_offset: float | None = None,
     ) -> np.ndarray:
         """Sample a COG band into an analysis grid covering [west,south,east,north]."""
         import rasterio
@@ -1159,9 +1205,9 @@ class SceneImageryService:
                     "EPSG:4326", src.crs, west, south, east, north
                 )
                 window = from_bounds(left, bottom, right, top, transform=src.transform)
-                # Prefer cubic when reducing (sharper than bilinear); nearest when enlarging.
+                # Categorical (SCL/QA): always nearest. Else cubic when reducing.
                 oversampling = float(window.width) < width or float(window.height) < height
-                if oversampling:
+                if categorical or oversampling:
                     resampling = Resampling.nearest
                 else:
                     resampling = Resampling.cubic
@@ -1202,10 +1248,13 @@ class SceneImageryService:
             celsius[invalid] = np.nan
             data = celsius
         elif reflectance_scale == "sentinel2_l2a":
+            # ESA L2A BOA: ρ = DN × scale + offset (PB≥04.00 → 0.0001, −0.1)
             finite = data[np.isfinite(data) & ~nodata_mask]
             if finite.size and float(np.nanmax(finite)) > 1.5:
-                data = data / 10000.0
-            data[nodata_mask] = np.nan
+                sc = SENTINEL2_L2A_SCALE if boa_scale is None else float(boa_scale)
+                off = SENTINEL2_L2A_OFFSET if boa_offset is None else float(boa_offset)
+                data = data * sc + off
+            data[nodata_mask | (data < 0)] = np.nan
             data = np.clip(data, 0, 1)
             data[nodata_mask | ~np.isfinite(data)] = np.nan
         else:
@@ -1352,7 +1401,13 @@ class SceneImageryService:
         analysis = layer.get("analysis_bands") or {}
         sign = layer.get("sign")
         is_landsat = layer.get("source") == "landsat_c2_l2"
+        is_s2 = (
+            layer.get("source") in {"sentinel2_l2a", "sentinel2_tci"}
+            or layer.get("collection") == "SENTINEL-2"
+        )
         scale = "landsat_c2_sr" if is_landsat else "sentinel2_l2a"
+        boa_scale = layer.get("boa_scale")
+        boa_offset = layer.get("boa_offset")
         out_shape = self.analysis_grid_shape(bounds, max_edge=size)
 
         bands: dict[str, np.ndarray] = {}
@@ -1373,6 +1428,7 @@ class SceneImageryService:
             "swir22",
             "thermal",
             "qa_pixel",
+            "scl",
             "vv",
             "vh",
         ):
@@ -1382,15 +1438,20 @@ class SceneImageryService:
             try:
                 if name in {"vv", "vh"}:
                     band_scale = None
+                    categorical = False
                 elif name == "thermal" and is_landsat:
                     # ST_B10 → °C (USGS C2 L2 surface temperature)
                     band_scale = "landsat_c2_st"
+                    categorical = False
                 elif name == "thermal":
                     band_scale = None
-                elif name == "qa_pixel":
+                    categorical = False
+                elif name in {"qa_pixel", "scl"}:
                     band_scale = None
+                    categorical = True
                 else:
                     band_scale = scale
+                    categorical = False
                 bands[name] = self.read_band_grid(
                     href,
                     bounds,
@@ -1398,6 +1459,9 @@ class SceneImageryService:
                     sign=sign,
                     reflectance_scale=band_scale,
                     out_shape=out_shape,
+                    categorical=categorical,
+                    boa_scale=float(boa_scale) if boa_scale is not None else None,
+                    boa_offset=float(boa_offset) if boa_offset is not None else None,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to load analysis band {} for {}: {}", name, scene_id, exc)
@@ -1409,7 +1473,7 @@ class SceneImageryService:
             bands["swir2"] = bands["swir22"]
         if "nir" not in bands and "nir08" in bands:
             bands["nir"] = bands["nir08"]
-        # Never substitute SWIR1 for SWIR2 — breaks NBR accuracy on Landsat-8 B6 vs B7
+        # Never substitute SWIR1 for SWIR2 — breaks NBR (S2 B11 vs B12 / L8 B6 vs B7)
 
         # Apply Landsat QA_PIXEL cloud / shadow / fill mask to optical + thermal
         qa = bands.get("qa_pixel")
@@ -1427,6 +1491,23 @@ class SceneImageryService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("QA_PIXEL mask failed for {}: {}", scene_id, exc)
 
+        # Apply Sentinel-2 SCL mask (cloud / shadow / snow / nodata / cirrus)
+        scl = bands.get("scl")
+        if scl is not None and is_s2:
+            try:
+                scl_i = np.rint(scl).astype(np.int16)
+                invalid = np.isin(scl_i, list(S2_SCL_INVALID))
+                for key, arr in list(bands.items()):
+                    if key == "scl":
+                        continue
+                    if arr.shape != invalid.shape:
+                        continue
+                    masked = arr.astype(np.float64, copy=True)
+                    masked[invalid] = np.nan
+                    bands[key] = masked
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SCL mask failed for {}: {}", scene_id, exc)
+
         return bands, bounds, layer.get("footprint"), layer
 
     # Stable picker order for real STAC product keys
@@ -1443,9 +1524,12 @@ class SceneImageryService:
         "nir09",
         "swir16",
         "swir22",
+        "scl",
         "lwir11",
+        "qa_pixel",
         "vv",
         "vh",
+        "visual",
     )
 
     def _resolve_download_bands(self, layer: dict[str, Any]) -> dict[str, dict[str, Any]]:

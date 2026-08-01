@@ -367,7 +367,8 @@ class ClassificationService:
         red = self._pick(bands, "red")
         nir = self._pick(bands, "nir", "nir08")
         swir1 = self._pick(bands, "swir", "swir16")
-        swir2 = self._pick(bands, "swir2", "swir22", "swir", "swir16")
+        # Require true SWIR2 (S2 B12 / L8 B7) — do not fall back to SWIR1
+        swir2 = self._pick(bands, "swir2", "swir22")
 
         ref = next(v for v in (red, green, blue, nir) if v is not None)
         h, w = ref.shape
@@ -380,13 +381,16 @@ class ClassificationService:
         red = _fill(red, np.zeros((h, w)))
         nir = _fill(nir, green)
         swir1 = _fill(swir1, red)
-        swir2 = _fill(swir2, swir1)
+        swir2 = _fill(swir2, np.full((h, w), np.nan))
 
         def _norm(a: np.ndarray) -> np.ndarray:
+            # Bands from load_analysis_bands are already 0–1 BOA; only scale raw DN.
             out = a.astype(np.float64)
             finite = np.isfinite(out)
             if finite.any() and float(np.nanmax(out[finite])) > 1.5:
-                out = out / 10000.0
+                # Sentinel-2 L2A PB≥04.00: ρ = DN×0.0001 − 0.1
+                out = out * 0.0001 - 0.1
+            out[out < 0] = np.nan
             out = np.clip(out, 0, 1)
             out[~finite] = np.nan
             return out
