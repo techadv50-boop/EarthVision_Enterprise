@@ -114,8 +114,8 @@ async def export_stretch_png(
     south: float = 31.35,
     east: float = 74.55,
     north: float = 31.7,
-    p_low: float = 2.0,
-    p_high: float = 98.0,
+    p_low: float = 1.0,
+    p_high: float = 99.0,
 ) -> Response:
     result = CompositeService().stretch_scene(
         StretchRequest(
@@ -123,6 +123,9 @@ async def export_stretch_png(
             bbox=[west, south, east, north],
             p_low=p_low,
             p_high=p_high,
+            size=1024,
+            gamma=1.05,
+            contrast=1.1,
         )
     )
     return Response(
@@ -142,8 +145,8 @@ async def export_stretch_geotiff(
     south: float = 31.35,
     east: float = 74.55,
     north: float = 31.7,
-    p_low: float = 2.0,
-    p_high: float = 98.0,
+    p_low: float = 1.0,
+    p_high: float = 99.0,
 ) -> Response:
     from app.services.geotiff_export import png_bytes_to_geotiff
 
@@ -153,6 +156,9 @@ async def export_stretch_geotiff(
             bbox=[west, south, east, north],
             p_low=p_low,
             p_high=p_high,
+            size=1024,
+            gamma=1.05,
+            contrast=1.1,
         )
     )
     tif, filename = png_bytes_to_geotiff(

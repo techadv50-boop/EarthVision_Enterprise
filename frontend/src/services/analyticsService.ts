@@ -130,6 +130,7 @@ export const analyticsService = {
       scene_id: sceneId,
       bbox,
       colormap: colormap || undefined,
+      size: 1024,
     });
     return data;
   },

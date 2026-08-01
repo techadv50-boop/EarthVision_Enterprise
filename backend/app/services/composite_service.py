@@ -214,6 +214,7 @@ class CompositeService:
         r = self._pick(bands, keys[0])
         g = self._pick(bands, keys[1])
         b = self._pick(bands, keys[2])
+        valid_mask = np.isfinite(r) | np.isfinite(g) | np.isfinite(b)
 
         rgb = self._stack_stretch(
             r, g, b,
@@ -225,7 +226,7 @@ class CompositeService:
             contrast=request.contrast,
         )
         hist = self._rgb_histogram(rgb)
-        png = self._rgb_to_png(rgb)
+        png = self._rgb_to_png(rgb, valid_mask=valid_mask)
         return CompositeResponse(
             preset=preset_id,
             label=label,
@@ -256,6 +257,7 @@ class CompositeService:
         r = self._pick(bands, "red")
         g = self._pick(bands, "green")
         b = self._pick(bands, "blue")
+        valid_mask = np.isfinite(r) | np.isfinite(g) | np.isfinite(b)
         rgb = self._stack_stretch(
             r, g, b,
             mode="percentile",
@@ -273,7 +275,7 @@ class CompositeService:
             self._pick(bands, "blue"),
         )
         hist["raw"] = raw_hist
-        png = self._rgb_to_png(rgb)
+        png = self._rgb_to_png(rgb, valid_mask=valid_mask)
         return StretchResponse(
             bounds=bounds,
             overlay_base64=base64.b64encode(png).decode("ascii"),
@@ -360,17 +362,19 @@ class CompositeService:
                 lo, hi = float(np.nanmin(ch)), float(np.nanmax(ch))
                 out[:, :, i] = np.clip((ch - lo) / (hi - lo + 1e-9), 0, 1)
                 out[:, :, i][~m] = 0
-        else:  # percentile — joint stretch across channels (standard EO display)
-            vals = stacked[valid]
-            if vals.size:
+        else:  # percentile — per-channel robust stretch (clearer FCC / composites)
+            for i in range(3):
+                ch = stacked[:, :, i]
+                m = np.isfinite(ch)
+                vals = ch[m]
+                if vals.size == 0:
+                    continue
                 lo = float(np.percentile(vals, p_low))
                 hi = float(np.percentile(vals, p_high))
                 if hi <= lo:
                     hi = lo + 1e-6
-                out = np.clip((stacked - lo) / (hi - lo), 0, 1)
-                out[~valid] = 0
-            else:
-                out = np.zeros_like(stacked)
+                out[:, :, i] = np.clip((ch - lo) / (hi - lo), 0, 1)
+                out[:, :, i][~m] = 0
 
         if abs(gamma - 1.0) > 1e-6:
             out = np.power(np.clip(out, 0, 1), 1.0 / gamma)
@@ -380,14 +384,18 @@ class CompositeService:
         out = out * brightness
         return np.clip(out, 0, 1)
 
-    def _rgb_to_png(self, rgb: np.ndarray) -> bytes:
+    def _rgb_to_png(self, rgb: np.ndarray, valid_mask: np.ndarray | None = None) -> bytes:
         u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-        alpha = np.full(u8.shape[:2], 220, dtype=np.uint8)
-        # Transparent where all near black (no data)
-        dark = (u8.sum(axis=2) < 3)
-        alpha[dark] = 0
+        if valid_mask is None:
+            # Keep dark-but-valid land/water; only hide empty corners
+            valid_mask = np.any(u8 > 0, axis=2) | (rgb.sum(axis=2) > 0)
+        alpha = np.where(valid_mask, 245, 0).astype(np.uint8)
         rgba = np.dstack([u8, alpha])
         img = Image.fromarray(rgba, mode="RGBA")
+        try:
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=110, threshold=2))
+        except Exception:  # noqa: BLE001
+            pass
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         return buf.getvalue()

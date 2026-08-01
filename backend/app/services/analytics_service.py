@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 from loguru import logger
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from app.core.config import get_settings
 from app.core.exceptions import ValidationError
@@ -313,14 +313,48 @@ class AnalyticsService:
             "min": float(np.min(valid)),
             "max": float(np.max(valid)),
             "median": float(np.median(valid)),
+            "percentile_2": float(np.percentile(valid, 2)),
             "percentile_25": float(np.percentile(valid, 25)),
             "percentile_75": float(np.percentile(valid, 75)),
+            "percentile_98": float(np.percentile(valid, 98)),
             "valid_pixels": int(valid.size),
             "histogram": {
                 "counts": hist_counts.astype(float).tolist(),
                 "edges": hist_edges.astype(float).tolist(),
             },
         }
+
+    def _display_range(
+        self,
+        array: np.ndarray,
+        fixed_min: float,
+        fixed_max: float,
+        *,
+        p_low: float = 2.0,
+        p_high: float = 98.0,
+        mask: np.ndarray | None = None,
+    ) -> tuple[float, float]:
+        """Robust display vmin/vmax from data percentiles, soft-clipped to meta range."""
+        valid = array[np.isfinite(array)]
+        if mask is not None:
+            valid = array[np.isfinite(array) & mask]
+        if valid.size == 0:
+            return float(fixed_min), float(fixed_max)
+        lo = float(np.percentile(valid, p_low))
+        hi = float(np.percentile(valid, p_high))
+        # Keep within physical meta range but never force full [-1, 1] (washes out NDVI).
+        lo = max(float(fixed_min), lo)
+        hi = min(float(fixed_max), hi)
+        if hi <= lo:
+            mid = 0.5 * (float(fixed_min) + float(fixed_max))
+            span = max(0.05, 0.05 * (float(fixed_max) - float(fixed_min)))
+            lo, hi = mid - span, mid + span
+        # Ensure a useful contrast span for visualization
+        if (hi - lo) < 0.05 * max(1e-6, float(fixed_max) - float(fixed_min)):
+            mid = 0.5 * (lo + hi)
+            pad = 0.05 * max(1e-6, float(fixed_max) - float(fixed_min))
+            lo, hi = mid - pad, mid + pad
+        return lo, hi
 
     def _colormap_rgb(self, name: str, t: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Map normalized t∈[0,1] to RGB channels."""
@@ -410,7 +444,7 @@ class AnalyticsService:
         vmin: float,
         vmax: float,
         *,
-        alpha: int = 200,
+        alpha: int = 240,
         mask: np.ndarray | None = None,
     ) -> bytes:
         valid = np.isfinite(array)
@@ -418,13 +452,20 @@ class AnalyticsService:
             valid = valid & mask
         norm = np.zeros_like(array, dtype=float)
         norm[valid] = (array[valid] - vmin) / (vmax - vmin + 1e-12)
+        # Soft contrast curve keeps midtones readable after percentile stretch
+        norm[valid] = np.clip(norm[valid], 0, 1)
         r, g, b = self._colormap_rgb(cmap, norm)
         rgba = np.zeros((*array.shape, 4), dtype=np.uint8)
-        rgba[..., 0] = (r * 255).astype(np.uint8)
-        rgba[..., 1] = (g * 255).astype(np.uint8)
-        rgba[..., 2] = (b * 255).astype(np.uint8)
+        rgba[..., 0] = (np.clip(r, 0, 1) * 255).astype(np.uint8)
+        rgba[..., 1] = (np.clip(g, 0, 1) * 255).astype(np.uint8)
+        rgba[..., 2] = (np.clip(b, 0, 1) * 255).astype(np.uint8)
         rgba[..., 3] = np.where(valid, alpha, 0).astype(np.uint8)
         img = Image.fromarray(rgba, mode="RGBA")
+        # Mild unsharp mask restores edge clarity lost in downsampling
+        try:
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=2))
+        except Exception:  # noqa: BLE001
+            pass
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         return buf.getvalue()
@@ -434,15 +475,39 @@ class AnalyticsService:
     ) -> np.ndarray | None:
         if not footprint:
             return None
+        h, w = shape
+        west, south, east, north = bounds
+        try:
+            from affine import Affine
+            from rasterio.features import geometry_mask
+
+            transform = Affine(
+                (east - west) / w,
+                0.0,
+                west,
+                0.0,
+                (south - north) / h,
+                north,
+            )
+            # geometry_mask True = outside; invert for inside footprint
+            outside = geometry_mask(
+                [footprint],
+                out_shape=(h, w),
+                transform=transform,
+                all_touched=True,
+                invert=False,
+            )
+            return ~outside
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from shapely.geometry import Point, shape as shp_shape
 
             geom = shp_shape(footprint)
         except Exception:  # noqa: BLE001
             return None
-        h, w = shape
-        west, south, east, north = bounds
-        step = max(1, min(h, w) // 128)
+        # Finer fallback sampling than before (was //128)
+        step = max(1, min(h, w) // 256)
         ys = np.linspace(north, south, h, endpoint=False) + (south - north) / (2 * h)
         xs = np.linspace(west, east, w, endpoint=False) + (east - west) / (2 * w)
         mask = np.zeros((h, w), dtype=bool)
@@ -477,7 +542,7 @@ class AnalyticsService:
         )
 
     def _compute_array(
-        self, index: str, scene_id: str | None, L: float = 0.5, size: int = 512
+        self, index: str, scene_id: str | None, L: float = 0.5, size: int = 1024
     ) -> np.ndarray:
         if scene_id:
             try:
@@ -501,21 +566,46 @@ class AnalyticsService:
         *,
         L: float = 0.5,
         scene_id: str | None = None,
-        size: int = 512,
+        size: int = 1024,
     ) -> np.ndarray:
-        synth = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
+        # Prefer the native loaded band shape (aspect-aware). Only resize if mismatched.
+        sample = next((a for a in bands.values() if a is not None and a.size), None)
+        target_h = int(sample.shape[0]) if sample is not None else size
+        target_w = int(sample.shape[1]) if sample is not None else size
+        synth = self._synthetic_bands(
+            size=max(target_h, target_w),
+            seed=hash(scene_id or "default") % (2**31),
+        )
 
         def band(name: str) -> np.ndarray:
             arr = bands.get(name)
             if arr is None or not np.isfinite(arr).any():
                 if name == "swir2":
-                    return synth.get("swir2", synth["swir"])
-                key = "swir" if name == "swir" else name
-                return synth[key if key in synth else "red"]
-            if arr.shape != (size, size):
-                img = Image.fromarray(np.nan_to_num(arr).astype(np.float32), mode="F")
-                arr = np.array(img.resize((size, size), Image.Resampling.BILINEAR), dtype=float)
-            return arr
+                    arr = synth.get("swir2", synth["swir"])
+                else:
+                    key = "swir" if name == "swir" else name
+                    arr = synth[key if key in synth else "red"]
+            if arr.shape != (target_h, target_w):
+                # Preserve nodata (NaN) through resize — avoid smearing zeros into data.
+                finite = np.isfinite(arr)
+                fill = float(np.nanmedian(arr[finite])) if finite.any() else 0.0
+                work = np.where(finite, arr, fill).astype(np.float32)
+                img = Image.fromarray(work, mode="F")
+                resized = np.array(
+                    img.resize((target_w, target_h), Image.Resampling.LANCZOS),
+                    dtype=float,
+                )
+                mask_img = Image.fromarray((finite.astype(np.uint8) * 255), mode="L")
+                mask_r = (
+                    np.array(
+                        mask_img.resize((target_w, target_h), Image.Resampling.NEAREST),
+                        dtype=np.uint8,
+                    )
+                    > 127
+                )
+                resized[~mask_r] = np.nan
+                return resized
+            return arr.astype(float, copy=False)
 
         if index == "NDVI":
             return self.compute_ndvi(band("red"), band("nir"))
@@ -551,7 +641,7 @@ class AnalyticsService:
     def compute_index(self, request: IndexComputeRequest) -> IndexComputeResponse:
         index = request.index
         meta = INDEX_META[index]
-        size = 512
+        size = int(getattr(request, "size", 1024) or 1024)
         footprint = request.aoi if request.aoi and request.aoi.get("type") == "Polygon" else None
         bounds = self._resolve_bounds(request.bbox, request.aoi)
         real_bands: dict[str, np.ndarray] = {}
@@ -613,16 +703,14 @@ class AnalyticsService:
             )
 
         fixed_min, fixed_max = meta["range"]
-        if index == "LST":
-            valid = result[np.isfinite(result)]
-            vmin = float(np.percentile(valid, 2)) if valid.size else -20.0
-            vmax = float(np.percentile(valid, 98)) if valid.size else 50.0
-        else:
-            vmin, vmax = fixed_min, fixed_max
-
         fp_mask = self._footprint_mask_grid(footprint, bounds, result.shape)
+        # Data-driven display stretch (was fixed -1..1 → washed-out NDVI/NDWI/etc.)
+        vmin, vmax = self._display_range(
+            result, fixed_min, fixed_max, p_low=2.0, p_high=98.0, mask=fp_mask
+        )
+
         cmap = request.colormap or meta["cmap"]
-        overlay_bytes = self._rgba_overlay(result, cmap, vmin, vmax, mask=fp_mask)
+        overlay_bytes = self._rgba_overlay(result, cmap, vmin, vmax, alpha=240, mask=fp_mask)
         preview_bytes = self._rgba_overlay(
             result, cmap, vmin, vmax, alpha=255, mask=fp_mask
         )
@@ -657,7 +745,7 @@ class AnalyticsService:
         )
 
     def change_detection(self, request: IndexChangeRequest) -> IndexChangeResponse:
-        size = 512
+        size = 1024
         before = self._compute_array(request.index, request.before_scene_id, request.L, size=size)
         after = self._compute_array(request.index, request.after_scene_id, request.L, size=size)
         h = min(before.shape[0], after.shape[0])
@@ -719,7 +807,7 @@ class AnalyticsService:
         )
 
     @staticmethod
-    def _percentile_stretch(band: np.ndarray, p_low: float = 2.0, p_high: float = 98.0) -> np.ndarray:
+    def _percentile_stretch(band: np.ndarray, p_low: float = 1.0, p_high: float = 99.0) -> np.ndarray:
         """Standard remote-sensing display stretch to [0, 1]."""
         valid = band[np.isfinite(band)]
         if valid.size == 0:
@@ -733,19 +821,23 @@ class AnalyticsService:
 
     @staticmethod
     def _joint_rgb_stretch(red: np.ndarray, green: np.ndarray, blue: np.ndarray) -> np.ndarray:
-        """Shared 2–98% stretch across RGB so channel balance stays natural."""
-        stacked = np.stack(
-            [red.astype(np.float64), green.astype(np.float64), blue.astype(np.float64)],
-            axis=-1,
-        )
-        valid = stacked[np.isfinite(stacked)]
-        if valid.size == 0:
-            return np.zeros((*red.shape, 3), dtype=np.float64)
-        lo = float(np.percentile(valid, 2))
-        hi = float(np.percentile(valid, 98))
-        if hi <= lo:
-            hi = lo + 1e-6
-        return np.clip((stacked - lo) / (hi - lo), 0.0, 1.0)
+        """Per-channel 1–99% stretch for clearer true-color / RGB overlays."""
+        channels = [
+            red.astype(np.float64),
+            green.astype(np.float64),
+            blue.astype(np.float64),
+        ]
+        out = np.zeros((*red.shape, 3), dtype=np.float64)
+        for i, ch in enumerate(channels):
+            valid = ch[np.isfinite(ch)]
+            if valid.size == 0:
+                continue
+            lo = float(np.percentile(valid, 1))
+            hi = float(np.percentile(valid, 99))
+            if hi <= lo:
+                hi = lo + 1e-6
+            out[:, :, i] = np.clip((ch - lo) / (hi - lo), 0.0, 1.0)
+        return out
 
     def _lonlat_to_tile(self, lon: float, lat: float, zoom: int) -> tuple[float, float]:
         """Web Mercator fractional tile coordinates."""

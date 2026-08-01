@@ -637,7 +637,7 @@ class SceneImageryService:
                 )
                 window = from_bounds(left, bottom, right, top, transform=src.transform)
                 oversampling = float(window.width) < self.TILE_SIZE or float(window.height) < self.TILE_SIZE
-                resampling = Resampling.nearest if oversampling else Resampling.bilinear
+                resampling = Resampling.nearest if oversampling else Resampling.cubic
                 count = min(3, src.count)
                 data = src.read(
                     indexes=list(range(1, count + 1)),
@@ -675,7 +675,7 @@ class SceneImageryService:
                     )
                     window = from_bounds(left, bottom, right, top, transform=src.transform)
                     oversampling = float(window.width) < self.TILE_SIZE or float(window.height) < self.TILE_SIZE
-                    resampling = Resampling.nearest if oversampling else Resampling.bilinear
+                    resampling = Resampling.nearest if oversampling else Resampling.cubic
                     arr = src.read(
                         1,
                         out_shape=(self.TILE_SIZE, self.TILE_SIZE),
@@ -747,16 +747,23 @@ class SceneImageryService:
             else:
                 # Landsat scaled reflectance*10000 or raw DN
                 stacked = np.clip(rgb_f / 10000.0, 0, 1) if rgb_f.max() > 255 else rgb_f
-            valid_mask = np.any(stacked > 0, axis=0)
-            valid = stacked[:, valid_mask]
-            if valid.size:
-                lo = float(np.percentile(valid, 2))
-                hi = float(np.percentile(valid, 98))
-                if hi <= lo:
-                    hi = lo + 1e-6
-                stretched = np.clip((stacked - lo) / (hi - lo), 0, 1)
-            else:
-                stretched = np.zeros_like(stacked)
+            # Valid where any channel has real reflectance (not all-nan / all-zero fill)
+            valid_mask = np.any(np.isfinite(stacked) & (stacked > 0), axis=0)
+            stretched = np.zeros_like(stacked)
+            if valid_mask.any():
+                # Per-channel robust stretch → clearer contrast without washing midtones
+                for i in range(stacked.shape[0]):
+                    ch = stacked[i]
+                    vals = ch[valid_mask & np.isfinite(ch)]
+                    if vals.size == 0:
+                        continue
+                    lo = float(np.percentile(vals, 1))
+                    hi = float(np.percentile(vals, 99))
+                    if hi <= lo:
+                        hi = lo + 1e-6
+                    stretched[i] = np.clip((ch - lo) / (hi - lo), 0, 1)
+                # Mild display gamma for natural EO look
+                stretched = np.power(stretched, 1.0 / 1.05)
             rgb_u8 = (stretched * 255).astype(np.uint8)
             alpha = np.where(valid_mask, 255, 0).astype(np.uint8)
 
@@ -840,16 +847,36 @@ class SceneImageryService:
         finally:
             self.TILE_SIZE = old
 
+    @staticmethod
+    def analysis_grid_shape(
+        bounds: list[float], max_edge: int = 1024
+    ) -> tuple[int, int]:
+        """Return (height, width) preserving AOI aspect ratio up to max_edge."""
+        west, south, east, north = (float(v) for v in bounds)
+        width_deg = max(east - west, 1e-9)
+        height_deg = max(north - south, 1e-9)
+        mid_lat = (south + north) / 2.0
+        width_m = width_deg * max(0.2, float(np.cos(np.radians(mid_lat))))
+        height_m = height_deg
+        if width_m >= height_m:
+            width = int(max_edge)
+            height = max(64, int(round(max_edge * height_m / width_m)))
+        else:
+            height = int(max_edge)
+            width = max(64, int(round(max_edge * width_m / height_m)))
+        return height, width
+
     def read_band_grid(
         self,
         href: str,
         bounds: list[float],
-        size: int = 512,
+        size: int = 1024,
         *,
         sign: str | None = None,
         reflectance_scale: str | None = None,
+        out_shape: tuple[int, int] | None = None,
     ) -> np.ndarray:
-        """Sample a COG band into a size×size grid covering [west,south,east,north]."""
+        """Sample a COG band into an analysis grid covering [west,south,east,north]."""
         import rasterio
         from rasterio.enums import Resampling
         from rasterio.warp import transform_bounds
@@ -861,35 +888,60 @@ class SceneImageryService:
                 url = self._sign_pc(url, client)
 
         west, south, east, north = (float(v) for v in bounds)
+        height, width = out_shape or (size, size)
         env = GDAL_ENV if sign != "planetary_computer" else {}
+        src_nodata: float | None = None
         with rasterio.Env(**env):
             with rasterio.open(url) as src:
                 left, bottom, right, top = transform_bounds(
                     "EPSG:4326", src.crs, west, south, east, north
                 )
                 window = from_bounds(left, bottom, right, top, transform=src.transform)
+                # Prefer cubic when reducing (sharper than bilinear); nearest when enlarging.
+                oversampling = float(window.width) < width or float(window.height) < height
+                if oversampling:
+                    resampling = Resampling.nearest
+                else:
+                    resampling = Resampling.cubic
+                try:
+                    src_nodata = float(src.nodata) if src.nodata is not None else None
+                except Exception:  # noqa: BLE001
+                    src_nodata = None
                 data = src.read(
                     1,
-                    out_shape=(size, size),
+                    out_shape=(height, width),
                     window=window,
-                    resampling=Resampling.bilinear,
+                    resampling=resampling,
                     boundless=True,
                     fill_value=0,
                 ).astype(np.float64)
 
+        # Mask true nodata before reflectance scaling; keep dark-but-valid pixels.
+        nodata_mask = data == 0
+        if src_nodata is not None:
+            try:
+                nodata_mask = nodata_mask | np.isclose(data, float(src_nodata))
+            except Exception:  # noqa: BLE001
+                pass
+
         if reflectance_scale == "landsat_c2_sr":
-            data = np.clip(data * 0.0000275 - 0.2, 0, 1)
-            data[data <= 0] = np.nan
+            data = data * 0.0000275 - 0.2
+            data[nodata_mask | (data < 0)] = np.nan
+            data = np.clip(data, 0, 1)
+            data[nodata_mask | ~np.isfinite(data)] = np.nan
         elif reflectance_scale == "sentinel2_l2a":
-            if np.nanmax(data) > 1.5:
+            finite = data[np.isfinite(data) & ~nodata_mask]
+            if finite.size and float(np.nanmax(finite)) > 1.5:
                 data = data / 10000.0
-            data[data <= 0] = np.nan
+            data[nodata_mask] = np.nan
+            data = np.clip(data, 0, 1)
+            data[nodata_mask | ~np.isfinite(data)] = np.nan
         else:
-            data[data <= 0] = np.nan
+            data[nodata_mask] = np.nan
         return data
 
     def load_analysis_bands(
-        self, scene_id: str, size: int = 512
+        self, scene_id: str, size: int = 1024
     ) -> tuple[dict[str, np.ndarray], list[float], dict[str, Any] | None, dict[str, Any]]:
         """Load optical analysis bands for a prepared scene over its full footprint bounds."""
         layer = self.get_layer(scene_id)
@@ -907,6 +959,7 @@ class SceneImageryService:
         analysis = layer.get("analysis_bands") or {}
         sign = layer.get("sign")
         scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else "sentinel2_l2a"
+        out_shape = self.analysis_grid_shape(bounds, max_edge=size)
 
         bands: dict[str, np.ndarray] = {}
         for name in (
@@ -934,11 +987,21 @@ class SceneImageryService:
             try:
                 if name in {"vv", "vh", "thermal"}:
                     bands[name] = self.read_band_grid(
-                        href, bounds, size, sign=sign, reflectance_scale=None
+                        href,
+                        bounds,
+                        size,
+                        sign=sign,
+                        reflectance_scale=None,
+                        out_shape=out_shape,
                     )
                 else:
                     bands[name] = self.read_band_grid(
-                        href, bounds, size, sign=sign, reflectance_scale=scale
+                        href,
+                        bounds,
+                        size,
+                        sign=sign,
+                        reflectance_scale=scale,
+                        out_shape=out_shape,
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to load analysis band {} for {}: {}", name, scene_id, exc)

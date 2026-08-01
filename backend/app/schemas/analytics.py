@@ -55,6 +55,12 @@ class IndexComputeRequest(BaseModel):
     colormap: ColormapName | None = Field(
         default=None, description="Optional color ramp override (default = index thematic ramp)"
     )
+    size: int = Field(
+        default=1024,
+        ge=64,
+        le=2048,
+        description="Analysis grid edge length (pixels) for sharper overlays",
+    )
 
 
 class IndexComputeResponse(BaseModel):

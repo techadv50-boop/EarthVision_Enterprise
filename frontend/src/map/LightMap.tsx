@@ -850,8 +850,8 @@ export function LightMap({
                 url={overlay.tileUrl}
                 bounds={leafletBounds}
                 opacity={overlay.opacity}
-                maxNativeZoom={16}
-                maxZoom={18}
+                maxNativeZoom={18}
+                maxZoom={20}
                 pane="evStackPane"
                 zIndex={zIndex}
                 updateWhenZooming={false}

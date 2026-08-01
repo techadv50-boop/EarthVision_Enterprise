@@ -31,13 +31,13 @@ class CompositeRequest(BaseModel):
     red_band: str | None = None
     green_band: str | None = None
     blue_band: str | None = None
-    size: int = Field(default=512, ge=64, le=1024)
+    size: int = Field(default=1024, ge=64, le=2048)
     stretch: Literal["percentile", "minmax", "none"] = "percentile"
-    p_low: float = Field(default=2.0, ge=0, le=49)
-    p_high: float = Field(default=98.0, ge=51, le=100)
-    gamma: float = Field(default=1.0, gt=0.1, le=3.0)
+    p_low: float = Field(default=1.0, ge=0, le=49)
+    p_high: float = Field(default=99.0, ge=51, le=100)
+    gamma: float = Field(default=1.05, gt=0.1, le=3.0)
     brightness: float = Field(default=1.0, gt=0.1, le=2.5)
-    contrast: float = Field(default=1.0, gt=0.1, le=2.5)
+    contrast: float = Field(default=1.1, gt=0.1, le=2.5)
 
 
 class CompositeResponse(BaseModel):
@@ -57,12 +57,12 @@ class CompositeResponse(BaseModel):
 class StretchRequest(BaseModel):
     scene_id: str | None = None
     bbox: list[float] | None = None
-    size: int = Field(default=512, ge=64, le=1024)
-    p_low: float = Field(default=2.0, ge=0, le=49)
-    p_high: float = Field(default=98.0, ge=51, le=100)
-    gamma: float = Field(default=1.0, gt=0.1, le=3.0)
+    size: int = Field(default=1024, ge=64, le=2048)
+    p_low: float = Field(default=1.0, ge=0, le=49)
+    p_high: float = Field(default=99.0, ge=51, le=100)
+    gamma: float = Field(default=1.05, gt=0.1, le=3.0)
     brightness: float = Field(default=1.0, gt=0.1, le=2.5)
-    contrast: float = Field(default=1.0, gt=0.1, le=2.5)
+    contrast: float = Field(default=1.1, gt=0.1, le=2.5)
     source: Literal["true_color", "current"] = "true_color"
 
 
