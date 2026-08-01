@@ -73,6 +73,13 @@ def create_app() -> FastAPI:
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
 
+        index_html = FRONTEND_DIST / "index.html"
+
+        @app.get("/", include_in_schema=False)
+        async def spa_root() -> FileResponse:
+            """Serve the UI at the public root URL (not API JSON)."""
+            return FileResponse(index_html)
+
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str) -> FileResponse:
             """Serve built SPA files; fall back to index.html for client routes."""
@@ -81,10 +88,10 @@ def create_app() -> FastAPI:
             try:
                 candidate.relative_to(FRONTEND_DIST.resolve())
             except ValueError:
-                return FileResponse(FRONTEND_DIST / "index.html")
+                return FileResponse(index_html)
             if candidate.is_file():
                 return FileResponse(candidate)
-            return FileResponse(FRONTEND_DIST / "index.html")
+            return FileResponse(index_html)
 
         logger.info("Serving frontend from {}", FRONTEND_DIST)
     else:
