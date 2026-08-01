@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 from app.schemas.analytics import LegendInfo
 
 
-LandCoverClass = Literal["snow", "soil", "vegetation", "water"]
+LandCoverClass = Literal[
+    "snow", "bare_soil", "built_up", "vegetation", "water", "roads"
+]
 
 
 class ClassAreaStat(BaseModel):
@@ -27,9 +29,9 @@ class ClassificationRequest(BaseModel):
     bbox: list[float] | None = Field(
         default=None, description="[west, south, east, north]"
     )
-    size: int = Field(default=1024, ge=128, le=2048)
-    # Fixed 4-class product; kept for API clarity
-    n_classes: int = Field(default=4, ge=4, le=4)
+    size: int = Field(default=1280, ge=128, le=2048)
+    # Fixed 6-class product
+    n_classes: int = Field(default=6, ge=6, le=6)
 
 
 class ClassificationResponse(BaseModel):

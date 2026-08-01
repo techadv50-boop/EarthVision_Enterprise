@@ -37,8 +37,8 @@ export const classificationService = {
     size?: number;
   }): Promise<ClassificationResult> {
     const { data } = await api.post<ClassificationResult>('/analytics/classify', {
-      n_classes: 4,
-      size: 1024,
+      n_classes: 6,
+      size: 1536,
       ...payload,
     });
     return data;
@@ -82,7 +82,7 @@ export const classificationService = {
       '/analytics/export/geotiff',
       {
         bounds: result.bounds,
-        filename: `lulc4_${sceneId}.tif`,
+        filename: `lulc6_${sceneId}.tif`,
         overlay_base64: result.overlay_base64,
         procedure: 'overlay',
         scene_id: sceneId,
@@ -92,7 +92,7 @@ export const classificationService = {
     const url = URL.createObjectURL(data as Blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `lulc4_${sceneId}.tif`;
+    a.download = `lulc6_${sceneId}.tif`;
     a.click();
     URL.revokeObjectURL(url);
   },

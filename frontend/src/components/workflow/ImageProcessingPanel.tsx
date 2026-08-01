@@ -248,8 +248,11 @@ export function ImageProcessingPanel({
           Unsupervised classification
         </h3>
         <p className="mb-1 text-[10px] text-[var(--muted)]">
-          Adaptive ensemble (spectral rules + ISODATA K-means + OBIA-like objects, cloud-masked)
-          over your place/AOI → <strong>Snow / Soil (Built-up) / Vegetation / Water</strong>
+          Adaptive ensemble over the full scene →{' '}
+          <strong>
+            Snow / Bare Soil / Built-up / Vegetation / Water / Roads
+          </strong>{' '}
+          (canal & road linear enhancement)
         </p>
         <button
           type="button"
@@ -261,7 +264,7 @@ export function ImageProcessingPanel({
               : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
           }`}
         >
-          Run 4-class unsupervised classify
+          Run 6-class unsupervised classify
         </button>
         {classificationResult && (
           <div className="mt-2 space-y-2 rounded border border-[var(--line)] bg-white p-2">

@@ -884,7 +884,7 @@ export function WorkspacePage() {
         bounds: (result.bounds as [number, number, number, number]) ?? bounds,
         footprint: sceneOverlay?.footprint ?? null,
         opacity: 0.88,
-        label: 'LULC 4-class (unsupervised)',
+        label: 'LULC 6-class (unsupervised)',
         visible: true,
       });
       useWorkflowStore.getState().setExpandedToolbox('image');
@@ -1586,7 +1586,7 @@ export function WorkspacePage() {
                   .downloadGeotiff(classificationResult, focusScene.id)
                   .then(() =>
                     setLastMessage(
-                      `Downloaded GeoTIFF · LULC 4-class (${classificationResult.total_area_km2} km²)`,
+                      `Downloaded GeoTIFF · LULC 6-class (${classificationResult.total_area_km2} km²)`,
                     ),
                   )
                   .catch((err) => setError(getErrorMessage(err)))

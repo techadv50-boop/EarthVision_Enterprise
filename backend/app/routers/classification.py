@@ -18,7 +18,7 @@ router = APIRouter(prefix="/analytics", tags=["Classification"])
 async def classify_unsupervised(
     data: ClassificationRequest, user: CurrentUser
 ) -> ClassificationResponse:
-    """Ensemble unsupervised classification into Snow / Soil / Vegetation / Water."""
+    """Ensemble unsupervised classification into 6 LULC classes."""
     return ClassificationService().classify(data)
 
 
@@ -32,7 +32,7 @@ async def export_classify_png(
         media_type="image/png",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="lulc4_{data.scene_id}.png"'
+                f'attachment; filename="lulc6_{data.scene_id}.png"'
             )
         },
     )
@@ -50,7 +50,7 @@ async def export_classify_csv(
         media_type="text/csv",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="lulc4_{data.scene_id}_areas.csv"'
+                f'attachment; filename="lulc6_{data.scene_id}_areas.csv"'
             )
         },
     )
@@ -66,7 +66,7 @@ async def export_classify_geotiff(
     tif, filename = png_bytes_to_geotiff(
         base64.b64decode(result.overlay_base64),
         list(result.bounds),
-        filename=f"lulc4_{data.scene_id}.tif",
+        filename=f"lulc6_{data.scene_id}.tif",
     )
     return Response(
         content=tif,

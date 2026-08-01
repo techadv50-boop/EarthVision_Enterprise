@@ -105,7 +105,7 @@ export const TOOLBOXES: ToolboxDef[] = [
       { id: 'false_color', label: 'False Color', action: { type: 'process', op: 'false_color' }, needsScene: true },
       {
         id: 'unsupervised_classify',
-        label: 'Unsupervised Classify',
+        label: 'Unsupervised Classify (6-class)',
         action: { type: 'process', op: 'unsupervised_classify' },
         needsScene: true,
       },

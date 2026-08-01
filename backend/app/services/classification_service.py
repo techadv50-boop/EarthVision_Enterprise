@@ -1,12 +1,14 @@
-"""Ensemble unsupervised land-cover classification (4 classes).
+"""Ensemble unsupervised land-cover classification (6 classes).
 
 Produces a categorical map:
-  snow (white), soil/built-up (light orange), vegetation (light green), water (blue)
+  snow, bare soil, built-up, vegetation, water, roads
 
 Amalgam of:
-  1) Adaptive spectral decision rules (NDVI / MNDWI / NDSI / NDBI + cloud mask)
-  2) Over-clustered K-means / ISODATA-style mapping onto the 4 target classes
+  1) Adaptive spectral decision rules (NDVI / MNDWI / AWEI / NDBI / BSI)
+  2) Over-clustered K-means mapped onto the 6 target classes
   3) OBIA-like object majority with spectral overrides
+  4) Linear-feature enhancement for canals (water) and roads
+  5) Wet-channel growth for turbid / wet river beds
 """
 
 from __future__ import annotations
@@ -28,30 +30,34 @@ from app.schemas.classification import (
 
 # Class ids
 SNOW = 0
-SOIL = 1
-VEGETATION = 2
-WATER = 3
+BARE_SOIL = 1
+BUILT_UP = 2
+VEGETATION = 3
+WATER = 4
+ROADS = 5
 NODATA = 255
+N_CLASSES = 6
 
 CLASS_META: dict[int, dict[str, str]] = {
     SNOW: {"name": "snow", "label": "Snow", "color": "#FFFFFF"},
-    # Distinct warm orange — must not read as blue water over satellite basemap
-    SOIL: {"name": "soil", "label": "Soil (Built-up)", "color": "#FF9A3C"},
-    VEGETATION: {"name": "vegetation", "label": "Vegetation", "color": "#A8E6A1"},
-    # Deep saturated blue — visually separate from built-up orange
+    BARE_SOIL: {"name": "bare_soil", "label": "Bare Soil", "color": "#D4A574"},
+    BUILT_UP: {"name": "built_up", "label": "Built-up", "color": "#E85D04"},
+    VEGETATION: {"name": "vegetation", "label": "Vegetation", "color": "#4CAF50"},
     WATER: {"name": "water", "label": "Water", "color": "#1565C0"},
+    ROADS: {"name": "roads", "label": "Roads", "color": "#6B7280"},
 }
+
+# Backward-compatible aliases used by older helpers / tests
+SOIL = BARE_SOIL
 
 
 class ClassificationService:
     def classify(self, request: ClassificationRequest) -> ClassificationResponse:
-        size = max(int(request.size), 1024)
+        size = max(int(request.size), 1280)
         bands, bounds, footprint = self._load_bands(
             request.scene_id, request.bbox, size
         )
         features, valid = self._build_features(bands)
-        # Clip to the STAC scene footprint so the map matches the eye-loaded image
-        # (tilted Landsat / S2 swaths leave transparent corners in the bbox).
         valid = self._apply_footprint_mask(valid, bounds, footprint)
         if int(valid.sum()) < 64:
             raise ValidationError(
@@ -73,9 +79,9 @@ class ClassificationService:
 
         amalgam, agreement = self._weighted_amalgam(
             [
-                (rule_map, rule_conf, 1.45),
+                (rule_map, rule_conf, 1.50),
                 (kmeans_map, kmeans_conf, 1.0),
-                (obia_map, np.clip(kmeans_conf * 0.9 + 0.1, 0, 1), 0.90),
+                (obia_map, np.clip(kmeans_conf * 0.9 + 0.1, 0, 1), 0.85),
             ],
             valid,
             cloud,
@@ -84,23 +90,22 @@ class ClassificationService:
         )
         amalgam = self._cleanup_implausible_snow(amalgam, features, valid, thresholds)
         amalgam = self._refine_water_bodies(amalgam, features, valid, thresholds)
-        # Grow clear-water seeds into turbid / wet-soil river channels (Punjab-style).
         amalgam = self._expand_wet_channels(amalgam, features, valid, thresholds)
-        amalgam = self._refine_urban_soil(amalgam, features, valid, thresholds)
-        # Strip only true urban false-water; keep wet sediment as water.
-        amalgam = self._separate_water_builtup(amalgam, features, valid, thresholds)
-        amalgam = self._majority_filter(amalgam, valid, iterations=2)
+        amalgam = self._enhance_linear_features(amalgam, features, valid, thresholds)
+        amalgam = self._refine_impervious(amalgam, features, valid, thresholds)
+        amalgam = self._majority_filter(amalgam, valid, iterations=1)
         amalgam = self._expand_wet_channels(
-            amalgam, features, valid, thresholds, iterations=5
+            amalgam, features, valid, thresholds, iterations=4
         )
-        amalgam = self._separate_water_builtup(amalgam, features, valid, thresholds)
+        amalgam = self._enhance_linear_features(amalgam, features, valid, thresholds)
+        amalgam = self._strip_false_vegetation(amalgam, features, valid, thresholds)
 
         stats, total_km2 = self._area_stats(amalgam, valid, bounds)
         overlay = self._class_map_to_png(amalgam, valid)
 
         return ClassificationResponse(
             scene_id=request.scene_id,
-            algorithm="amalgam(adaptive_rules + ISODATA-kmeans + OBIA-like)",
+            algorithm="amalgam(adaptive_rules + ISODATA-kmeans + OBIA-like + linear)",
             classes=stats,
             total_area_km2=total_km2,
             valid_pixels=int(valid.sum()),
@@ -108,17 +113,23 @@ class ClassificationService:
             overlay_base64=base64.b64encode(overlay).decode("ascii"),
             legend=self._legend(),
             formula=(
-                "Ensemble unsupervised LULC: adaptive NDVI/EVI/MNDWI/AWEI/NDBI rules ⊕ "
-                "over-clustered K-means ⊕ OBIA-like majority ⊕ wet-channel expansion "
-                "(turbid water / wet soil grown from clear-water seeds; urban veto)"
+                "6-class unsupervised LULC: Snow / Bare Soil / Built-up / Vegetation / "
+                "Water / Roads — adaptive spectral rules ⊕ over-clustered K-means ⊕ "
+                "OBIA-like majority ⊕ canal/road linear enhancement ⊕ wet-channel growth"
             ),
             message=(
-                f"Classified into 4 classes · agreement {agreement:.0f}% · "
+                f"Classified into {N_CLASSES} classes · agreement {agreement:.0f}% · "
                 f"total {total_km2:.2f} km²"
             ),
             agreement_percent=round(float(agreement), 1),
             metadata={
-                "members": ["adaptive_spectral_rules", "isodata_kmeans", "obia_like"],
+                "members": [
+                    "adaptive_spectral_rules",
+                    "isodata_kmeans",
+                    "obia_like",
+                    "linear_roads_canals",
+                ],
+                "n_classes": N_CLASSES,
                 "thresholds": {k: round(float(v), 4) for k, v in thresholds.items()},
                 "cloud_pixels": int(cloud.sum()),
                 "colors": {m["name"]: m["color"] for m in CLASS_META.values()},
@@ -160,7 +171,6 @@ class ClassificationService:
         bounds: list[float],
         footprint: dict | None,
     ) -> np.ndarray:
-        """Keep only pixels inside the STAC footprint (tilted scene support)."""
         if not footprint or footprint.get("type") != "Polygon":
             return valid
         try:
@@ -177,11 +187,12 @@ class ClassificationService:
         if east <= west or north <= south or h < 2 or w < 2:
             return valid
 
-        # Coarse grid then nearest upsample (same approach as scene tiles)
         step = 4 if min(h, w) >= 128 else 2
         ys = np.linspace(north, south, h, endpoint=False) + (south - north) / (2 * h)
         xs = np.linspace(west, east, w, endpoint=False) + (east - west) / (2 * w)
-        mask_small = np.zeros(((h + step - 1) // step, (w + step - 1) // step), dtype=bool)
+        mask_small = np.zeros(
+            ((h + step - 1) // step, (w + step - 1) // step), dtype=bool
+        )
         for iy, lat in enumerate(ys[::step]):
             for ix, lon in enumerate(xs[::step]):
                 if iy >= mask_small.shape[0] or ix >= mask_small.shape[1]:
@@ -248,29 +259,30 @@ class ClassificationService:
 
         eps = 1e-6
         ndvi = (nir - red) / (nir + red + eps)
-        # Enhanced vegetation index — more stable for sparse crops / arid fields
         evi = 2.5 * (nir - red) / (nir + 6.0 * red - 7.5 * blue + 1.0 + eps)
         evi = np.clip(evi, -1.0, 1.0)
         savi = 1.5 * (nir - red) / (nir + red + 0.5 + eps)
-        # McFeeters NDWI and Xu MNDWI (better water in urban scenes)
         ndwi = (green - nir) / (green + nir + eps)
         mndwi = (green - swir1) / (green + swir1 + eps)
         ndsi = (green - swir1) / (green + swir1 + eps)
         ndbi = (swir1 - nir) / (swir1 + nir + eps)
-        # Built-up index emphasizing SWIR2 contrast
         bu = ndbi - ndvi
-        # Bare soil index — separates fallow / bare fields from sparse vegetation
         bsi = ((swir1 + red) - (nir + blue)) / ((swir1 + red) + (nir + blue) + eps)
-        # AWEI (non-shadow) — strong water vs built-up discriminator
-        awei = (
-            4.0 * (green - swir1)
-            - (0.25 * nir + 2.75 * swir2)
-        )
+        awei = 4.0 * (green - swir1) - (0.25 * nir + 2.75 * swir2)
         brightness = (blue + green + red) / 3.0
-        # NIR+SWIR "wetness darkness" — water is dark in both; roofs usually are not
         dark_ir = 1.0 - np.clip((nir + swir1) * 0.5 / 0.25, 0, 1)
-        # Simple shadow cue
         shadow = (brightness < 0.08) & (nir < 0.12)
+        # UI / asphalt cue: low chroma, moderate brightness, low NDVI
+        grey = 1.0 - np.clip(
+            (
+                np.abs(red - green)
+                + np.abs(green - blue)
+                + np.abs(red - blue)
+            )
+            / 0.18,
+            0,
+            1,
+        )
 
         return {
             "blue": blue,
@@ -291,6 +303,7 @@ class ClassificationService:
             "awei": awei,
             "dark_ir": dark_ir,
             "brightness": brightness,
+            "grey": grey,
             "shadow": shadow.astype(np.float64),
         }, valid
 
@@ -304,35 +317,28 @@ class ClassificationService:
     def _adaptive_thresholds(
         self, f: dict[str, np.ndarray], valid: np.ndarray
     ) -> dict[str, float]:
-        """Scene-adaptive cutoffs so one tile's cropland/urban mix doesn't break rules."""
-        ndvi = f["ndvi"]
-        evi = f["evi"]
-        mndwi = f["mndwi"]
-        ndsi = f["ndsi"]
-        ndbi = f["ndbi"]
-        bsi = f["bsi"]
-        bright = f["brightness"]
+        ndvi, evi = f["ndvi"], f["evi"]
+        mndwi, ndsi, ndbi, bsi = f["mndwi"], f["ndsi"], f["ndbi"], f["bsi"]
+        bright, awei = f["brightness"], f["awei"]
 
         ndvi_p50 = self._pct(ndvi, valid, 50, 0.22)
-        ndvi_p60 = self._pct(ndvi, valid, 60, 0.28)
-        ndvi_p35 = self._pct(ndvi, valid, 35, 0.15)
-        evi_p55 = self._pct(evi, valid, 55, 0.18)
+        ndvi_p70 = self._pct(ndvi, valid, 70, 0.32)
+        ndvi_p40 = self._pct(ndvi, valid, 40, 0.16)
+        evi_p65 = self._pct(evi, valid, 65, 0.22)
         mndwi_p85 = self._pct(mndwi, valid, 85, 0.02)
         mndwi_p90 = self._pct(mndwi, valid, 90, 0.05)
         ndsi_p70 = self._pct(ndsi, valid, 70, 0.10)
         ndsi_p85 = self._pct(ndsi, valid, 85, 0.25)
         ndsi_p95 = self._pct(ndsi, valid, 95, 0.35)
-        ndbi_p65 = self._pct(ndbi, valid, 65, -0.02)
+        ndbi_p70 = self._pct(ndbi, valid, 70, 0.0)
         bsi_p60 = self._pct(bsi, valid, 60, 0.05)
         bright_p85 = self._pct(bright, valid, 85, 0.35)
+        awei_p85 = self._pct(awei, valid, 85, 0.0)
+        swir_p50 = self._pct(f["swir1"], valid, 50, 0.15)
 
-        # Agricultural / arid scenes: median NDVI is modest — lower veg cut so
-        # cropland is not collapsed into soil/built-up.
-        arid_ag = ndvi_p50 < 0.28 and ndsi_p85 < 0.25
-
-        # If the scene itself looks snowy (high NDSI body), use a softer snow cut.
-        # Lowland scenes keep a strict cut so clouds are not labeled snow.
+        arid_ag = ndvi_p50 < 0.30 and ndsi_p85 < 0.25
         snowy_scene = ndsi_p70 > 0.18 or ndsi_p85 > 0.30
+
         if snowy_scene:
             snow_ndsi = float(np.clip(max(0.22, min(0.45, ndsi_p70 * 0.90)), 0.20, 0.48))
             snow_bright = float(np.clip(max(0.18, bright_p85 * 0.55), 0.16, 0.40))
@@ -340,35 +346,31 @@ class ClassificationService:
             snow_ndsi = float(np.clip(max(0.40, min(0.70, ndsi_p95 * 0.92)), 0.38, 0.75))
             snow_bright = float(np.clip(max(0.28, bright_p85 * 0.85), 0.25, 0.55))
 
-        awei = f["awei"]
-        awei_p85 = self._pct(awei, valid, 85, 0.0)
-        swir_p50 = self._pct(f["swir1"], valid, 50, 0.15)
-
+        # Vegetation must be STRICT — roads/canals were collapsing into agriculture
         if arid_ag:
-            veg_ndvi = float(np.clip(max(0.14, min(0.28, ndvi_p60 * 0.78)), 0.12, 0.30))
-            soil_ndvi_max = float(np.clip(max(0.08, min(0.20, ndvi_p35)), 0.06, 0.22))
-            # Modest floor — turbid Punjab rivers often have muted MNDWI
+            veg_ndvi = float(np.clip(max(0.22, min(0.38, ndvi_p70 * 0.88)), 0.20, 0.40))
+            soil_ndvi_max = float(np.clip(max(0.10, min(0.22, ndvi_p40)), 0.08, 0.24))
             water_mndwi = float(
-                np.clip(max(0.04, min(0.18, mndwi_p85 * 0.55)), 0.03, 0.20)
+                np.clip(max(0.03, min(0.18, mndwi_p85 * 0.50)), 0.02, 0.20)
             )
         else:
-            veg_ndvi = float(np.clip(max(0.18, min(0.38, ndvi_p60 * 0.88)), 0.16, 0.40))
-            soil_ndvi_max = float(np.clip(max(0.10, min(0.26, ndvi_p35)), 0.08, 0.28))
+            veg_ndvi = float(np.clip(max(0.26, min(0.42, ndvi_p70 * 0.90)), 0.24, 0.45))
+            soil_ndvi_max = float(np.clip(max(0.12, min(0.24, ndvi_p40)), 0.10, 0.26))
             water_mndwi = float(
-                np.clip(max(0.05, min(0.22, mndwi_p90 * 0.55)), 0.04, 0.26)
+                np.clip(max(0.04, min(0.22, mndwi_p90 * 0.55)), 0.03, 0.26)
             )
 
         return {
             "veg_ndvi": veg_ndvi,
-            "veg_evi": float(np.clip(max(0.10, min(0.35, evi_p55 * 0.90)), 0.08, 0.38)),
+            "veg_evi": float(np.clip(max(0.16, min(0.40, evi_p65 * 0.92)), 0.14, 0.42)),
             "soil_ndvi_max": soil_ndvi_max,
             "water_mndwi": water_mndwi,
-            "water_awei": float(np.clip(max(-0.08, min(0.25, awei_p85 * 0.40)), -0.12, 0.30)),
-            # Clear deep water
+            "water_awei": float(
+                np.clip(max(-0.08, min(0.25, awei_p85 * 0.40)), -0.12, 0.30)
+            ),
             "water_nir_max": 0.16,
             "water_swir_max": float(np.clip(min(0.16, swir_p50 * 0.65), 0.10, 0.18)),
             "water_bright_max": 0.32,
-            # Turbid / shallow / wet-sediment allowances (used by wet-channel grow)
             "wet_nir_max": 0.28,
             "wet_swir_max": 0.28,
             "wet_bright_max": 0.45,
@@ -377,7 +379,8 @@ class ClassificationService:
             "snow_bright": snow_bright,
             "snowy_scene": 1.0 if snowy_scene else 0.0,
             "arid_ag": 1.0 if arid_ag else 0.0,
-            "urban_ndbi": float(np.clip(ndbi_p65 - 0.01, -0.08, 0.18)),
+            "urban_ndbi": float(np.clip(ndbi_p70 - 0.01, -0.06, 0.20)),
+            "road_ndbi": float(np.clip(ndbi_p70 - 0.04, -0.10, 0.16)),
             "bare_bsi": float(np.clip(bsi_p60, -0.05, 0.35)),
             "cloud_bright": float(np.clip(bright_p85 + 0.05, 0.32, 0.60)),
         }
@@ -385,25 +388,39 @@ class ClassificationService:
     def _cloud_mask(
         self, f: dict[str, np.ndarray], valid: np.ndarray
     ) -> np.ndarray:
-        """Conservative bright-cloud mask (not used as a land-cover class)."""
-        bright = f["brightness"]
-        blue = f["blue"]
-        nir = f["nir"]
-        swir1 = f["swir1"]
-        ndvi = f["ndvi"]
-        ndsi = f["ndsi"]
-        # Bright, blue-rich, low vegetation, SWIR not as dark as deep water
-        cloud = (
+        bright, blue, nir = f["brightness"], f["blue"], f["nir"]
+        swir1, ndvi, ndsi = f["swir1"], f["ndvi"], f["ndsi"]
+        return (
             valid
             & (bright > 0.34)
             & (blue > 0.28)
             & (ndvi < 0.18)
             & (swir1 > 0.08)
             & (nir > 0.20)
-            # Exclude clear snow (high NDSI + very low SWIR)
             & ~((ndsi > 0.45) & (swir1 < 0.12))
         )
-        return cloud
+
+    def _hard_urban_mask(
+        self, f: dict[str, np.ndarray], t: dict[str, float]
+    ) -> np.ndarray:
+        return (
+            (f["ndbi"] > t["urban_ndbi"] + 0.03)
+            & (f["swir1"] > 0.18)
+            & (f["nir"] > 0.20)
+            & (f["brightness"] > 0.24)
+            & (f["mndwi"] < t["water_mndwi"] - 0.03)
+            & (f["ndvi"] < t["veg_ndvi"] - 0.04)
+        )
+
+    def _elongation(self, mask: np.ndarray) -> np.ndarray:
+        """Directional contrast — high for canals/roads, low for blob fields."""
+        m = mask.astype(np.float64)
+        h = sum(np.roll(m, i, axis=1) for i in range(-3, 4))
+        v = sum(np.roll(m, i, axis=0) for i in range(-3, 4))
+        d1 = sum(np.roll(np.roll(m, i, 0), i, 1) for i in range(-3, 4))
+        d2 = sum(np.roll(np.roll(m, i, 0), -i, 1) for i in range(-3, 4))
+        stack = np.stack([h, v, d1, d2], axis=0)
+        return stack.max(axis=0) - stack.min(axis=0)
 
     # --------------------------------------------------------- classifiers
     def _classify_spectral_rules(
@@ -420,20 +437,12 @@ class ClassificationService:
         ndvi, evi, savi = f["ndvi"], f["evi"], f["savi"]
         mndwi, ndwi, awei = f["mndwi"], f["ndwi"], f["awei"]
         ndsi, ndbi, bu, bsi = f["ndsi"], f["ndbi"], f["bu"], f["bsi"]
-        bright, nir, swir1 = f["brightness"], f["nir"], f["swir1"]
-        shadow = f["shadow"] > 0.5
+        bright, nir, swir1, grey = f["brightness"], f["nir"], f["swir1"], f["grey"]
         land = valid & ~cloud
 
-        # True built-up veto only (roofs/asphalt). Do NOT treat bare river sand as urban.
-        urban_like = (
-            (ndbi > t["urban_ndbi"] + 0.03)
-            & (swir1 > 0.18)
-            & (nir > 0.20)
-            & (bright > 0.24)
-            & (mndwi < t["water_mndwi"] - 0.02)
-        )
+        urban_like = self._hard_urban_mask(f, t)
 
-        # Clear water: dark IR + wetness
+        # --- Water (clear + turbid); canals refined later by linear enhance
         water_core = (
             land
             & ~urban_like
@@ -447,7 +456,6 @@ class ClassificationService:
                 | ((mndwi > t["water_mndwi"] - 0.03) & (ndwi > 0.0))
             )
         )
-        # Narrow canals / dark water
         water_dark = (
             land
             & ~urban_like
@@ -457,7 +465,6 @@ class ClassificationService:
             & (ndvi < 0.14)
             & ((mndwi > t["water_mndwi"] - 0.05) | (awei > t["water_awei"] - 0.06))
         )
-        # Turbid / shallow river water (sediment raises brightness & SWIR)
         water_turbid = (
             land
             & ~urban_like
@@ -479,7 +486,7 @@ class ClassificationService:
         )
         water = water_core | water_dark | water_turbid
 
-        # Snow: high NDSI, bright visible, dark SWIR, low NDVI — and not cloud
+        # --- Snow
         snow = (
             land
             & ~water
@@ -490,60 +497,106 @@ class ClassificationService:
             & (f["blue"] > 0.22)
         )
 
-        # Vegetation: NDVI primary, with EVI/SAVI support for sparse crops
+        # --- Vegetation: STRICT green crops/trees only (not roads/canals/soil)
         veg = (
             land
             & ~water
             & ~snow
-            & (mndwi < t["water_mndwi"] + 0.06)
+            & (mndwi < t["water_mndwi"] + 0.04)
+            & (ndvi > t["veg_ndvi"])
+            & (evi > t["veg_evi"] * 0.75)
+            & (bsi < t["bare_bsi"] + 0.12)
+        )
+        # Secondary sparse crop only with clearly elevated NDVI
+        veg |= (
+            land
+            & ~water
+            & ~snow
+            & ~veg
+            & (ndvi > t["veg_ndvi"] + 0.04)
+            & (savi > t["veg_ndvi"])
+            & (mndwi < t["water_mndwi"])
+        )
+
+        # --- Built-up first: bright roofs / dense settlement clusters
+        built = (
+            land
+            & ~water
+            & ~snow
+            & ~veg
+            & (ndvi < t["veg_ndvi"] - 0.04)
+            & (mndwi < t["water_mndwi"])
             & (
-                (ndvi > t["veg_ndvi"])
-                | ((evi > t["veg_evi"]) & (ndvi > t["soil_ndvi_max"] + 0.02))
-                | ((savi > t["veg_ndvi"] * 0.85) & (ndvi > t["soil_ndvi_max"]))
+                urban_like
+                | (
+                    (ndbi > t["urban_ndbi"] - 0.02)
+                    & (bright > 0.26)
+                    & (swir1 > 0.16)
+                )
+                | (
+                    (bu > 0.0)
+                    & (bright > 0.28)
+                    & (ndvi < t["soil_ndvi_max"] + 0.06)
+                    & (swir1 > 0.18)
+                )
             )
         )
-        # Do not call bare soil "vegetation" just because NDVI is noisy
-        veg &= ~((bsi > t["bare_bsi"] + 0.08) & (ndvi < t["veg_ndvi"] + 0.05))
 
-        # Soil / built-up: low-moderate NDVI, elevated NDBI/BU/BSI, or bare bright land
-        soil = land & ~water & ~snow & ~veg & (
-            (ndvi < t["soil_ndvi_max"])
-            | ((ndbi > t["urban_ndbi"]) & (ndvi < t["veg_ndvi"]))
-            | ((bu > 0.0) & (ndvi < t["veg_ndvi"]))
-            | ((bsi > t["bare_bsi"]) & (ndvi < t["veg_ndvi"]))
+        # --- Roads: mid-tone grey asphalt (not bright roofs), low NDVI, not water
+        roads = (
+            land
+            & ~water
+            & ~snow
+            & ~veg
+            & ~built
+            & (ndvi < t["soil_ndvi_max"] + 0.06)
+            & (ndvi < t["veg_ndvi"] - 0.08)
+            & (mndwi < t["water_mndwi"] - 0.02)
+            & (nir > t["water_nir_max"] * 0.7)
+            & (bright > 0.12)
+            & (bright < 0.30)  # roofs are brighter; keep those as built-up
+            & (
+                ((ndbi > t["road_ndbi"] - 0.02) & (grey > 0.45))
+                | ((bu > -0.02) & (grey > 0.50) & (ndvi < 0.18))
+            )
         )
-        # Remaining land defaults to soil/built-up (not vegetation)
-        leftover = land & ~water & ~snow & ~veg & ~soil
-        soil |= leftover
 
-        # Shadows over land → soil (not water), unless MNDWI is decisive
+        # --- Bare soil / fallow
+        bare = (
+            land
+            & ~water
+            & ~snow
+            & ~veg
+            & ~roads
+            & ~built
+            & (
+                (ndvi < t["soil_ndvi_max"] + 0.04)
+                | ((bsi > t["bare_bsi"] - 0.02) & (ndvi < t["veg_ndvi"] - 0.06))
+            )
+        )
+        leftover = land & ~water & ~snow & ~veg & ~roads & ~built & ~bare
+        bare |= leftover
+
+        # Shadows → bare (unless water)
+        shadow = f["shadow"] > 0.5
         shadow_land = land & shadow & ~water
-        soil |= shadow_land
+        bare |= shadow_land
         veg &= ~shadow_land
 
-        # Clouds: map to soil/built-up visually (impervious/bright) rather than snow/water
-        out[soil] = SOIL
+        out[bare] = BARE_SOIL
+        out[built] = BUILT_UP
         out[veg] = VEGETATION
         out[snow] = SNOW
         out[water] = WATER
-        out[cloud & valid] = SOIL
+        out[roads] = ROADS
+        out[cloud & valid] = BARE_SOIL
 
-        # Confidence from how strongly indices exceed thresholds
         conf[water] = np.clip((mndwi[water] - t["water_mndwi"]) / 0.25 + 0.45, 0.35, 1)
         conf[snow] = np.clip((ndsi[snow] - t["snow_ndsi"]) / 0.25 + 0.40, 0.30, 1)
-        conf[veg] = np.clip(
-            np.maximum(ndvi[veg] - t["veg_ndvi"], evi[veg] - t["veg_evi"]) / 0.35 + 0.40,
-            0.30,
-            1,
-        )
-        conf[soil] = np.clip(
-            0.35
-            + np.maximum(0, -ndvi[soil]) * 0.5
-            + np.maximum(0, ndbi[soil]) * 0.8
-            + np.maximum(0, bsi[soil]) * 0.4,
-            0.25,
-            0.85,
-        )
+        conf[veg] = np.clip((ndvi[veg] - t["veg_ndvi"]) / 0.30 + 0.45, 0.35, 1)
+        conf[roads] = np.clip(0.40 + grey[roads] * 0.35 + np.maximum(0, ndbi[roads]) * 0.5, 0.30, 0.90)
+        conf[built] = np.clip(0.40 + np.maximum(0, ndbi[built]) * 0.9, 0.30, 0.90)
+        conf[bare] = np.clip(0.30 + np.maximum(0, bsi[bare]) * 0.5, 0.25, 0.80)
         conf[cloud & valid] = 0.20
         conf[~valid] = 0
         return out, conf
@@ -562,7 +615,6 @@ class ClassificationService:
         out = np.full((h, w), NODATA, dtype=np.uint8)
         conf = np.zeros((h, w), dtype=np.float64)
 
-        # Train on non-cloud land/water pixels
         train_mask = valid & ~cloud
         if int(train_mask.sum()) < 128:
             train_mask = valid
@@ -582,6 +634,7 @@ class ClassificationService:
             "bu",
             "bsi",
             "brightness",
+            "grey",
         ]
         stack = np.stack([f[k] for k in keys], axis=-1)
         samples = stack[train_mask]
@@ -595,8 +648,7 @@ class ClassificationService:
         scaler = StandardScaler()
         train_z = scaler.fit_transform(train)
 
-        # Over-cluster (ISODATA-style) then map many clusters → 4 semantic classes
-        n_clusters = int(np.clip(round(math.sqrt(max(n, 256)) / 2.6), 10, 18))
+        n_clusters = int(np.clip(round(math.sqrt(max(n, 256)) / 2.4), 12, 20))
         km = MiniBatchKMeans(
             n_clusters=n_clusters,
             random_state=42,
@@ -606,13 +658,12 @@ class ClassificationService:
         )
         km.fit(train_z)
 
-        all_samples = stack[valid]
-        labels = km.predict(scaler.transform(all_samples))
+        labels = km.predict(scaler.transform(stack[valid]))
         centers = scaler.inverse_transform(km.cluster_centers_)
 
-        # Feature indices in keys
         i_ndvi, i_evi, i_mndwi, i_awei = 5, 6, 7, 8
-        i_ndsi, i_ndbi, i_bu, i_bsi, i_bright = 9, 10, 11, 12, 13
+        i_ndsi, i_ndbi, i_bu, i_bsi = 9, 10, 11, 12
+        i_bright, i_grey = 13, 14
         i_nir, i_swir = 3, 4
 
         mapping: dict[int, int] = {}
@@ -627,6 +678,7 @@ class ClassificationService:
             bu_c = float(centers[cid, i_bu])
             bsi_c = float(centers[cid, i_bsi])
             bright_c = float(centers[cid, i_bright])
+            grey_c = float(centers[cid, i_grey])
             nir_c = float(centers[cid, i_nir])
             swir_c = float(centers[cid, i_swir])
 
@@ -645,53 +697,67 @@ class ClassificationService:
                     + 1.1 * bright_c
                     - 1.4 * swir_c
                     - 1.0 * max(ndvi_c, 0)
-                    - (0.8 if bright_c < 0.25 else 0)
                 ),
                 VEGETATION: (
-                    2.4 * ndvi_c
-                    + 1.2 * evi_c
-                    - 1.0 * max(mndwi_c, 0)
-                    - 0.5 * max(ndbi_c, 0)
-                    - 0.4 * max(bsi_c, 0)
+                    3.0 * ndvi_c
+                    + 1.4 * evi_c
+                    - 1.2 * max(mndwi_c, 0)
+                    - 0.8 * max(ndbi_c, 0)
+                    - 0.8 * max(bsi_c, 0)
                 ),
-                SOIL: (
+                ROADS: (
+                    1.4 * grey_c
+                    + 1.2 * ndbi_c
+                    + 0.6 * bu_c
+                    - 2.2 * ndvi_c
+                    - 1.0 * max(mndwi_c, 0)
+                    + (0.4 if 0.14 < bright_c < 0.40 else -0.5)
+                ),
+                BUILT_UP: (
                     1.8 * ndbi_c
                     + 1.2 * bu_c
-                    + 1.1 * bsi_c
-                    + 1.0 * swir_c
+                    + 0.8 * bright_c
                     - 1.8 * ndvi_c
-                    - 1.2 * max(mndwi_c, 0)
-                    - 0.8 * max(awei_c, 0)
-                    + 0.3
+                    - 1.0 * max(mndwi_c, 0)
+                    - 0.4 * grey_c
+                ),
+                BARE_SOIL: (
+                    1.4 * bsi_c
+                    + 0.6 * swir_c
+                    - 1.6 * ndvi_c
+                    - 0.8 * max(mndwi_c, 0)
+                    + 0.2
                 ),
             }
-            # Suppress snow unless NDSI is truly high (prevents cloud→snow)
             if ndsi_c < t["snow_ndsi"] - 0.05 or swir_c > 0.18:
                 scores[SNOW] -= 2.5
-            # Suppress water unless wetness + dark IR support it (blocks built-up)
             if (
-                mndwi_c < t["water_mndwi"] - 0.03
-                and awei_c < t["water_awei"] - 0.05
-            ) or nir_c > t["water_nir_max"] + 0.04 or swir_c > t["water_swir_max"] + 0.04:
+                mndwi_c < t["water_mndwi"] - 0.03 and awei_c < t["water_awei"] - 0.05
+            ) or nir_c > t["water_nir_max"] + 0.04:
                 scores[WATER] -= 2.8
-            if ndbi_c > t["urban_ndbi"] and swir_c > t["water_swir_max"]:
-                scores[WATER] -= 2.0
-                scores[SOIL] += 1.2
+            if ndvi_c < t["veg_ndvi"] - 0.02:
+                scores[VEGETATION] -= 2.0
+            if grey_c < 0.35 or ndvi_c > 0.22:
+                scores[ROADS] -= 1.5
+            if ndbi_c < t["urban_ndbi"] - 0.02 and bright_c < 0.22:
+                scores[BUILT_UP] -= 1.2
 
             best = max(scores, key=scores.get)
             mapping[cid] = best
             ordered = sorted(scores.values(), reverse=True)
             strength[cid] = float(
-                np.clip((ordered[0] - ordered[1]) / (abs(ordered[0]) + 0.5) + 0.35, 0.2, 1.0)
+                np.clip(
+                    (ordered[0] - ordered[1]) / (abs(ordered[0]) + 0.5) + 0.35,
+                    0.2,
+                    1.0,
+                )
             )
 
         mapped = np.array([mapping[int(x)] for x in labels], dtype=np.uint8)
         conf_vals = np.array([strength[int(x)] for x in labels], dtype=np.float64)
         out[valid] = mapped
         conf[valid] = conf_vals
-
-        # Cloud pixels → soil/built-up
-        out[cloud & valid] = SOIL
+        out[cloud & valid] = BARE_SOIL
         conf[cloud & valid] = np.minimum(conf[cloud & valid], 0.25)
         return out, conf
 
@@ -703,12 +769,12 @@ class ClassificationService:
         t: dict[str, float],
         seed_map: np.ndarray,
     ) -> np.ndarray:
-        """Object-based refinement with spectral object overrides."""
         ndvi_s = self._smooth(f["ndvi"], radius=1.5)
         mndwi_s = self._smooth(f["mndwi"], radius=1.5)
         ndsi_s = self._smooth(f["ndsi"], radius=1.5)
         bright_s = self._smooth(f["brightness"], radius=1.5)
         ndbi_s = self._smooth(f["ndbi"], radius=1.5)
+        grey_s = self._smooth(f["grey"], radius=1.2)
 
         ndvi_q = np.digitize(ndvi_s, bins=[-0.05, 0.12, 0.22, 0.35, 0.5, 0.65])
         mndwi_q = np.digitize(mndwi_s, bins=[-0.2, -0.05, 0.05, 0.15, 0.3])
@@ -722,13 +788,13 @@ class ClassificationService:
                 continue
             mask = object_id == oid
             if cloud[mask].mean() > 0.55:
-                out[mask] = SOIL
+                out[mask] = BARE_SOIL
                 continue
             vals = seed_map[mask]
             vals = vals[vals != NODATA]
             if vals.size == 0:
                 continue
-            majority = int(np.argmax(np.bincount(vals, minlength=4)))
+            majority = int(np.argmax(np.bincount(vals, minlength=N_CLASSES)))
             out[mask] = majority
 
             mean_mndwi = float(np.nanmean(mndwi_s[mask]))
@@ -737,37 +803,42 @@ class ClassificationService:
             mean_bright = float(np.nanmean(bright_s[mask]))
             mean_ndbi = float(np.nanmean(ndbi_s[mask]))
             mean_nir = float(np.nanmean(f["nir"][mask]))
-
             mean_swir = float(np.nanmean(f["swir1"][mask]))
             mean_awei = float(np.nanmean(f["awei"][mask]))
+            mean_grey = float(np.nanmean(grey_s[mask]))
+
             if (
                 mean_ndvi < 0.14
                 and mean_nir < t["water_nir_max"]
                 and mean_swir < t["water_swir_max"]
                 and mean_bright < t["water_bright_max"]
                 and mean_ndbi < t["urban_ndbi"] + 0.05
-                and (
-                    mean_mndwi > t["water_mndwi"]
-                    or mean_awei > t["water_awei"]
-                )
+                and (mean_mndwi > t["water_mndwi"] or mean_awei > t["water_awei"])
             ):
                 out[mask] = WATER
             elif (
                 mean_ndsi > t["snow_ndsi"]
                 and mean_bright > t["snow_bright"]
                 and mean_ndvi < 0.15
-                and float(np.nanmean(f["swir1"][mask])) < 0.14
+                and mean_swir < 0.14
             ):
                 out[mask] = SNOW
-            elif mean_ndvi > t["veg_ndvi"] + 0.03 and mean_mndwi < t["water_mndwi"]:
+            elif mean_ndvi > t["veg_ndvi"] and mean_mndwi < t["water_mndwi"]:
                 out[mask] = VEGETATION
-            elif mean_ndvi < t["soil_ndvi_max"] or (
-                mean_ndbi > t["urban_ndbi"] and mean_ndvi < t["veg_ndvi"]
+            elif (
+                mean_ndvi < t["veg_ndvi"] - 0.06
+                and mean_grey > 0.48
+                and mean_mndwi < t["water_mndwi"] - 0.02
+                and 0.12 < mean_bright < 0.40
             ):
-                out[mask] = SOIL
+                out[mask] = ROADS
+            elif mean_ndbi > t["urban_ndbi"] and mean_ndvi < t["veg_ndvi"] - 0.04:
+                out[mask] = BUILT_UP
+            elif mean_ndvi < t["soil_ndvi_max"] + 0.04:
+                out[mask] = BARE_SOIL
 
         out[~valid] = NODATA
-        out[cloud & valid] = SOIL
+        out[cloud & valid] = BARE_SOIL
         return out
 
     def _weighted_amalgam(
@@ -779,13 +850,12 @@ class ClassificationService:
         t: dict[str, float],
     ) -> tuple[np.ndarray, float]:
         h, w = valid.shape
-        scores = np.zeros((4, h, w), dtype=np.float64)
+        scores = np.zeros((N_CLASSES, h, w), dtype=np.float64)
         for class_map, conf, weight in members:
-            for cid in range(4):
+            for cid in range(N_CLASSES):
                 hit = (class_map == cid) & valid
                 scores[cid][hit] += weight * conf[hit]
 
-        # Spectral prior boost (helps break ties toward physically plausible class)
         wet = np.clip(
             np.maximum(
                 (f["mndwi"] - t["water_mndwi"]) / 0.2,
@@ -795,7 +865,7 @@ class ClassificationService:
             1,
         ) * f["dark_ir"]
         scores[WATER] += 0.75 * wet * valid
-        # Built-up prior: bright + high NDBI/SWIR — actively fights water score
+
         urban_prior = np.clip(
             0.5 * np.clip((f["ndbi"] - t["urban_ndbi"]) / 0.2, 0, 1)
             + 0.4 * np.clip((f["swir1"] - t["water_swir_max"]) / 0.15, 0, 1)
@@ -803,49 +873,43 @@ class ClassificationService:
             0,
             1,
         )
-        scores[SOIL] += 0.70 * urban_prior * valid
+        scores[BUILT_UP] += 0.65 * urban_prior * valid
         scores[WATER] -= 1.10 * urban_prior * valid
-        # Soft IR penalty — allow turbid/shallow water with moderate NIR/SWIR
+
         scores[WATER] -= 0.45 * np.clip(
             (f["nir"] - t["wet_nir_max"]) / 0.15, 0, 1
         ) * valid
-        scores[WATER] -= 0.45 * np.clip(
-            (f["swir1"] - t["wet_swir_max"]) / 0.15, 0, 1
-        ) * valid
-        # Extra wet-channel prior for low-vegetation wetness
         scores[WATER] += 0.55 * np.clip(
             (f["mndwi"] - t["wet_mndwi_min"]) / 0.25, 0, 1
         ) * (f["ndvi"] < 0.18) * valid
 
-        scores[VEGETATION] += 0.50 * np.clip(
-            np.maximum(
-                (f["ndvi"] - t["veg_ndvi"]) / 0.3,
-                (f["evi"] - t["veg_evi"]) / 0.3,
-            ),
-            0,
-            1,
+        # Strong vegetation prior only for truly green pixels
+        scores[VEGETATION] += 0.70 * np.clip(
+            (f["ndvi"] - t["veg_ndvi"]) / 0.25, 0, 1
         ) * valid
-        scores[SOIL] += 0.35 * np.clip(
-            np.maximum(
-                (t["veg_ndvi"] - f["ndvi"]) / 0.3,
-                (f["bsi"] - t["bare_bsi"]) / 0.25,
-            ),
-            0,
-            1,
+        # Anti-veg prior for low-NDVI surfaces (roads, canals, soil)
+        scores[VEGETATION] -= 1.20 * np.clip(
+            (t["veg_ndvi"] - f["ndvi"]) / 0.25, 0, 1
+        ) * valid
+
+        scores[ROADS] += 0.55 * np.clip(f["grey"] - 0.4, 0, 1) * (
+            f["ndvi"] < t["veg_ndvi"] - 0.06
+        ) * valid
+        scores[BARE_SOIL] += 0.40 * np.clip(
+            (f["bsi"] - t["bare_bsi"]) / 0.25, 0, 1
         ) * valid
         scores[SNOW] += 0.50 * np.clip(
             (f["ndsi"] - t["snow_ndsi"]) / 0.2, 0, 1
         ) * valid
-        # Strong penalty: clouds are not snow/water
+
         scores[SNOW][cloud] = -1
         scores[WATER][cloud] = -1
 
         winner = np.argmax(scores, axis=0).astype(np.uint8)
         out = np.full((h, w), NODATA, dtype=np.uint8)
         out[valid] = winner[valid]
-        out[cloud & valid] = SOIL
+        out[cloud & valid] = BARE_SOIL
 
-        # Agreement = top two members match on class
         stack = np.stack([m[0] for m in members], axis=0)
         agree = (
             ((stack[0] == stack[1]) | (stack[0] == stack[2]) | (stack[1] == stack[2]))
@@ -861,7 +925,6 @@ class ClassificationService:
         valid: np.ndarray,
         t: dict[str, float],
     ) -> np.ndarray:
-        """Drop weak snow false-positives in lowland scenes; keep snow in snowy scenes."""
         out = class_map.copy()
         snow = (out == SNOW) & valid
         if not snow.any():
@@ -870,30 +933,14 @@ class ClassificationService:
             f["brightness"] > t["snow_bright"] * 0.85
         )
         if t.get("snowy_scene", 0) >= 0.5:
-            # Alpine / snowy tiles: keep moderate NDSI snow, only drop obvious clouds
             weak = snow & ((f["swir1"] > 0.22) | (f["ndsi"] < t["snow_ndsi"] - 0.08))
-            out[weak] = SOIL
+            out[weak] = BARE_SOIL
             return out
-
         weak = snow & ~strong
-        out[weak] = SOIL
-        # If overall strong snow < 0.3% of scene, drop all snow (lowland false positives)
+        out[weak] = BARE_SOIL
         if strong.sum() < 0.003 * max(int(valid.sum()), 1):
-            out[snow] = SOIL
+            out[snow] = BARE_SOIL
         return out
-
-    def _hard_urban_mask(
-        self, f: dict[str, np.ndarray], t: dict[str, float]
-    ) -> np.ndarray:
-        """Roofs / dense built-up — exclude from water & wet-channel growth."""
-        return (
-            (f["ndbi"] > t["urban_ndbi"] + 0.04)
-            & (f["swir1"] > 0.20)
-            & (f["nir"] > 0.22)
-            & (f["brightness"] > 0.26)
-            & (f["mndwi"] < t["water_mndwi"] - 0.04)
-            & (f["ndvi"] < t["veg_ndvi"])
-        )
 
     def _refine_water_bodies(
         self,
@@ -902,7 +949,6 @@ class ClassificationService:
         valid: np.ndarray,
         t: dict[str, float],
     ) -> np.ndarray:
-        """Recover clear + turbid water; leave wet-channel growth to expand pass."""
         out = class_map.copy()
         mndwi, ndwi, ndvi, awei = f["mndwi"], f["ndwi"], f["ndvi"], f["awei"]
         nir, swir1, bright = f["nir"], f["swir1"], f["brightness"]
@@ -927,8 +973,11 @@ class ClassificationService:
 
         water = ((out == WATER) & valid).astype(np.uint8) * 255
         if water.any():
-            img = Image.fromarray(water, mode="L")
-            closed = img.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
+            closed = (
+                Image.fromarray(water, mode="L")
+                .filter(ImageFilter.MaxFilter(3))
+                .filter(ImageFilter.MinFilter(3))
+            )
             closed_arr = np.array(closed, dtype=np.uint8) > 127
             add = (
                 closed_arr
@@ -940,19 +989,6 @@ class ClassificationService:
                 & (swir1 < t["wet_swir_max"])
             )
             out[add] = WATER
-
-            # Only drop speckles that look dry AND urban-ish
-            opened = (
-                Image.fromarray(((out == WATER) & valid).astype(np.uint8) * 255, mode="L")
-                .filter(ImageFilter.MinFilter(3))
-                .filter(ImageFilter.MaxFilter(3))
-            )
-            keep = np.array(opened, dtype=np.uint8) > 127
-            speckles = (out == WATER) & valid & ~keep
-            weak = speckles & (mndwi < t["wet_mndwi_min"]) & (awei < t["water_awei"] - 0.08)
-            out[weak] = np.where(
-                f["ndvi"][weak] > t["veg_ndvi"], VEGETATION, SOIL
-            ).astype(np.uint8)
         return out
 
     def _expand_wet_channels(
@@ -963,12 +999,6 @@ class ClassificationService:
         t: dict[str, float],
         iterations: int = 10,
     ) -> np.ndarray:
-        """Grow clear-water seeds into turbid water and wet river-bed sediment.
-
-        Punjab meandering channels are often mostly wet sand / shallow turbid water
-        with only a thin clear-water thread — those beds should map to Water, not Soil.
-        Growth is blocked on hard urban surfaces.
-        """
         out = class_map.copy()
         urban = self._hard_urban_mask(f, t)
         ndvi, mndwi, ndwi, awei = f["ndvi"], f["mndwi"], f["ndwi"], f["awei"]
@@ -976,24 +1006,19 @@ class ClassificationService:
 
         seeds = (out == WATER) & valid & ~urban
         if not seeds.any():
-            # Bootstrap seeds from strongest wetness if amalgam missed the channel
             strong = (
                 valid
                 & ~urban
                 & (ndvi < 0.14)
                 & (nir < t["water_nir_max"])
                 & (swir1 < t["water_swir_max"])
-                & (
-                    (mndwi > t["water_mndwi"])
-                    | (awei > t["water_awei"])
-                )
+                & ((mndwi > t["water_mndwi"]) | (awei > t["water_awei"]))
             )
             seeds = strong
             out[seeds] = WATER
         if not seeds.any():
             return out
 
-        # Wet / turbid / channel-bed candidates (includes wet soil in active channels)
         wet_candidate = (
             valid
             & ~urban
@@ -1007,7 +1032,6 @@ class ClassificationService:
                 | (ndwi > -0.14)
                 | (awei > t["water_awei"] - 0.16)
                 | (
-                    # Active channel sediment: bare, low veg, not dry desert
                     (ndvi < 0.12)
                     & (bsi > t["bare_bsi"] - 0.05)
                     & (mndwi > t["wet_mndwi_min"] - 0.06)
@@ -1015,9 +1039,10 @@ class ClassificationService:
                 )
             )
         )
-        # Do not eat dense crops/vegetation during growth
+        wet_candidate &= ~((out == VEGETATION) & (ndvi > t["veg_ndvi"] + 0.05))
+        # Do not overwrite clear roads during wet growth
         wet_candidate &= ~(
-            (out == VEGETATION) & (ndvi > t["veg_ndvi"] + 0.05)
+            (out == ROADS) & (f["grey"] > 0.55) & (mndwi < t["water_mndwi"] - 0.05)
         )
 
         mask = seeds.copy()
@@ -1035,78 +1060,169 @@ class ClassificationService:
             if not (grown & ~mask).any():
                 break
             mask |= grown
-
         out[mask] = WATER
         return out
 
-    def _separate_water_builtup(
+    def _enhance_linear_features(
         self,
         class_map: np.ndarray,
         f: dict[str, np.ndarray],
         valid: np.ndarray,
         t: dict[str, float],
     ) -> np.ndarray:
-        """Remove water labels only from hard urban; recover clear/turbid water on soil."""
+        """Promote canal-like wet lines to water and elongated grey lines to roads."""
         out = class_map.copy()
-        mndwi, awei, ndwi = f["mndwi"], f["awei"], f["ndwi"]
-        ndvi = f["ndvi"]
-        nir, swir1, bright = f["nir"], f["swir1"], f["brightness"]
+        ndvi, mndwi, ndwi = f["ndvi"], f["mndwi"], f["ndwi"]
+        nir, swir1, bright, grey = f["nir"], f["swir1"], f["brightness"], f["grey"]
+        ndbi, awei = f["ndbi"], f["awei"]
         urban = self._hard_urban_mask(f, t)
 
-        # Only strip water that is clearly built-up (not wet river sediment)
-        false_water = (out == WATER) & valid & urban
-        out[false_water] = SOIL
-
-        # Recover clear + turbid water still labeled soil
-        labeled_soil = (out == SOIL) & valid & ~urban
-        true_water = labeled_soil & (
-            (ndvi < 0.16)
-            & (nir < t["wet_nir_max"])
-            & (swir1 < t["wet_swir_max"])
-            & (bright < t["wet_bright_max"])
+        # Canal candidates: dark / wet, low NDVI, not urban roofs
+        canal_cand = (
+            valid
+            & ~urban
+            & (out != SNOW)
+            & (ndvi < 0.20)
+            & (nir < t["wet_nir_max"] + 0.02)
             & (
-                (mndwi > t["water_mndwi"] - 0.03)
-                | (awei > t["water_awei"] - 0.03)
-                | ((mndwi > t["wet_mndwi_min"]) & (ndwi > -0.05) & (nir < 0.20))
+                (mndwi > t["wet_mndwi_min"] - 0.02)
+                | (ndwi > -0.10)
+                | (awei > t["water_awei"] - 0.12)
+                | ((bright < 0.22) & (nir < 0.16) & (swir1 < 0.16))
             )
         )
-        out[true_water] = WATER
+        elong_canal = self._elongation(canal_cand)
+        canal = canal_cand & ((elong_canal >= 3.5) | (out == WATER))
+        # Grow canals a bit along the line
+        if canal.any():
+            dil = (
+                np.array(
+                    Image.fromarray((canal.astype(np.uint8) * 255), mode="L").filter(
+                        ImageFilter.MaxFilter(3)
+                    ),
+                    dtype=np.uint8,
+                )
+                > 127
+            )
+            canal |= dil & canal_cand & valid
+            out[canal & (out != SNOW)] = WATER
+
+        # Road candidates: grey, low NDVI, not water-wet
+        road_cand = (
+            valid
+            & (out != WATER)
+            & (out != SNOW)
+            & (ndvi < t["veg_ndvi"] - 0.08)
+            & (ndvi < 0.22)
+            & (mndwi < t["water_mndwi"] - 0.02)
+            & (grey > 0.42)
+            & (bright > 0.12)
+            & (bright < 0.45)
+            & (nir > t["water_nir_max"] * 0.65)
+            & ((ndbi > t["road_ndbi"] - 0.04) | (f["bu"] > -0.04))
+        )
+        elong_road = self._elongation(road_cand)
+        roads = road_cand & ((elong_road >= 3.0) | (out == ROADS))
+        if roads.any():
+            dil = (
+                np.array(
+                    Image.fromarray((roads.astype(np.uint8) * 255), mode="L").filter(
+                        ImageFilter.MaxFilter(3)
+                    ),
+                    dtype=np.uint8,
+                )
+                > 127
+            )
+            roads |= dil & road_cand & valid & (out != WATER)
+            # Prefer roads over bare/veg for linear grey features
+            out[roads & (out != WATER) & (out != SNOW) & (out != BUILT_UP)] = ROADS
+            # Also reclaim false vegetation on road lines
+            out[roads & (out == VEGETATION)] = ROADS
         return out
 
-    def _refine_urban_soil(
+    def _refine_impervious(
         self,
         class_map: np.ndarray,
         f: dict[str, np.ndarray],
         valid: np.ndarray,
         t: dict[str, float],
     ) -> np.ndarray:
-        """Pull bright built-up / bare cores toward soil; protect dense vegetation."""
         out = class_map.copy()
-        ndvi, ndbi, bsi = f["ndvi"], f["ndbi"], f["bsi"]
-        bright, bu = f["brightness"], f["bu"]
+        ndvi, ndbi, bright, grey = f["ndvi"], f["ndbi"], f["brightness"], f["grey"]
 
-        # Bright, high-NDBI cores mislabeled as vegetation → soil/built-up
+        # Bright high-NDBI cores mislabeled as vegetation → built-up
         urban_core = (
             valid
             & (out == VEGETATION)
-            & (ndvi < t["veg_ndvi"] + 0.06)
-            & (
-                ((ndbi > t["urban_ndbi"] + 0.02) & (bright > 0.22))
-                | ((bsi > t["bare_bsi"] + 0.06) & (bu > 0.0))
-            )
+            & (ndvi < t["veg_ndvi"] + 0.02)
+            & (ndbi > t["urban_ndbi"])
+            & (bright > 0.22)
         )
-        out[urban_core] = SOIL
+        out[urban_core] = BUILT_UP
 
-        # Dense green that was labeled soil → vegetation
+        # Dense green labeled bare → vegetation
         green_fill = (
             valid
-            & (out == SOIL)
-            & (ndvi > t["veg_ndvi"] + 0.04)
+            & (out == BARE_SOIL)
+            & (ndvi > t["veg_ndvi"] + 0.03)
             & (f["evi"] > t["veg_evi"])
             & (ndbi < t["urban_ndbi"] + 0.05)
             & (f["mndwi"] < t["water_mndwi"])
         )
         out[green_fill] = VEGETATION
+
+        # Compact bright settlement blobs → built-up (not roads)
+        built = (
+            valid
+            & (out == ROADS)
+            & (bright > 0.26)
+            & (ndbi > t["urban_ndbi"] - 0.02)
+        )
+        # Non-linear bright road patches are settlements
+        if built.any():
+            elong = self._elongation(out == ROADS)
+            built |= (
+                valid
+                & (out == ROADS)
+                & (bright > 0.24)
+                & (elong < 2.5)
+                & (ndvi < t["veg_ndvi"] - 0.06)
+            )
+        out[built] = BUILT_UP
+        return out
+
+    def _strip_false_vegetation(
+        self,
+        class_map: np.ndarray,
+        f: dict[str, np.ndarray],
+        valid: np.ndarray,
+        t: dict[str, float],
+    ) -> np.ndarray:
+        """Final pass: low-NDVI 'agriculture' reassigned to roads/soil/water/built-up."""
+        out = class_map.copy()
+        ndvi, mndwi, grey = f["ndvi"], f["mndwi"], f["grey"]
+        ndbi, bright, nir = f["ndbi"], f["brightness"], f["nir"]
+
+        false_veg = valid & (out == VEGETATION) & (ndvi < t["veg_ndvi"] - 0.02)
+        # Wet → water
+        to_water = false_veg & (
+            (mndwi > t["wet_mndwi_min"])
+            | ((nir < t["water_nir_max"]) & (f["swir1"] < t["water_swir_max"]))
+        )
+        out[to_water] = WATER
+        false_veg = false_veg & ~to_water
+
+        to_roads = false_veg & (grey > 0.45) & (bright < 0.42) & (
+            ndbi > t["road_ndbi"] - 0.05
+        )
+        out[to_roads] = ROADS
+        false_veg = false_veg & ~to_roads
+
+        to_built = false_veg & (ndbi > t["urban_ndbi"]) & (bright > 0.22)
+        out[to_built] = BUILT_UP
+        false_veg = false_veg & ~to_built
+
+        out[false_veg] = BARE_SOIL
         return out
 
     def _majority_filter(
@@ -1119,6 +1235,9 @@ class ClassificationService:
             arr = np.array(filtered, dtype=np.uint8)
             arr[~valid] = NODATA
             arr[out == NODATA] = NODATA
+            # Preserve thin linear water/roads from being majority-eaten
+            preserve = (out == WATER) | (out == ROADS)
+            arr[preserve & valid] = out[preserve & valid]
             out = arr
         return out
 
@@ -1174,8 +1293,14 @@ class ClassificationService:
     def _class_map_to_png(self, class_map: np.ndarray, valid: np.ndarray) -> bytes:
         h, w = class_map.shape
         rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        # Water more opaque so blue reads clearly against orange built-up
-        alpha = {SNOW: 235, SOIL: 210, VEGETATION: 210, WATER: 245}
+        alpha = {
+            SNOW: 235,
+            BARE_SOIL: 200,
+            BUILT_UP: 220,
+            VEGETATION: 210,
+            WATER: 245,
+            ROADS: 230,
+        }
         for cid, meta in CLASS_META.items():
             r, g, b = self._hex_to_rgb(meta["color"])
             mask = (class_map == cid) & valid
@@ -1191,11 +1316,11 @@ class ClassificationService:
     def _legend(self) -> LegendInfo:
         return LegendInfo(
             min=0,
-            max=3,
+            max=float(N_CLASSES - 1),
             unit="class",
-            label="Land cover (4 classes)",
-            formula="Snow / Soil(Built-up) / Vegetation / Water",
-            colormap="lulc4",
+            label="Land cover (6 classes)",
+            formula="Snow / Bare Soil / Built-up / Vegetation / Water / Roads",
+            colormap="lulc6",
             stops=[
                 ColormapStop(value=float(cid), color=meta["color"])
                 for cid, meta in CLASS_META.items()
