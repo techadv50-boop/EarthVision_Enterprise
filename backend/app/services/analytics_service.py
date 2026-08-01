@@ -103,7 +103,8 @@ INDEX_META: dict[str, dict[str, Any]] = {
     },
 }
 
-# Landsat-8 OLI/TIRS band cheat-sheet (Collection-2 Level-2)
+# Landsat-8 OLI/TIRS and Landsat-9 OLI-2/TIRS-2 (Collection-2 Level-2)
+# share band numbers and USGS scale factors (SR + ST_B10).
 # B2 blue, B3 green, B4 red, B5 nir, B6 swir1, B7 swir2, ST_B10 thermal (°C after scale)
 
 
@@ -579,7 +580,7 @@ class AnalyticsService:
         bands = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
         return self._index_from_bands(index, bands, L=L, scene_id=scene_id, size=size)
 
-    # Required physical bands per index (Landsat-8: B2 blue…B7 swir2, ST_B10 thermal)
+    # Required physical bands per index (L8/L9: B2 blue…B7 swir2, ST_B10 thermal)
     INDEX_REQUIRED_BANDS: dict[str, tuple[str, ...]] = {
         "NDVI": ("red", "nir"),
         "NDWI": ("green", "nir"),
@@ -621,7 +622,7 @@ class AnalyticsService:
             if missing:
                 raise ValidationError(
                     f"{index} needs band(s) {', '.join(missing)} on this scene. "
-                    "For Landsat-8 use OLI/TIRS Collection-2 Level-2 "
+                    "For Landsat-8/9 use OLI/OLI-2 Collection-2 Level-2 "
                     "(B2–B7 / ST_B10)."
                 )
 

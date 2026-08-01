@@ -531,15 +531,20 @@ class SceneImageryService:
                     limit=25,
                 )
                 scored: list[tuple[float, dict[str, Any]]] = []
+                want_mission = platform_q.replace("landsat-", "")  # "7" | "8" | "9"
                 for feat in features:
                     props = feat.get("properties") or {}
-                    plat = (props.get("platform") or "").lower()
-                    # Soft preference for requested Landsat mission
-                    want = platform_q.replace("landsat-", "")
-                    if want and want not in plat and any(x in plat for x in ("7", "8", "9")):
-                        platform_bonus = -0.08
-                    else:
-                        platform_bonus = 0.0
+                    plat = (props.get("platform") or "").lower().replace("_", "-")
+                    # Hard-match Landsat-7/8/9 so an L9 catalog scene never binds L8 COGs
+                    # (same band numbers, but wrong product / calibration / date).
+                    if want_mission in {"7", "8", "9"} and plat:
+                        plat_mission = None
+                        for m in ("7", "8", "9"):
+                            if f"landsat-{m}" in plat or plat.endswith(f"-{m}") or plat == m:
+                                plat_mission = m
+                                break
+                        if plat_mission is not None and plat_mission != want_mission:
+                            continue
                     cov = self._coverage(bbox, feat.get("bbox") or [])
                     if cov < 0.1:
                         continue
@@ -549,10 +554,12 @@ class SceneImageryService:
                     cloud = float(props.get("eo:cloud_cover") or 0)
                     target = float(target_cloud) if target_cloud is not None else cloud
                     cloud_delta = abs(cloud - target)
-                    score = cov * 10.0 - cloud_delta / 100.0 + platform_bonus
+                    score = cov * 10.0 - cloud_delta / 100.0
                     scored.append((score, feat))
                 if not scored:
-                    last_error = f"no covering Landsat in {start}..{end}"
+                    last_error = (
+                        f"no covering {platform_q} in {start}..{end}"
+                    )
                     continue
                 scored.sort(key=lambda t: -t[0])
                 feat = scored[0][1]
@@ -634,7 +641,15 @@ class SceneImageryService:
                     "source": "landsat_c2_l2",
                     "platform": props.get("platform") or platform_q,
                     "bands": {"R": "SR_B4.TIF", "G": "SR_B3.TIF", "B": "SR_B2.TIF"},
-                    "label": f"{platform} true-color (OLI)",
+                    "label": (
+                        f"{platform} true-color ("
+                        + {
+                            "LANDSAT-9": "OLI-2",
+                            "LANDSAT-8": "OLI",
+                            "LANDSAT-7": "ETM+",
+                        }.get(platform, "OLI")
+                        + ")"
+                    ),
                     "external_tile_url": external_tile,
                     "thumbnail_url": thumbnail,
                 }

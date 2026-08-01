@@ -151,7 +151,8 @@ function bandCodesLine(p: CompositePresetInfo): string {
   }
   const parts = [
     p.sentinel2 ? `S2 ${p.sentinel2}` : '',
-    p.landsat ? `L8 ${p.landsat}` : '',
+    (p.landsat8 || p.landsat) ? `L8 ${p.landsat8 || p.landsat}` : '',
+    p.landsat9 ? `L9 ${p.landsat9}` : '',
     p.landsat7 ? `L7 ${p.landsat7}` : '',
     p.modis ? `MODIS ${p.modis}` : '',
   ].filter(Boolean);

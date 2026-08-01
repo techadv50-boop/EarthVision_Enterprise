@@ -176,6 +176,7 @@ class CompositeService:
             # Default display codes: S2 / Landsat-8 / MODIS for UI cards
             s2 = (sat_bands.get("SENTINEL-2") or {}).get("codes", "")
             ls8 = (sat_bands.get("LANDSAT-8") or {}).get("codes", "")
+            ls9 = (sat_bands.get("LANDSAT-9") or {}).get("codes", "")
             l7 = (sat_bands.get("LANDSAT-7") or {}).get("codes", "")
             modis = (sat_bands.get("MODIS") or {}).get("codes", "")
             formula = (active or {}).get("formula") or meta["formula"]
@@ -195,6 +196,8 @@ class CompositeService:
                     "use": meta["use"],
                     "sentinel2": s2,
                     "landsat": ls8,
+                    "landsat8": ls8,
+                    "landsat9": ls9,
                     "landsat7": l7,
                     "modis": modis,
                     "bands": meta["display"],

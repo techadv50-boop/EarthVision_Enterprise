@@ -60,10 +60,15 @@ def family_label(family: str) -> str:
 
 
 # Accurate RGB band codes per sensor (R-G-B product order)
-# Landsat-8/9 OLI: B2 Blue, B3 Green, B4 Red, B5 NIR, B6 SWIR1, B7 SWIR2
+# Landsat-8 OLI / Landsat-9 OLI-2: same C2 L2 numbering —
+#   B2 Blue, B3 Green, B4 Red, B5 NIR, B6 SWIR1, B7 SWIR2, ST_B10 thermal
 # Landsat-7 ETM+: B1 Blue, B2 Green, B3 Red, B4 NIR, B5 SWIR1, B7 SWIR2
 # Sentinel-2: B02 Blue, B03 Green, B04 Red, B08 NIR, B11 SWIR1, B12 SWIR2
 # MODIS 09A1: B01 Red, B02 NIR, B03 Blue, B04 Green, B06 SWIR1, B07 SWIR2
+#
+# USGS Collection-2 Level-2 scale factors (identical for L8 and L9):
+#   SR:  ρ = DN × 0.0000275 − 0.2
+#   ST:  Kelvin = DN × 0.00341802 + 149.0
 COMPOSITE_BAND_CODES: dict[str, dict[str, dict[str, str]]] = {
     "true_color": {
         "SENTINEL-2": {
@@ -371,10 +376,34 @@ INDEX_BAND_NOTES: dict[str, dict[str, str]] = {
         "MODIS": "B02 + B07",
     },
     "LST": {
-        "LANDSAT-8": "ST_B10 (C2 L2 surface temp → °C)",
-        "LANDSAT-9": "ST_B10 (C2 L2 surface temp → °C)",
+        "LANDSAT-8": "ST_B10 / TIRS (C2 L2 → °C)",
+        "LANDSAT-9": "ST_B10 / TIRS-2 (C2 L2 → °C)",
     },
 }
+
+
+def assert_landsat89_parity() -> None:
+    """Guard: Landsat-9 OLI-2 must stay aligned with Landsat-8 OLI band codes."""
+    for preset_id, fams in COMPOSITE_BAND_CODES.items():
+        a, b = fams.get("LANDSAT-8"), fams.get("LANDSAT-9")
+        if a != b:
+            raise AssertionError(
+                f"Composite '{preset_id}' Landsat-8/9 band codes drifted: {a} vs {b}"
+            )
+    for index_id, notes in INDEX_BAND_NOTES.items():
+        # LST labels may mention TIRS vs TIRS-2; compare band identity via applicable set
+        if index_id == "LST":
+            continue
+        if notes.get("LANDSAT-8") != notes.get("LANDSAT-9"):
+            raise AssertionError(
+                f"Index '{index_id}' Landsat-8/9 band notes drifted: "
+                f"{notes.get('LANDSAT-8')} vs {notes.get('LANDSAT-9')}"
+            )
+    if set(INDEX_APPLICABLE.get("LST", ())) != {"LANDSAT-8", "LANDSAT-9"}:
+        raise AssertionError("LST must apply to Landsat-8 and Landsat-9 only")
+
+
+assert_landsat89_parity()
 
 
 def composite_applicable_families(preset_id: str) -> list[str]:

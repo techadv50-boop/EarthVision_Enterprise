@@ -20,6 +20,8 @@ export interface CompositePresetInfo {
   use: string;
   sentinel2: string;
   landsat: string;
+  landsat8?: string;
+  landsat9?: string;
   landsat7?: string;
   modis?: string;
   bands: { R: string; G: string; B: string };
