@@ -402,7 +402,7 @@ export function WorkspacePage() {
       setDownloadingIds((ids) => [...ids, scene.id]);
       setError(null);
       setToolStatus(
-        `Exporting ${bands.length} band${bands.length === 1 ? '' : 's'} as GeoTIFF…`,
+        `Downloading full product band${bands.length === 1 ? '' : 's'} (large .tif files)…`,
       );
       try {
         await catalogService.downloadBands(scene, bands, {

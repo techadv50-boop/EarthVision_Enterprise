@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from app.core.deps import CurrentUser, DbSession
 from app.schemas.catalog import (
@@ -258,6 +258,7 @@ class SceneBandsBody(BaseModel):
     sensing_time: str | None = None
     cloud_cover: float | None = None
     bands: list[str] = Field(default_factory=list)
+    # Kept for compatibility; full product COG download ignores resample size
     size: int = Field(default=512, ge=64, le=2048)
 
 
@@ -297,14 +298,15 @@ async def download_scene_bands(
     scene_id: str,
     data: SceneBandsBody,
     user: CurrentUser,
-) -> Response:
-    """Download selected product bands as .tif files (or a .zip of them)."""
+) -> FileResponse:
+    """Download original full-resolution product band COGs (.tif) or a ZIP of them."""
+    from starlette.background import BackgroundTask
     from starlette.concurrency import run_in_threadpool
 
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    payload, filename, media_type = await run_in_threadpool(
+    path, filename, media_type, cleanup = await run_in_threadpool(
         imagery.export_selected_bands,
         scene_id,
         data.bands,
@@ -315,11 +317,18 @@ async def download_scene_bands(
         sensing_time=data.sensing_time,
         cloud_cover=data.cloud_cover,
     )
-    return Response(
-        content=payload,
+
+    def _cleanup() -> None:
+        if cleanup:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    return FileResponse(
+        path,
         media_type=media_type,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "private, max-age=60",
-        },
+        filename=filename,
+        background=BackgroundTask(_cleanup),
+        headers={"Cache-Control": "private, max-age=60"},
     )

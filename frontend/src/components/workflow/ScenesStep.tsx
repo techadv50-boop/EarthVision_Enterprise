@@ -56,6 +56,7 @@ export function ScenesStep({
   const [selectedBands, setSelectedBands] = useState<string[]>([]);
   const [bandsLoading, setBandsLoading] = useState(false);
   const [bandsError, setBandsError] = useState<string | null>(null);
+  const [bandsNote, setBandsNote] = useState<string | null>(null);
   const [pngBusy, setPngBusy] = useState(false);
 
   const closePicker = useCallback(() => {
@@ -63,6 +64,7 @@ export function ScenesStep({
     setBandOptions([]);
     setSelectedBands([]);
     setBandsError(null);
+    setBandsNote(null);
     setBandsLoading(false);
   }, []);
 
@@ -76,16 +78,19 @@ export function ScenesStep({
       setBandOptions([]);
       setSelectedBands([]);
       setBandsError(null);
+      setBandsNote(null);
       setBandsLoading(true);
       try {
         const result = await catalogService.listBands(scene, {
           bbox: getSceneBbox(scene),
         });
         setBandOptions(result.bands);
+        setBandsNote(result.note ?? null);
+        // Full COGs are large — default to one product band, not all
         setSelectedBands(
           result.default_bands?.length
             ? [...result.default_bands]
-            : result.bands.map((b) => b.id),
+            : result.bands.slice(0, 1).map((b) => b.id),
         );
       } catch (err) {
         setBandsError(getErrorMessage(err));
@@ -110,10 +115,9 @@ export function ScenesStep({
 
   const selectAll = () => setSelectedBands(bandOptions.map((b) => b.id));
   const selectDefaults = () => {
-    const defaults = bandOptions
-      .filter((b) => ['red', 'green', 'blue', 'vv'].includes(b.id))
-      .map((b) => b.id);
-    setSelectedBands(defaults.length ? defaults : bandOptions.slice(0, 1).map((b) => b.id));
+    const one =
+      bandOptions.find((b) => b.id === 'red' || b.id === 'vv') ?? bandOptions[0];
+    setSelectedBands(one ? [one.id] : []);
   };
 
   const handleExport = async (scene: SceneSummary) => {
@@ -244,8 +248,14 @@ export function ScenesStep({
                   {pickerOpen && (
                     <div className="mt-2.5 border-t border-[var(--line)] pt-2.5">
                       <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="text-xs font-semibold text-[var(--ink)]">
-                          Select product bands (.tif)
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-[var(--ink)]">
+                            Full product bands (.tif)
+                          </div>
+                          <p className="mt-0.5 text-[10px] leading-snug text-[var(--muted)]">
+                            {bandsNote ||
+                              'Original COG files (~40–120 MB each), not preview windows.'}
+                          </p>
                         </div>
                         <button
                           type="button"
@@ -291,7 +301,7 @@ export function ScenesStep({
                               className="text-[var(--accent)] underline-offset-2 hover:underline"
                               onClick={selectDefaults}
                             >
-                              RGB / VV defaults
+                              Default band
                             </button>
                             <button
                               type="button"
@@ -318,12 +328,18 @@ export function ScenesStep({
                                     <span className="min-w-0">
                                       <span className="block font-mono text-xs font-semibold text-[var(--ink)]">
                                         {fileName}
+                                        {band.size_label ? (
+                                          <span className="ml-1.5 font-sans font-medium text-[var(--accent)]">
+                                            {band.size_label}
+                                          </span>
+                                        ) : null}
                                       </span>
                                       <span className="block text-[10px] text-[var(--muted)]">
                                         {band.label}
                                         {' · '}
                                         {format}
-                                        {band.extension ? ` (${band.extension})` : ''}
+                                        {band.extension ? ` ${band.extension}` : ''}
+                                        {' · full resolution'}
                                       </span>
                                     </span>
                                   </label>

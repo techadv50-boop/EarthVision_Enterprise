@@ -49,6 +49,9 @@ export interface DownloadBandInfo {
   format: string;
   media_type?: string;
   group?: string;
+  size_bytes?: number | null;
+  size_label?: string;
+  full_resolution?: boolean;
 }
 
 export interface SceneBandsResponse {
@@ -59,6 +62,8 @@ export interface SceneBandsResponse {
   bands: DownloadBandInfo[];
   default_bands: string[];
   formats: string[];
+  download_mode?: string;
+  note?: string;
 }
 
 export const catalogService = {
@@ -127,7 +132,8 @@ export const catalogService = {
         },
         {
           responseType: 'blob',
-          timeout: 300000,
+          // Full product COGs are often 40–120 MB each
+          timeout: 900000,
         },
       );
       const disposition = String(headers['content-disposition'] || '');

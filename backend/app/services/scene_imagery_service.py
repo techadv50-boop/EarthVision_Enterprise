@@ -16,7 +16,7 @@ from PIL import Image
 from shapely.geometry import Point, shape
 
 from app.core.config import get_settings
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import ExternalServiceError, NotFoundError, ValidationError
 
 EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
 PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
@@ -1032,9 +1032,42 @@ class SceneImageryService:
             )
 
         download_bands = self._resolve_download_bands(layer)
+        sign = layer.get("sign")
+        analysis = layer.get("analysis_bands") or {}
+
+        # Probe full COG sizes (Content-Length) so the UI can show ~MB, not tiny windows
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _size_for(key: str) -> tuple[str, int | None]:
+            meta = download_bands[key]
+            if meta.get("size_bytes"):
+                try:
+                    return key, int(meta["size_bytes"])
+                except (TypeError, ValueError):
+                    pass
+            href = analysis.get(key) or meta.get("href")
+            if not href:
+                return key, None
+            return key, self._probe_asset_size(str(href), sign)
+
+        sizes: dict[str, int | None] = {}
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(download_bands)))) as pool:
+            futures = [pool.submit(_size_for, key) for key in download_bands]
+            for fut in as_completed(futures):
+                key, nbytes = fut.result()
+                sizes[key] = nbytes
+                if nbytes:
+                    download_bands[key]["size_bytes"] = nbytes
+        # Persist probed sizes on the layer for later downloads
+        if any(sizes.values()):
+            layer["download_bands"] = download_bands
+            self.save_layer(scene_id, layer)
+
         order = {k: i for i, k in enumerate(self.DOWNLOAD_BAND_ORDER)}
-        available: list[dict[str, str]] = []
+        available: list[dict[str, Any]] = []
         for key, meta in download_bands.items():
+            nbytes = sizes.get(key) or meta.get("size_bytes")
+            size_mb = round(float(nbytes) / (1024 * 1024), 1) if nbytes else None
             available.append(
                 {
                     "id": key,
@@ -1045,11 +1078,15 @@ class SceneImageryService:
                     "format": meta.get("format") or "GeoTIFF",
                     "media_type": meta.get("media_type") or "image/tiff",
                     "group": "sar" if key in {"vv", "vh"} else "optical",
+                    "size_bytes": nbytes,
+                    "size_label": f"{size_mb} MB" if size_mb is not None else "full COG",
+                    "full_resolution": True,
                 }
             )
         available.sort(key=lambda b: order.get(b["id"], 999))
 
-        defaults = [b["id"] for b in available if b["id"] in {"red", "green", "blue", "vv"}]
+        # Default to a single full band — each file is tens of MB
+        defaults = [b["id"] for b in available if b["id"] in {"red", "vv"}][:1]
         if not defaults and available:
             defaults = [available[0]["id"]]
 
@@ -1061,7 +1098,97 @@ class SceneImageryService:
             "bands": available,
             "default_bands": defaults,
             "formats": ["GeoTIFF", "ZIP"],
+            "download_mode": "full_product_cog",
+            "note": "Downloads are original full-resolution product band COGs (typically ~40–120 MB each), not preview windows.",
         }
+
+    def _signed_asset_href(self, href: str, sign: str | None) -> str:
+        """Return a fetchable HTTPS URL, signing Planetary Computer assets when needed."""
+        url = self._s3_to_https(href)
+        if sign == "planetary_computer":
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                url = self._sign_pc(url, client)
+        return url
+
+    def _probe_asset_size(self, href: str, sign: str | None) -> int | None:
+        """Best-effort Content-Length for a full product band COG."""
+        try:
+            url = self._signed_asset_href(href, sign)
+            with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+                resp = client.head(url)
+                if resp.status_code >= 400:
+                    # Some CDNs require GET for length; fall back lightly
+                    with client.stream("GET", url) as streamed:
+                        cl = streamed.headers.get("content-length")
+                        streamed.close()
+                        return int(cl) if cl else None
+                cl = resp.headers.get("content-length")
+                return int(cl) if cl else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _fetch_original_band_file(
+        self,
+        href: str,
+        *,
+        sign: str | None,
+        dest: Path,
+    ) -> int:
+        """Download the original full-resolution band COG to disk. Returns bytes written."""
+        url = self._signed_asset_href(href, sign)
+        written = 0
+        with httpx.Client(timeout=httpx.Timeout(30.0, read=900.0), follow_redirects=True) as client:
+            with client.stream("GET", url) as resp:
+                if resp.status_code >= 400:
+                    raise ExternalServiceError(
+                        f"Failed to download band file ({resp.status_code})"
+                    )
+                with dest.open("wb") as out:
+                    for chunk in resp.iter_bytes(1024 * 1024):
+                        if not chunk:
+                            continue
+                        out.write(chunk)
+                        written += len(chunk)
+        if written < 50_000:
+            # Reject empty/error bodies; real 60 m COGs can be ~1 MB, 10 m ~40–100 MB
+            raise ExternalServiceError(
+                f"Band download too small ({written} bytes); expected a full product COG"
+            )
+        return written
+
+    def _resolve_band_selection(
+        self,
+        layer: dict[str, Any],
+        band_ids: list[str],
+    ) -> list[str]:
+        analysis = layer.get("analysis_bands") or {}
+        download_bands = self._resolve_download_bands(layer)
+        alias_map = {
+            "swir": "swir16",
+            "swir2": "swir22",
+            "nir": "nir08" if "nir08" in download_bands and "nir" not in download_bands else "nir",
+            "thermal": "lwir11",
+        }
+        resolved: list[str] = []
+        for bid in band_ids:
+            key = bid if bid in download_bands else alias_map.get(bid, bid)
+            if key not in download_bands and key not in analysis:
+                raise ValidationError(f"Band '{bid}' is not available for this scene")
+            if key not in download_bands:
+                download_bands[key] = self._stac_band_meta(
+                    key,
+                    {"href": analysis[key], "title": key},
+                    fallback_filename=f"{key}.tif",
+                )
+                layer.setdefault("download_bands", {})[key] = download_bands[key]
+            resolved.append(key)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for b in resolved:
+            if b not in seen:
+                seen.add(b)
+                unique.append(b)
+        return unique
 
     def export_selected_bands(
         self,
@@ -1074,15 +1201,18 @@ class SceneImageryService:
         footprint: dict[str, Any] | None = None,
         sensing_time: str | None = None,
         cloud_cover: float | None = None,
-    ) -> tuple[bytes, str, str]:
+    ) -> tuple[Path, str, str, bool]:
         """
-        Export chosen product bands as GeoTIFF files with real names/extensions.
-        One band → single .tif/.tiff; multiple → ZIP of individual band files.
+        Fetch original full-resolution product band COGs (typically ~40–120 MB each).
+
+        Returns (path, filename, media_type, cleanup) where cleanup=True means the
+        caller should delete the temp path after the response is sent.
         """
-        import io
+        import tempfile
         import zipfile
 
-        from app.services.geotiff_export import band_arrays_to_geotiff
+        # `size` is ignored for full product downloads (kept for API compatibility)
+        _ = size
 
         if not band_ids:
             raise ValidationError("Select at least one band to download")
@@ -1098,80 +1228,59 @@ class SceneImageryService:
                 collection=collection,
             )
 
-        bounds = [float(x) for x in layer["bounds"]]
         analysis = layer.get("analysis_bands") or {}
         download_bands = self._resolve_download_bands(layer)
         sign = layer.get("sign")
-        scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else None
-        if layer.get("source") == "sentinel2_tci":
-            scale = "sentinel2_l2a"
+        unique = self._resolve_band_selection(layer, band_ids)
 
-        # Map picker ids / aliases → real product keys present in download_bands
-        alias_map = {
-            "swir": "swir16",
-            "swir2": "swir22",
-            "nir": "nir08" if "nir08" in download_bands and "nir" not in download_bands else "nir",
-            "thermal": "lwir11",
-        }
-        resolved: list[str] = []
-        for bid in band_ids:
-            key = bid if bid in download_bands else alias_map.get(bid, bid)
-            if key not in download_bands and key not in analysis:
-                raise ValidationError(f"Band '{bid}' is not available for this scene")
-            if key not in download_bands:
-                # Analysis-only key: synthesize meta
-                download_bands[key] = self._stac_band_meta(
-                    key,
-                    {"href": analysis[key], "title": key},
-                    fallback_filename=f"{key}.tif",
+        tmp_dir = Path(tempfile.mkdtemp(prefix="ev_bands_"))
+        try:
+            saved: list[tuple[str, Path, int]] = []
+            for name in unique:
+                meta = download_bands[name]
+                href = analysis.get(name) or meta["href"]
+                filename = meta.get("filename") or f"{name}.tif"
+                # Keep original extension from product (.tif / .tiff / .TIF)
+                dest = tmp_dir / filename
+                nbytes = self._fetch_original_band_file(href, sign=sign, dest=dest)
+                logger.info("Fetched full band {} ({} bytes) for {}", filename, nbytes, scene_id)
+                saved.append((filename, dest, nbytes))
+
+            if len(saved) == 1:
+                import os
+
+                filename, dest, _nbytes = saved[0]
+                media = "image/tiff"
+                # Move single file out so we can remove the temp dir container later
+                fd, single_str = tempfile.mkstemp(
+                    prefix="ev_band_", suffix=Path(filename).suffix or ".tif"
                 )
-            resolved.append(key)
+                os.close(fd)
+                single = Path(single_str)
+                dest.replace(single)
+                return single, filename, media, True
 
-        seen: set[str] = set()
-        unique: list[str] = []
-        for b in resolved:
-            if b not in seen:
-                seen.add(b)
-                unique.append(b)
+            import os
 
-        size = max(64, min(int(size), 2048))
-        files: list[tuple[str, bytes]] = []
-        for name in unique:
-            href = analysis.get(name) or download_bands[name]["href"]
-            if name in {"vv", "vh", "thermal", "lwir11"}:
-                arr = self.read_band_grid(
-                    href, bounds, size, sign=sign, reflectance_scale=None
-                )
-            else:
-                arr = self.read_band_grid(
-                    href, bounds, size, sign=sign, reflectance_scale=scale
-                )
-            meta = download_bands[name]
-            filename = meta.get("filename") or f"{name}.tif"
-            band_code = meta.get("code") or Path(filename).stem
-            tif_bytes, safe_name = band_arrays_to_geotiff(
-                {band_code: arr},
-                bounds,
-                filename=filename,
-                band_order=[band_code],
-            )
-            files.append((safe_name, tif_bytes))
+            stac = (layer.get("stac_id") or scene_id)[:60].replace("/", "_")
+            zip_name = f"{stac}_bands.zip"
+            fd, zip_str = tempfile.mkstemp(prefix="ev_bands_", suffix=".zip")
+            os.close(fd)
+            zip_path = Path(zip_str)
+            # STORE only — COGs are already compressed; avoids huge CPU/RAM re-encode
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+                used: set[str] = set()
+                for filename, dest, _nbytes in saved:
+                    out_name = filename
+                    if out_name in used:
+                        stem = Path(filename).stem
+                        suffix = Path(filename).suffix or ".tif"
+                        out_name = f"{stem}_{len(used)}{suffix}"
+                    used.add(out_name)
+                    zf.write(dest, arcname=out_name)
+            return zip_path, zip_name, "application/zip", True
+        finally:
+            # Always drop per-band temp copies; final artifact is outside tmp_dir
+            import shutil
 
-        if len(files) == 1:
-            fname, payload = files[0]
-            return payload, fname, "image/tiff"
-
-        stac = (layer.get("stac_id") or scene_id)[:60].replace("/", "_")
-        zip_name = f"{stac}_bands.zip"
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            used: set[str] = set()
-            for fname, payload in files:
-                out_name = fname
-                if out_name in used:
-                    stem = Path(fname).stem
-                    suffix = Path(fname).suffix or ".tif"
-                    out_name = f"{stem}_{len(used)}{suffix}"
-                used.add(out_name)
-                zf.writestr(out_name, payload)
-        return buf.getvalue(), zip_name, "application/zip"
+            shutil.rmtree(tmp_dir, ignore_errors=True)
