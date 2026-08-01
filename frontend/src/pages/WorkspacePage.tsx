@@ -42,11 +42,7 @@ import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
 import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
 import { bookmarkService } from '../services/bookmarkService';
-import {
-  EO_HIDDEN_TOOLBOXES,
-  TOOLBOXES,
-  isStandardEoSatellite,
-} from '../toolbox/catalog';
+import { HIGH_RES_ONLY_TOOLBOXES, TOOLBOXES } from '../toolbox/catalog';
 
 function sceneBounds(
   scene: SceneSummary,
@@ -130,6 +126,7 @@ export function WorkspacePage() {
       satelliteId: '',
       satelliteLabel: '',
       collections: defaultSat.collections,
+      isHighResolution: false,
       startDate: start.toISOString().slice(0, 10),
       endDate: end.toISOString().slice(0, 10),
     };
@@ -243,29 +240,21 @@ export function WorkspacePage() {
 
   const hasVisibleScene = visibleSceneIds.length > 0;
 
-  const hideEoDomainTools = useMemo(() => {
-    if (isStandardEoSatellite(catalogFilters.satelliteId)) return true;
-    if (isStandardEoSatellite(focusScene?.collection || focusScene?.platform)) {
-      return true;
-    }
-    return scenes.some(
-      (s) =>
-        visibleSceneIds.includes(s.id) &&
-        isStandardEoSatellite(s.collection || s.platform),
-    );
-  }, [catalogFilters.satelliteId, focusScene, scenes, visibleSceneIds]);
+  const satelliteActive = Boolean(catalogFilters.satelliteId);
+  /** AI / Change / Maritime / Air only for high-res satellites (future APIs). */
+  const hideHighResOnlyTools = !catalogFilters.isHighResolution;
 
   const toolCount = useMemo(() => {
     let boxes =
       allowedTools == null
         ? TOOLBOXES
         : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
-    if (hideEoDomainTools) {
-      const hidden = new Set(EO_HIDDEN_TOOLBOXES);
+    if (hideHighResOnlyTools) {
+      const hidden = new Set(HIGH_RES_ONLY_TOOLBOXES);
       boxes = boxes.filter((b) => !hidden.has(b.id));
     }
     return boxes.reduce((n, b) => n + b.tools.length, 0);
-  }, [allowedTools, hideEoDomainTools]);
+  }, [allowedTools, hideHighResOnlyTools]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
     const sceneOverlay = focusScene
@@ -1060,6 +1049,22 @@ export function WorkspacePage() {
   );
 
   const onTool = async (tool: ToolboxTool) => {
+    if (!catalogFilters.satelliteId) {
+      setError('Select a satellite first to activate toolbox options');
+      setToolStatus('Select a satellite to use tools');
+      return;
+    }
+    // Domain tools require a high-resolution satellite (hidden for current free EO).
+    if (
+      (tool.action.type === 'detection' || tool.action.type === 'change') &&
+      !catalogFilters.isHighResolution
+    ) {
+      setError(
+        'AI, Change, Maritime, and Air require high-resolution imagery (add via Admin → Satellites / APIs later)',
+      );
+      return;
+    }
+
     // Clicking the active tool again turns it off
     if (activeToolId === tool.id) {
       deactivateTool(tool);
@@ -1397,7 +1402,8 @@ export function WorkspacePage() {
               lastMessage={lastMessage}
               mapChrome={mapChrome}
               allowedTools={allowedTools}
-              hideEoDomainTools={hideEoDomainTools}
+              hideHighResOnlyTools={hideHighResOnlyTools}
+              toolsEnabled={satelliteActive}
               onExpand={(id) => setExpandedToolbox(id)}
               onTool={onTool}
               onClose={() => setToolboxOpen(false)}

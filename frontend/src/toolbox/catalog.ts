@@ -12,30 +12,20 @@ export type ToolboxId =
   | 'gis'
   | 'measure';
 
-/** Domain tools hidden for standard EO satellites (Sentinel / Landsat / MODIS, etc.). */
-export const EO_HIDDEN_TOOLBOXES: ToolboxId[] = [
+/**
+ * Domain toolboxes that require high-resolution imagery.
+ * Off for all current free EO satellites; enabled only when a satellite
+ * is flagged is_high_resolution (future commercial/high-res APIs).
+ */
+export const HIGH_RES_ONLY_TOOLBOXES: ToolboxId[] = [
   'ai',
   'change',
   'maritime',
   'aviation',
 ];
 
-/** True for catalog satellites that use standard EO imagery toolboxes only. */
-export function isStandardEoSatellite(name?: string | null): boolean {
-  if (!name) return false;
-  const n = name.toUpperCase().replace(/_/g, '-');
-  return (
-    n.includes('SENTINEL') ||
-    n.includes('LANDSAT') ||
-    n.includes('MODIS') ||
-    n.includes('TERRA') ||
-    n.includes('AQUA') ||
-    n.includes('SMOS') ||
-    n.includes('ENVISAT') ||
-    n.includes('COP-DEM') ||
-    n.includes('GLOBAL-MOSAIC')
-  );
-}
+/** @deprecated Use HIGH_RES_ONLY_TOOLBOXES */
+export const EO_HIDDEN_TOOLBOXES = HIGH_RES_ONLY_TOOLBOXES;
 
 export type ToolAction =
   | { type: 'map'; mode: string }

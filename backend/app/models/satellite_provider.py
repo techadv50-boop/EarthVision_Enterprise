@@ -28,4 +28,7 @@ class SatelliteProvider(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # When true, AI / Change / Maritime / Air toolboxes are available for this satellite.
+    # Current free EO sats stay false; future commercial/high-res APIs can enable this.
+    is_high_resolution: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=100, nullable=False)

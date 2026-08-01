@@ -18,6 +18,7 @@ class SatelliteProviderCreate(BaseModel):
     auth_password: str | None = Field(default=None, max_length=512)
     notes: str | None = None
     enabled: bool = True
+    is_high_resolution: bool = False
     sort_order: int = 100
 
 
@@ -31,6 +32,7 @@ class SatelliteProviderUpdate(BaseModel):
     auth_password: str | None = None
     notes: str | None = None
     enabled: bool | None = None
+    is_high_resolution: bool | None = None
     sort_order: int | None = None
 
 
@@ -43,6 +45,7 @@ class SatelliteProviderPublic(BaseModel):
     collection_id: str
     enabled: bool
     is_builtin: bool
+    is_high_resolution: bool = False
     sort_order: int
 
     model_config = {"from_attributes": True}

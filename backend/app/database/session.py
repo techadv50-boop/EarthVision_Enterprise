@@ -54,12 +54,22 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     from sqlalchemy import inspect, text
 
     inspector = inspect(sync_conn)
-    if "users" not in inspector.get_table_names():
-        return
-    columns = {c["name"] for c in inspector.get_columns("users")}
-    if "allowed_tools" not in columns:
-        sync_conn.execute(text("ALTER TABLE users ADD COLUMN allowed_tools JSON"))
-        logger.info("Added users.allowed_tools column")
+    tables = set(inspector.get_table_names())
+    if "users" in tables:
+        columns = {c["name"] for c in inspector.get_columns("users")}
+        if "allowed_tools" not in columns:
+            sync_conn.execute(text("ALTER TABLE users ADD COLUMN allowed_tools JSON"))
+            logger.info("Added users.allowed_tools column")
+    if "satellite_providers" in tables:
+        sat_cols = {c["name"] for c in inspector.get_columns("satellite_providers")}
+        if "is_high_resolution" not in sat_cols:
+            sync_conn.execute(
+                text(
+                    "ALTER TABLE satellite_providers "
+                    "ADD COLUMN is_high_resolution BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+            logger.info("Added satellite_providers.is_high_resolution column")
 
 
 async def init_db() -> None:

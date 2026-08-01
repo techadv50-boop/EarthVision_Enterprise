@@ -42,27 +42,31 @@ export interface SatelliteOption {
   id: string;
   label: string;
   collections: CollectionName[];
+  /** High-res flag — unlocks AI / Change / Maritime / Air when true. */
+  isHighResolution?: boolean;
 }
 
 /** Fallback if the satellites API is unreachable. */
 export const SATELLITE_OPTIONS: SatelliteOption[] = [
-  { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'] },
-  { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'] },
-  { id: 'SENTINEL-3', label: 'Sentinel-3', collections: ['SENTINEL-3'] },
-  { id: 'SENTINEL-5P', label: 'Sentinel-5P', collections: ['SENTINEL-5P'] },
-  { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'] },
-  { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'] },
-  { id: 'LANDSAT-7', label: 'Landsat-7', collections: ['LANDSAT-7'] },
-  { id: 'MODIS', label: 'MODIS (Terra+Aqua)', collections: ['TERRAAQUA'] },
-  { id: 'TERRA', label: 'Terra MODIS', collections: ['TERRA'] },
-  { id: 'AQUA', label: 'Aqua MODIS', collections: ['AQUA'] },
-  { id: 'SMOS', label: 'SMOS', collections: ['SMOS'] },
+  { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'], isHighResolution: false },
+  { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'], isHighResolution: false },
+  { id: 'SENTINEL-3', label: 'Sentinel-3', collections: ['SENTINEL-3'], isHighResolution: false },
+  { id: 'SENTINEL-5P', label: 'Sentinel-5P', collections: ['SENTINEL-5P'], isHighResolution: false },
+  { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'], isHighResolution: false },
+  { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'], isHighResolution: false },
+  { id: 'LANDSAT-7', label: 'Landsat-7', collections: ['LANDSAT-7'], isHighResolution: false },
+  { id: 'MODIS', label: 'MODIS (Terra+Aqua)', collections: ['TERRAAQUA'], isHighResolution: false },
+  { id: 'TERRA', label: 'Terra MODIS', collections: ['TERRA'], isHighResolution: false },
+  { id: 'AQUA', label: 'Aqua MODIS', collections: ['AQUA'], isHighResolution: false },
+  { id: 'SMOS', label: 'SMOS', collections: ['SMOS'], isHighResolution: false },
 ];
 
 export interface CatalogFilters {
   satelliteId: string;
   satelliteLabel: string;
   collections: CollectionName[];
+  /** True only for future high-res satellite APIs. */
+  isHighResolution: boolean;
   startDate: string;
   endDate: string;
 }
@@ -98,6 +102,7 @@ function toOptions(rows: SatellitePublic[]): SatelliteOption[] {
     id: row.name,
     label: row.label,
     collections: [row.collection_id],
+    isHighResolution: Boolean(row.is_high_resolution),
   }));
 }
 
@@ -145,6 +150,7 @@ export function PlaceStep({ onSelect, busy, filters, onFiltersChange }: Props) {
       satelliteId: option.id,
       satelliteLabel: option.label,
       collections: option.collections,
+      isHighResolution: Boolean(option.isHighResolution),
     });
   };
 

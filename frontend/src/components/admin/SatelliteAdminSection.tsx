@@ -18,6 +18,7 @@ const emptyForm: SatelliteCreatePayload = {
   auth_password: '',
   notes: '',
   enabled: true,
+  is_high_resolution: false,
   sort_order: 100,
 };
 
@@ -69,6 +70,7 @@ export function SatelliteAdminSection() {
       auth_password: '',
       notes: row.notes || '',
       enabled: row.enabled,
+      is_high_resolution: Boolean(row.is_high_resolution),
       sort_order: row.sort_order,
     });
     setMessage(null);
@@ -104,6 +106,7 @@ export function SatelliteAdminSection() {
           auth_password: form.auth_password || undefined,
           notes: form.notes || null,
           enabled: form.enabled,
+          is_high_resolution: Boolean(form.is_high_resolution),
           sort_order: form.sort_order,
         });
         setMessage(`Updated ${form.label}`);
@@ -176,6 +179,7 @@ export function SatelliteAdminSection() {
                   <div className="truncate text-[10px] text-[var(--muted)]">
                     {row.name} · {row.collection_id}
                     {row.is_builtin ? ' · built-in' : ''}
+                    {row.is_high_resolution ? ' · high-res' : ''}
                     {!row.enabled ? ' · disabled' : ''}
                   </div>
                 </button>
@@ -303,13 +307,29 @@ export function SatelliteAdminSection() {
           onChange={(e) => setField('notes', e.target.value)}
         />
 
-        <label className="mb-3 flex items-center gap-2 text-xs">
+        <label className="mb-2 flex items-center gap-2 text-xs">
           <input
             type="checkbox"
             checked={Boolean(form.enabled)}
             onChange={(e) => setField('enabled', e.target.checked)}
           />
           Enabled for all clients
+        </label>
+
+        <label className="mb-3 flex items-start gap-2 text-xs">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={Boolean(form.is_high_resolution)}
+            onChange={(e) => setField('is_high_resolution', e.target.checked)}
+            disabled={mode === 'edit' && Boolean(items.find((i) => i.id === selectedId)?.is_builtin)}
+          />
+          <span>
+            High-resolution imagery
+            <span className="mt-0.5 block text-[10px] text-[var(--muted)]">
+              Enables AI, Change, Maritime, and Air. Leave off for Sentinel / Landsat / MODIS.
+            </span>
+          </span>
         </label>
 
         {error && (

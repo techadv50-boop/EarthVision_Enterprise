@@ -101,6 +101,7 @@ def to_admin(row: SatelliteProvider) -> SatelliteProviderAdmin:
         collection_id=row.collection_id,
         enabled=row.enabled,
         is_builtin=row.is_builtin,
+        is_high_resolution=bool(row.is_high_resolution),
         sort_order=row.sort_order,
         api_base_url=row.api_base_url,
         token_url=row.token_url,
@@ -142,22 +143,26 @@ class SatelliteProviderService:
                         auth_password=settings.copernicus_password or None,
                         enabled=True,
                         is_builtin=True,
+                        is_high_resolution=False,
                         sort_order=sort_order,
                     )
                 )
                 changed = True
                 continue
             # Keep admin enable/disable & credentials; sync catalog identity fields.
+            # Built-ins are never high-resolution (domain tools stay off).
             if (
                 existing.label != label
                 or existing.collection_id != collection_id
                 or existing.sort_order != sort_order
                 or not existing.is_builtin
+                or existing.is_high_resolution
             ):
                 existing.label = label
                 existing.collection_id = collection_id
                 existing.sort_order = sort_order
                 existing.is_builtin = True
+                existing.is_high_resolution = False
                 changed = True
         if changed:
             await self.db.commit()
@@ -203,6 +208,7 @@ class SatelliteProviderService:
             notes=data.notes,
             enabled=data.enabled,
             is_builtin=False,
+            is_high_resolution=bool(data.is_high_resolution),
             sort_order=data.sort_order,
         )
         self.db.add(row)

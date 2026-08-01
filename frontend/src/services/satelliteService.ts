@@ -7,6 +7,8 @@ export interface SatellitePublic {
   collection_id: string;
   enabled: boolean;
   is_builtin: boolean;
+  /** Enables AI / Change / Maritime / Air (high-res imagery only). */
+  is_high_resolution: boolean;
   sort_order: number;
 }
 
@@ -32,6 +34,7 @@ export interface SatelliteCreatePayload {
   auth_password?: string;
   notes?: string;
   enabled?: boolean;
+  is_high_resolution?: boolean;
   sort_order?: number;
 }
 
@@ -45,6 +48,7 @@ export interface SatelliteUpdatePayload {
   auth_password?: string;
   notes?: string | null;
   enabled?: boolean;
+  is_high_resolution?: boolean;
   sort_order?: number;
 }
 
