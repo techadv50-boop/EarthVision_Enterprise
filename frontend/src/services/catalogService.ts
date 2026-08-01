@@ -44,6 +44,10 @@ export interface DownloadBandInfo {
   id: string;
   label: string;
   code: string;
+  filename: string;
+  extension: string;
+  format: string;
+  media_type?: string;
   group?: string;
 }
 

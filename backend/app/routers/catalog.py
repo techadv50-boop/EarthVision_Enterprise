@@ -298,13 +298,13 @@ async def download_scene_bands(
     data: SceneBandsBody,
     user: CurrentUser,
 ) -> Response:
-    """Download user-selected bands as a multi-band GeoTIFF."""
+    """Download selected product bands as .tif files (or a .zip of them)."""
     from starlette.concurrency import run_in_threadpool
 
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    tif, filename = await run_in_threadpool(
+    payload, filename, media_type = await run_in_threadpool(
         imagery.export_selected_bands,
         scene_id,
         data.bands,
@@ -316,8 +316,8 @@ async def download_scene_bands(
         cloud_cover=data.cloud_cover,
     )
     return Response(
-        content=tif,
-        media_type="image/tiff",
+        content=payload,
+        media_type=media_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "private, max-age=60",

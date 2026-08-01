@@ -13,10 +13,12 @@ from app.core.exceptions import ValidationError
 
 
 def _safe_filename(name: str, ext: str = "tif") -> str:
-    base = re.sub(r"[^\w.\-]+", "_", (name or "earthvision").strip())[:96] or "earthvision"
-    if not base.lower().endswith(f".{ext}"):
-        base = f"{base}.{ext}"
-    return base
+    """Sanitize a download filename while preserving real extensions (.tif/.tiff/.zip)."""
+    base = re.sub(r"[^\w.\-]+", "_", (name or "earthvision").strip())[:160] or "earthvision"
+    lower = base.lower()
+    if lower.endswith((".tif", ".tiff", ".zip", ".png", ".jp2")):
+        return base
+    return f"{base}.{ext}"
 
 
 def png_bytes_to_geotiff(

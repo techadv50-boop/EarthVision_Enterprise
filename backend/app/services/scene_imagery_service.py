@@ -31,7 +31,44 @@ GDAL_ENV = {
 }
 
 # Registry schema version — bump to invalidate old all-S2 layers
-LAYER_VERSION = 3
+LAYER_VERSION = 4
+
+# Fallback product filenames when STAC hrefs omit a basename
+S2_BAND_FILES: dict[str, str] = {
+    "coastal": "B01.tif",
+    "blue": "B02.tif",
+    "green": "B03.tif",
+    "red": "B04.tif",
+    "rededge1": "B05.tif",
+    "rededge2": "B06.tif",
+    "rededge3": "B07.tif",
+    "nir": "B08.tif",
+    "nir08": "B8A.tif",
+    "nir09": "B09.tif",
+    "swir16": "B11.tif",
+    "swir22": "B12.tif",
+    "scl": "SCL.tif",
+    "aot": "AOT.tif",
+    "wvp": "WVP.tif",
+    "visual": "TCI.tif",
+}
+S1_BAND_FILES: dict[str, str] = {
+    "vv": "VV.tif",
+    "vh": "VH.tif",
+}
+LANDSAT_BAND_FILES: dict[str, str] = {
+    "blue": "SR_B2.TIF",
+    "green": "SR_B3.TIF",
+    "red": "SR_B4.TIF",
+    "nir08": "SR_B5.TIF",
+    "nir": "SR_B5.TIF",
+    "swir16": "SR_B6.TIF",
+    "swir": "SR_B6.TIF",
+    "swir22": "SR_B7.TIF",
+    "swir2": "SR_B7.TIF",
+    "lwir11": "ST_B10.TIF",
+    "thermal": "ST_B10.TIF",
+}
 
 
 class SceneImageryService:
@@ -138,6 +175,33 @@ class SceneImageryService:
             return f"https://{bucket}.s3.amazonaws.com/{key}"
         return href
 
+    @staticmethod
+    def _stac_band_meta(
+        asset_key: str,
+        asset: dict[str, Any],
+        *,
+        fallback_filename: str | None = None,
+    ) -> dict[str, Any]:
+        """Build download metadata from a STAC asset (real filename + extension)."""
+        href = str(asset.get("href") or "")
+        path_part = href.split("?", 1)[0]
+        filename = path_part.rsplit("/", 1)[-1] if path_part else ""
+        if not filename or "." not in filename:
+            filename = fallback_filename or f"{asset_key}.tif"
+        ext = Path(filename).suffix or ".tif"
+        media = str(asset.get("type") or "image/tiff; application=geotiff")
+        is_tif = "tif" in ext.lower() or "tiff" in media.lower()
+        return {
+            "id": asset_key,
+            "href": href,
+            "filename": filename,
+            "extension": ext if ext.startswith(".") else f".{ext}",
+            "title": str(asset.get("title") or asset_key),
+            "media_type": media,
+            "format": "GeoTIFF" if is_tif else ext.lstrip(".").upper() or "GeoTIFF",
+            "code": Path(filename).stem,
+        }
+
     def _sign_pc(self, href: str, client: httpx.Client) -> str:
         resp = client.get(PC_SIGN_URL, params={"href": href})
         if resp.status_code != 200:
@@ -232,25 +296,31 @@ class SceneImageryService:
                 feat = scored[0][1]
                 props = feat.get("properties") or {}
                 assets = feat.get("assets") or {}
-                analysis_bands = {
-                    k: assets[k]["href"]
-                    for k in (
-                        "coastal",
-                        "blue",
-                        "green",
-                        "red",
-                        "rededge1",
-                        "rededge2",
-                        "rededge3",
-                        "nir",
-                        "nir08",
-                        "nir09",
-                        "swir16",
-                        "swir22",
+                spectral_keys = (
+                    "coastal",
+                    "blue",
+                    "green",
+                    "red",
+                    "rededge1",
+                    "rededge2",
+                    "rededge3",
+                    "nir",
+                    "nir08",
+                    "nir09",
+                    "swir16",
+                    "swir22",
+                )
+                analysis_bands: dict[str, str] = {}
+                download_bands: dict[str, dict[str, Any]] = {}
+                for k in spectral_keys:
+                    asset = assets.get(k) or {}
+                    if not asset.get("href"):
+                        continue
+                    analysis_bands[k] = asset["href"]
+                    download_bands[k] = self._stac_band_meta(
+                        k, asset, fallback_filename=S2_BAND_FILES.get(k)
                     )
-                    if k in assets and assets[k].get("href")
-                }
-                # Friendly aliases used by indices / band picker
+                # Friendly aliases used by indices only (not shown in download picker)
                 if "swir16" in analysis_bands:
                     analysis_bands["swir"] = analysis_bands["swir16"]
                 if "swir22" in analysis_bands:
@@ -263,6 +333,7 @@ class SceneImageryService:
                     "stac_id": feat.get("id"),
                     "cog_url": assets["visual"]["href"],
                     "analysis_bands": analysis_bands,
+                    "download_bands": download_bands,
                     "sign": None,
                     "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
                     "footprint": feat.get("geometry"),
@@ -270,7 +341,7 @@ class SceneImageryService:
                     "cloud_cover": props.get("eo:cloud_cover"),
                     "render_mode": "rgb",
                     "source": "sentinel2_tci",
-                    "bands": {"R": "B04 Red", "G": "B03 Green", "B": "B02 Blue"},
+                    "bands": {"R": "B04.tif", "G": "B03.tif", "B": "B02.tif"},
                     "label": "Sentinel-2 true-color (TCI)",
                 }
         raise NotFoundError(f"No Sentinel-2 TCI found ({last_error})")
@@ -302,14 +373,23 @@ class SceneImageryService:
                 assets = feat.get("assets") or {}
                 pol = "vv" if "vv" in assets else "vh"
                 analysis_bands: dict[str, str] = {}
-                if assets.get("vv", {}).get("href"):
-                    analysis_bands["vv"] = self._s3_to_https(assets["vv"]["href"])
-                if assets.get("vh", {}).get("href"):
-                    analysis_bands["vh"] = self._s3_to_https(assets["vh"]["href"])
+                download_bands: dict[str, dict[str, Any]] = {}
+                for key in ("vv", "vh"):
+                    asset = assets.get(key) or {}
+                    if not asset.get("href"):
+                        continue
+                    href = self._s3_to_https(asset["href"])
+                    analysis_bands[key] = href
+                    download_bands[key] = self._stac_band_meta(
+                        key,
+                        {**asset, "href": href},
+                        fallback_filename=S1_BAND_FILES.get(key),
+                    )
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": self._s3_to_https(assets[pol]["href"]),
                     "analysis_bands": analysis_bands,
+                    "download_bands": download_bands,
                     "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
                     "footprint": feat.get("geometry"),
                     "datetime": props.get("datetime"),
@@ -317,7 +397,7 @@ class SceneImageryService:
                     "render_mode": "grayscale",
                     "source": "sentinel1_grd",
                     "polarization": pol.upper(),
-                    "bands": {"R": f"{pol.upper()} SAR", "G": f"{pol.upper()} SAR", "B": f"{pol.upper()} SAR"},
+                    "bands": {"R": f"{pol.upper()}.tif", "G": f"{pol.upper()}.tif", "B": f"{pol.upper()}.tif"},
                     "label": f"Sentinel-1 GRD {pol.upper()} (grayscale)",
                     "proj_epsg": props.get("proj:epsg"),
                     "proj_transform": props.get("proj:transform"),
@@ -376,21 +456,47 @@ class SceneImageryService:
                 feat = scored[0][1]
                 props = feat.get("properties") or {}
                 assets = feat.get("assets") or {}
-                analysis_bands = {
+                analysis_bands: dict[str, str] = {
                     "red": assets["red"]["href"],
                     "green": assets["green"]["href"],
                     "blue": assets["blue"]["href"],
                 }
+                download_bands: dict[str, dict[str, Any]] = {
+                    k: self._stac_band_meta(
+                        k, assets[k], fallback_filename=LANDSAT_BAND_FILES.get(k)
+                    )
+                    for k in ("red", "green", "blue")
+                }
                 if assets.get("nir08", {}).get("href"):
                     analysis_bands["nir"] = assets["nir08"]["href"]
+                    download_bands["nir08"] = self._stac_band_meta(
+                        "nir08",
+                        assets["nir08"],
+                        fallback_filename=LANDSAT_BAND_FILES.get("nir08"),
+                    )
                 if assets.get("swir16", {}).get("href"):
                     analysis_bands["swir"] = assets["swir16"]["href"]
+                    download_bands["swir16"] = self._stac_band_meta(
+                        "swir16",
+                        assets["swir16"],
+                        fallback_filename=LANDSAT_BAND_FILES.get("swir16"),
+                    )
                 if assets.get("swir22", {}).get("href"):
                     analysis_bands["swir2"] = assets["swir22"]["href"]
+                    download_bands["swir22"] = self._stac_band_meta(
+                        "swir22",
+                        assets["swir22"],
+                        fallback_filename=LANDSAT_BAND_FILES.get("swir22"),
+                    )
                 elif analysis_bands.get("swir"):
                     analysis_bands["swir2"] = analysis_bands["swir"]
                 if assets.get("lwir11", {}).get("href"):
                     analysis_bands["thermal"] = assets["lwir11"]["href"]
+                    download_bands["lwir11"] = self._stac_band_meta(
+                        "lwir11",
+                        assets["lwir11"],
+                        fallback_filename=LANDSAT_BAND_FILES.get("lwir11"),
+                    )
                 return {
                     "stac_id": feat.get("id"),
                     "cog_urls": {
@@ -399,6 +505,7 @@ class SceneImageryService:
                         "blue": assets["blue"]["href"],
                     },
                     "analysis_bands": analysis_bands,
+                    "download_bands": download_bands,
                     "sign": "planetary_computer",
                     "bbox": [float(x) for x in (feat.get("bbox") or bbox)],
                     "footprint": feat.get("geometry"),
@@ -407,7 +514,7 @@ class SceneImageryService:
                     "render_mode": "rgb",
                     "source": "landsat_c2_l2",
                     "platform": props.get("platform") or platform_q,
-                    "bands": {"R": "SR_B4 Red", "G": "SR_B3 Green", "B": "SR_B2 Blue"},
+                    "bands": {"R": "SR_B4.TIF", "G": "SR_B3.TIF", "B": "SR_B2.TIF"},
                     "label": f"{platform} true-color (OLI)",
                 }
         raise NotFoundError(f"No Landsat imagery found ({last_error})")
@@ -454,6 +561,7 @@ class SceneImageryService:
             "cog_url": match.get("cog_url"),
             "cog_urls": match.get("cog_urls"),
             "analysis_bands": match.get("analysis_bands") or {},
+            "download_bands": match.get("download_bands") or {},
             "sign": match.get("sign"),
             "stac_id": match.get("stac_id"),
             "bounds": display_bounds,
@@ -844,26 +952,62 @@ class SceneImageryService:
 
         return bands, bounds, layer.get("footprint"), layer
 
-    # Display metadata for band-picker downloads
-    BAND_INFO: dict[str, dict[str, str]] = {
-        "coastal": {"label": "Coastal / Aerosol", "code": "B01", "group": "optical"},
-        "blue": {"label": "Blue", "code": "B02 / SR_B2", "group": "optical"},
-        "green": {"label": "Green", "code": "B03 / SR_B3", "group": "optical"},
-        "red": {"label": "Red", "code": "B04 / SR_B4", "group": "optical"},
-        "rededge1": {"label": "Red Edge 1", "code": "B05", "group": "optical"},
-        "rededge2": {"label": "Red Edge 2", "code": "B06", "group": "optical"},
-        "rededge3": {"label": "Red Edge 3", "code": "B07", "group": "optical"},
-        "nir": {"label": "NIR", "code": "B08 / SR_B5", "group": "optical"},
-        "nir08": {"label": "NIR narrow", "code": "B8A / nir08", "group": "optical"},
-        "nir09": {"label": "Water vapour", "code": "B09", "group": "optical"},
-        "swir": {"label": "SWIR 1", "code": "B11 / SR_B6", "group": "optical"},
-        "swir16": {"label": "SWIR 1.6 µm", "code": "swir16", "group": "optical"},
-        "swir2": {"label": "SWIR 2", "code": "B12 / SR_B7", "group": "optical"},
-        "swir22": {"label": "SWIR 2.2 µm", "code": "swir22", "group": "optical"},
-        "thermal": {"label": "Thermal", "code": "ST_B10 / lwir11", "group": "thermal"},
-        "vv": {"label": "VV polarization", "code": "VV", "group": "sar"},
-        "vh": {"label": "VH polarization", "code": "VH", "group": "sar"},
-    }
+    # Stable picker order for real STAC product keys
+    DOWNLOAD_BAND_ORDER: tuple[str, ...] = (
+        "coastal",
+        "blue",
+        "green",
+        "red",
+        "rededge1",
+        "rededge2",
+        "rededge3",
+        "nir",
+        "nir08",
+        "nir09",
+        "swir16",
+        "swir22",
+        "lwir11",
+        "vv",
+        "vh",
+    )
+
+    def _resolve_download_bands(self, layer: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Return real product-band metadata (filename + extension) for a layer."""
+        stored = layer.get("download_bands") or {}
+        if stored:
+            return stored
+
+        # Legacy layers: synthesize filenames from known product naming
+        analysis = layer.get("analysis_bands") or {}
+        source = layer.get("source") or ""
+        fallbacks = S2_BAND_FILES
+        if source == "sentinel1_grd":
+            fallbacks = S1_BAND_FILES
+        elif source == "landsat_c2_l2":
+            fallbacks = LANDSAT_BAND_FILES
+
+        # Skip index-only aliases when real product keys exist
+        skip = set()
+        if "swir16" in analysis:
+            skip.add("swir")
+        if "swir22" in analysis:
+            skip.add("swir2")
+        if "nir08" in analysis and "nir" in analysis and source == "landsat_c2_l2":
+            skip.add("nir")
+        if "lwir11" in analysis:
+            skip.add("thermal")
+
+        out: dict[str, dict[str, Any]] = {}
+        for key, href in analysis.items():
+            if key in skip or not href:
+                continue
+            fname = fallbacks.get(key, f"{key}.tif")
+            out[key] = self._stac_band_meta(
+                key,
+                {"href": href, "title": key, "type": "image/tiff; application=geotiff"},
+                fallback_filename=fname,
+            )
+        return out
 
     def list_download_bands(
         self,
@@ -875,7 +1019,7 @@ class SceneImageryService:
         cloud_cover: float | None = None,
         collection: str | None = None,
     ) -> dict[str, Any]:
-        """Return selectable spectral / SAR bands for a scene download."""
+        """Return selectable product bands with real filenames/extensions."""
         layer = self.get_layer(scene_id)
         if not layer or (collection and layer.get("collection") != self._normalize_collection(collection)):
             layer = self.prepare_scene_layer(
@@ -887,33 +1031,23 @@ class SceneImageryService:
                 collection=collection,
             )
 
-        analysis = layer.get("analysis_bands") or {}
-        # Prefer canonical keys; skip raw duplicates when aliases exist
-        skip = set()
-        if "swir" in analysis:
-            skip.update({"swir16"})
-        if "swir2" in analysis:
-            skip.update({"swir22"})
-        if "nir" in analysis and "nir08" in analysis:
-            skip.add("nir08")
-
+        download_bands = self._resolve_download_bands(layer)
+        order = {k: i for i, k in enumerate(self.DOWNLOAD_BAND_ORDER)}
         available: list[dict[str, str]] = []
-        for key in analysis.keys():
-            if key in skip:
-                continue
-            meta = self.BAND_INFO.get(key, {"label": key, "code": key, "group": "other"})
+        for key, meta in download_bands.items():
             available.append(
                 {
                     "id": key,
-                    "label": meta["label"],
-                    "code": meta["code"],
-                    "group": meta["group"],
+                    "label": meta.get("title") or key,
+                    "code": meta.get("code") or key,
+                    "filename": meta.get("filename") or f"{key}.tif",
+                    "extension": meta.get("extension") or ".tif",
+                    "format": meta.get("format") or "GeoTIFF",
+                    "media_type": meta.get("media_type") or "image/tiff",
+                    "group": "sar" if key in {"vv", "vh"} else "optical",
                 }
             )
-
-        # Stable display order
-        order = list(self.BAND_INFO.keys())
-        available.sort(key=lambda b: order.index(b["id"]) if b["id"] in order else 999)
+        available.sort(key=lambda b: order.get(b["id"], 999))
 
         defaults = [b["id"] for b in available if b["id"] in {"red", "green", "blue", "vv"}]
         if not defaults and available:
@@ -926,7 +1060,7 @@ class SceneImageryService:
             "bounds": layer.get("bounds"),
             "bands": available,
             "default_bands": defaults,
-            "formats": ["geotiff"],
+            "formats": ["GeoTIFF", "ZIP"],
         }
 
     def export_selected_bands(
@@ -940,8 +1074,14 @@ class SceneImageryService:
         footprint: dict[str, Any] | None = None,
         sensing_time: str | None = None,
         cloud_cover: float | None = None,
-    ) -> tuple[bytes, str]:
-        """Load chosen bands and package as a multi-band GeoTIFF."""
+    ) -> tuple[bytes, str, str]:
+        """
+        Export chosen product bands as GeoTIFF files with real names/extensions.
+        One band → single .tif/.tiff; multiple → ZIP of individual band files.
+        """
+        import io
+        import zipfile
+
         from app.services.geotiff_export import band_arrays_to_geotiff
 
         if not band_ids:
@@ -958,29 +1098,35 @@ class SceneImageryService:
                 collection=collection,
             )
 
-        # SAR: allow loading even though optical indices are blocked
         bounds = [float(x) for x in layer["bounds"]]
         analysis = layer.get("analysis_bands") or {}
+        download_bands = self._resolve_download_bands(layer)
         sign = layer.get("sign")
         scale = "landsat_c2_sr" if layer.get("source") == "landsat_c2_l2" else None
         if layer.get("source") == "sentinel2_tci":
             scale = "sentinel2_l2a"
 
-        # Resolve aliases
+        # Map picker ids / aliases → real product keys present in download_bands
+        alias_map = {
+            "swir": "swir16",
+            "swir2": "swir22",
+            "nir": "nir08" if "nir08" in download_bands and "nir" not in download_bands else "nir",
+            "thermal": "lwir11",
+        }
         resolved: list[str] = []
         for bid in band_ids:
-            if bid in analysis:
-                resolved.append(bid)
-            elif bid == "swir" and "swir16" in analysis:
-                resolved.append("swir16")
-            elif bid == "swir2" and "swir22" in analysis:
-                resolved.append("swir22")
-            elif bid == "nir" and "nir08" in analysis:
-                resolved.append("nir08")
-            else:
+            key = bid if bid in download_bands else alias_map.get(bid, bid)
+            if key not in download_bands and key not in analysis:
                 raise ValidationError(f"Band '{bid}' is not available for this scene")
+            if key not in download_bands:
+                # Analysis-only key: synthesize meta
+                download_bands[key] = self._stac_band_meta(
+                    key,
+                    {"href": analysis[key], "title": key},
+                    fallback_filename=f"{key}.tif",
+                )
+            resolved.append(key)
 
-        # De-dupe while preserving order
         seen: set[str] = set()
         unique: list[str] = []
         for b in resolved:
@@ -989,22 +1135,43 @@ class SceneImageryService:
                 unique.append(b)
 
         size = max(64, min(int(size), 2048))
-        loaded: dict[str, np.ndarray] = {}
+        files: list[tuple[str, bytes]] = []
         for name in unique:
-            href = analysis[name]
-            if name in {"vv", "vh", "thermal"}:
-                loaded[name] = self.read_band_grid(
+            href = analysis.get(name) or download_bands[name]["href"]
+            if name in {"vv", "vh", "thermal", "lwir11"}:
+                arr = self.read_band_grid(
                     href, bounds, size, sign=sign, reflectance_scale=None
                 )
             else:
-                loaded[name] = self.read_band_grid(
+                arr = self.read_band_grid(
                     href, bounds, size, sign=sign, reflectance_scale=scale
                 )
+            meta = download_bands[name]
+            filename = meta.get("filename") or f"{name}.tif"
+            band_code = meta.get("code") or Path(filename).stem
+            tif_bytes, safe_name = band_arrays_to_geotiff(
+                {band_code: arr},
+                bounds,
+                filename=filename,
+                band_order=[band_code],
+            )
+            files.append((safe_name, tif_bytes))
 
-        coll = (layer.get("collection") or "scene").replace("-", "")
-        stac = (layer.get("stac_id") or scene_id)[:60]
-        band_tag = "-".join(unique)[:80]
-        filename = f"{coll}_{stac}_{band_tag}.tif".replace("/", "_")
-        return band_arrays_to_geotiff(
-            loaded, bounds, filename=filename, band_order=unique
-        )
+        if len(files) == 1:
+            fname, payload = files[0]
+            return payload, fname, "image/tiff"
+
+        stac = (layer.get("stac_id") or scene_id)[:60].replace("/", "_")
+        zip_name = f"{stac}_bands.zip"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            used: set[str] = set()
+            for fname, payload in files:
+                out_name = fname
+                if out_name in used:
+                    stem = Path(fname).stem
+                    suffix = Path(fname).suffix or ".tif"
+                    out_name = f"{stem}_{len(used)}{suffix}"
+                used.add(out_name)
+                zf.writestr(out_name, payload)
+        return buf.getvalue(), zip_name, "application/zip"

@@ -140,7 +140,7 @@ export function ScenesStep({
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
-          {' — '}eye shows imagery; download lets you pick bands as GeoTIFF.
+          {' — '}eye shows imagery; download lets you pick product bands (.tif).
         </p>
       </div>
 
@@ -245,7 +245,7 @@ export function ScenesStep({
                     <div className="mt-2.5 border-t border-[var(--line)] pt-2.5">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <div className="text-xs font-semibold text-[var(--ink)]">
-                          Select bands to download
+                          Select product bands (.tif)
                         </div>
                         <button
                           type="button"
@@ -304,6 +304,8 @@ export function ScenesStep({
                           <ul className="mb-2 max-h-40 space-y-1 overflow-y-auto pr-0.5">
                             {bandOptions.map((band) => {
                               const checked = selectedBands.includes(band.id);
+                              const fileName = band.filename || `${band.code || band.id}.tif`;
+                              const format = band.format || 'GeoTIFF';
                               return (
                                 <li key={band.id}>
                                   <label className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 hover:bg-[var(--accent-soft)]/50">
@@ -314,12 +316,14 @@ export function ScenesStep({
                                       onChange={() => toggleBand(band.id)}
                                     />
                                     <span className="min-w-0">
-                                      <span className="block text-xs font-medium text-[var(--ink)]">
-                                        {band.label}
+                                      <span className="block font-mono text-xs font-semibold text-[var(--ink)]">
+                                        {fileName}
                                       </span>
                                       <span className="block text-[10px] text-[var(--muted)]">
-                                        {band.code}
-                                        {band.group ? ` · ${band.group}` : ''}
+                                        {band.label}
+                                        {' · '}
+                                        {format}
+                                        {band.extension ? ` (${band.extension})` : ''}
                                       </span>
                                     </span>
                                   </label>
@@ -339,8 +343,14 @@ export function ScenesStep({
                               ) : (
                                 <Download className="h-3.5 w-3.5" />
                               )}
-                              Download GeoTIFF
-                              {selectedBands.length > 0 ? ` (${selectedBands.length})` : ''}
+                              {selectedBands.length > 1
+                                ? `Download ZIP (${selectedBands.length} .tif)`
+                                : selectedBands.length === 1
+                                  ? `Download ${
+                                      bandOptions.find((b) => b.id === selectedBands[0])
+                                        ?.filename || '.tif'
+                                    }`
+                                  : 'Download .tif'}
                             </button>
                             {onDownloadPng && (
                               <button
