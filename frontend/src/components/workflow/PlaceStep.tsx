@@ -48,7 +48,6 @@ export const SATELLITE_OPTIONS: SatelliteOption[] = [
   { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'] },
   { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'] },
   { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'] },
-  { id: 'OTHERS', label: 'Others', collections: ['MODIS'] },
 ];
 
 export interface CatalogFilters {
