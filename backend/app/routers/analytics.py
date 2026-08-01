@@ -63,6 +63,8 @@ class GeoTiffExportRequest(BaseModel):
     title: str | None = None
     legend_items: list[LegendItemExport] | None = None
     total_area_km2: float | None = None
+    # When true, return the (optionally decorated) PNG instead of GeoTIFF
+    as_png: bool = False
 
 
 
@@ -331,7 +333,9 @@ async def export_geotiff(data: GeoTiffExportRequest, user: CurrentUser) -> Respo
             "composite/index/stretch/change/classify"
         )
 
-    if data.decorate and png is not None:
+    # Decorate whenever explicitly requested OR legend/area data is supplied
+    should_decorate = bool(data.decorate) or bool(data.legend_items)
+    if should_decorate and png is not None:
         from app.services.map_cartography import decorate_classification_map
 
         legend = [item.model_dump() for item in (data.legend_items or [])]
@@ -341,6 +345,19 @@ async def export_geotiff(data: GeoTiffExportRequest, user: CurrentUser) -> Respo
             legend,
             title=data.title or "Land Cover Classification",
             total_area_km2=data.total_area_km2,
+        )
+
+    if data.as_png:
+        from app.services.geotiff_export import _safe_filename
+
+        png_name = _safe_filename(
+            (data.filename or "earthvision_map").rsplit(".", 1)[0] + ".png",
+            ext="png",
+        )
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="{png_name}"'},
         )
 
     tif, filename = png_bytes_to_geotiff(png, bounds, filename=data.filename)

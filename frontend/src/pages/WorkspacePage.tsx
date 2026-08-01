@@ -883,7 +883,7 @@ export function WorkspacePage() {
       });
       upsertOverlay({
         id: `classify-${focusScene.id}`,
-        kind: 'index',
+        kind: 'classify',
         sceneId: focusScene.id,
         url: dataUrl.startsWith('data:')
           ? dataUrl
@@ -932,7 +932,7 @@ export function WorkspacePage() {
       setLastMessage(result.message);
       upsertOverlay({
         id: `classify-${focusScene.id}`,
-        kind: 'index',
+        kind: 'classify',
         sceneId: focusScene.id,
         url: classificationService.toDataUrl(result.overlay_base64),
         // Prefer backend bounds, but never shrink below the original scene extent.
@@ -1046,11 +1046,24 @@ export function WorkspacePage() {
   const exportActiveOverlayPng = () => {
     const last = [...overlays].reverse().find(
       (o) =>
-        (o.kind === 'index' || o.kind === 'change' || o.kind === 'terrain' || o.kind === 'detection') &&
+        (o.kind === 'classify' ||
+          o.kind === 'index' ||
+          o.kind === 'change' ||
+          o.kind === 'terrain' ||
+          o.kind === 'detection') &&
         o.url,
     );
     if (!last?.url) {
       setError('No processed overlay to export — run an index, composite, or stretch first');
+      return;
+    }
+    if (
+      (last.kind === 'classify' || last.id.startsWith('classify-')) &&
+      classificationResult
+    ) {
+      void classificationService
+        .downloadDecoratedPng(classificationResult, focusScene?.id || 'scene')
+        .catch((err) => setError(getErrorMessage(err)));
       return;
     }
     const a = document.createElement('a');
@@ -1062,7 +1075,8 @@ export function WorkspacePage() {
   const exportActiveOverlayGeotiff = async () => {
     const last = [...overlays].reverse().find(
       (o) =>
-        (o.kind === 'index' ||
+        (o.kind === 'classify' ||
+          o.kind === 'index' ||
           o.kind === 'change' ||
           o.kind === 'terrain' ||
           o.kind === 'detection' ||
@@ -1082,6 +1096,34 @@ export function WorkspacePage() {
     setError(null);
     setToolStatus(`Exporting ${layer.label} GeoTIFF…`);
     try {
+      const isClassify =
+        layer.kind === 'classify' ||
+        layer.id.startsWith('classify-') ||
+        /^LULC\b/i.test(layer.label);
+      if (isClassify && classificationResult) {
+        const sceneId =
+          layer.sceneId || focusScene?.id || classificationResult.metadata?.scene_id;
+        if (!sceneId || typeof sceneId !== 'string') {
+          throw new Error('Missing scene id for classification GeoTIFF');
+        }
+        // Use current overlay pixels (includes recolor) + class areas for legend
+        const overlayB64 = layer.url
+          ? await compositeService.overlayUrlToBase64(layer.url)
+          : classificationResult.overlay_base64;
+        await classificationService.downloadGeotiff(
+          {
+            ...classificationResult,
+            overlay_base64: overlayB64,
+            bounds: [...layer.bounds],
+          },
+          sceneId,
+        );
+        setLastMessage(
+          `Downloaded GeoTIFF · LULC map sheet with legend (${classificationResult.total_area_km2} km²)`,
+        );
+        return;
+      }
+
       const filename = `${layer.label.replace(/\W+/g, '_') || layer.kind}.tif`;
       if (layer.demGrid?.length) {
         await compositeService.downloadGeotiff({
@@ -1617,10 +1659,9 @@ export function WorkspacePage() {
                   setError('Run Unsupervised Classify first');
                   return;
                 }
-                classificationService.downloadPngFromBase64(
-                  classificationResult.overlay_base64,
-                  `lulc4_${focusScene.id}.png`,
-                );
+                void classificationService
+                  .downloadDecoratedPng(classificationResult, focusScene.id)
+                  .catch((err) => setError(getErrorMessage(err)));
               }}
               onExportClassifyCsv={() => {
                 if (!classificationResult || !focusScene) {

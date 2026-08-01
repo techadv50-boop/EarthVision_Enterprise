@@ -210,7 +210,7 @@ export const classificationService = {
     return rows.join('\n') + '\n';
   },
 
-  async downloadGeotiff(result: ClassificationResult, sceneId: string) {
+  _mapSheetPayload(result: ClassificationResult, sceneId: string) {
     const n =
       (result.metadata?.n_classes as number | undefined) ??
       result.classes.length ??
@@ -218,13 +218,13 @@ export const classificationService = {
     const overlay = result.overlay_base64.includes(',')
       ? result.overlay_base64.split(',')[1]
       : result.overlay_base64;
-    const { data } = await api.post(
-      '/analytics/export/geotiff',
-      {
+    return {
+      n,
+      body: {
         bounds: result.bounds,
-        filename: `lulc${n}_${sceneId}.tif`,
+        filename: `lulc${n}_${sceneId}_map.tif`,
         overlay_base64: overlay,
-        procedure: 'overlay',
+        procedure: 'overlay' as const,
         scene_id: sceneId,
         decorate: true,
         title: `Land Cover Classification (${n}-class)`,
@@ -236,12 +236,35 @@ export const classificationService = {
           area_km2: c.area_km2,
         })),
       },
-      { responseType: 'blob' },
+    };
+  },
+
+  async downloadGeotiff(result: ClassificationResult, sceneId: string) {
+    const { n, body } = this._mapSheetPayload(result, sceneId);
+    const { data } = await api.post('/analytics/export/geotiff', body, {
+      responseType: 'blob',
+      timeout: 180000,
+    });
+    const url = URL.createObjectURL(data as Blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `lulc${n}_${sceneId}_map.tif`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
+  /** Decorated map-sheet PNG (north arrow, scale, grid, legend + areas). */
+  async downloadDecoratedPng(result: ClassificationResult, sceneId: string) {
+    const { n, body } = this._mapSheetPayload(result, sceneId);
+    const { data } = await api.post(
+      '/analytics/export/geotiff',
+      { ...body, as_png: true, filename: `lulc${n}_${sceneId}_map.png` },
+      { responseType: 'blob', timeout: 180000 },
     );
     const url = URL.createObjectURL(data as Blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `lulc${n}_${sceneId}.tif`;
+    a.download = `lulc${n}_${sceneId}_map.png`;
     a.click();
     URL.revokeObjectURL(url);
   },
