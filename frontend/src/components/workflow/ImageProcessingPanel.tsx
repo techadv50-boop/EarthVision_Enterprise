@@ -248,8 +248,8 @@ export function ImageProcessingPanel({
           Unsupervised classification
         </h3>
         <p className="mb-1 text-[10px] text-[var(--muted)]">
-          Ensemble amalgam of spectral rules, K-means, and OBIA-like object majority →{' '}
-          <strong>Snow / Soil (Built-up) / Vegetation / Water</strong>
+          Adaptive ensemble (spectral rules + ISODATA K-means + OBIA-like objects, cloud-masked)
+          over your place/AOI → <strong>Snow / Soil (Built-up) / Vegetation / Water</strong>
         </p>
         <button
           type="button"

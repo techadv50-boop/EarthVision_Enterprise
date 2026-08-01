@@ -863,11 +863,29 @@ export function WorkspacePage() {
       const sceneOverlay = overlays.find(
         (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
       );
-      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      const sceneBox =
+        sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      // Prefer the place/AOI window clipped to the scene — full S2 tiles (~100 km)
+      // drown local urban/water detail and inflate vegetation stats.
+      const focusBox = aoiBbox(
+        aoiGeoJson,
+        place?.bbox ?? sceneBox,
+      );
+      const bounds: [number, number, number, number] = [
+        Math.max(sceneBox[0], focusBox[0]),
+        Math.max(sceneBox[1], focusBox[1]),
+        Math.min(sceneBox[2], focusBox[2]),
+        Math.min(sceneBox[3], focusBox[3]),
+      ];
+      const useBounds =
+        bounds[2] > bounds[0] + 1e-5 && bounds[3] > bounds[1] + 1e-5
+          ? bounds
+          : sceneBox;
+
       const result = await classificationService.classify({
         scene_id: focusScene.id,
-        bbox: [...bounds],
-        size: 1024,
+        bbox: [...useBounds],
+        size: 1280,
       });
       setClassificationResult(result);
       setLastLegend(result.legend);
@@ -878,8 +896,8 @@ export function WorkspacePage() {
         sceneId: focusScene.id,
         url: classificationService.toDataUrl(result.overlay_base64),
         bounds: result.bounds as [number, number, number, number],
-        footprint: sceneOverlay?.footprint ?? null,
-        opacity: 0.85,
+        footprint: null,
+        opacity: 0.88,
         label: 'LULC 4-class (unsupervised)',
         visible: true,
       });
