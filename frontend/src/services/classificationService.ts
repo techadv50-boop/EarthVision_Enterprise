@@ -38,7 +38,7 @@ export const classificationService = {
   }): Promise<ClassificationResult> {
     const { data } = await api.post<ClassificationResult>('/analytics/classify', {
       n_classes: 6,
-      size: 1536,
+      size: 1792,
       ...payload,
     });
     return data;

@@ -38,13 +38,14 @@ ROADS = 5
 NODATA = 255
 N_CLASSES = 6
 
+# High-contrast categorical palette (fully opaque map rendering).
 CLASS_META: dict[int, dict[str, str]] = {
-    SNOW: {"name": "snow", "label": "Snow", "color": "#FFFFFF"},
-    BARE_SOIL: {"name": "bare_soil", "label": "Bare Soil", "color": "#D4A574"},
-    BUILT_UP: {"name": "built_up", "label": "Built-up", "color": "#E85D04"},
-    VEGETATION: {"name": "vegetation", "label": "Vegetation", "color": "#4CAF50"},
-    WATER: {"name": "water", "label": "Water", "color": "#1565C0"},
-    ROADS: {"name": "roads", "label": "Roads", "color": "#6B7280"},
+    SNOW: {"name": "snow", "label": "Snow", "color": "#F8FAFC"},
+    BARE_SOIL: {"name": "bare_soil", "label": "Bare Soil", "color": "#F0C040"},
+    BUILT_UP: {"name": "built_up", "label": "Built-up", "color": "#E11D48"},
+    VEGETATION: {"name": "vegetation", "label": "Vegetation", "color": "#16A34A"},
+    WATER: {"name": "water", "label": "Water", "color": "#1D4ED8"},
+    ROADS: {"name": "roads", "label": "Roads", "color": "#111827"},
 }
 
 # Backward-compatible aliases used by older helpers / tests
@@ -53,7 +54,7 @@ SOIL = BARE_SOIL
 
 class ClassificationService:
     def classify(self, request: ClassificationRequest) -> ClassificationResponse:
-        size = max(int(request.size), 1280)
+        size = max(int(request.size), 1536)
         bands, bounds, footprint = self._load_bands(
             request.scene_id, request.bbox, size
         )
@@ -94,7 +95,7 @@ class ClassificationService:
         amalgam = self._expand_wet_channels(amalgam, features, valid, thresholds)
         amalgam = self._enhance_linear_features(amalgam, features, valid, thresholds)
         amalgam = self._refine_impervious(amalgam, features, valid, thresholds)
-        amalgam = self._majority_filter(amalgam, valid, iterations=1)
+        # Skip heavy majority smoothing — keeps class edges crisp at 100% opacity.
         amalgam = self._expand_wet_channels(
             amalgam, features, valid, thresholds, iterations=4
         )
@@ -1380,26 +1381,21 @@ class ClassificationService:
         return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
     def _class_map_to_png(self, class_map: np.ndarray, valid: np.ndarray) -> bytes:
+        """Render a sharp, fully opaque categorical PNG (no soft alpha / blur)."""
         h, w = class_map.shape
         rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        alpha = {
-            SNOW: 235,
-            BARE_SOIL: 200,
-            BUILT_UP: 220,
-            VEGETATION: 210,
-            WATER: 245,
-            ROADS: 230,
-        }
         for cid, meta in CLASS_META.items():
             r, g, b = self._hex_to_rgb(meta["color"])
             mask = (class_map == cid) & valid
             rgba[mask, 0] = r
             rgba[mask, 1] = g
             rgba[mask, 2] = b
-            rgba[mask, 3] = alpha[cid]
+            rgba[mask, 3] = 255  # 100% opaque class fill
+        # Outside footprint stays transparent (alpha 0) for tilted scenes.
         img = Image.fromarray(rgba, mode="RGBA")
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        # compress_level only; no resampling — keep pixel-crisp class boundaries
+        img.save(buf, format="PNG", compress_level=6, optimize=False)
         return buf.getvalue()
 
     def _legend(self) -> LegendInfo:

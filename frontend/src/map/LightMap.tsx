@@ -649,10 +649,25 @@ function EnforceStackOrder({
   return null;
 }
 
-function tagOverlayElement(el: HTMLElement | undefined | null, id: string, zIndex: number) {
+function tagOverlayElement(
+  el: HTMLElement | undefined | null,
+  id: string,
+  zIndex: number,
+  crisp = false,
+) {
   if (!el) return;
   el.dataset.evId = id;
   el.style.zIndex = String(zIndex);
+  if (crisp) {
+    // Keep categorical LULC pixels sharp (no browser bilinear blur when scaled).
+    el.style.imageRendering = 'pixelated';
+    (el.style as CSSStyleDeclaration & { msInterpolationMode?: string }).msInterpolationMode =
+      'nearest-neighbor';
+    const imgs = el.tagName === 'IMG' ? [el] : Array.from(el.querySelectorAll('img'));
+    for (const img of imgs) {
+      (img as HTMLElement).style.imageRendering = 'pixelated';
+    }
+  }
 }
 
 function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
@@ -832,6 +847,9 @@ export function LightMap({
             : null;
 
         const zIndex = overlayZIndex.get(overlay.id) ?? 430;
+        const crispRaster =
+          overlay.id.startsWith('classify-') ||
+          (overlay.label ?? '').toLowerCase().includes('lulc');
         const tagHandlers = {
           add: (e: { target: L.Layer & { getContainer?: () => HTMLElement; getElement?: () => HTMLElement } }) => {
             const el =
@@ -839,7 +857,7 @@ export function LightMap({
               e.target.getElement?.() ||
               (e.target as unknown as { _container?: HTMLElement; _image?: HTMLElement })._container ||
               (e.target as unknown as { _image?: HTMLElement })._image;
-            tagOverlayElement(el ?? null, overlay.id, zIndex);
+            tagOverlayElement(el ?? null, overlay.id, zIndex, crispRaster);
           },
         };
 

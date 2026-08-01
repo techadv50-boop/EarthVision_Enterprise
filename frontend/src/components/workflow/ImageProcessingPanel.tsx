@@ -248,11 +248,8 @@ export function ImageProcessingPanel({
           Unsupervised classification
         </h3>
         <p className="mb-1 text-[10px] text-[var(--muted)]">
-          Adaptive ensemble over the full scene →{' '}
-          <strong>
-            Snow / Bare Soil / Built-up / Vegetation / Water / Roads
-          </strong>{' '}
-          (canal & road linear enhancement)
+          Full-scene 6-class map at <strong>100% opacity</strong> (high-contrast
+          colors): Snow / Bare Soil / Built-up / Vegetation / Water / Roads
         </p>
         <button
           type="button"

@@ -883,8 +883,8 @@ export function WorkspacePage() {
         // Prefer backend bounds, but never shrink below the original scene extent.
         bounds: (result.bounds as [number, number, number, number]) ?? bounds,
         footprint: sceneOverlay?.footprint ?? null,
-        opacity: 0.88,
-        label: 'LULC 6-class (unsupervised)',
+        opacity: 1,
+        label: 'LULC 6-class (opaque)',
         visible: true,
       });
       useWorkflowStore.getState().setExpandedToolbox('image');
