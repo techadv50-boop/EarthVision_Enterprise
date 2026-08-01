@@ -112,7 +112,6 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
-  const [downloadingIds, setDownloadingIds] = useState<string[]>([]);
   const [geotiffBusy, setGeotiffBusy] = useState(false);
   const [geotiffLayerId, setGeotiffLayerId] = useState<string | null>(null);
 
@@ -385,64 +384,6 @@ export function WorkspacePage() {
     removeOverlaysByKind('change');
     await loadSceneOverlay(scene);
   };
-
-  const getSceneBbox = useCallback(
-    (scene: SceneSummary): number[] => {
-      const sceneOverlay = useWorkflowStore
-        .getState()
-        .overlays.find((o) => o.kind === 'scene' && o.sceneId === scene.id);
-      return sceneOverlay?.bounds ?? sceneBounds(scene, place);
-    },
-    [place],
-  );
-
-  const onDownloadSceneBands = useCallback(
-    async (scene: SceneSummary, bands: string[]) => {
-      if (downloadingIds.includes(scene.id)) return;
-      setDownloadingIds((ids) => [...ids, scene.id]);
-      setError(null);
-      setToolStatus(
-        `Downloading full product band${bands.length === 1 ? '' : 's'} (large .tif files)…`,
-      );
-      try {
-        await catalogService.downloadBands(scene, bands, {
-          bbox: getSceneBbox(scene),
-          size: 512,
-        });
-        setLastMessage(
-          `Downloaded GeoTIFF · ${scene.collection} · ${bands.join(', ')}`,
-        );
-      } catch (err) {
-        setError(getErrorMessage(err));
-      } finally {
-        setDownloadingIds((ids) => ids.filter((id) => id !== scene.id));
-        setToolStatus(null);
-      }
-    },
-    [downloadingIds, getSceneBbox, setError, setLastMessage, setToolStatus],
-  );
-
-  const onDownloadScenePng = useCallback(
-    async (scene: SceneSummary) => {
-      if (downloadingIds.includes(scene.id)) return;
-      setDownloadingIds((ids) => [...ids, scene.id]);
-      setError(null);
-      setToolStatus(`Downloading ${scene.collection} PNG preview…`);
-      try {
-        await catalogService.downloadImage(scene, {
-          bbox: getSceneBbox(scene),
-          size: 768,
-        });
-        setLastMessage(`Downloaded PNG · ${scene.collection} · ${scene.name}`);
-      } catch (err) {
-        setError(getErrorMessage(err));
-      } finally {
-        setDownloadingIds((ids) => ids.filter((id) => id !== scene.id));
-        setToolStatus(null);
-      }
-    },
-    [downloadingIds, getSceneBbox, setError, setLastMessage, setToolStatus],
-  );
 
   const runIndex = async (index: IndexName, colormap?: ColormapName | null) => {
     if (!focusScene) {
@@ -1269,11 +1210,7 @@ export function WorkspacePage() {
               focusSceneId={focusSceneId}
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
-              downloadingIds={downloadingIds}
-              getSceneBbox={getSceneBbox}
               onToggleEye={onToggleEye}
-              onDownloadBands={onDownloadSceneBands}
-              onDownloadPng={onDownloadScenePng}
               onFocus={(scene) => setFocusSceneId(scene.id)}
               onBack={backToPlace}
             />
