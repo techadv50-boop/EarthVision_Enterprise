@@ -425,11 +425,15 @@ def index_applicable(index_id: str, family: str) -> bool:
 
 
 def capability_summary(family: str) -> dict[str, Any]:
+    optical = family in OPTICAL_SWIR_FAMILY
     return {
         "family": family,
         "label": family_label(family),
-        "optical_swir": family in OPTICAL_SWIR_FAMILY,
+        "optical_swir": optical,
         "thermal_lst": family in THERMAL_FAMILY,
+        # Sentinel-1 GRD is SAR — no Image Processing optical tools apply
+        "image_processing": optical,
+        "sar_only": family == "SENTINEL-1",
         "composites": [
             pid for pid in COMPOSITE_BAND_CODES if family in COMPOSITE_BAND_CODES[pid]
         ],

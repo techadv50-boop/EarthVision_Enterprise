@@ -32,11 +32,17 @@ const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapNam
   { id: 'LST', label: 'LST', defaultRamp: 'thermal' },
 ];
 
+/** Sentinel-1 GRD SAR — no optical RGB / spectral-index tools apply. */
+function isSentinel1Sar(collection?: string | null): boolean {
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  return c.includes('SENTINEL-1') || c.startsWith('S1');
+}
+
 /** Optical multispectral families that support RGB composites / most indices. */
 function isOpticalMultispectral(collection?: string | null): boolean {
   const c = (collection || '').toUpperCase().replace(/_/g, '-');
   if (!c) return true; // no scene yet — leave tools available
-  if (c.includes('SENTINEL-1') || c.startsWith('S1')) return false;
+  if (isSentinel1Sar(c)) return false;
   if (c.includes('SENTINEL-3') || c.startsWith('S3')) return false;
   if (c.includes('SENTINEL-5') || c.includes('S5P')) return false;
   if (c.includes('SMOS')) return false;
@@ -224,7 +230,9 @@ export function ImageProcessingPanel({
     );
   };
 
-  const opticalOk = isOpticalMultispectral(sceneCollection);
+  const sarOnly = isSentinel1Sar(sceneCollection);
+  const opticalOk = isOpticalMultispectral(sceneCollection) && !sarOnly;
+  const toolsOff = sarOnly || !opticalOk;
   const activeThematic = thematic.find((t) => t.id === indexResult?.index);
   const activeIndexMeta = INDEX_LIST.find((i) => i.id === indexResult?.index);
   const selectedRamp =
@@ -241,18 +249,35 @@ export function ImageProcessingPanel({
 
   return (
     <div className="mb-3 space-y-3 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/30 p-2">
-      {!hasScene && (
-        <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
-          Toggle a Sentinel-2 / Landsat / MODIS scene eye for best results. Tools can still run on the AOI.
+      {sarOnly ? (
+        <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
+          <strong>Sentinel-1 SAR</strong> — Image Processing tools are off. GRD is
+          single-polarization radar (no optical RGB / SWIR / thermal bands), so true
+          color, false color, spectral indices, classification, histogram stretch, and
+          related exports do not apply. Use the grayscale scene on the map; SAR ship
+          tools stay under Maritime when unlocked.
         </p>
-      )}
-      {sceneCollection && (
-        <p className="rounded border border-[var(--line)] bg-white px-2 py-1 text-[10px] text-[var(--muted)]">
-          Indicators filtered for <strong className="text-[var(--ink,#0f172a)]">{sceneCollection}</strong>
-          — unavailable composites/indices are dimmed.
-        </p>
+      ) : (
+        <>
+          {!hasScene && (
+            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+              Toggle a Sentinel-2 / Landsat / MODIS scene eye for best results. Tools can still run on the AOI.
+            </p>
+          )}
+          {sceneCollection && (
+            <p className="rounded border border-[var(--line)] bg-white px-2 py-1 text-[10px] text-[var(--muted)]">
+              Indicators filtered for{' '}
+              <strong className="text-[var(--ink,#0f172a)]">{sceneCollection}</strong>
+              — unavailable composites/indices are dimmed.
+            </p>
+          )}
+        </>
       )}
 
+      <div
+        className={toolsOff ? 'pointer-events-none space-y-3 opacity-40' : 'space-y-3'}
+        aria-disabled={toolsOff || undefined}
+      >
       {/* Band combinations */}
       <section>
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -293,11 +318,17 @@ export function ImageProcessingPanel({
               <button
                 key={p.id}
                 type="button"
-                disabled={loading || !enabled}
-                title={enabled ? p.use || p.formula : p.disabled_reason || 'Not applicable'}
+                disabled={loading || !enabled || toolsOff}
+                title={
+                  toolsOff
+                    ? 'Not applicable to Sentinel-1 SAR'
+                    : enabled
+                      ? p.use || p.formula
+                      : p.disabled_reason || 'Not applicable'
+                }
                 onClick={() => onComposite(p.id)}
                 className={`rounded-lg border px-2 py-1.5 text-left text-[11px] ${
-                  !enabled
+                  !enabled || toolsOff
                     ? 'cursor-not-allowed border-[var(--line)] bg-[var(--bg)] opacity-45'
                     : active
                       ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
@@ -306,7 +337,7 @@ export function ImageProcessingPanel({
               >
                 <div className="font-semibold">
                   {p.label}
-                  {!enabled && (
+                  {(!enabled || toolsOff) && (
                     <span className="ml-1 text-[9px] font-normal uppercase tracking-wide">
                       off
                     </span>
@@ -845,6 +876,7 @@ export function ImageProcessingPanel({
           </button>
         </div>
       </section>
+      </div>
     </div>
   );
 }

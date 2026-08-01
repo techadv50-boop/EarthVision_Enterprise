@@ -58,6 +58,12 @@ function sceneBounds(
   );
 }
 
+/** Sentinel-1 GRD — no optical Image Processing tools apply. */
+function isSentinel1Collection(collection?: string | null): boolean {
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  return c.includes('SENTINEL-1') || c.startsWith('S1');
+}
+
 function aoiBbox(
   aoi: GeoJSON.Feature | null,
   fallback: [number, number, number, number],
@@ -469,6 +475,12 @@ export function WorkspacePage() {
   const runIndex = async (index: IndexName, colormap?: ColormapName | null) => {
     if (!focusScene) {
       setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    if (isSentinel1Collection(focusScene.collection)) {
+      setError(
+        'Sentinel-1 SAR does not support optical indices (NDVI, NDWI, …). Use Sentinel-2 or Landsat.',
+      );
       return;
     }
     setToolLoading(true);
@@ -913,6 +925,12 @@ export function WorkspacePage() {
       setError('Show a satellite scene first (eye icon)');
       return;
     }
+    if (isSentinel1Collection(focusScene.collection)) {
+      setError(
+        'Sentinel-1 SAR does not support unsupervised optical classification. Use Sentinel-2 or Landsat.',
+      );
+      return;
+    }
     const nClasses = opts?.n_classes ?? 6;
     setToolLoading(true);
     setActiveToolId('unsupervised_classify');
@@ -961,6 +979,12 @@ export function WorkspacePage() {
   const runComposite = async (preset: CompositePreset) => {
     if (!focusScene) {
       setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    if (isSentinel1Collection(focusScene.collection)) {
+      setError(
+        'Sentinel-1 SAR has no optical RGB bands — band composites are not applicable.',
+      );
       return;
     }
     setToolLoading(true);
@@ -1012,6 +1036,12 @@ export function WorkspacePage() {
   const runStretch = async (params = stretchParams) => {
     if (!focusScene) {
       setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    if (isSentinel1Collection(focusScene.collection)) {
+      setError(
+        'Sentinel-1 SAR grayscale intensity does not use optical histogram stretch tools.',
+      );
       return;
     }
     setToolLoading(true);
@@ -1610,7 +1640,9 @@ export function WorkspacePage() {
               overlays={overlays}
               layerOpacity={layerOpacity}
               hasScene={hasVisibleScene}
-              sceneCollection={focusScene?.collection ?? null}
+              sceneCollection={
+                focusScene?.collection ?? catalogFilters.satelliteId ?? null
+              }
               hasDrawn={Boolean(drawnFeature)}
               drawnType={drawnFeature?.type ?? null}
               bufferLoading={bufferLoading}

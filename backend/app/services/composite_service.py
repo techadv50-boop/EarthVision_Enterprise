@@ -344,6 +344,12 @@ class CompositeService:
         return None
 
     def stretch_scene(self, request: StretchRequest) -> StretchResponse:
+        family = self._resolve_family(request.scene_id, None)
+        if family == "SENTINEL-1":
+            raise ValidationError(
+                "Sentinel-1 SAR does not support optical histogram stretch. "
+                "Use a Sentinel-2 or Landsat scene."
+            )
         bands, bounds = self._load_bands(
             request.scene_id, request.bbox, max(request.size, 1280)
         )
