@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from webcrawler import __app_name__, __version__
+from webcrawler.auth.manager import AuthManager, UserAccount
+from webcrawler.gui.login_dialog import ChangePasswordDialog
 from webcrawler.gui.progress_panel import ProgressPanel
 from webcrawler.gui.settings_dialog import SettingsDialog
 from webcrawler.gui.workers import CrawlWorker
@@ -32,9 +34,16 @@ from webcrawler.utils.url import parse_url_list
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        auth: AuthManager | None = None,
+        user: UserAccount | None = None,
+    ) -> None:
         super().__init__()
-        self.setWindowTitle(f"{__app_name__} v{__version__}")
+        self.auth = auth or AuthManager()
+        self.user = user
+        title_user = f" — {user.username}" if user else ""
+        self.setWindowTitle(f"{__app_name__} v{__version__}{title_user}")
         self.resize(1100, 780)
 
         self.settings_manager = SettingsManager()
@@ -49,6 +58,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._restore_settings()
         self._set_running_ui(False)
+        if self.user:
+            self.statusBar().showMessage(f"Signed in as {self.user.username} ({self.user.role})")
 
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -59,6 +70,11 @@ class MainWindow(QMainWindow):
         quit_action = QAction("Exit", self)
         quit_action.triggered.connect(self.close)
         menu.addAction(quit_action)
+
+        account = self.menuBar().addMenu("&Account")
+        change_pw = QAction("Change Password…", self)
+        change_pw.triggered.connect(self._change_password)
+        account.addAction(change_pw)
 
         help_menu = self.menuBar().addMenu("&Help")
         about = QAction("About", self)
@@ -168,6 +184,20 @@ class MainWindow(QMainWindow):
             self.settings = dialog.result_settings()
             self.settings_manager.save(self.settings)
             self.statusBar().showMessage("Settings saved", 3000)
+
+    def _change_password(self) -> None:
+        if not self.user:
+            return
+        dialog = ChangePasswordDialog(
+            self.auth,
+            self.user.username,
+            self,
+            forced=False,
+            require_current=True,
+        )
+        if dialog.exec() and dialog.user:
+            self.user = dialog.user
+            self.statusBar().showMessage("Password changed", 3000)
 
     def _about(self) -> None:
         QMessageBox.about(

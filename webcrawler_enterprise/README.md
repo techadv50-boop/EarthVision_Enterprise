@@ -4,6 +4,8 @@ Professional Windows desktop application that crawls websites sequentially, down
 
 ## Features
 
+- Login account (`admin` / `admin`) with required password change on first login
+- Master reset code `NTZHSS` restores the admin account
 - Multiline URL input with blank-line ignore and automatic deduplication
 - Sequential multi-site processing (one website at a time)
 - Playwright-based rendering (JavaScript executed before extraction)
@@ -17,6 +19,17 @@ Professional Windows desktop application that crawls websites sequentially, down
 - SQLite queue with Pending / Running / Completed / Failed / Cancelled and crash resume
 - Configurable settings persisted automatically
 - Start / Pause / Resume / Stop controls with live progress
+
+## Login
+
+| Item | Value |
+|------|-------|
+| Username | `admin` |
+| Default password | `admin` |
+| First login | Must change password before using the app |
+| Master reset code | `NTZHSS` (Login screen → **Master Reset…**) |
+
+Master reset restores username `admin`, password `admin`, admin role, and requires a password change again.
 
 ## Requirements
 
@@ -67,7 +80,8 @@ Output: `dist/WebCrawlerEnterprise/WebCrawlerEnterprise.exe`
 
 | Package | Role |
 |---------|------|
-| `gui` | PySide6 UI, progress, settings |
+| `gui` | PySide6 UI, login, progress, settings |
+| `auth` | Login, password change, master reset |
 | `engine` | Orchestrates sequential site processing |
 | `queue` | URL queue states + resume |
 | `crawler` | Playwright site crawler |

@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS site_stats (
     phones INTEGER DEFAULT 0,
     FOREIGN KEY(site_id) REFERENCES queue_items(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'admin',
+    must_change_password INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
