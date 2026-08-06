@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin
 
 from bs4 import BeautifulSoup
 
 from webcrawler.extractors.email import extract_emails_from_text
-from webcrawler.extractors.phone import extract_phones_from_text
+from webcrawler.extractors.phone import extract_phones_from_text, region_from_url
 from webcrawler.utils.url import (
     DOCUMENT_EXTENSIONS,
     IMAGE_EXTENSIONS,
@@ -50,8 +50,10 @@ class HtmlParser:
         page_url: str,
         root_url: str,
         allowed_doc_types: list[str] | None = None,
+        phone_region: str | None = None,
     ) -> ParsedPage:
-        soup = BeautifulSoup(html or "", "lxml")
+        raw_html = html or ""
+        soup = BeautifulSoup(raw_html, "lxml")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
 
@@ -62,14 +64,25 @@ class HtmlParser:
         documents: list[str] = []
         images: list[str] = []
         seen: set[str] = set()
+        emails: set[str] = set()
+        phones: set[str] = set()
+        region = phone_region or region_from_url(root_url or page_url)
 
         for tag in soup.find_all(["a", "area"]):
-            href = tag.get("href")
+            href = (tag.get("href") or "").strip()
             if not href:
                 continue
-            href = href.strip()
-            if href.startswith(("mailto:", "tel:", "javascript:", "data:", "#")):
+            lower = href.lower()
+            if lower.startswith("mailto:"):
+                addr = unquote(href.split(":", 1)[1].split("?", 1)[0])
+                emails |= extract_emails_from_text(addr)
                 continue
+            if lower.startswith("tel:"):
+                phones |= extract_phones_from_text(href, default_region=region)
+                continue
+            if lower.startswith(("javascript:", "data:", "#")):
+                continue
+
             absolute = urljoin(page_url, href)
             try:
                 normalized = normalize_url(absolute)
@@ -96,15 +109,10 @@ class HtmlParser:
                 images.append(absolute)
                 seen.add(absolute)
 
-        emails = extract_emails_from_text(html) | extract_emails_from_text(text)
-        phones = extract_phones_from_text(text)
-
-        # Also mailto: links
-        for tag in BeautifulSoup(html or "", "lxml").find_all("a", href=True):
-            href = tag["href"]
-            if href.lower().startswith("mailto:"):
-                addr = href.split(":", 1)[1].split("?", 1)[0]
-                emails |= extract_emails_from_text(addr)
+        # Emails: scan visible text + raw HTML (obfuscation / attributes / JSON).
+        # Phones: scan visible text only (raw HTML/CSS creates many false positives).
+        emails |= extract_emails_from_text(text) | extract_emails_from_text(raw_html)
+        phones |= extract_phones_from_text(text, default_region=region)
 
         return ParsedPage(
             url=page_url,
@@ -115,5 +123,5 @@ class HtmlParser:
             emails=emails,
             phones=phones,
             text=text,
-            html=html,
+            html=raw_html,
         )

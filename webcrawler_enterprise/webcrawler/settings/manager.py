@@ -38,8 +38,8 @@ def app_data_dir() -> Path:
 
 @dataclass
 class AppSettings:
-    crawl_depth: int = 10
-    max_pages_per_site: int = 500
+    crawl_depth: int = 15
+    max_pages_per_site: int = 2000
     download_timeout: int = 60
     worker_threads: int = 4
     user_agent: str = (

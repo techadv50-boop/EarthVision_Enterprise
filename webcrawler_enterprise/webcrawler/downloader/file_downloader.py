@@ -10,7 +10,7 @@ import httpx
 
 from webcrawler.db.duplicates import DuplicateManager
 from webcrawler.extractors.email import extract_emails_from_file
-from webcrawler.extractors.phone import extract_phones_from_file
+from webcrawler.extractors.phone import extract_phones_from_file, region_from_url
 from webcrawler.logger.crawl_logger import CrawlLogger
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import destination_path, folder_for_extension
@@ -26,12 +26,14 @@ class FileDownloader:
         duplicates: DuplicateManager,
         logger: CrawlLogger,
         on_download: Callable[[str, str], None] | None = None,
+        phone_region: str | None = None,
     ) -> None:
         self.site_dir = site_dir
         self.settings = settings
         self.duplicates = duplicates
         self.logger = logger
         self.on_download = on_download
+        self.phone_region = phone_region or "US"
         self.stats = {
             "documents": 0,
             "pdfs": 0,
@@ -88,7 +90,9 @@ class FileDownloader:
                 # Extract contacts from documents
                 for email in extract_emails_from_file(dest):
                     self.duplicates.add_email(email)
-                for phone in extract_phones_from_file(dest):
+                for phone in extract_phones_from_file(
+                    dest, default_region=self.phone_region
+                ):
                     self.duplicates.add_phone(phone)
                 return dest
             except Exception as exc:
