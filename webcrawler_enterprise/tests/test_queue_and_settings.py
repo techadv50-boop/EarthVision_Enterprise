@@ -39,6 +39,12 @@ def test_duplicates(tmp_path: Path):
     assert dup.mark_download("https://example.com/a.pdf", "abc", "/tmp/a.pdf", "PDF")
     assert dup.has_hash("abc")
     assert not dup.should_download("https://example.com/a.pdf")
+    dup.clear_crawl_state(clear_contacts=True)
+    assert dup.visited_count == 0
+    assert dup.download_count == 0
+    assert not dup.emails
+    assert not dup.phones
+    assert dup.should_download("https://example.com/a.pdf")
 
 
 def test_settings_persist(tmp_path: Path):

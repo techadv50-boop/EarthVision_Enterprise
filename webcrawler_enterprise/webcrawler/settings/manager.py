@@ -38,8 +38,8 @@ def app_data_dir() -> Path:
 
 @dataclass
 class AppSettings:
-    crawl_depth: int = 15
-    max_pages_per_site: int = 2000
+    crawl_depth: int = 100
+    max_pages_per_site: int = 50000
     download_timeout: int = 60
     worker_threads: int = 4
     user_agent: str = (
@@ -53,8 +53,12 @@ class AppSettings:
     retry_attempts: int = 3
     output_folder: str = ""
     last_urls: str = ""
-    page_timeout_ms: int = 30000
+    page_timeout_ms: int = 45000
     respect_same_host_only: bool = True
+    # Download every reachable internal page, document, and image; rebuild contact files.
+    download_complete_site: bool = True
+    download_all_images: bool = True
+    fresh_site_crawl: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

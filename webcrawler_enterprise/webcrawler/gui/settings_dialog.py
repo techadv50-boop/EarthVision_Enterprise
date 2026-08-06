@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QHBoxLayout,
     QLineEdit,
     QSpinBox,
     QVBoxLayout,
@@ -27,11 +26,11 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
 
         self.crawl_depth = QSpinBox()
-        self.crawl_depth.setRange(1, 100)
+        self.crawl_depth.setRange(1, 10000)
         self.crawl_depth.setValue(settings.crawl_depth)
 
         self.max_pages = QSpinBox()
-        self.max_pages.setRange(1, 100000)
+        self.max_pages.setRange(1, 1000000)
         self.max_pages.setValue(settings.max_pages_per_site)
 
         self.timeout = QSpinBox()
@@ -54,6 +53,12 @@ class SettingsDialog(QDialog):
         self.ignore_robots.setChecked(settings.ignore_robots_txt)
         self.follow_redirects = QCheckBox("Follow redirects")
         self.follow_redirects.setChecked(settings.follow_redirects)
+        self.complete_site = QCheckBox("Download complete website")
+        self.complete_site.setChecked(settings.download_complete_site)
+        self.all_images = QCheckBox("Download all images")
+        self.all_images.setChecked(settings.download_all_images)
+        self.fresh_crawl = QCheckBox("Fresh crawl each Start (rebuild contacts)")
+        self.fresh_crawl.setChecked(settings.fresh_site_crawl)
 
         form.addRow("Crawl depth", self.crawl_depth)
         form.addRow("Max pages per website", self.max_pages)
@@ -64,9 +69,15 @@ class SettingsDialog(QDialog):
         form.addRow("Download file types", self.file_types)
         layout.addLayout(form)
 
-        checks = QHBoxLayout()
-        checks.addWidget(self.ignore_robots)
-        checks.addWidget(self.follow_redirects)
+        checks = QVBoxLayout()
+        for widget in (
+            self.ignore_robots,
+            self.follow_redirects,
+            self.complete_site,
+            self.all_images,
+            self.fresh_crawl,
+        ):
+            checks.addWidget(widget)
         layout.addLayout(checks)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -92,6 +103,9 @@ class SettingsDialog(QDialog):
                 "download_file_types": types or self._settings.download_file_types,
                 "ignore_robots_txt": self.ignore_robots.isChecked(),
                 "follow_redirects": self.follow_redirects.isChecked(),
+                "download_complete_site": self.complete_site.isChecked(),
+                "download_all_images": self.all_images.isChecked(),
+                "fresh_site_crawl": self.fresh_crawl.isChecked(),
             }
         )
         return AppSettings.from_dict(data)

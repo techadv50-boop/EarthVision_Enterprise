@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from webcrawler.utils.url import extension_of, get_registrable_domain
 
@@ -64,8 +66,6 @@ def destination_path(site_dir: Path, url: str, filename: str | None = None) -> P
     ext = extension_of(url) or (Path(filename).suffix if filename else "")
     folder = folder_for_extension(ext)
     if not filename:
-        from urllib.parse import unquote, urlparse
-
         name = unquote(Path(urlparse(url).path).name) or f"download{ext or '.bin'}"
         filename = name
     dest_dir = site_dir / folder
@@ -84,3 +84,36 @@ def unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         i += 1
+
+
+def _safe_segment(segment: str) -> str:
+    segment = unquote(segment).strip().replace("\\", "_").replace("/", "_")
+    segment = re.sub(r"[<>:\"|?*\x00-\x1f]", "_", segment)
+    segment = segment.strip(" .")
+    return segment[:120] or "_"
+
+
+def html_mirror_path(site_dir: Path, page_url: str) -> Path:
+    """Build a readable on-disk path under HTML/ that mirrors the URL path."""
+    parsed = urlparse(page_url)
+    parts = [p for p in parsed.path.split("/") if p]
+    if not parts:
+        rel = Path("index.html")
+    else:
+        last = parts[-1]
+        if "." in last and not last.lower().endswith((".html", ".htm")):
+            # unusual non-html path saved as html snapshot
+            parts[-1] = f"{last}.html"
+            rel = Path(*[_safe_segment(p) for p in parts])
+        elif last.lower().endswith((".html", ".htm")):
+            rel = Path(*[_safe_segment(p) for p in parts])
+        else:
+            rel = Path(*[_safe_segment(p) for p in parts]) / "index.html"
+
+    if parsed.query:
+        q = _safe_segment(parsed.query)[:40]
+        rel = rel.with_name(f"{rel.stem}_{q}{rel.suffix}")
+
+    dest = site_dir / "HTML" / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return unique_path(dest)

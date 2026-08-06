@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import threading
 import time
@@ -26,7 +25,7 @@ from webcrawler.logger.crawl_logger import CrawlLogger
 from webcrawler.parser.html_parser import HtmlParser
 from webcrawler.queue.manager import QueueItem
 from webcrawler.settings.manager import AppSettings
-from webcrawler.utils.folders import ensure_site_structure, site_folder
+from webcrawler.utils.folders import ensure_site_structure, html_mirror_path, site_folder
 from webcrawler.utils.url import normalize_url, same_site
 
 CONTACT_HINTS = (
@@ -121,14 +120,19 @@ class SiteCrawler:
         self._phone_region = region_from_url(item.url)
         self._site_dir: Path | None = None
         self._flush_counter = 0
+        self._pages_index: list[str] = []
 
     def crawl(self) -> SiteResult:
         start = datetime.now(timezone.utc)
         site_dir = ensure_site_structure(site_folder(self.item.output_root, self.item.url))
         self._site_dir = site_dir
         self.logger.set_path(site_dir / "Logs" / "crawl_log.txt")
-        self.logger.info(f"Starting crawl of {self.item.url}")
+        self.logger.info(f"Starting full-site download of {self.item.url}")
         self.logger.info(f"Phone default region inferred as {self._phone_region}")
+
+        if self.settings.fresh_site_crawl or self.settings.download_complete_site:
+            self.duplicates.clear_crawl_state(clear_contacts=True)
+            self.logger.info("Cleared previous crawl state for a fresh complete download")
 
         result = SiteResult(
             website=self.item.url,
@@ -178,8 +182,9 @@ class SiteCrawler:
             result.error = str(exc)
             self.logger.error(f"Site crawl failed: {exc}")
 
-        # Safety net: re-scan saved HTML snapshots for any missed contacts
-        self._rescan_saved_html(site_dir)
+        # Scan every downloaded file (HTML + documents) for emails/phones
+        self._rescan_all_downloaded_files(site_dir)
+        self._write_pages_index(site_dir)
         self._flush_contacts(force=True)
 
         emails = sorted(self.duplicates.emails)
@@ -275,7 +280,13 @@ class SiteCrawler:
                         for doc_url in doc_urls:
                             self._emit_progress(current_download=doc_url)
                             futures.append(pool.submit(downloader.download, doc_url))
-                        for img_url in image_urls[:30]:
+                        images_to_get = (
+                            image_urls
+                            if self.settings.download_all_images
+                            or self.settings.download_complete_site
+                            else image_urls[:40]
+                        )
+                        for img_url in images_to_get:
                             futures.append(
                                 pool.submit(downloader.download, img_url, True)
                             )
@@ -356,10 +367,11 @@ class SiteCrawler:
 
         self.logger.page_visited(final_url, status_code)
 
+        html_path: Path | None = None
         try:
-            safe = hashlib.sha1(normalize_url(final_url).encode()).hexdigest()[:12]
-            html_path = site_dir / "HTML" / f"{safe}.html"
+            html_path = html_mirror_path(site_dir, final_url)
             html_path.write_text(html, encoding="utf-8")
+            self._pages_index.append(f"{final_url}\t{html_path.relative_to(site_dir)}")
         except Exception as exc:
             self.logger.warning(f"Could not save HTML for {final_url}: {exc}")
 
@@ -382,9 +394,17 @@ class SiteCrawler:
             )
         self._flush_contacts()
 
-        if depth < self.settings.crawl_depth:
-            # Priority links first for deeper contact discovery
-            links = sorted(parsed.internal_links, key=lambda u: (0 if _is_priority_url(u) else 1))
+        # Complete-site mode follows every internal link until max pages is reached.
+        max_depth = (
+            10_000
+            if self.settings.download_complete_site
+            else self.settings.crawl_depth
+        )
+        if depth < max_depth:
+            links = sorted(
+                parsed.internal_links,
+                key=lambda u: (0 if _is_priority_url(u) else 1),
+            )
             for link in links:
                 if same_site(link, self.item.url):
                     self._enqueue(link, depth + 1, priority=_is_priority_url(link))
@@ -486,40 +506,71 @@ class SiteCrawler:
         if added:
             self.logger.info(f"Queued {added} URLs from sitemap {sitemap_url}")
 
-    def _rescan_saved_html(self, site_dir: Path) -> None:
-        html_dir = site_dir / "HTML"
-        if not html_dir.exists():
-            return
+    def _rescan_all_downloaded_files(self, site_dir: Path) -> None:
+        """Scan HTML + documents so contact text files are complete."""
         before_e, before_p = len(self.duplicates.emails), len(self.duplicates.phones)
-        for path in html_dir.glob("*.html"):
-            for email in extract_emails_from_file(path):
-                self.duplicates.add_email(email)
-            for phone in extract_phones_from_file(
-                path, default_region=self._phone_region
-            ):
-                self.duplicates.add_phone(phone)
+        patterns = (
+            "HTML/**/*.html",
+            "HTML/**/*.htm",
+            "PDF/**/*",
+            "Word/**/*",
+            "Excel/**/*",
+            "PowerPoint/**/*",
+            "Reports/**/*",
+        )
+        scanned = 0
+        for pattern in patterns:
+            for path in site_dir.glob(pattern):
+                if not path.is_file():
+                    continue
+                if path.name in {"emails.txt", "phone_numbers.txt", "pages_index.txt"}:
+                    continue
+                scanned += 1
+                for email in extract_emails_from_file(path):
+                    self.duplicates.add_email(email)
+                for phone in extract_phones_from_file(
+                    path, default_region=self._phone_region
+                ):
+                    self.duplicates.add_phone(phone)
         gained_e = len(self.duplicates.emails) - before_e
         gained_p = len(self.duplicates.phones) - before_p
-        if gained_e or gained_p:
-            self.logger.info(
-                f"HTML rescan found +{gained_e} emails, +{gained_p} phones"
-            )
+        self.logger.info(
+            f"Full download rescan ({scanned} files): "
+            f"+{gained_e} emails, +{gained_p} phones"
+        )
+
+    def _write_pages_index(self, site_dir: Path) -> None:
+        index_path = site_dir / "Reports" / "pages_index.txt"
+        lines = ["URL\tSaved As", *self._pages_index]
+        index_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     def _flush_contacts(self, force: bool = False) -> None:
         self._flush_counter += 1
-        if not force and self._flush_counter % 5 != 0:
+        if not force and self._flush_counter % 3 != 0:
             return
         if not self._site_dir:
             return
         emails = sorted(self.duplicates.emails)
         phones = sorted(self.duplicates.phones)
-        (self._site_dir / "emails.txt").write_text(
-            "\n".join(emails) + ("\n" if emails else ""),
-            encoding="utf-8",
+
+        email_body = (
+            f"# Emails extracted from {self.item.url}\n"
+            f"# Total: {len(emails)}\n"
+            + ("\n".join(emails) + ("\n" if emails else ""))
         )
-        (self._site_dir / "phone_numbers.txt").write_text(
-            "\n".join(phones) + ("\n" if phones else ""),
-            encoding="utf-8",
+        phone_body = (
+            f"# Phone numbers extracted from {self.item.url}\n"
+            f"# Total: {len(phones)}\n"
+            + ("\n".join(phones) + ("\n" if phones else ""))
+        )
+
+        # Primary location required by the product
+        (self._site_dir / "emails.txt").write_text(email_body, encoding="utf-8")
+        (self._site_dir / "phone_numbers.txt").write_text(phone_body, encoding="utf-8")
+        # Copies under Reports for easy browsing
+        (self._site_dir / "Reports" / "emails.txt").write_text(email_body, encoding="utf-8")
+        (self._site_dir / "Reports" / "phone_numbers.txt").write_text(
+            phone_body, encoding="utf-8"
         )
 
     def _load_robots(self, root: str) -> None:

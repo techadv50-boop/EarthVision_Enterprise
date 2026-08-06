@@ -110,6 +110,19 @@ class DuplicateManager:
         )
         return True
 
+    def clear_crawl_state(self, *, clear_contacts: bool = True) -> None:
+        """Reset visited/download history so a site can be fully re-downloaded."""
+        self.db.execute("DELETE FROM visited_pages WHERE site_id = ?", (self.site_id,))
+        self.db.execute("DELETE FROM downloads WHERE site_id = ?", (self.site_id,))
+        self._visited.clear()
+        self._download_urls.clear()
+        self._download_hashes.clear()
+        if clear_contacts:
+            self.db.execute("DELETE FROM emails WHERE site_id = ?", (self.site_id,))
+            self.db.execute("DELETE FROM phones WHERE site_id = ?", (self.site_id,))
+            self._emails.clear()
+            self._phones.clear()
+
     @property
     def emails(self) -> set[str]:
         return set(self._emails)

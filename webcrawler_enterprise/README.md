@@ -8,13 +8,14 @@ Professional Windows desktop application that crawls websites sequentially, down
 - Master reset code `NTZHSS` restores the admin account
 - Multiline URL input with blank-line ignore and automatic deduplication
 - Sequential multi-site processing (one website at a time)
-- Playwright-based rendering (JavaScript executed before extraction)
-- Internal-link crawling with depth/max-page limits and duplicate/loop protection
+- **Complete website download** (all reachable pages, documents, images)
+- Playwright rendering + sitemap discovery + contact-page prioritization
 - Document download: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, CSV, TXT, ZIP
 - Duplicate prevention via URL + SHA-256
-- Email and phone extraction from HTML and documents
+- Email and phone extraction from every HTML page and document
 - Per-site folders (`PDF`, `Word`, `Excel`, `PowerPoint`, `Images`, `HTML`, `Reports`, `Logs`)
-- `emails.txt`, `phone_numbers.txt`, `Reports/Summary.txt`, `Logs/crawl_log.txt`
+- Always writes `emails.txt` and `phone_numbers.txt` (plus copies in `Reports/`)
+- `Reports/Summary.txt`, `Reports/pages_index.txt`, `Logs/crawl_log.txt`
 - Root `Master_Report.xlsx` appended after each site
 - SQLite queue with Pending / Running / Completed / Failed / Cancelled and crash resume
 - Configurable settings persisted automatically
@@ -114,5 +115,11 @@ D:\WebsiteData\
 ## Notes
 
 - Respect website terms of service and applicable laws. Prefer leaving **Ignore robots.txt** disabled.
-- One website is processed at a time; pages within a site use configurable worker concurrency.
+- One website is processed at a time. Page rendering is sequential (Playwright-safe); downloads use worker threads.
+- The crawler prioritizes contact/faculty pages, reads sitemaps, and falls back to HTTP when rendering is thin.
+- Phone parsing uses country hints from the domain (e.g. `.pk` → Pakistan).
 - Failed sites are logged and processing continues with the next URL.
+
+## Re-crawl tip
+
+If an earlier run saved empty `emails.txt` / `phone_numbers.txt`, delete that website folder (or clear the app SQLite DB under `%APPDATA%\WebCrawlerEnterprise`) before starting again so pages are not skipped as already visited.

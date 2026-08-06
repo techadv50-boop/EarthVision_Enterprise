@@ -10,7 +10,7 @@ import httpx
 
 from webcrawler.db.duplicates import DuplicateManager
 from webcrawler.extractors.email import extract_emails_from_file
-from webcrawler.extractors.phone import extract_phones_from_file, region_from_url
+from webcrawler.extractors.phone import extract_phones_from_file
 from webcrawler.logger.crawl_logger import CrawlLogger
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import destination_path, folder_for_extension
