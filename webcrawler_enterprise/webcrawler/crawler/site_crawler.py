@@ -1,4 +1,4 @@
-"""Per-website Playwright crawler with reliable contact extraction."""
+"""High-speed full-site crawler: concurrent HTTP first, Playwright fallback."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from webcrawler.parser.html_parser import HtmlParser
 from webcrawler.queue.manager import QueueItem
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import ensure_site_structure, html_mirror_path, site_folder
-from webcrawler.utils.url import normalize_url, same_site
+from webcrawler.utils.url import is_document_url, is_image_url, normalize_url, same_site
 
 CONTACT_HINTS = (
     "contact",
@@ -94,8 +94,19 @@ def _is_priority_url(url: str) -> bool:
     return any(hint in path for hint in CONTACT_HINTS)
 
 
+def _looks_thin(html: str) -> bool:
+    if not html or len(html) < 400:
+        return True
+    if not re.search(r"<body", html, re.I):
+        return True
+    # SPA shells often have almost no text
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+    return len(text) < 80
+
+
 class SiteCrawler:
-    """Crawl a single website until all reachable pages are processed."""
+    """Download every reachable page/document/image as fast as possible without skipping."""
 
     def __init__(
         self,
@@ -115,20 +126,25 @@ class SiteCrawler:
         self.parser = HtmlParser()
         self._page_queue: deque[tuple[str, int]] = deque()
         self._queued: set[str] = set()
+        self._playwright_queue: deque[tuple[str, int]] = deque()
         self._lock = threading.Lock()
         self._robots: RobotFileParser | None = None
         self._phone_region = region_from_url(item.url)
         self._site_dir: Path | None = None
         self._flush_counter = 0
         self._pages_index: list[str] = []
+        self._download_futures: set = set()
 
     def crawl(self) -> SiteResult:
         start = datetime.now(timezone.utc)
         site_dir = ensure_site_structure(site_folder(self.item.output_root, self.item.url))
         self._site_dir = site_dir
         self.logger.set_path(site_dir / "Logs" / "crawl_log.txt")
-        self.logger.info(f"Starting full-site download of {self.item.url}")
-        self.logger.info(f"Phone default region inferred as {self._phone_region}")
+        self.logger.info(f"Starting high-speed full-site download of {self.item.url}")
+        self.logger.info(
+            f"Workers: pages={self.settings.page_workers}, "
+            f"downloads={self.settings.worker_threads}, region={self._phone_region}"
+        )
 
         if self.settings.fresh_site_crawl or self.settings.download_complete_site:
             self.duplicates.clear_crawl_state(clear_contacts=True)
@@ -150,7 +166,6 @@ class SiteCrawler:
         )
 
         def _on_download(url: str, path: str) -> None:
-            # Extract contacts from every downloaded document immediately.
             for email in extract_emails_from_file(Path(path)):
                 self.duplicates.add_email(email)
             for phone in extract_phones_from_file(
@@ -174,7 +189,7 @@ class SiteCrawler:
         self._load_sitemaps(root)
 
         try:
-            self._run_playwright(site_dir, downloader, result)
+            self._run_fast_crawl(site_dir, downloader, result)
             if result.status != "Cancelled":
                 result.status = "Completed"
         except Exception as exc:
@@ -182,7 +197,6 @@ class SiteCrawler:
             result.error = str(exc)
             self.logger.error(f"Site crawl failed: {exc}")
 
-        # Scan every downloaded file (HTML + documents) for emails/phones
         self._rescan_all_downloaded_files(site_dir)
         self._write_pages_index(site_dir)
         self._flush_contacts(force=True)
@@ -208,7 +222,7 @@ class SiteCrawler:
         self.logger.info(
             f"Finished {self.item.url}: pages={result.pages_crawled} "
             f"docs={result.documents_downloaded} emails={result.emails} phones={result.phones} "
-            f"status={result.status}"
+            f"status={result.status} time={result.processing_time}"
         )
         self._emit_progress(
             pages=result.pages_crawled,
@@ -220,154 +234,178 @@ class SiteCrawler:
         )
         return result
 
-    def _run_playwright(
+    def _run_fast_crawl(
         self,
         site_dir: Path,
         downloader: FileDownloader,
         result: SiteResult,
     ) -> None:
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError as exc:
-            raise RuntimeError(
-                "Playwright is not installed. Run: pip install playwright && playwright install chromium"
-            ) from exc
+        page_workers = max(4, min(self.settings.page_workers, 64))
+        download_workers = max(4, min(self.settings.worker_threads, 32))
+        self.logger.info(
+            f"Fast crawl mode: {page_workers} parallel page fetches, "
+            f"{download_workers} parallel downloads"
+        )
 
-        # Playwright sync API is not thread-safe. Navigate pages sequentially.
-        # Use a thread pool only for document downloads.
-        download_workers = max(1, min(self.settings.worker_threads, 6))
+        with ThreadPoolExecutor(max_workers=page_workers) as page_pool, ThreadPoolExecutor(
+            max_workers=download_workers
+        ) as download_pool:
+            pending_pages: dict = {}
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent=self.settings.user_agent,
-                ignore_https_errors=True,
-            )
-            context.set_default_timeout(self.settings.page_timeout_ms)
-            page = context.new_page()
+            while True:
+                state = self._wait_if_paused()
+                if state == "stopped":
+                    result.status = "Cancelled"
+                    self.logger.warning("Crawl stopped by user")
+                    break
 
-            try:
-                with ThreadPoolExecutor(max_workers=download_workers) as pool:
-                    while True:
-                        state = self.control_state()
-                        if state == "stopped":
-                            result.status = "Cancelled"
-                            self.logger.warning("Crawl stopped by user")
-                            break
-                        while state == "paused":
-                            time.sleep(0.25)
-                            state = self.control_state()
-                            if state == "stopped":
-                                result.status = "Cancelled"
-                                break
-                        if result.status == "Cancelled":
-                            break
+                if self.duplicates.visited_count >= self.settings.max_pages_per_site:
+                    self.logger.info("Reached max pages per website")
+                    break
 
-                        if self.duplicates.visited_count >= self.settings.max_pages_per_site:
-                            self.logger.info("Reached max pages per website")
-                            break
+                # Reap finished page fetches
+                done = [fut for fut in list(pending_pages) if fut.done()]
+                for fut in done:
+                    url, depth = pending_pages.pop(fut)
+                    try:
+                        payload = fut.result()
+                    except Exception as exc:
+                        self.logger.error(f"Page worker error for {url}: {exc}")
+                        self.duplicates.mark_visited(url, None)
+                        continue
+                    self._handle_fetched_page(
+                        payload, depth, site_dir, downloader, download_pool, result
+                    )
 
-                        with self._lock:
-                            if not self._page_queue:
-                                break
-                            url, depth = self._page_queue.popleft()
-
-                        doc_urls, image_urls = self._process_page(
-                            page, url, depth, site_dir
+                # Fill page worker pool
+                while (
+                    len(pending_pages) < page_workers
+                    and self.duplicates.visited_count + len(pending_pages)
+                    < self.settings.max_pages_per_site
+                ):
+                    state = self.control_state()
+                    if state != "running":
+                        break
+                    item = self._pop_page()
+                    if item is None:
+                        break
+                    url, depth = item
+                    if self.duplicates.has_visited(url):
+                        continue
+                    if not self._allowed_by_robots(url):
+                        self.logger.skipped(url, "robots.txt")
+                        self.duplicates.mark_visited(url, 0)
+                        continue
+                    # Route obvious binaries straight to downloader
+                    if is_document_url(url, self.settings.download_file_types) or is_image_url(url):
+                        self.duplicates.mark_visited(url, 200)
+                        self._submit_download(
+                            download_pool,
+                            downloader,
+                            url,
+                            is_image=is_image_url(url),
                         )
+                        continue
+                    self._emit_progress(
+                        current_page=url,
+                        pages=self.duplicates.visited_count,
+                        emails=len(self.duplicates.emails),
+                        phones=len(self.duplicates.phones),
+                    )
+                    fut = page_pool.submit(self._http_fetch_page, url)
+                    pending_pages[fut] = (url, depth)
 
-                        futures = []
-                        for doc_url in doc_urls:
-                            self._emit_progress(current_download=doc_url)
-                            futures.append(pool.submit(downloader.download, doc_url))
-                        images_to_get = (
-                            image_urls
-                            if self.settings.download_all_images
-                            or self.settings.download_complete_site
-                            else image_urls[:40]
-                        )
-                        for img_url in images_to_get:
-                            futures.append(
-                                pool.submit(downloader.download, img_url, True)
-                            )
-                        for fut in as_completed(futures):
-                            try:
-                                fut.result()
-                            except Exception as exc:
-                                self.logger.warning(f"Download worker error: {exc}")
-            finally:
-                try:
-                    page.close()
-                except Exception:
-                    pass
-                context.close()
-                browser.close()
+                # Idle: no pending and no queued pages
+                if not pending_pages and not self._has_queued_pages():
+                    break
 
-    def _process_page(
+                if not done and pending_pages:
+                    time.sleep(0.02)
+
+            # Drain download futures
+            self._drain_downloads()
+
+        # Playwright fallback for thin/failed pages (completeness, not primary speed path)
+        if self.settings.use_playwright_fallback and self._playwright_queue:
+            if self.control_state() != "stopped":
+                self.logger.info(
+                    f"Playwright fallback for {len(self._playwright_queue)} page(s)"
+                )
+                self._run_playwright_fallback(site_dir, downloader, result)
+
+    def _handle_fetched_page(
         self,
-        page,
-        url: str,
+        payload: dict,
         depth: int,
         site_dir: Path,
-    ) -> tuple[list[str], list[str]]:
-        if self.duplicates.has_visited(url):
-            return [], []
-        if not self._allowed_by_robots(url):
-            self.logger.skipped(url, "robots.txt")
-            self.duplicates.mark_visited(url, 0)
-            return [], []
+        downloader: FileDownloader,
+        download_pool: ThreadPoolExecutor,
+        result: SiteResult,
+    ) -> None:
+        url = payload["url"]
+        html = payload.get("html") or ""
+        status = payload.get("status")
+        final_url = payload.get("final_url") or url
+        error = payload.get("error")
 
-        self._emit_progress(current_page=url, pages=self.duplicates.visited_count)
-
-        status_code = None
-        html = ""
-        final_url = url
-        try:
-            response = page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=self.settings.page_timeout_ms,
+        if payload.get("binary"):
+            self.duplicates.mark_visited(url, status or 200)
+            self._submit_download(
+                download_pool,
+                downloader,
+                final_url or url,
+                is_image=("image/" in str(error)),
             )
-            try:
-                page.wait_for_load_state("networkidle", timeout=8000)
-            except Exception:
-                pass
-            # Give late JS a moment on contact-heavy pages
-            if _is_priority_url(url):
-                try:
-                    page.wait_for_timeout(1200)
-                except Exception:
-                    pass
-            status_code = response.status if response else None
-            html = page.content() or ""
-            final_url = page.url
-        except Exception as exc:
-            self.logger.warning(f"Playwright failed for {url}: {exc}")
-            html, status_code, final_url = self._httpx_fetch(url)
-            if not html:
-                self.logger.error(f"Failed to open {url}: {exc}")
+            return
+
+        if error and not html:
+            # Retry with Playwright later so nothing is permanently skipped
+            if self.settings.use_playwright_fallback:
+                self._playwright_queue.append((url, depth))
+                self.logger.warning(f"Queued Playwright fallback for {url}: {error}")
+            else:
+                self.logger.error(f"Failed {url}: {error}")
                 self.duplicates.mark_visited(url, None)
-                return [], []
+            return
 
-        # Fallback when rendered page looks empty / blocked
-        if len(html) < 500 or not re.search(r"<body", html, re.I):
-            alt_html, alt_status, alt_final = self._httpx_fetch(url)
-            if alt_html and len(alt_html) > len(html):
-                self.logger.info(f"Using HTTP fallback content for {url}")
-                html, status_code, final_url = alt_html, alt_status, alt_final
+        if status and status >= 400:
+            self.logger.warning(f"HTTP {status} for {url}")
+            self.duplicates.mark_visited(url, status)
+            return
 
-        if status_code and status_code >= 400:
-            self.logger.warning(f"HTTP {status_code} for {url}")
-            self.duplicates.mark_visited(url, status_code)
-            return [], []
+        if _looks_thin(html) and self.settings.use_playwright_fallback:
+            self._playwright_queue.append((url, depth))
+            self.logger.info(f"Thin page, queued Playwright fallback: {url}")
+            return
 
+        # Always ingest available HTML (never skip content we already fetched)
+        self._ingest_html(
+            html=html,
+            url=url,
+            final_url=final_url,
+            status_code=status,
+            depth=depth,
+            site_dir=site_dir,
+            downloader=downloader,
+            download_pool=download_pool,
+        )
+
+    def _ingest_html(
+        self,
+        html: str,
+        url: str,
+        final_url: str,
+        status_code: int | None,
+        depth: int,
+        site_dir: Path,
+        downloader: FileDownloader,
+        download_pool: ThreadPoolExecutor | None,
+    ) -> None:
         self.duplicates.mark_visited(normalize_url(final_url), status_code)
         if normalize_url(final_url) != normalize_url(url):
             self.duplicates.mark_visited(url, status_code)
-
         self.logger.page_visited(final_url, status_code)
 
-        html_path: Path | None = None
         try:
             html_path = html_mirror_path(site_dir, final_url)
             html_path.write_text(html, encoding="utf-8")
@@ -387,18 +425,14 @@ class SiteCrawler:
             self.duplicates.add_email(email)
         for phone in parsed.phones:
             self.duplicates.add_phone(phone)
-
         if parsed.emails or parsed.phones:
             self.logger.info(
                 f"Contacts on {final_url}: emails={len(parsed.emails)} phones={len(parsed.phones)}"
             )
         self._flush_contacts()
 
-        # Complete-site mode follows every internal link until max pages is reached.
         max_depth = (
-            10_000
-            if self.settings.download_complete_site
-            else self.settings.crawl_depth
+            10_000 if self.settings.download_complete_site else self.settings.crawl_depth
         )
         if depth < max_depth:
             links = sorted(
@@ -409,27 +443,241 @@ class SiteCrawler:
                 if same_site(link, self.item.url):
                     self._enqueue(link, depth + 1, priority=_is_priority_url(link))
 
+        if download_pool is not None:
+            for doc_url in parsed.document_links:
+                self._submit_download(download_pool, downloader, doc_url, is_image=False)
+            images = parsed.image_links
+            if not (
+                self.settings.download_all_images or self.settings.download_complete_site
+            ):
+                images = images[:40]
+            for img_url in images:
+                self._submit_download(download_pool, downloader, img_url, is_image=True)
+
         self._emit_progress(
             pages=self.duplicates.visited_count,
+            documents=downloader.stats["documents"],
             emails=len(self.duplicates.emails),
             phones=len(self.duplicates.phones),
             current_page=final_url,
         )
-        return parsed.document_links, parsed.image_links
 
-    def _httpx_fetch(self, url: str) -> tuple[str, int | None, str]:
+    def _http_fetch_page(self, url: str) -> dict:
+        headers = {"User-Agent": self.settings.user_agent, "Accept": "text/html,*/*"}
+        timeout = httpx.Timeout(self.settings.download_timeout)
+        last_error = None
+        for attempt in range(1, max(1, self.settings.retry_attempts) + 1):
+            try:
+                with httpx.Client(
+                    headers=headers,
+                    timeout=timeout,
+                    follow_redirects=self.settings.follow_redirects,
+                    verify=False,
+                    http2=False,
+                ) as client:
+                    response = client.get(url)
+                    content_type = response.headers.get("content-type", "").lower()
+                    # If server returns a file instead of HTML, treat as download target
+                    if any(
+                        x in content_type
+                        for x in (
+                            "application/pdf",
+                            "application/msword",
+                            "application/vnd.",
+                            "application/zip",
+                            "image/",
+                        )
+                    ):
+                        return {
+                            "url": url,
+                            "html": "",
+                            "status": response.status_code,
+                            "final_url": str(response.url),
+                            "error": f"binary-content:{content_type}",
+                            "binary": True,
+                        }
+                    text = response.text or ""
+                    return {
+                        "url": url,
+                        "html": text,
+                        "status": response.status_code,
+                        "final_url": str(response.url),
+                        "error": None,
+                    }
+            except Exception as exc:
+                last_error = exc
+                time.sleep(min(0.2 * attempt, 1.0))
+        return {
+            "url": url,
+            "html": "",
+            "status": None,
+            "final_url": url,
+            "error": str(last_error),
+        }
+
+    def _submit_download(
+        self,
+        pool: ThreadPoolExecutor,
+        downloader: FileDownloader,
+        url: str,
+        is_image: bool,
+    ) -> None:
+        if not self.duplicates.should_download(url):
+            return
+        self._emit_progress(current_download=url)
+        fut = pool.submit(downloader.download, url, is_image)
+        with self._lock:
+            self._download_futures.add(fut)
+
+        def _done(f) -> None:
+            with self._lock:
+                self._download_futures.discard(f)
+            try:
+                f.result()
+            except Exception as exc:
+                self.logger.warning(f"Download error: {exc}")
+
+        fut.add_done_callback(_done)
+
+    def _drain_downloads(self) -> None:
+        while True:
+            with self._lock:
+                pending = [f for f in self._download_futures if not f.done()]
+            if not pending:
+                break
+            time.sleep(0.05)
+
+    def _run_playwright_fallback(
+        self,
+        site_dir: Path,
+        downloader: FileDownloader,
+        result: SiteResult,
+    ) -> None:
         try:
-            with httpx.Client(
-                headers={"User-Agent": self.settings.user_agent},
-                timeout=self.settings.download_timeout,
-                follow_redirects=self.settings.follow_redirects,
-                verify=False,
-            ) as client:
-                response = client.get(url)
-                return response.text or "", response.status_code, str(response.url)
+            from playwright.sync_api import sync_playwright
         except Exception as exc:
-            self.logger.warning(f"HTTP fallback failed for {url}: {exc}")
-            return "", None, url
+            self.logger.warning(f"Playwright unavailable for fallback: {exc}")
+            # Mark remaining fallback URLs visited via HTTP one more time
+            while self._playwright_queue:
+                url, depth = self._playwright_queue.popleft()
+                payload = self._http_fetch_page(url)
+                if payload.get("html"):
+                    self._ingest_html(
+                        html=payload["html"],
+                        url=url,
+                        final_url=payload.get("final_url") or url,
+                        status_code=payload.get("status"),
+                        depth=depth,
+                        site_dir=site_dir,
+                        downloader=downloader,
+                        download_pool=None,
+                    )
+                    for doc in self.parser.parse(
+                        payload["html"],
+                        payload.get("final_url") or url,
+                        self.item.url,
+                        self.settings.download_file_types,
+                        self._phone_region,
+                    ).document_links:
+                        downloader.download(doc)
+                else:
+                    self.duplicates.mark_visited(url, None)
+            return
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=self.settings.user_agent,
+                ignore_https_errors=True,
+            )
+            context.set_default_timeout(min(self.settings.page_timeout_ms, 20000))
+            page = context.new_page()
+            try:
+                while self._playwright_queue:
+                    if self._wait_if_paused() == "stopped":
+                        result.status = "Cancelled"
+                        break
+                    if self.duplicates.visited_count >= self.settings.max_pages_per_site:
+                        break
+                    url, depth = self._playwright_queue.popleft()
+                    if self.duplicates.has_visited(url):
+                        continue
+                    try:
+                        response = page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=min(self.settings.page_timeout_ms, 20000),
+                        )
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=2500)
+                        except Exception:
+                            pass
+                        html = page.content() or ""
+                        final_url = page.url
+                        status = response.status if response else None
+                    except Exception as exc:
+                        self.logger.error(f"Playwright failed for {url}: {exc}")
+                        # Last resort: keep whatever HTTP can get
+                        payload = self._http_fetch_page(url)
+                        html = payload.get("html") or ""
+                        final_url = payload.get("final_url") or url
+                        status = payload.get("status")
+                        if not html:
+                            self.duplicates.mark_visited(url, None)
+                            continue
+
+                    if status and status >= 400 and not html:
+                        self.duplicates.mark_visited(url, status)
+                        continue
+
+                    self._ingest_html(
+                        html=html,
+                        url=url,
+                        final_url=final_url,
+                        status_code=status,
+                        depth=depth,
+                        site_dir=site_dir,
+                        downloader=downloader,
+                        download_pool=None,
+                    )
+                    # Sync download docs for fallback pages
+                    parsed = self.parser.parse(
+                        html,
+                        final_url,
+                        self.item.url,
+                        self.settings.download_file_types,
+                        self._phone_region,
+                    )
+                    for doc_url in parsed.document_links:
+                        downloader.download(doc_url)
+                    images = parsed.image_links
+                    if self.settings.download_all_images or self.settings.download_complete_site:
+                        for img_url in images:
+                            downloader.download(img_url, True)
+            finally:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                context.close()
+                browser.close()
+
+    def _wait_if_paused(self) -> str:
+        state = self.control_state()
+        while state == "paused":
+            time.sleep(0.2)
+            state = self.control_state()
+        return state
+
+    def _pop_page(self) -> tuple[str, int] | None:
+        with self._lock:
+            if self._page_queue:
+                return self._page_queue.popleft()
+        return None
+
+    def _has_queued_pages(self) -> bool:
+        with self._lock:
+            return bool(self._page_queue)
 
     def _enqueue(self, url: str, depth: int, priority: bool = False) -> None:
         normalized = normalize_url(url)
@@ -459,55 +707,95 @@ class SiteCrawler:
             urljoin(base, "/wp-sitemap.xml"),
             urljoin(base, "/sitemap_index.xml"),
         ]
-        # Include sitemap from robots.txt if present
         try:
-            robots_text = self._httpx_fetch(urljoin(base, "/robots.txt"))[0]
+            robots_text = self._http_fetch_page(urljoin(base, "/robots.txt")).get("html") or ""
             for line in robots_text.splitlines():
                 if line.lower().startswith("sitemap:"):
                     candidates.append(line.split(":", 1)[1].strip())
         except Exception:
             pass
 
-        seen_maps: set[str] = set()
-        for sm_url in candidates:
-            if not sm_url or sm_url in seen_maps:
-                continue
-            seen_maps.add(sm_url)
-            self._ingest_sitemap(sm_url, depth=0)
+        # Unique preserve order
+        seen: set[str] = set()
+        unique = []
+        for sm in candidates:
+            if sm and sm not in seen:
+                seen.add(sm)
+                unique.append(sm)
 
-    def _ingest_sitemap(self, sitemap_url: str, depth: int) -> None:
-        if depth > 2:
-            return
-        xml_text, status, _ = self._httpx_fetch(sitemap_url)
+        child_maps: list[str] = []
+        with ThreadPoolExecutor(max_workers=min(12, max(2, len(unique) or 2))) as pool:
+            futures = {pool.submit(self._parse_sitemap_locs, sm): sm for sm in unique}
+            for fut in as_completed(futures):
+                sm = futures[fut]
+                try:
+                    page_locs, nested = fut.result()
+                except Exception as exc:
+                    self.logger.warning(f"Sitemap error {sm}: {exc}")
+                    continue
+                added = 0
+                for loc in page_locs:
+                    if not same_site(loc, self.item.url):
+                        continue
+                    self._enqueue(loc, 1, priority=_is_priority_url(loc))
+                    added += 1
+                if added:
+                    self.logger.info(f"Queued {added} URLs from sitemap {sm}")
+                for nested_url in nested:
+                    if nested_url not in seen:
+                        seen.add(nested_url)
+                        child_maps.append(nested_url)
+
+        if child_maps:
+            with ThreadPoolExecutor(max_workers=min(16, max(2, len(child_maps)))) as pool:
+                futures = {
+                    pool.submit(self._parse_sitemap_locs, sm): sm for sm in child_maps
+                }
+                for fut in as_completed(futures):
+                    sm = futures[fut]
+                    try:
+                        page_locs, _nested = fut.result()
+                    except Exception as exc:
+                        self.logger.warning(f"Sitemap error {sm}: {exc}")
+                        continue
+                    added = 0
+                    for loc in page_locs:
+                        if loc.endswith(".xml"):
+                            continue
+                        if not same_site(loc, self.item.url):
+                            continue
+                        self._enqueue(loc, 1, priority=_is_priority_url(loc))
+                        added += 1
+                    if added:
+                        self.logger.info(f"Queued {added} URLs from sitemap {sm}")
+
+    def _parse_sitemap_locs(self, sitemap_url: str) -> tuple[list[str], list[str]]:
+        payload = self._http_fetch_page(sitemap_url)
+        xml_text = payload.get("html") or ""
+        status = payload.get("status")
         if not xml_text or (status and status >= 400):
-            return
+            return [], []
         try:
             root = ET.fromstring(xml_text)
         except ET.ParseError:
             self.logger.warning(f"Could not parse sitemap: {sitemap_url}")
-            return
+            return [], []
 
         ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
         locs = [el.text.strip() for el in root.findall(".//sm:loc", ns) if el.text]
         if not locs:
             locs = [el.text.strip() for el in root.findall(".//{*}loc") if el.text]
 
-        added = 0
+        pages: list[str] = []
+        nested: list[str] = []
         for loc in locs:
             if loc.endswith(".xml") and "sitemap" in loc.lower():
-                self._ingest_sitemap(loc, depth + 1)
-                continue
-            if not same_site(loc, self.item.url):
-                continue
-            self._enqueue(loc, 1, priority=_is_priority_url(loc))
-            added += 1
-            if added >= self.settings.max_pages_per_site:
-                break
-        if added:
-            self.logger.info(f"Queued {added} URLs from sitemap {sitemap_url}")
+                nested.append(loc)
+            else:
+                pages.append(loc)
+        return pages, nested
 
     def _rescan_all_downloaded_files(self, site_dir: Path) -> None:
-        """Scan HTML + documents so contact text files are complete."""
         before_e, before_p = len(self.duplicates.emails), len(self.duplicates.phones)
         patterns = (
             "HTML/**/*.html",
@@ -535,8 +823,7 @@ class SiteCrawler:
         gained_e = len(self.duplicates.emails) - before_e
         gained_p = len(self.duplicates.phones) - before_p
         self.logger.info(
-            f"Full download rescan ({scanned} files): "
-            f"+{gained_e} emails, +{gained_p} phones"
+            f"Full download rescan ({scanned} files): +{gained_e} emails, +{gained_p} phones"
         )
 
     def _write_pages_index(self, site_dir: Path) -> None:
@@ -546,13 +833,12 @@ class SiteCrawler:
 
     def _flush_contacts(self, force: bool = False) -> None:
         self._flush_counter += 1
-        if not force and self._flush_counter % 3 != 0:
+        if not force and self._flush_counter % 10 != 0:
             return
         if not self._site_dir:
             return
         emails = sorted(self.duplicates.emails)
         phones = sorted(self.duplicates.phones)
-
         email_body = (
             f"# Emails extracted from {self.item.url}\n"
             f"# Total: {len(emails)}\n"
@@ -563,11 +849,8 @@ class SiteCrawler:
             f"# Total: {len(phones)}\n"
             + ("\n".join(phones) + ("\n" if phones else ""))
         )
-
-        # Primary location required by the product
         (self._site_dir / "emails.txt").write_text(email_body, encoding="utf-8")
         (self._site_dir / "phone_numbers.txt").write_text(phone_body, encoding="utf-8")
-        # Copies under Reports for easy browsing
         (self._site_dir / "Reports" / "emails.txt").write_text(email_body, encoding="utf-8")
         (self._site_dir / "Reports" / "phone_numbers.txt").write_text(
             phone_body, encoding="utf-8"

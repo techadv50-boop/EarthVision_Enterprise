@@ -9,7 +9,8 @@ Professional Windows desktop application that crawls websites sequentially, down
 - Multiline URL input with blank-line ignore and automatic deduplication
 - Sequential multi-site processing (one website at a time)
 - **Complete website download** (all reachable pages, documents, images)
-- Playwright rendering + sitemap discovery + contact-page prioritization
+- **High-speed parallel crawl** (many pages/downloads at once; Playwright only as fallback)
+- Sitemap discovery + contact-page prioritization
 - Document download: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, CSV, TXT, ZIP
 - Duplicate prevention via URL + SHA-256
 - Email and phone extraction from every HTML page and document
