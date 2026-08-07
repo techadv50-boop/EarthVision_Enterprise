@@ -4,23 +4,25 @@ export default {
   theme: {
     extend: {
       colors: {
+        sateye: {
+          ink: '#070b14',
+          panel: '#121a2a',
+          line: '#1e293b',
+          mist: '#e2e8f0',
+          teal: '#2dd4bf',
+          sky: '#38bdf8',
+          amber: '#fbbf24',
+        },
+        // Keep earth aliases for any leftover widgets
         earth: {
-          50: '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          300: '#93c5fd',
-          400: '#60a5fa',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
-          950: '#172554',
+          400: '#2dd4bf',
+          500: '#14b8a6',
+          600: '#0d9488',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
+        sans: ['Space Grotesk', 'Segoe UI', 'sans-serif'],
+        mono: ['IBM Plex Mono', 'ui-monospace', 'monospace'],
       },
     },
   },

@@ -18,11 +18,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "EarthVision Enterprise"
+    app_name: str = "SAT EYE"
     app_version: str = "1.0.0"
     debug: bool = False
+    offline_mode: bool = True
     secret_key: str = Field(
-        default="dev-secret-key-change-in-production-min-32-chars",
+        default="sat-eye-offline-local-secret-key-32chars!",
         min_length=32,
     )
     access_token_expire_minutes: int = 60
@@ -30,11 +31,11 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
 
     database_url: str = Field(
-        default=f"sqlite+aiosqlite:///{PROJECT_ROOT / 'earthvision.db'}"
+        default=f"sqlite+aiosqlite:///{PROJECT_ROOT / 'sateye.db'}"
     )
 
     cors_origins: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000"]
+        default=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"]
     )
 
     copernicus_client_id: str = ""
@@ -51,6 +52,7 @@ class Settings(BaseSettings):
     imagery_cache_dir: Path = Field(default=PROJECT_ROOT / "cache" / "imagery")
     scene_cache_dir: Path = Field(default=PROJECT_ROOT / "cache" / "scenes")
     upload_dir: Path = Field(default=PROJECT_ROOT / "uploads")
+    offline_data_dir: Path = Field(default=PROJECT_ROOT / "offline_data")
     max_upload_size_mb: int = 500
 
     cesium_ion_token: str = ""
@@ -71,7 +73,11 @@ class Settings(BaseSettings):
         return list(v)  # type: ignore[arg-type]
 
     @field_validator(
-        "imagery_cache_dir", "scene_cache_dir", "upload_dir", mode="after"
+        "imagery_cache_dir",
+        "scene_cache_dir",
+        "upload_dir",
+        "offline_data_dir",
+        mode="after",
     )
     @classmethod
     def ensure_dirs(cls, v: Path) -> Path:

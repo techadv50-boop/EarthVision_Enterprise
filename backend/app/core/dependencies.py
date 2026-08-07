@@ -53,11 +53,40 @@ async def _load_user_from_token(
     return user
 
 
+async def _offline_local_user(db: AsyncSession) -> User:
+    """Return the seeded local offline operator (no internet / no login)."""
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.roles).selectinload(Role.permissions))
+        .where(User.username == "offline")
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        # Fallback to admin if offline user not yet seeded
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.roles).selectinload(Role.permissions))
+            .where(User.username == "admin")
+        )
+        user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Offline user not initialized",
+        )
+    return user
+
+
 async def get_current_user(
     credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
+    from app.core.config import get_settings
+
+    settings = get_settings()
     if credentials is None:
+        if settings.offline_mode:
+            return await _offline_local_user(db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -75,7 +104,11 @@ async def get_current_user_tile_compatible(
 
     Cesium UrlTemplateImageryProvider cannot send Authorization headers, so tile
     URLs should append ``?token=${access_token}`` (or a short-lived tile JWT).
+    In offline mode, tiles work without a token.
     """
+    from app.core.config import get_settings
+
+    settings = get_settings()
     raw = None
     if credentials is not None:
         raw = credentials.credentials
@@ -83,6 +116,8 @@ async def get_current_user_tile_compatible(
         raw = token
 
     if not raw:
+        if settings.offline_mode:
+            return await _offline_local_user(db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated (provide Bearer header or token query param)",

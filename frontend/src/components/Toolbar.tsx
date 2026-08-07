@@ -1,6 +1,6 @@
 import {
-  Search, Layers, Satellite, BarChart3, Bookmark, Shield,
-  Pentagon, Square, Circle, MapPin, Ruler, Navigation, Trash2, Images,
+  Search, Layers, Satellite, BarChart3, Bookmark, Wrench,
+  Pentagon, Square, Circle, MapPin, Ruler, Navigation, Trash2, Images, Upload,
 } from 'lucide-react';
 import { useMapStore } from '@/store/mapStore';
 import { useUIStore } from '@/store/uiStore';
@@ -15,14 +15,15 @@ const TOOLS = [
 ];
 
 const PANELS = [
-  { id: 'search' as const, icon: Search, label: 'Search' },
+  { id: 'upload' as const, icon: Upload, label: 'Upload Imagery' },
   { id: 'layers' as const, icon: Layers, label: 'Layers' },
-  { id: 'imagery' as const, icon: Satellite, label: 'Imagery' },
+  { id: 'tools' as const, icon: Wrench, label: 'GIS Tools (148)' },
+  { id: 'imagery' as const, icon: Satellite, label: 'Time Stacks' },
   { id: 'analytics' as const, icon: BarChart3, label: 'Analytics' },
-  { id: 'aoi' as const, icon: Pentagon, label: 'AOI' },
   { id: 'raster' as const, icon: Images, label: 'Raster' },
+  { id: 'aoi' as const, icon: Pentagon, label: 'AOI' },
+  { id: 'search' as const, icon: Search, label: 'Search' },
   { id: 'bookmarks' as const, icon: Bookmark, label: 'Bookmarks' },
-  { id: 'admin' as const, icon: Shield, label: 'Admin' },
 ];
 
 export default function Toolbar() {
@@ -30,7 +31,7 @@ export default function Toolbar() {
   const { activePanel, setActivePanel } = useUIStore();
 
   return (
-    <div className="absolute top-4 left-4 z-20 flex flex-col gap-2">
+    <div className="absolute top-4 left-4 z-20 flex flex-col gap-2 animate-slide-in">
       <div className="panel p-1 flex flex-col gap-0.5">
         {TOOLS.map(({ id, icon: Icon, label }) => (
           <button
@@ -38,7 +39,7 @@ export default function Toolbar() {
             onClick={() => setActiveTool(id)}
             title={label}
             className={`p-2 rounded transition-colors ${
-              activeTool === id ? 'bg-earth-600 text-white' : 'hover:bg-gray-800 text-gray-400'
+              activeTool === id ? 'bg-sateye-teal text-sateye-ink' : 'hover:bg-sateye-panel text-sateye-mist/70'
             }`}
           >
             <Icon className="w-5 h-5" />
@@ -47,7 +48,7 @@ export default function Toolbar() {
         <button
           onClick={clearGeometries}
           title="Clear drawings"
-          className="p-2 rounded hover:bg-gray-800 text-gray-400"
+          className="p-2 rounded hover:bg-sateye-panel text-sateye-mist/70"
         >
           <Trash2 className="w-5 h-5" />
         </button>
@@ -60,7 +61,7 @@ export default function Toolbar() {
             onClick={() => setActivePanel(id)}
             title={label}
             className={`p-2 rounded transition-colors ${
-              activePanel === id ? 'bg-earth-600 text-white' : 'hover:bg-gray-800 text-gray-400'
+              activePanel === id ? 'bg-sateye-teal text-sateye-ink' : 'hover:bg-sateye-panel text-sateye-mist/70'
             }`}
           >
             <Icon className="w-5 h-5" />

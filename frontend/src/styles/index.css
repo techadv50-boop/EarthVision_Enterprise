@@ -2,28 +2,141 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('/fonts/SpaceGrotesk.ttf') format('truetype');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/IBMPlexMono-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/IBMPlexMono-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 @layer base {
   * {
-    @apply border-gray-800;
+    @apply border-sateye-line;
   }
   body {
-    @apply antialiased;
+    @apply antialiased text-sateye-mist bg-sateye-ink;
+    font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
   }
 }
 
 @layer components {
+  .sateye-shell {
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(45, 212, 191, 0.12), transparent 55%),
+      radial-gradient(900px 500px at 90% 0%, rgba(56, 189, 248, 0.08), transparent 50%),
+      linear-gradient(180deg, #070b14 0%, #0b1220 45%, #0a1628 100%);
+  }
+
+  .sateye-header {
+    background: linear-gradient(180deg, rgba(7, 11, 20, 0.92), rgba(7, 11, 20, 0.72));
+    border-bottom: 1px solid rgba(45, 212, 191, 0.15);
+    backdrop-filter: blur(12px);
+  }
+
+  .brand-mark {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    color: #5eead4;
+    text-shadow: 0 0 24px rgba(45, 212, 191, 0.25);
+  }
+
   .panel {
-    @apply bg-gray-900/95 backdrop-blur-md border border-gray-800 rounded-lg shadow-xl;
+    @apply bg-sateye-ink/90 backdrop-blur-md border border-sateye-line rounded-lg shadow-xl;
   }
+
   .btn-primary {
-    @apply px-4 py-2 bg-earth-600 hover:bg-earth-500 text-white rounded-md font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply px-4 py-2 bg-sateye-teal hover:bg-sateye-teal/90 text-sateye-ink rounded-md font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
   }
+
   .btn-secondary {
-    @apply px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md font-medium transition-colors;
+    @apply px-4 py-2 bg-sateye-panel hover:bg-sateye-panel/80 text-sateye-mist rounded-md font-medium transition-colors;
   }
+
   .input-field {
-    @apply w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-earth-500 focus:border-transparent;
+    @apply w-full px-3 py-2 bg-sateye-panel border border-sateye-line rounded-md text-sateye-mist placeholder-sateye-mist/35 focus:outline-none focus:ring-2 focus:ring-sateye-teal/50 focus:border-transparent;
   }
+}
+
+.date-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    #2dd4bf var(--pct, 0%),
+    rgba(148, 163, 184, 0.25) var(--pct, 0%)
+  );
+  outline: none;
+}
+
+.date-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #5eead4;
+  border: 2px solid #0b1220;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.55);
+}
+
+.date-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #5eead4;
+  border: 2px solid #0b1220;
+  cursor: pointer;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.45s ease-out both;
+}
+
+.animate-slide-in {
+  animation: slide-in 0.4s ease-out both;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2.8s ease-in-out infinite;
+}
+
+.shadow-glow {
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45), 0 0 30px rgba(45, 212, 191, 0.08);
 }
 
 .cesium-viewer-bottom,

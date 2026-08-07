@@ -34,7 +34,7 @@ api.interceptors.response.use(
         } catch {
           localStorage.removeItem('access_token');
           localStorage.removeItem('refresh_token');
-          window.location.href = '/login';
+          // Offline SAT EYE has no login wall — do not redirect
         }
       }
     }
@@ -167,4 +167,55 @@ export const adminApi = {
 export const configApi = {
   health: () => axios.get('/api/health'),
   config: () => axios.get('/api/config'),
+};
+
+export const offlineApi = {
+  status: () => api.get('/offline/status'),
+  seed: () => api.post('/offline/seed'),
+  layers: () => api.get('/offline/layers'),
+  layerGeojson: (layerId: string) => api.get(`/offline/layers/${encodeURIComponent(layerId)}/geojson`),
+  uploadElevation: (file: File, subtype = 'DEM') => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('subtype', subtype);
+    return api.post('/offline/layers/upload-elevation', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  uploadVector: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post('/offline/layers/upload-vector', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  tools: (params?: { category?: string; q?: string }) =>
+    api.get('/offline/tools', { params }),
+  toolCategories: () => api.get('/offline/tools/categories'),
+  runTool: (tool_id: string, params: Record<string, unknown> = {}) =>
+    api.post('/offline/tools/run', { tool_id, params }),
+  stacks: () => api.get('/offline/stacks'),
+  getStack: (id: string) => api.get(`/offline/stacks/${encodeURIComponent(id)}`),
+  createStack: (data: Record<string, unknown>) => api.post('/offline/stacks', data),
+  addImageToStack: (id: string, data: Record<string, unknown>) =>
+    api.post(`/offline/stacks/${encodeURIComponent(id)}/images`, data),
+  uploadToStack: (file: File, fields: {
+    place_name: string;
+    acquisition_date?: string;
+    longitude?: number;
+    latitude?: number;
+    cloud_cover?: number;
+  }) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('place_name', fields.place_name);
+    if (fields.acquisition_date) form.append('acquisition_date', fields.acquisition_date);
+    if (fields.longitude != null) form.append('longitude', String(fields.longitude));
+    if (fields.latitude != null) form.append('latitude', String(fields.latitude));
+    if (fields.cloud_cover != null) form.append('cloud_cover', String(fields.cloud_cover));
+    return api.post('/offline/stacks/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  seedDemoStack: () => api.post('/offline/stacks/seed-demo'),
 };
