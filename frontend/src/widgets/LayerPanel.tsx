@@ -140,6 +140,18 @@ export default function LayerPanel() {
     const layer = layers.find((l) => l.id === layerId);
     if (!layer || !viewer) return;
 
+    if (layer.category === 'basemap' && layer.url_template) {
+      if (on) {
+        const style = layerId.includes('topo')
+          ? 'topo'
+          : layerId.includes('dark')
+            ? 'dark'
+            : 'satellite';
+        switchBasemap(style);
+      }
+      return;
+    }
+
     if (layer.type === 'geojson') {
       if (on) await loadVector(layerId);
       else removeVector(layerId);
