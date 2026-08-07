@@ -28,7 +28,7 @@ jobs:
           path: webcrawler_enterprise/dist/WebCrawlerEnterprise-Portable.zip
           if-no-files-found: error
 
-  windows-exe:
+  windows-standalone:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,45 +43,69 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright Chromium into local folder
         working-directory: webcrawler_enterprise
-        run: python -m playwright install chromium
+        shell: pwsh
+        run: |
+          $browserRoot = Join-Path (Get-Location) "ms-playwright"
+          New-Item -ItemType Directory -Force -Path $browserRoot | Out-Null
+          $env:PLAYWRIGHT_BROWSERS_PATH = $browserRoot
+          python -m playwright install chromium
+          if (-not (Get-ChildItem $browserRoot -ErrorAction SilentlyContinue)) {
+            throw "Playwright browsers were not installed into $browserRoot"
+          }
 
       - name: Build with PyInstaller
         working-directory: webcrawler_enterprise
-        run: pyinstaller --noconfirm webcrawler_enterprise.spec
+        shell: pwsh
+        run: |
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path (Get-Location) "ms-playwright"
+          pyinstaller --noconfirm webcrawler_enterprise.spec
 
-      - name: Stage Windows package
+      - name: Stage standalone package
         working-directory: webcrawler_enterprise
         shell: pwsh
         run: |
-          $stage = "dist/WebCrawlerEnterprise-Windows"
+          $stage = "dist/WebCrawlerEnterprise-Standalone"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          # PyInstaller output
           Copy-Item -Recurse "dist/WebCrawlerEnterprise/*" $stage
-          Copy-Item "START_HERE.txt" $stage -ErrorAction SilentlyContinue
+
+          # Bundled Chromium for Playwright fallback (no python/playwright install needed)
+          Copy-Item -Recurse "ms-playwright" (Join-Path $stage "ms-playwright")
+
+          # Double-click launcher + docs
+          Copy-Item "scripts/Start_WebCrawlerEnterprise.bat" (Join-Path $stage "Start WebCrawler Enterprise.bat")
+          Copy-Item "README_STANDALONE.txt" (Join-Path $stage "README_START_HERE.txt")
           Copy-Item "README.md" $stage -ErrorAction SilentlyContinue
+
           @"
-          WebCrawler Enterprise (Windows build)
+          WebCrawler Enterprise - Standalone
 
-          1. Unzip this folder
-          2. Run WebCrawlerEnterprise.exe
-          3. Login: admin / admin (change password on first login)
-          4. Master reset code: NTZHSS
+          Double-click: Start WebCrawler Enterprise.bat
 
-          Note: If Chromium is missing for Playwright, install with:
-            playwright install chromium
-          or use the Portable package with Setup.bat.
-          "@ | Set-Content -Path "$stage/README_WINDOWS.txt"
+          Login: admin / admin
+          Master reset: NTZHSS
 
-      - name: Zip Windows package
+          No Python or VS Code required.
+          "@ | Set-Content -Path (Join-Path $stage "OPEN_ME.txt") -Encoding UTF8
+
+      - name: Zip standalone package
         working-directory: webcrawler_enterprise
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist/WebCrawlerEnterprise-Windows\*" -DestinationPath "dist/WebCrawlerEnterprise-Windows.zip" -Force
+          if (Test-Path "dist/WebCrawlerEnterprise-Standalone-Windows.zip") {
+            Remove-Item "dist/WebCrawlerEnterprise-Standalone-Windows.zip" -Force
+          }
+          Compress-Archive -Path "dist/WebCrawlerEnterprise-Standalone\*" -DestinationPath "dist/WebCrawlerEnterprise-Standalone-Windows.zip" -Force
+          Get-Item "dist/WebCrawlerEnterprise-Standalone-Windows.zip" | Format-List Name, Length
 
-      - name: Upload Windows exe package
+      - name: Upload standalone Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: WebCrawlerEnterprise-Windows
-          path: webcrawler_enterprise/dist/WebCrawlerEnterprise-Windows.zip
+          name: WebCrawlerEnterprise-Standalone-Windows
+          path: webcrawler_enterprise/dist/WebCrawlerEnterprise-Standalone-Windows.zip
           if-no-files-found: error
+          retention-days: 30

@@ -1,6 +1,12 @@
-# WebCrawler Enterprise — Portable Package
+# WebCrawler Enterprise — Package
 
-## Quick start (Windows)
+## Best option: Standalone (no Python / no VS Code)
+
+Download the CI artifact named **WebCrawlerEnterprise-Standalone-Windows**, unzip it, then double-click:
+
+`Start WebCrawler Enterprise.bat`
+
+## Portable source package (needs Python once)
 
 1. Unzip this folder anywhere (example: `D:\WebCrawlerEnterprise`)
 2. Double-click **`Setup.bat`** (once)

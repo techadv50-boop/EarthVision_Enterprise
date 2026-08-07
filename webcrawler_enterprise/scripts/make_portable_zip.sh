@@ -19,6 +19,7 @@ cp "$ROOT/README.md" "$STAGE/"
 cp "$ROOT/Setup.bat" "$STAGE/"
 cp "$ROOT/Run_WebCrawlerEnterprise.bat" "$STAGE/"
 cp "$ROOT/START_HERE.txt" "$STAGE/"
+cp "$ROOT/README_STANDALONE.txt" "$STAGE/" 2>/dev/null || true
 cp "$ROOT/webcrawler_enterprise.spec" "$STAGE/" 2>/dev/null || true
 
 # Optional tests for developers

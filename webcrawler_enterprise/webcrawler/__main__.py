@@ -6,6 +6,9 @@ import sys
 
 
 def main() -> int:
+    from webcrawler.runtime import configure_runtime
+
+    configure_runtime()
     from webcrawler.gui.app import run_app
 
     return run_app(sys.argv)
