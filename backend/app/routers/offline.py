@@ -37,11 +37,17 @@ class StackCreateRequest(BaseModel):
 
 class StackAddImageRequest(BaseModel):
     file_path: str
-    acquisition_date: str | None = None
+    acquisition_date: str  # required
+    acquisition_time: str | None = None
     label: str | None = None
     cloud_cover: float | None = None
+    sensor: str | None = None
+    platform: str | None = None
+    resolution_m: float | None = None
+    notes: str | None = None
     metadata: dict[str, Any] | None = None
     footprint_geojson: str | None = None
+    working_path: str | None = None
 
 
 @router.get("/status")
@@ -205,6 +211,13 @@ async def get_stack(stack_id: str):
     return stack
 
 
+@router.get("/formats")
+async def list_supported_formats():
+    from app.services.image_ingest_service import ImageIngestService
+
+    return ImageIngestService.supported_formats()
+
+
 @router.post("/stacks/{stack_id}/images")
 async def add_image_to_stack(
     stack_id: str,
@@ -212,15 +225,29 @@ async def add_image_to_stack(
     current_user: Annotated[User, Depends(get_current_user)],
 ):
     _ = current_user
-    stack = ImageryStackService().add_image(
-        stack_id,
-        file_path=body.file_path,
-        acquisition_date=body.acquisition_date,
-        label=body.label,
-        cloud_cover=body.cloud_cover,
-        metadata=body.metadata,
-        footprint_geojson=body.footprint_geojson,
-    )
+    meta = dict(body.metadata or {})
+    if body.sensor:
+        meta["sensor"] = body.sensor
+    if body.platform:
+        meta["platform"] = body.platform
+    if body.resolution_m is not None:
+        meta["resolution_m"] = body.resolution_m
+    if body.notes:
+        meta["notes"] = body.notes
+    try:
+        stack = ImageryStackService().add_image(
+            stack_id,
+            file_path=body.file_path,
+            acquisition_date=body.acquisition_date,
+            acquisition_time=body.acquisition_time,
+            label=body.label,
+            cloud_cover=body.cloud_cover,
+            metadata=meta,
+            footprint_geojson=body.footprint_geojson,
+            working_path=body.working_path,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not stack:
         raise HTTPException(status_code=404, detail="Stack not found")
     return stack
@@ -232,51 +259,127 @@ async def upload_to_stack(
     db: Annotated[AsyncSession, Depends(get_db)],
     file: UploadFile = File(...),
     place_name: str = Form(...),
-    acquisition_date: Optional[str] = Form(default=None),
+    acquisition_date: str = Form(..., description="Required acquisition date YYYY-MM-DD"),
+    acquisition_time: Optional[str] = Form(default=None),
     longitude: Optional[float] = Form(default=None),
     latitude: Optional[float] = Form(default=None),
+    altitude_m: Optional[float] = Form(default=None),
     cloud_cover: Optional[float] = Form(default=None),
+    sensor: Optional[str] = Form(default=None),
+    platform: Optional[str] = Form(default=None),
+    resolution_m: Optional[float] = Form(default=None),
+    notes: Optional[str] = Form(default=None),
+    label: Optional[str] = Form(default=None),
 ):
-    """Upload a satellite image and attach it to a place stack (creates stack if needed)."""
+    """Upload a satellite/optical image with required date + optional metadata.
+
+    Accepts many formats; normalizes to a working GeoTIFF for GIS tools.
+    """
+    from app.services.image_ingest_service import ImageIngestService
+
     _ = db
+    ingest = ImageIngestService()
+    filename = file.filename or "scene.tif"
+    if not ingest.is_supported(filename):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported image format. Accepted extensions: "
+                f"{', '.join(ingest.supported_formats()['extensions'])}"
+            ),
+        )
+
+    try:
+        date = ingest.parse_required_date(acquisition_date)
+        time_val = ingest.parse_optional_time(acquisition_time)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     settings = get_settings()
     user_id = current_user.id
     dest_dir = settings.upload_dir / "offline" / str(user_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    safe = Path(file.filename or "scene.tif").name
-    dest = dest_dir / safe
-    with dest.open("wb") as out:
+
+    # Stage upload then normalize
+    staging = dest_dir / f"_staging_{Path(filename).name}"
+    with staging.open("wb") as out:
         shutil.copyfileobj(file.file, out)
 
-    info = None
+    result: dict[str, Any] | None = None
     try:
-        from app.services.raster_service import RasterService
+        result = ingest.ingest(staging, dest_dir, original_filename=filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        # Remove staging copy if it is not the kept original
+        if staging.exists():
+            keep = Path(result["original_path"]).resolve() if result else None
+            if keep is None or staging.resolve() != keep:
+                staging.unlink(missing_ok=True)
 
-        info = RasterService().get_tile_info(str(dest))
-        if longitude is None and latitude is None and info and "bounds" in info:
-            b = info["bounds"]
-            if isinstance(b, (list, tuple)) and len(b) >= 4:
-                longitude = (float(b[0]) + float(b[2])) / 2
-                latitude = (float(b[1]) + float(b[3])) / 2
-            elif isinstance(b, dict):
-                longitude = (float(b["left"]) + float(b["right"])) / 2
-                latitude = (float(b["bottom"]) + float(b["top"])) / 2
-    except Exception:  # noqa: BLE001
-        info = None
+    assert result is not None
+
+    if longitude is None:
+        longitude = result.get("longitude")
+    if latitude is None:
+        latitude = result.get("latitude")
+
+    meta: dict[str, Any] = {
+        "original_filename": Path(filename).name,
+        "original_format": result.get("original_format"),
+        "normalized": result.get("normalized"),
+        "convert_note": result.get("convert_note"),
+        "raster_info": result.get("info"),
+        "working_path": result.get("working_path"),
+    }
+    if time_val:
+        meta["acquisition_time"] = time_val
+    if sensor:
+        meta["sensor"] = sensor
+    if platform:
+        meta["platform"] = platform
+    if resolution_m is not None:
+        meta["resolution_m"] = resolution_m
+    if altitude_m is not None:
+        meta["altitude_m"] = altitude_m
+    if notes:
+        meta["notes"] = notes
+    if longitude is not None:
+        meta["longitude"] = longitude
+    if latitude is not None:
+        meta["latitude"] = latitude
 
     stacks = ImageryStackService()
     stack = stacks.find_or_create_for_place(
         place_name, longitude=longitude, latitude=latitude
     )
-    stack = stacks.add_image(
-        stack["id"],
-        file_path=str(dest),
-        acquisition_date=acquisition_date,
-        label=safe,
-        cloud_cover=cloud_cover,
-        metadata={"original_filename": safe, "raster_info": info},
-    )
-    return {"stack": stack, "file_path": str(dest), "info": info}
+    try:
+        stack = stacks.add_image(
+            stack["id"],
+            file_path=result["original_path"],
+            working_path=result["working_path"],
+            acquisition_date=date,
+            acquisition_time=time_val,
+            label=label or Path(filename).name,
+            cloud_cover=cloud_cover,
+            metadata=meta,
+            original_format=result.get("original_format"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "stack": stack,
+        "file_path": result["original_path"],
+        "working_path": result["working_path"],
+        "info": result.get("info"),
+        "acquisition_date": date,
+        "acquisition_time": time_val,
+        "format": result.get("original_format"),
+        "normalized": result.get("normalized"),
+        "slider_max_index": stack.get("slider_max_index") if stack else 0,
+        "image_count": stack.get("image_count") if stack else 0,
+    }
 
 
 @router.post("/stacks/seed-demo")

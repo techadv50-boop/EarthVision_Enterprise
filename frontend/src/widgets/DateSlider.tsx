@@ -4,42 +4,49 @@ import { useStackStore } from '@/store/stackStore';
 import { useMapStore } from '@/store/mapStore';
 
 /**
- * Multi-date imagery slider. Visible when the active place stack has 2+ images
- * (designed for stacks of ~20 dates of the same place).
+ * Multi-date imagery slider.
+ * Range is strictly 0 … image_count-1 (maximum = number of uploaded dated images).
  */
 export default function DateSlider() {
   const { activeStack, sliderIndex, setSliderIndex, selectByDateIndex } = useStackStore();
   const { flyTo, viewer } = useMapStore();
 
   const images = activeStack?.images ?? [];
-  const show = Boolean(activeStack && images.length >= 2);
+  const imageCount = images.length;
+  const maxIndex = Math.max(0, imageCount - 1);
+  const show = Boolean(activeStack && imageCount >= 2);
+  const safeIndex = Math.min(Math.max(0, sliderIndex), maxIndex);
 
-  const current = images[sliderIndex];
+  const current = images[safeIndex];
   const dateLabel = useMemo(() => {
     if (!current?.acquisition_date) return '—';
-    return current.acquisition_date;
+    const t = current.acquisition_time || current.metadata?.acquisition_time;
+    return t ? `${current.acquisition_date} ${String(t)}` : current.acquisition_date;
   }, [current]);
 
   useEffect(() => {
+    if (!activeStack) return;
+    if (sliderIndex > maxIndex) setSliderIndex(maxIndex);
+  }, [activeStack, maxIndex, setSliderIndex, sliderIndex]);
+
+  useEffect(() => {
     if (!show || !current) return;
-    // Demo images have virtual paths — show footprint / fly only
     const isDemo = current.is_demo || current.file_path?.startsWith('demo://');
-    if (!isDemo && current.file_path) {
-      // Use analysis layer path via raster tiles when real file exists
+    const path = current.working_path || current.file_path;
+    if (!isDemo && path) {
       const url =
-        `/api/v1/raster/tiles/{z}/{x}/{y}.png?file_path=${encodeURIComponent(current.file_path)}`;
+        `/api/v1/raster/tiles/{z}/{x}/{y}.png?file_path=${encodeURIComponent(path)}`;
       useMapStore.getState().addAnalysisLayer(url);
     }
-  }, [show, current, sliderIndex]);
+  }, [show, current, safeIndex]);
 
   useEffect(() => {
     if (!activeStack?.longitude || !activeStack?.latitude || !viewer) return;
-    // Soft fly when stack first selected
-  }, [activeStack?.id, viewer]);
+  }, [activeStack?.id, activeStack?.latitude, activeStack?.longitude, viewer]);
 
   if (!show) return null;
 
-  const pct = images.length <= 1 ? 0 : (sliderIndex / (images.length - 1)) * 100;
+  const pct = maxIndex <= 0 ? 0 : (safeIndex / maxIndex) * 100;
 
   return (
     <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30 w-[min(720px,92vw)] animate-fade-in">
@@ -51,24 +58,24 @@ export default function DateSlider() {
             </div>
             <div className="font-semibold truncate">{activeStack?.name}</div>
             <div className="text-xs text-sateye-mist/55">
-              {images.length} images · same place · different dates
+              {imageCount} images · slider max {imageCount} · same place · different dates
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <Calendar className="w-4 h-4 text-sateye-teal" />
             <span className="font-mono text-sm text-sateye-teal">{dateLabel}</span>
             <span className="text-xs text-sateye-mist/45">
-              {sliderIndex + 1}/{images.length}
+              {safeIndex + 1}/{imageCount}
             </span>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
           <button
-            className="p-1.5 rounded hover:bg-sateye-panel text-sateye-mist/70"
-            onClick={() => setSliderIndex(sliderIndex - 1)}
-            disabled={sliderIndex <= 0}
-            title="Previous date"
+            className="p-1.5 rounded hover:bg-sateye-panel text-sateye-mist/70 disabled:opacity-30"
+            onClick={() => setSliderIndex(safeIndex - 1)}
+            disabled={safeIndex <= 0}
+            title="Previous image"
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
@@ -77,26 +84,35 @@ export default function DateSlider() {
             <input
               type="range"
               min={0}
-              max={images.length - 1}
-              value={sliderIndex}
+              max={maxIndex}
+              step={1}
+              value={safeIndex}
               onChange={(e) => {
                 const idx = Number(e.target.value);
-                selectByDateIndex(idx);
+                // Hard clamp to available images only
+                selectByDateIndex(Math.max(0, Math.min(idx, maxIndex)));
               }}
               className="date-slider w-full"
               style={{ '--pct': `${pct}%` } as React.CSSProperties}
+              aria-valuemin={0}
+              aria-valuemax={maxIndex}
+              aria-valuenow={safeIndex}
+              aria-label={`Image ${safeIndex + 1} of ${imageCount}`}
             />
             <div className="flex justify-between mt-1 text-[10px] font-mono text-sateye-mist/40">
               <span>{images[0]?.acquisition_date}</span>
-              <span>{images[images.length - 1]?.acquisition_date}</span>
+              <span>
+                max {imageCount}
+              </span>
+              <span>{images[maxIndex]?.acquisition_date}</span>
             </div>
           </div>
 
           <button
-            className="p-1.5 rounded hover:bg-sateye-panel text-sateye-mist/70"
-            onClick={() => setSliderIndex(sliderIndex + 1)}
-            disabled={sliderIndex >= images.length - 1}
-            title="Next date"
+            className="p-1.5 rounded hover:bg-sateye-panel text-sateye-mist/70 disabled:opacity-30"
+            onClick={() => setSliderIndex(safeIndex + 1)}
+            disabled={safeIndex >= maxIndex}
+            title="Next image"
           >
             <ChevronRight className="w-5 h-5" />
           </button>
@@ -117,6 +133,7 @@ export default function DateSlider() {
         {current?.label && (
           <div className="mt-2 text-xs text-sateye-mist/50 truncate">
             {current.label}
+            {current.original_format && ` · ${current.original_format}`}
             {current.cloud_cover != null && ` · cloud ${current.cloud_cover}%`}
           </div>
         )}

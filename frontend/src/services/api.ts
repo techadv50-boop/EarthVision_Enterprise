@@ -199,20 +199,35 @@ export const offlineApi = {
   createStack: (data: Record<string, unknown>) => api.post('/offline/stacks', data),
   addImageToStack: (id: string, data: Record<string, unknown>) =>
     api.post(`/offline/stacks/${encodeURIComponent(id)}/images`, data),
+  formats: () => api.get('/offline/formats'),
   uploadToStack: (file: File, fields: {
     place_name: string;
-    acquisition_date?: string;
+    acquisition_date: string;
+    acquisition_time?: string;
     longitude?: number;
     latitude?: number;
+    altitude_m?: number;
     cloud_cover?: number;
+    sensor?: string;
+    platform?: string;
+    resolution_m?: number;
+    notes?: string;
+    label?: string;
   }) => {
     const form = new FormData();
     form.append('file', file);
     form.append('place_name', fields.place_name);
-    if (fields.acquisition_date) form.append('acquisition_date', fields.acquisition_date);
+    form.append('acquisition_date', fields.acquisition_date);
+    if (fields.acquisition_time) form.append('acquisition_time', fields.acquisition_time);
     if (fields.longitude != null) form.append('longitude', String(fields.longitude));
     if (fields.latitude != null) form.append('latitude', String(fields.latitude));
+    if (fields.altitude_m != null) form.append('altitude_m', String(fields.altitude_m));
     if (fields.cloud_cover != null) form.append('cloud_cover', String(fields.cloud_cover));
+    if (fields.sensor) form.append('sensor', fields.sensor);
+    if (fields.platform) form.append('platform', fields.platform);
+    if (fields.resolution_m != null) form.append('resolution_m', String(fields.resolution_m));
+    if (fields.notes) form.append('notes', fields.notes);
+    if (fields.label) form.append('label', fields.label);
     return api.post('/offline/stacks/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });

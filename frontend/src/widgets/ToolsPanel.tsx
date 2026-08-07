@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Loader2, Play, Search, Wrench } from 'lucide-react';
 import { offlineApi } from '@/services/api';
 import { useUIStore } from '@/store/uiStore';
+import { useStackStore } from '@/store/stackStore';
 
 interface GisTool {
   id: string;
@@ -27,6 +28,12 @@ export default function ToolsPanel() {
   const [running, setRunning] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const { showNotification } = useUIStore();
+  const { activeStack, sliderIndex } = useStackStore();
+  const activeImage = activeStack?.images?.[sliderIndex];
+  const activePath =
+    activeImage?.working_path ||
+    activeImage?.file_path ||
+    (activeImage?.metadata?.working_path as string | undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +75,16 @@ export default function ToolsPanel() {
     setRunning(tool.id);
     setResult(null);
     try {
-      const { data } = await offlineApi.runTool(tool.id, {});
+      const params: Record<string, unknown> = {};
+      // Pass current slider image so tools work on any uploaded format (normalized server-side)
+      if (activePath && !String(activePath).startsWith('demo://')) {
+        params.file_path = activePath;
+        params.working_path = activePath;
+      }
+      if (activeImage?.acquisition_date) {
+        params.acquisition_date = activeImage.acquisition_date;
+      }
+      const { data } = await offlineApi.runTool(tool.id, params);
       const msg =
         data.message ||
         (data.stats ? JSON.stringify(data.stats) : data.ok ? 'Completed offline' : data.error);
@@ -90,6 +106,20 @@ export default function ToolsPanel() {
         </span>
         <span>{tools.length} shown</span>
       </div>
+
+      {activeImage ? (
+        <div className="text-[11px] text-sateye-mist/50 bg-sateye-panel/50 rounded px-2 py-1.5">
+          Target: <span className="text-sateye-teal">{activeImage.acquisition_date}</span>
+          {activeImage.original_format && (
+            <span> · {activeImage.original_format}</span>
+          )}
+          <span className="text-sateye-mist/35"> (any format → tools via GeoTIFF)</span>
+        </div>
+      ) : (
+        <div className="text-[11px] text-sateye-mist/45">
+          Upload a dated image (or select a stack) to run tools on it.
+        </div>
+      )}
 
       <div className="relative">
         <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-sateye-mist/40" />

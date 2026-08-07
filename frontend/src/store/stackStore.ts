@@ -4,11 +4,14 @@ import { offlineApi } from '@/services/api';
 export interface StackImage {
   id: string;
   file_path: string;
+  working_path?: string;
   acquisition_date: string;
+  acquisition_time?: string | null;
   label?: string;
   cloud_cover?: number;
   metadata?: Record<string, unknown>;
   footprint_geojson?: string;
+  original_format?: string;
   is_demo?: boolean;
 }
 
@@ -20,6 +23,8 @@ export interface ImageryStack {
   latitude?: number;
   description?: string;
   image_count: number;
+  slider_max_index?: number;
+  date_count?: number;
   date_min?: string;
   date_max?: string;
   has_slider: boolean;

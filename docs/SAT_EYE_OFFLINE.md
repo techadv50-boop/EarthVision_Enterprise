@@ -12,7 +12,23 @@ SAT EYE is the offline PC edition of the Earth Observation workspace.
 
 ## Multi-date slider
 
-`ImageryStackService` groups uploads by place name / proximity. When a stack has ≥2 images, the UI shows a date slider. A 20-date demo stack (`demo_valley`) is seeded on startup.
+`ImageryStackService` groups uploads by place name / proximity. When a stack has ≥2 images, the UI shows a date slider. The slider range is **0 … image_count−1** (maximum = number of available dated images for that place). A 20-date demo stack (`demo_valley`) is seeded on startup.
+
+## Upload metadata
+
+`POST /api/v1/offline/stacks/upload` requires:
+
+| Field | Required | Notes |
+|---|---|---|
+| `place_name` | yes | Groups images of the same place |
+| `acquisition_date` | yes | `YYYY-MM-DD` |
+| `acquisition_time` | no | `HH:MM` / `HH:MM:SS` |
+| `longitude` / `latitude` / `altitude_m` | no | Location |
+| `cloud_cover`, `sensor`, `platform`, `resolution_m`, `notes`, `label` | no | Optional metadata |
+
+## Multi-format ingest
+
+`GET /api/v1/offline/formats` lists accepted extensions (GeoTIFF, JPEG2000, JPG/PNG/WebP, HDF/NetCDF, IMG, ASCII grid, etc.). Uploads are normalized to a **working GeoTIFF** so all 148 GIS tools can run on any accepted format.
 
 ## GIS tools
 

@@ -39,7 +39,23 @@ class GisToolsService:
         if tool is None:
             return {"ok": False, "error": f"Unknown tool: {tool_id}"}
 
-        params = params or {}
+        params = dict(params or {})
+        # Normalize any image format to a working GeoTIFF so tools are format-agnostic
+        for key in ("file_path", "raster_path", "dem_path", "working_path"):
+            raw = params.get(key)
+            if isinstance(raw, str) and raw and not raw.startswith("demo://"):
+                try:
+                    from app.services.image_ingest_service import ImageIngestService
+
+                    params[key] = ImageIngestService().ensure_working_path(raw)
+                    params.setdefault("file_path", params[key])
+                except Exception as exc:  # noqa: BLE001
+                    return {
+                        "ok": False,
+                        "tool": tool,
+                        "error": f"Could not open image for tools: {exc}",
+                    }
+
         handler = {
             "raster_info": self._raster_info,
             "index_ndvi": lambda p: self._spectral_index(p, "ndvi"),

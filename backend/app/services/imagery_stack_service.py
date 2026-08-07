@@ -73,37 +73,61 @@ class ImageryStackService:
         stack_id: str,
         *,
         file_path: str,
-        acquisition_date: str | None = None,
+        acquisition_date: str,
         label: str | None = None,
         cloud_cover: float | None = None,
         metadata: dict[str, Any] | None = None,
         footprint_geojson: str | None = None,
+        working_path: str | None = None,
+        acquisition_time: str | None = None,
+        original_format: str | None = None,
     ) -> dict[str, Any] | None:
+        from app.services.image_ingest_service import ImageIngestService
+
         data = self._read_index()
         stack = data.get("stacks", {}).get(stack_id)
         if not stack:
             return None
 
+        date = ImageIngestService.parse_required_date(acquisition_date)
+        time_val = ImageIngestService.parse_optional_time(acquisition_time)
+
+        work = working_path or file_path
         # Try to enrich from raster bounds if lon/lat missing
         if stack.get("longitude") is None or stack.get("latitude") is None:
-            center = self._raster_center(file_path)
+            center = self._raster_center(work)
             if center:
                 stack["longitude"], stack["latitude"] = center
 
         image_id = str(uuid.uuid4())[:10]
-        date = acquisition_date or self._infer_date(file_path) or datetime.now(timezone.utc).date().isoformat()
+        meta = dict(metadata or {})
+        if time_val:
+            meta["acquisition_time"] = time_val
+        if original_format:
+            meta["original_format"] = original_format
+        meta.setdefault("working_path", work)
+
         image = {
             "id": image_id,
             "file_path": file_path,
+            "working_path": work,
             "acquisition_date": date,
+            "acquisition_time": time_val,
             "label": label or Path(file_path).name,
             "cloud_cover": cloud_cover,
-            "metadata": metadata or {},
+            "metadata": meta,
             "footprint_geojson": footprint_geojson,
+            "original_format": original_format or Path(file_path).suffix.lower(),
             "added_at": datetime.now(timezone.utc).isoformat(),
         }
         stack["images"].append(image)
-        stack["images"].sort(key=lambda im: im.get("acquisition_date") or "")
+        # Sort by date then time so slider order is chronological
+        stack["images"].sort(
+            key=lambda im: (
+                im.get("acquisition_date") or "",
+                im.get("acquisition_time") or "",
+            )
+        )
         stack["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._write_index(data)
         return self._public_stack(stack_id, stack)
@@ -190,6 +214,8 @@ class ImageryStackService:
     def _public_stack(self, stack_id: str, stack: dict[str, Any]) -> dict[str, Any]:
         images = stack.get("images") or []
         dates = [im.get("acquisition_date") for im in images if im.get("acquisition_date")]
+        # Unique acquisition dates (slider steps = one entry per uploaded image)
+        unique_dates = sorted({d for d in dates if d})
         return {
             "id": stack_id,
             "name": stack.get("name"),
@@ -200,6 +226,8 @@ class ImageryStackService:
             "created_at": stack.get("created_at"),
             "updated_at": stack.get("updated_at"),
             "image_count": len(images),
+            "slider_max_index": max(0, len(images) - 1),
+            "date_count": len(unique_dates),
             "date_min": min(dates) if dates else None,
             "date_max": max(dates) if dates else None,
             "has_slider": len(images) >= 2,
