@@ -1,0 +1,50 @@
+# WebCrawler Enterprise — Portable Package
+
+## Quick start (Windows)
+
+1. Unzip this folder anywhere (example: `D:\WebCrawlerEnterprise`)
+2. Double-click **`Setup.bat`** (once)
+3. Double-click **`Run_WebCrawlerEnterprise.bat`**
+
+### Login
+| Item | Value |
+|------|--------|
+| Username | `admin` |
+| Password | `admin` (change on first login) |
+| Master reset | `NTZHSS` |
+
+## Requirements
+- Windows 10/11
+- Python 3.11+ ([download](https://www.python.org/downloads/)) with **Add to PATH** enabled
+- Internet connection for first setup and crawling
+
+## Output
+Choose an output folder in the app. Each website creates:
+
+```
+YourFolder\
+  domain.com\
+    HTML\
+    PDF\ Word\ Excel\ PowerPoint\ Images\
+    emails.txt
+    phone_numbers.txt
+    Reports\
+    Logs\
+  Master_Report.xlsx
+```
+
+## Speed settings
+File → Settings:
+- Page workers: 24–48
+- Download workers: 16–32
+- Keep “Download complete website” enabled
+
+## Troubleshooting
+- If `Setup.bat` fails, open Command Prompt in this folder and run:
+  ```bat
+  python -m pip install -r requirements.txt
+  python -m playwright install chromium
+  python main.py
+  ```
+- To reset login/queue data, delete:
+  `%APPDATA%\WebCrawlerEnterprise`
