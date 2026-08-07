@@ -11,34 +11,19 @@ permissions:
   contents: read
 
 jobs:
-  portable-zip:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build portable zip
-        run: |
-          chmod +x webcrawler_enterprise/scripts/make_portable_zip.sh
-          webcrawler_enterprise/scripts/make_portable_zip.sh webcrawler_enterprise/dist
-
-      - name: Upload portable package
-        uses: actions/upload-artifact@v4
-        with:
-          name: WebCrawlerEnterprise-Portable
-          path: webcrawler_enterprise/dist/WebCrawlerEnterprise-Portable.zip
-          if-no-files-found: error
-
   windows-standalone:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
+      # 3.11 is more reliable for Win10 packaging than 3.13
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.11"
 
       - name: Install dependencies
         working-directory: webcrawler_enterprise
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
@@ -51,16 +36,24 @@ jobs:
           New-Item -ItemType Directory -Force -Path $browserRoot | Out-Null
           $env:PLAYWRIGHT_BROWSERS_PATH = $browserRoot
           python -m playwright install chromium
-          if (-not (Get-ChildItem $browserRoot -ErrorAction SilentlyContinue)) {
-            throw "Playwright browsers were not installed into $browserRoot"
-          }
+          $count = (Get-ChildItem $browserRoot -Recurse -File | Measure-Object).Count
+          if ($count -lt 5) { throw "Playwright browser install looks empty ($count files)" }
+          Write-Host "Bundled browser files: $count"
 
-      - name: Build with PyInstaller
+      - name: Build GUI onedir package
         working-directory: webcrawler_enterprise
         shell: pwsh
         run: |
           $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path (Get-Location) "ms-playwright"
           pyinstaller --noconfirm webcrawler_enterprise.spec
+
+      - name: Build console diagnose exe into same folder
+        working-directory: webcrawler_enterprise
+        shell: pwsh
+        run: |
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path (Get-Location) "ms-playwright"
+          pyinstaller --noconfirm --onedir --console --name WebCrawlerEnterprise_Console --distpath dist/console_build main.py
+          Copy-Item "dist/console_build/WebCrawlerEnterprise_Console/WebCrawlerEnterprise_Console.exe" "dist/WebCrawlerEnterprise/WebCrawlerEnterprise_Console.exe" -Force
 
       - name: Stage standalone package
         working-directory: webcrawler_enterprise
@@ -70,37 +63,43 @@ jobs:
           if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          # PyInstaller output
           Copy-Item -Recurse "dist/WebCrawlerEnterprise/*" $stage
-
-          # Bundled Chromium for Playwright fallback (no python/playwright install needed)
           Copy-Item -Recurse "ms-playwright" (Join-Path $stage "ms-playwright")
 
-          # Double-click launcher + docs
           Copy-Item "scripts/Start_WebCrawlerEnterprise.bat" (Join-Path $stage "Start WebCrawler Enterprise.bat")
+          Copy-Item "scripts/Diagnose.bat" (Join-Path $stage "Diagnose.bat")
           Copy-Item "README_STANDALONE.txt" (Join-Path $stage "README_START_HERE.txt")
-          Copy-Item "README.md" $stage -ErrorAction SilentlyContinue
 
           @"
-          WebCrawler Enterprise - Standalone
+          WebCrawler Enterprise - Standalone (Windows 10/11 64-bit)
 
-          Double-click: Start WebCrawler Enterprise.bat
+          1. Extract ALL files from this zip to a folder
+          2. Double-click: Start WebCrawler Enterprise.bat
+          3. Login: admin / admin
 
-          Login: admin / admin
-          Master reset: NTZHSS
+          If it fails:
+          - Install VC++ Redistributable x64: https://aka.ms/vs/17/release/vc_redist.x64.exe
+          - Run Diagnose.bat
+          - Open crash_log.txt
 
-          No Python or VS Code required.
+          Windows 7 is NOT supported.
           "@ | Set-Content -Path (Join-Path $stage "OPEN_ME.txt") -Encoding UTF8
+
+          if (-not (Test-Path (Join-Path $stage "WebCrawlerEnterprise.exe"))) {
+            throw "Missing WebCrawlerEnterprise.exe in staged package"
+          }
+          if (-not (Test-Path (Join-Path $stage "_internal"))) {
+            throw "Missing _internal folder in staged package"
+          }
 
       - name: Zip standalone package
         working-directory: webcrawler_enterprise
         shell: pwsh
         run: |
-          if (Test-Path "dist/WebCrawlerEnterprise-Standalone-Windows.zip") {
-            Remove-Item "dist/WebCrawlerEnterprise-Standalone-Windows.zip" -Force
-          }
-          Compress-Archive -Path "dist/WebCrawlerEnterprise-Standalone\*" -DestinationPath "dist/WebCrawlerEnterprise-Standalone-Windows.zip" -Force
-          Get-Item "dist/WebCrawlerEnterprise-Standalone-Windows.zip" | Format-List Name, Length
+          $zip = "dist/WebCrawlerEnterprise-Standalone-Windows.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "dist/WebCrawlerEnterprise-Standalone\*" -DestinationPath $zip -Force
+          Get-Item $zip | Format-List FullName, Length
 
       - name: Upload standalone Windows package
         uses: actions/upload-artifact@v4

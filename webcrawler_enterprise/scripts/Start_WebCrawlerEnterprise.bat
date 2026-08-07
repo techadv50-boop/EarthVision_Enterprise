@@ -3,8 +3,15 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 if not exist "%~dp0WebCrawlerEnterprise.exe" (
-  echo WebCrawlerEnterprise.exe not found in this folder.
-  echo Please unzip the full package and try again.
+  echo WebCrawlerEnterprise.exe not found.
+  echo Unzip the complete package first.
+  pause
+  exit /b 1
+)
+
+if not exist "%~dp0_internal" (
+  echo ERROR: _internal folder missing. Package is incomplete.
+  echo Download again and extract ALL files.
   pause
   exit /b 1
 )

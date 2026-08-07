@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for WebCrawler Enterprise (Windows)."""
+"""PyInstaller spec for WebCrawler Enterprise (Windows standalone GUI)."""
 
-from PyInstaller.utils.hooks import collect_all
+import sys
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
@@ -9,6 +10,7 @@ datas = []
 binaries = []
 hiddenimports = [
     "playwright",
+    "playwright.sync_api",
     "bs4",
     "lxml",
     "httpx",
@@ -18,23 +20,32 @@ hiddenimports = [
     "openpyxl",
     "phonenumbers",
     "tldextract",
+    "PySide6",
+    "shiboken6",
+    "webcrawler",
+    "webcrawler.runtime",
 ]
 
-for pkg in ("playwright", "tldextract", "phonenumbers"):
+for pkg in ("PySide6", "shiboken6", "playwright", "tldextract", "phonenumbers", "certifi"):
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
         datas += pkg_datas
         binaries += pkg_binaries
         hiddenimports += pkg_hidden
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"collect_all({pkg}) warning: {exc}", file=sys.stderr)
+
+try:
+    hiddenimports += collect_submodules("webcrawler")
+except Exception:
+    pass
 
 a = Analysis(
     ["main.py"],
     pathex=["."],
     binaries=binaries,
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=sorted(set(hiddenimports)),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -56,7 +67,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -71,7 +82,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="WebCrawlerEnterprise",
 )

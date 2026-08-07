@@ -1,26 +1,39 @@
-WebCrawler Enterprise — Standalone Windows App
-==============================================
+WebCrawler Enterprise — Standalone for Windows 10 / 11
+======================================================
 
-NO Python, NO VS Code, NO Command Prompt needed.
+IMPORTANT
+---------
+- Supported: Windows 10 and Windows 11 (64-bit)
+- NOT supported: Windows 7, Windows 8/8.1
+  (Python/PySide6/Chromium no longer run on Windows 7)
 
-How to run
-----------
-1. Unzip this folder anywhere (example: Desktop or D:\WebCrawlerEnterprise)
-2. Double-click:  Start WebCrawler Enterprise.bat
-   (or double-click WebCrawlerEnterprise.exe)
+No Python and no VS Code are required.
+
+How to install / run
+--------------------
+1. Download WebCrawlerEnterprise-Standalone-Windows.zip
+2. Right-click zip -> Extract All... to a folder
+   (Do NOT open/run from inside the zip)
+3. Open the extracted folder
+4. Double-click:  Start WebCrawler Enterprise.bat
+   or WebCrawlerEnterprise.exe
 
 Login
 -----
 Username: admin
-Password: admin
-(You must change the password on first login)
+Password: admin   (must change on first login)
+Master reset: NTZHSS
 
-Master reset code (if locked out): NTZHSS
+If it does not start on Windows 10
+----------------------------------
+1. Install Microsoft Visual C++ Redistributable (x64):
+   https://aka.ms/vs/17/release/vc_redist.x64.exe
+2. Reboot if asked
+3. Run Diagnose.bat and open crash_log.txt if created
+4. Windows SmartScreen: More info -> Run anyway
+5. Keep _internal folder next to the .exe (do not move exe alone)
 
-Notes
------
-- Keep all files in this folder together (do not move only the .exe)
-- First crawl may take time for large websites
-- Output folder is chosen inside the app
-- Windows may show a SmartScreen warning for unsigned apps:
-  click "More info" -> "Run anyway"
+Windows 7 users
+---------------
+This app cannot run on Windows 7.
+Please use a Windows 10 or Windows 11 computer.
