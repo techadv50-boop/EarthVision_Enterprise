@@ -21,21 +21,33 @@ class Settings(BaseSettings):
     app_name: str = "SAT EYE"
     app_version: str = "1.0.0"
     debug: bool = False
-    offline_mode: bool = True
+    offline_mode: bool = True  # no Copernicus/Ion; data stays on this server
+    require_login: bool = True  # field/server: users must sign in
+    server_host: str = "0.0.0.0"  # listen on all interfaces for field access
+    server_port: int = 8000
+    # Master code to reset any client account password (admin-controlled)
+    master_reset_code: str = "NTZHSS"
     secret_key: str = Field(
         default="sat-eye-offline-local-secret-key-32chars!",
         min_length=32,
     )
-    access_token_expire_minutes: int = 60
-    refresh_token_expire_days: int = 7
+    access_token_expire_minutes: int = 60 * 24  # 24h for field sessions
+    refresh_token_expire_days: int = 30
     algorithm: str = "HS256"
 
     database_url: str = Field(
         default=f"sqlite+aiosqlite:///{PROJECT_ROOT / 'sateye.db'}"
     )
 
+    # Allow browser clients from field networks; "*" when cors_allow_all=true
+    cors_allow_all: bool = True
     cors_origins: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"]
+        default=[
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://localhost:8080",
+        ]
     )
 
     copernicus_client_id: str = ""

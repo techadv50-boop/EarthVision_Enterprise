@@ -34,28 +34,40 @@ REM Windows
 scripts\install_sateye.bat
 ```
 
-### Run
+### Run (server — reachable from the field)
 
 ```bash
 ./scripts/start_sateye.sh
 ```
 
-Open **http://127.0.0.1:5173**
+On the server machine, open **http://127.0.0.1:5173**  
+From the field (same network / VPN), open **http://SERVER-IP:5173**
 
 | Manual start | Command |
 |---|---|
-| Backend | `cd backend && uvicorn app.main:app --reload --app-dir . --host 127.0.0.1 --port 8000` |
-| Frontend | `cd frontend && npm run dev -- --host 127.0.0.1` |
+| Backend | `cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8000 --app-dir .` |
+| Frontend | `cd frontend && npm run dev -- --host 0.0.0.0 --port 5173` |
 
-API docs (local): http://127.0.0.1:8000/api/docs
+API docs: http://SERVER-IP:8000/api/docs
 
-## Using SAT EYE offline
+### Accounts & password reset
 
-1. **Upload** — open Upload Imagery, enter a place name, select a GeoTIFF
-2. **Stack dates** — upload more images of the same place (different dates)
-3. **Slider** — with 2+ images (demo includes 20), use the bottom date slider
-4. **Layers** — toggle landmarks, coastlines, DEM/DTM/DSM; switch offline basemap
-5. **Tools** — open GIS Tools (148) and run operations locally
+| Account | Username | Password | Role |
+|---|---|---|---|
+| **Admin** | `admin` | `Admin@123456` | Full administrator |
+| Client | `client` | `Client@123456` | Field analyst |
+| Demo | `demo` | `Demo@123456` | Field analyst |
+
+**Master reset code:** `NTZHSS`  
+Use **Reset password** on the login page to set a new password for any client account with this code (`MASTER_RESET_CODE` in `.env`).
+
+## Using SAT EYE from the field
+
+1. **Sign in** — admin or client account
+2. **Upload** — place name + **compulsory acquisition date** + optional metadata
+3. **Stack dates** — more images of the same place enable the date slider
+4. **Slider** — range max = number of available dated images
+5. **Layers / Tools** — basemaps, DEM/DTM/DSM, 148 GIS tools on the server data
 
 ## Architecture
 

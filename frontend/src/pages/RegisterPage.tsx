@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Globe, Loader2 } from 'lucide-react';
+import { Eye, Loader2 } from 'lucide-react';
 import { authApi } from '@/services/api';
 import { useAuthStore } from '@/store/authStore';
 
@@ -39,55 +39,54 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-earth-900/20 via-gray-950 to-gray-950" />
-
-      <div className="relative panel p-8 w-full max-w-md">
+    <div className="min-h-screen sateye-shell flex items-center justify-center px-4">
+      <div className="relative panel p-8 w-full max-w-md animate-fade-in">
         <div className="text-center mb-8">
-          <Globe className="w-16 h-16 text-earth-400 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold">Create Account</h1>
-          <p className="text-gray-500 mt-2">Join EarthVision Enterprise</p>
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-md border border-sateye-teal/40 bg-sateye-teal/15">
+            <Eye className="w-7 h-7 text-sateye-teal" />
+          </div>
+          <h1 className="brand-mark text-2xl tracking-[0.18em]">SAT EYE</h1>
+          <p className="text-sateye-mist/55 mt-2 text-sm">Create a field client account</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="text-sm text-gray-400 mb-1 block">Email</label>
+            <label className="text-sm text-sateye-mist/60 mb-1 block">Full name</label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
               className="input-field"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-sm text-gray-400 mb-1 block">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="input-field"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-sm text-gray-400 mb-1 block">Full name</label>
-            <input
-              type="text"
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
-              className="input-field"
             />
           </div>
           <div>
-            <label className="text-sm text-gray-400 mb-1 block">Password</label>
+            <label className="text-sm text-sateye-mist/60 mb-1 block">Email</label>
+            <input
+              type="email"
+              className="input-field"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label className="text-sm text-sateye-mist/60 mb-1 block">Username</label>
+            <input
+              className="input-field"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              minLength={3}
+              required
+            />
+          </div>
+          <div>
+            <label className="text-sm text-sateye-mist/60 mb-1 block">Password</label>
             <input
               type="password"
+              className="input-field"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="input-field"
-              required
               minLength={8}
+              required
             />
           </div>
 
@@ -98,16 +97,16 @@ export default function RegisterPage() {
             disabled={loading}
             className="btn-primary w-full flex items-center justify-center gap-2"
           >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create Account'}
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create account'}
           </button>
         </form>
 
-        <p className="mt-6 text-center text-sm text-gray-500">
+        <div className="mt-6 text-center text-sm text-sateye-mist/50">
           Already have an account?{' '}
-          <Link to="/login" className="text-earth-400 hover:underline">
+          <Link to="/login" className="text-sateye-teal hover:underline">
             Sign in
           </Link>
-        </p>
+        </div>
       </div>
     </div>
   );

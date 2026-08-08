@@ -8,7 +8,20 @@ SAT EYE is the offline PC edition of the Earth Observation workspace.
 - Imagery enters the system only via **user upload**
 - Basemap tiles are generated/cached under `offline_data/basemap`
 - Landmarks, coastlines, graticule, and sample DEM/DTM/DSM ship with the install
-- Auth wall is disabled when `OFFLINE_MODE=true` (local operator session)
+- Server listens on `0.0.0.0` so field clients can reach the same data over LAN/VPN
+- Login is required when `REQUIRE_LOGIN=true` (default for server/field use)
+
+## Accounts
+
+| User | Password | Notes |
+|---|---|---|
+| `admin` | `Admin@123456` | Administrator |
+| `client` | `Client@123456` | Field client |
+| `demo` | `Demo@123456` | Demo analyst |
+
+**Master password-reset code:** `NTZHSS` (`MASTER_RESET_CODE`)
+
+`POST /api/v1/auth/reset-password` with `{ username, master_code, new_password }` resets any client account without being logged in.
 
 ## Multi-date slider
 

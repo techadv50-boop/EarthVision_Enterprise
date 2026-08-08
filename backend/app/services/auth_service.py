@@ -57,6 +57,32 @@ class AuthService:
             "token_type": "bearer",
         }
 
+    async def reset_password_with_master_code(
+        self,
+        username: str,
+        master_code: str,
+        new_password: str,
+    ) -> User:
+        """Reset any client account password when the master code matches."""
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        expected = (settings.master_reset_code or "").strip()
+        provided = (master_code or "").strip()
+        if not expected or provided != expected:
+            raise ValueError("Invalid master code")
+
+        user = await self.get_user_by_username(username.strip())
+        if user is None:
+            raise ValueError("User not found")
+        if not user.is_active:
+            raise ValueError("Account is disabled")
+
+        user.hashed_password = get_password_hash(new_password)
+        await self.db.flush()
+        await self.db.refresh(user)
+        return user
+
     async def seed_default_data(self) -> None:
         from app.models.user import Permission
 
@@ -114,19 +140,71 @@ class AuthService:
                 email="demo@sateye.local",
                 username="demo",
                 hashed_password=get_password_hash("Demo@123456"),
-                full_name="Demo User",
+                full_name="Field Client (Demo)",
                 is_active=True,
             )
             demo_user.roles = [analyst_role]
             self.db.add(demo_user)
             await self.db.flush()
 
-            for user in [admin_user, demo_user]:
+            client_user = User(
+                email="client@sateye.local",
+                username="client",
+                hashed_password=get_password_hash("Client@123456"),
+                full_name="Field Client",
+                organization="Field Ops",
+                is_active=True,
+            )
+            client_user.roles = [analyst_role]
+            self.db.add(client_user)
+            await self.db.flush()
+
+            for user in [admin_user, demo_user, client_user]:
                 self.db.add(Subscription(user_id=user.id, plan="pro", status="active"))
 
             await self.db.flush()
 
-        # Always ensure offline local operator exists for SAT EYE PC installs
+        # Ensure admin + field client always exist (server field deployments)
+        role_admin_q = await self.db.execute(select(Role).where(Role.name == "admin"))
+        admin_role = role_admin_q.scalar_one_or_none()
+        role_analyst_q = await self.db.execute(select(Role).where(Role.name == "analyst"))
+        analyst_role = role_analyst_q.scalar_one_or_none()
+
+        admin_q = await self.db.execute(select(User).where(User.username == "admin"))
+        if admin_q.scalar_one_or_none() is None:
+            admin_user = User(
+                email="admin@sateye.local",
+                username="admin",
+                hashed_password=get_password_hash("Admin@123456"),
+                full_name="System Administrator",
+                is_superuser=True,
+                is_active=True,
+            )
+            if admin_role is not None:
+                admin_user.roles = [admin_role]
+            self.db.add(admin_user)
+            await self.db.flush()
+            self.db.add(Subscription(user_id=admin_user.id, plan="pro", status="active"))
+            await self.db.flush()
+
+        client_q = await self.db.execute(select(User).where(User.username == "client"))
+        if client_q.scalar_one_or_none() is None:
+            client_user = User(
+                email="client@sateye.local",
+                username="client",
+                hashed_password=get_password_hash("Client@123456"),
+                full_name="Field Client",
+                organization="Field Ops",
+                is_active=True,
+            )
+            if analyst_role is not None:
+                client_user.roles = [analyst_role]
+            self.db.add(client_user)
+            await self.db.flush()
+            self.db.add(Subscription(user_id=client_user.id, plan="pro", status="active"))
+            await self.db.flush()
+
+        # Optional local operator for kiosk installs (require_login=false)
         offline_q = await self.db.execute(select(User).where(User.username == "offline"))
         if offline_q.scalar_one_or_none() is None:
             role_q = await self.db.execute(select(Role).where(Role.name == "analyst"))

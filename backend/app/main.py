@@ -21,7 +21,13 @@ logger = get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    logger.info("Starting {} (offline_mode={})...", settings.app_name, settings.offline_mode)
+    logger.info(
+        "Starting {} (offline_mode={}, require_login={}, host={})...",
+        settings.app_name,
+        settings.offline_mode,
+        settings.require_login,
+        settings.server_host,
+    )
     await init_db()
 
     async with AsyncSessionLocal() as session:
@@ -64,10 +70,13 @@ app = FastAPI(
 )
 
 app.add_middleware(RequestLoggingMiddleware)
+
+# Field/server access: allow browsers from any LAN/WAN origin when cors_allow_all
+_cors_origins = ["*"] if settings.cors_allow_all else settings.cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=not settings.cors_allow_all,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -90,6 +99,8 @@ async def health_check():
         "app": settings.app_name,
         "version": settings.app_version,
         "offline_mode": settings.offline_mode,
+        "require_login": settings.require_login,
+        "field_access": True,
     }
 
 
@@ -99,6 +110,9 @@ async def get_public_config():
         "app_name": settings.app_name,
         "version": settings.app_version,
         "offline_mode": settings.offline_mode,
+        "require_login": settings.require_login,
+        "field_access": True,
         "cesium_ion_token": None if settings.offline_mode else (settings.cesium_ion_token or None),
         "gis_tools_count": 148,
+        "password_reset_available": True,
     }

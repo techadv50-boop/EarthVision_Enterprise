@@ -2,9 +2,12 @@ import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import DashboardPage from '@/pages/DashboardPage';
+import LoginPage from '@/pages/LoginPage';
+import RegisterPage from '@/pages/RegisterPage';
+import ResetPasswordPage from '@/pages/ResetPasswordPage';
 
-function OfflineGate({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, fetchUser, isLoading } = useAuthStore();
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, fetchUser, isLoading, requireLogin } = useAuthStore();
 
   useEffect(() => {
     void fetchUser();
@@ -15,14 +18,14 @@ function OfflineGate({ children }: { children: React.ReactNode }) {
       <div className="min-h-screen sateye-shell flex items-center justify-center">
         <div className="text-center animate-fade-in">
           <div className="brand-mark text-5xl tracking-[0.2em] mb-3">SAT EYE</div>
-          <p className="text-sm text-sateye-mist/70">Starting offline workspace…</p>
+          <p className="text-sm text-sateye-mist/70">Connecting to server…</p>
         </div>
       </div>
     );
   }
 
-  if (!isAuthenticated) {
-    return <Navigate to="/" replace />;
+  if (requireLogin && !isAuthenticated) {
+    return <Navigate to="/login" replace />;
   }
 
   return <>{children}</>;
@@ -31,12 +34,15 @@ function OfflineGate({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route
         path="/"
         element={
-          <OfflineGate>
+          <ProtectedRoute>
             <DashboardPage />
-          </OfflineGate>
+          </ProtectedRoute>
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -17,26 +17,19 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   offlineMode: boolean;
+  requireLogin: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
   fetchUser: () => Promise<void>;
+  resetPassword: (username: string, masterCode: string, newPassword: string) => Promise<void>;
 }
-
-const OFFLINE_USER: User = {
-  id: 0,
-  email: 'offline@sateye.local',
-  username: 'offline',
-  full_name: 'SAT EYE Offline Operator',
-  is_active: true,
-  is_superuser: true,
-  roles: ['analyst'],
-};
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: !!localStorage.getItem('access_token'),
   isLoading: true,
   offlineMode: true,
+  requireLogin: true,
 
   login: async (username, password) => {
     set({ isLoading: true });
@@ -55,8 +48,15 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: () => {
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
-    // In offline mode stay signed in as local operator
-    set({ user: OFFLINE_USER, isAuthenticated: true, offlineMode: true });
+    set({ user: null, isAuthenticated: false });
+  },
+
+  resetPassword: async (username, masterCode, newPassword) => {
+    await authApi.resetPassword({
+      username,
+      master_code: masterCode,
+      new_password: newPassword,
+    });
   },
 
   fetchUser: async () => {
@@ -64,43 +64,43 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const { data: cfg } = await configApi.config();
       const offline = cfg.offline_mode !== false;
-      if (offline) {
-        // Offline PC mode: no login wall — local operator session
+      const requireLogin = cfg.require_login !== false;
+      set({ offlineMode: offline, requireLogin });
+
+      if (!requireLogin) {
+        // Kiosk / local PC without login wall
         try {
           const { data } = await authApi.me();
-          set({
-            user: data,
-            isAuthenticated: true,
-            isLoading: false,
-            offlineMode: true,
-          });
+          set({ user: data, isAuthenticated: true, isLoading: false });
         } catch {
           set({
-            user: OFFLINE_USER,
+            user: {
+              id: 0,
+              email: 'offline@sateye.local',
+              username: 'offline',
+              full_name: 'SAT EYE Offline Operator',
+              is_active: true,
+              is_superuser: true,
+              roles: ['analyst'],
+            },
             isAuthenticated: true,
             isLoading: false,
-            offlineMode: true,
           });
         }
         return;
       }
 
       if (!localStorage.getItem('access_token')) {
-        set({ user: null, isAuthenticated: false, isLoading: false, offlineMode: false });
+        set({ user: null, isAuthenticated: false, isLoading: false });
         return;
       }
+
       const { data } = await authApi.me();
-      set({ user: data, isAuthenticated: true, isLoading: false, offlineMode: false });
+      set({ user: data, isAuthenticated: true, isLoading: false });
     } catch {
       localStorage.removeItem('access_token');
       localStorage.removeItem('refresh_token');
-      // Prefer offline fallback so the desktop app still opens
-      set({
-        user: OFFLINE_USER,
-        isAuthenticated: true,
-        isLoading: false,
-        offlineMode: true,
-      });
+      set({ user: null, isAuthenticated: false, isLoading: false });
     }
   },
 }));

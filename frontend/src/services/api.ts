@@ -34,7 +34,17 @@ api.interceptors.response.use(
         } catch {
           localStorage.removeItem('access_token');
           localStorage.removeItem('refresh_token');
-          // Offline SAT EYE has no login wall — do not redirect
+          if (!window.location.pathname.startsWith('/login') &&
+              !window.location.pathname.startsWith('/reset-password') &&
+              !window.location.pathname.startsWith('/register')) {
+            window.location.href = '/login';
+          }
+        }
+      } else if (!refreshToken) {
+        if (!window.location.pathname.startsWith('/login') &&
+            !window.location.pathname.startsWith('/reset-password') &&
+            !window.location.pathname.startsWith('/register')) {
+          window.location.href = '/login';
         }
       }
     }
@@ -50,6 +60,8 @@ export const authApi = {
   register: (data: { email: string; username: string; password: string; full_name?: string }) =>
     api.post('/auth/register', data),
   me: () => api.get('/auth/me'),
+  resetPassword: (data: { username: string; master_code: string; new_password: string }) =>
+    api.post('/auth/reset-password', data),
 };
 
 export const geoApi = {

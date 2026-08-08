@@ -85,7 +85,8 @@ async def get_current_user(
 
     settings = get_settings()
     if credentials is None:
-        if settings.offline_mode:
+        # Local kiosk only when login is not required
+        if settings.offline_mode and not settings.require_login:
             return await _offline_local_user(db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -116,7 +117,7 @@ async def get_current_user_tile_compatible(
         raw = token
 
     if not raw:
-        if settings.offline_mode:
+        if settings.offline_mode and not settings.require_login:
             return await _offline_local_user(db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
