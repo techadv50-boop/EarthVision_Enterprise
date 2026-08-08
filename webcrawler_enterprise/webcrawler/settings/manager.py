@@ -22,8 +22,14 @@ DEFAULT_FILE_TYPES = [
 ]
 
 
+# Isolated from older installs that used plain "WebCrawlerEnterprise".
+# Do not rename back — that would reopen the old password/URL/queue database.
+APP_DATA_FOLDER = "WebCrawlerEnterprise_v2"
+LEGACY_APP_DATA_FOLDER = "WebCrawlerEnterprise"
+
+
 def app_data_dir() -> Path:
-    """Return platform-appropriate application data directory."""
+    """Return THIS build's private data directory (never the legacy folder)."""
     import os
     import sys
 
@@ -31,9 +37,21 @@ def app_data_dir() -> Path:
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    path = base / "WebCrawlerEnterprise"
+    path = base / APP_DATA_FOLDER
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def legacy_app_data_dir() -> Path:
+    """Old program data folder — read-only reference; never used for storage."""
+    import os
+    import sys
+
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / LEGACY_APP_DATA_FOLDER
 
 
 @dataclass

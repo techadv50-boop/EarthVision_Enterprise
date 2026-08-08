@@ -19,9 +19,14 @@ Download the CI artifact named **WebCrawlerEnterprise-Standalone-Windows**, unzi
 | Password | `admin` (change on first login) |
 | Master reset | `NTZHSS` |
 
-If an older install was on this PC, the new build resets login to `admin` / `admin`
-once, clears old URLs, and will **not** crawl until you click **Start**.
-If login still fails, use **Master Reset…** with code `NTZHSS`.
+This build stores its own data in:
+  `%APPDATA%\WebCrawlerEnterprise_v2`
+It does **not** open or copy the old folder:
+  `%APPDATA%\WebCrawlerEnterprise`
+
+Login for a fresh store: `admin` / `admin` (change on first login).
+If login fails, use **Master Reset…** with code `NTZHSS`.
+Nothing crawls until you click **Start**.
 
 ## Requirements
 - Windows 10/11
@@ -70,5 +75,6 @@ File → Settings:
   python -m playwright install chromium
   python main.py
   ```
-- To reset login/queue data, delete:
-  `%APPDATA%\WebCrawlerEnterprise`
+- To reset login/queue data for THIS build, delete:
+  `%APPDATA%\WebCrawlerEnterprise_v2`
+  (the old `%APPDATA%\WebCrawlerEnterprise` folder is ignored)

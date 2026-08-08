@@ -127,4 +127,4 @@ D:\WebsiteData\
 
 ## Re-crawl tip
 
-If an earlier run saved empty `emails.txt` / `phone_numbers.txt`, delete that website folder (or clear the app SQLite DB under `%APPDATA%\WebCrawlerEnterprise`) before starting again so pages are not skipped as already visited.
+If an earlier run saved empty `emails.txt` / `phone_numbers.txt`, delete that website folder (or clear the app SQLite DB under `%APPDATA%\WebCrawlerEnterprise_v2`) before starting again so pages are not skipped as already visited. Older builds used `%APPDATA%\WebCrawlerEnterprise` — this build never reads that folder.

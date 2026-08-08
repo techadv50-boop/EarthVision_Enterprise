@@ -1,50 +1,34 @@
-"""One-time launch migrations so a new build does not inherit an old live session."""
+"""Launch helpers — keep this build fully isolated from older installs."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from webcrawler.auth.manager import MASTER_RESET_CODE, AuthManager
-from webcrawler.db.database import Database
-from webcrawler.queue.manager import QueueManager
-from webcrawler.settings.manager import SettingsManager, app_data_dir
-
-# Bump this when a release should open clean (default login, empty URLs, no auto-run).
-SESSION_PROFILE = 3
-
-
-def session_profile_path() -> Path:
-    return app_data_dir() / "session_profile.txt"
+from webcrawler.settings.manager import app_data_dir, legacy_app_data_dir
 
 
 def prepare_launch_session() -> dict:
-    """Reset inherited old-program session once per SESSION_PROFILE.
+    """Ensure we only use the v2 data directory; never import legacy state.
 
-    Returns info for optional UI notice.
+    Older builds stored login/queue/URLs under WebCrawlerEnterprise.
+    This build uses WebCrawlerEnterprise_v2 exclusively and does not copy
+    or open any files from the legacy folder.
     """
-    marker = session_profile_path()
-    try:
-        previous = int(marker.read_text(encoding="utf-8").strip()) if marker.exists() else 0
-    except ValueError:
-        previous = 0
-
-    if previous >= SESSION_PROFILE:
-        return {"migrated": False, "previous": previous, "current": SESSION_PROFILE}
-
-    # Restore default login for the "new program" experience.
-    AuthManager(Database()).master_reset(MASTER_RESET_CODE)
-
-    # Do not keep old unfinished crawls ready to auto-run.
-    QueueManager(Database()).abandon_all_unfinished()
-
-    settings_manager = SettingsManager()
-    settings_manager.settings.last_urls = ""
-    settings_manager.save()
-
-    marker.write_text(str(SESSION_PROFILE), encoding="utf-8")
+    data = app_data_dir()
+    legacy = legacy_app_data_dir()
+    legacy_present = legacy.exists()
+    # Fresh store markers (informational only).
+    marker = data / "ISOLATED_FROM_LEGACY.txt"
+    if not marker.exists():
+        marker.write_text(
+            "This folder is private to WebCrawler Enterprise v2+.\n"
+            "It does not read or copy %APPDATA%\\WebCrawlerEnterprise "
+            "(the old program repository).\n",
+            encoding="utf-8",
+        )
     return {
-        "migrated": True,
-        "previous": previous,
-        "current": SESSION_PROFILE,
+        "isolated": True,
+        "data_dir": str(data),
+        "legacy_dir": str(legacy),
+        "legacy_present": legacy_present,
+        "imported_legacy": False,
         "login": "admin / admin (change required on first login)",
     }

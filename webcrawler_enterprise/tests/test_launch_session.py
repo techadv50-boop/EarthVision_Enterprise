@@ -1,74 +1,64 @@
-"""Clean-launch session profile tests."""
+"""Isolation from the legacy app-data repository."""
 
 from pathlib import Path
 
 from webcrawler.auth.manager import DEFAULT_PASSWORD, DEFAULT_USERNAME, AuthManager
 from webcrawler.db.database import Database
-from webcrawler.launch import SESSION_PROFILE, prepare_launch_session, session_profile_path
-from webcrawler.queue.manager import QueueManager, QueueStatus
-from webcrawler.settings.manager import SettingsManager, app_data_dir
+from webcrawler.launch import prepare_launch_session
+from webcrawler.queue.manager import QueueManager
+from webcrawler.settings.manager import (
+    APP_DATA_FOLDER,
+    LEGACY_APP_DATA_FOLDER,
+    SettingsManager,
+    app_data_dir,
+    legacy_app_data_dir,
+)
 
 
-def test_prepare_launch_resets_old_session(tmp_path: Path, monkeypatch):
+def test_app_data_folder_is_not_legacy_name():
+    assert APP_DATA_FOLDER != LEGACY_APP_DATA_FOLDER
+    assert APP_DATA_FOLDER.endswith("_v2")
+
+
+def test_new_store_ignores_legacy_repository(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    # Point app data at temp by patching app_data_dir consumers via env (Linux path).
-    data = tmp_path / "WebCrawlerEnterprise"
-    data.mkdir(parents=True)
 
-    monkeypatch.setattr(
-        "webcrawler.launch.app_data_dir",
-        lambda: data,
+    legacy = tmp_path / LEGACY_APP_DATA_FOLDER
+    legacy.mkdir(parents=True)
+    # Poison the old repository — must never be opened by this build.
+    (legacy / "settings.json").write_text(
+        '{"last_urls": "https://legacy-only.example"}', encoding="utf-8"
     )
-    monkeypatch.setattr(
-        "webcrawler.settings.manager.app_data_dir",
-        lambda: data,
-    )
-    monkeypatch.setattr(
-        "webcrawler.db.database.app_data_dir",
-        lambda: data,
-    )
-
-    db = Database(data / "crawler.db")
-    auth = AuthManager(db)
-    # Simulate old changed password session with unfinished work + saved URLs.
-    auth.change_password(
+    legacy_db = Database(legacy / "crawler.db")
+    AuthManager(legacy_db).change_password(
         DEFAULT_USERNAME,
         DEFAULT_PASSWORD,
-        "OldPass99",
-        "OldPass99",
+        "LegacyPass99",
+        "LegacyPass99",
         require_current=True,
     )
-    qm = QueueManager(db)
-    items = qm.enqueue_many(["https://old-session.example"], str(tmp_path / "out"))
-    qm.mark_running(items[0].id)
-    settings = SettingsManager(data / "settings.json")
-    settings.update(last_urls="https://old-session.example")
+    QueueManager(legacy_db).enqueue_many(
+        ["https://legacy-only.example"], str(tmp_path / "legacy-out")
+    )
 
-    assert session_profile_path().parent == data or True
-    # Force migration by ensuring marker missing / low.
-    marker = data / "session_profile.txt"
-    if marker.exists():
-        marker.unlink()
+    # This build's data dir under the same config root.
+    data = app_data_dir()
+    assert data.name == APP_DATA_FOLDER
+    assert data != legacy
+    assert legacy_app_data_dir() == legacy
 
-    # Re-bind launch helpers to temp data dir
-    monkeypatch.setattr("webcrawler.launch.session_profile_path", lambda: marker)
     info = prepare_launch_session()
-    assert info["migrated"] is True
+    assert info["isolated"] is True
+    assert info["imported_legacy"] is False
+    assert info["legacy_present"] is True
+    assert Path(info["data_dir"]) == data
 
-    auth2 = AuthManager(Database(data / "crawler.db"))
-    ok = auth2.authenticate(DEFAULT_USERNAME, DEFAULT_PASSWORD)
+    # Fresh auth DB in v2 folder — default admin/admin, not legacy password.
+    auth = AuthManager(Database())
+    assert auth.authenticate(DEFAULT_USERNAME, "LegacyPass99").ok is False
+    ok = auth.authenticate(DEFAULT_USERNAME, DEFAULT_PASSWORD)
     assert ok.ok is True
-    assert ok.user is not None
-    assert ok.user.must_change_password is True
 
-    qm2 = QueueManager(Database(data / "crawler.db"))
-    assert qm2.count_unfinished() == 0
-    assert qm2.get(items[0].id).status == QueueStatus.CANCELLED.value
-
-    settings2 = SettingsManager(data / "settings.json")
-    assert settings2.settings.last_urls == ""
-
-    # Second launch must not migrate again.
-    info2 = prepare_launch_session()
-    assert info2["migrated"] is False
-    assert int(marker.read_text()) == SESSION_PROFILE
+    settings = SettingsManager()
+    assert "legacy-only.example" not in (settings.settings.last_urls or "")
+    assert QueueManager(Database()).count_unfinished() == 0
