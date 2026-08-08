@@ -16,22 +16,38 @@ def test_frontier_persists_and_restores(tmp_path: Path):
     site_id = items[0].id
     frontier = FrontierStore(db, site_id)
 
-    assert frontier.add("https://example.com/a", 1, priority=True)
-    assert frontier.add("https://example.com/b", 2, priority=False)
-    assert frontier.add("https://example.com/a", 9, priority=False)  # ignore dup
+    assert frontier.add("https://example.com/a", 1, priority=1)  # high urgency
+    assert frontier.add("https://example.com/b", 2, priority=6)  # normal
+    assert frontier.add("https://example.com/a", 9, priority=6)  # keep better rank
     frontier.flush()
     assert frontier.count() == 2
 
     rows = frontier.load_all()
+    # Lower numeric rank first.
     assert rows[0][0].rstrip("/").endswith("/a")
-    assert bool(rows[0][2]) is True
+    assert rows[0][2] == 1
     assert rows[1][0].rstrip("/").endswith("/b")
+    assert rows[1][2] == 6
 
     frontier.remove("https://example.com/a/")
     frontier.flush()
     assert frontier.count() == 1
     frontier.clear()
     assert frontier.count() == 0
+
+
+def test_frontier_bool_priority_maps_to_ranks(tmp_path: Path):
+    db = Database(tmp_path / "frontier_bool.db")
+    qm = QueueManager(db)
+    items = qm.enqueue_many(["https://example.com"], str(tmp_path / "out"))
+    frontier = FrontierStore(db, items[0].id)
+    assert frontier.add("https://example.com/hot", 1, priority=True)
+    assert frontier.add("https://example.com/cold", 2, priority=False)
+    frontier.flush()
+    rows = frontier.load_all()
+    assert rows[0][0].rstrip("/").endswith("/hot")
+    assert rows[0][2] == 1
+    assert rows[1][2] == 6
 
 
 def test_prepare_resume_recovers_failed_and_running(tmp_path: Path):

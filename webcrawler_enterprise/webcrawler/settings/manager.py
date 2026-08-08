@@ -56,12 +56,12 @@ def legacy_app_data_dir() -> Path:
 
 @dataclass
 class AppSettings:
-    crawl_depth: int = 100
-    max_pages_per_site: int = 50000
-    download_timeout: int = 25
-    # Defaults tuned for speed; lower in Settings if a site rate-limits you.
-    worker_threads: int = 8
-    page_workers: int = 12
+    crawl_depth: int = 10000
+    max_pages_per_site: int = 250000
+    download_timeout: int = 45
+    # Defaults tuned for deep site-wide contact discovery.
+    worker_threads: int = 12
+    page_workers: int = 16
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -86,7 +86,7 @@ class AppSettings:
     use_playwright_fallback: bool = True
     max_playwright_fallback: int = 100
     request_pause_ms: int = 0
-    max_download_queue: int = 300
+    max_download_queue: int = 1000
     max_download_bytes: int = 80 * 1024 * 1024
 
     def to_dict(self) -> dict[str, Any]:

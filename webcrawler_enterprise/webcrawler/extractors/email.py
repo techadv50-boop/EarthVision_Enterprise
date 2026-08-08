@@ -153,18 +153,14 @@ def extract_emails_from_file(path: Path) -> set[str]:
 
 
 def _pdf_text(path: Path) -> str:
-    """Extract text from PDFs. Prefer PyMuPDF for speed; cover many pages."""
+    """Extract text from every page of a PDF (author emails can appear late)."""
     chunks: list[str] = []
-    # Author/contact emails are usually early, but scan deep enough for appendices.
-    max_pages = 200
     try:
         import fitz
 
         doc = fitz.open(path)
         try:
-            for i, page in enumerate(doc):
-                if i >= max_pages:
-                    break
+            for page in doc:
                 chunks.append(page.get_text() or "")
         finally:
             doc.close()
@@ -177,7 +173,7 @@ def _pdf_text(path: Path) -> str:
         import pdfplumber
 
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages[:max_pages]:
+            for page in pdf.pages:
                 chunks.append(page.extract_text() or "")
     except Exception:
         return ""

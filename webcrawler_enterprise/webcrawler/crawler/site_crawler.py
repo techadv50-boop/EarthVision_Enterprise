@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import heapq
 import re
 import threading
 import time
@@ -29,7 +30,13 @@ from webcrawler.queue.manager import QueueItem
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import ensure_site_structure, html_mirror_path, site_folder
 from webcrawler.utils.network import is_connectivity_error, is_online
-from webcrawler.utils.url import is_document_url, is_image_url, normalize_url, same_site
+from webcrawler.utils.url import (
+    is_document_url,
+    is_image_url,
+    looks_like_document_path,
+    normalize_url,
+    same_site,
+)
 
 CONTACT_HINTS = (
     "contact",
@@ -126,10 +133,27 @@ SKIP_URL_MARKERS = (
 
 
 def _is_priority_url(url: str) -> bool:
-    path = urlparse(url).path.lower()
+    return _url_priority_rank(url) <= 5
+
+
+def _url_priority_rank(url: str) -> int:
+    """Lower number = crawl sooner (deep PDF/galley before abstracts/chrome)."""
+    path = urlparse(url or "").path.lower()
+    if looks_like_document_path(url) or "/article/download/" in path:
+        return 0
+    if re.search(r"/article/view/\d+/\d+", path):
+        return 1  # deep galley HTML
+    if re.search(r"/article/view/\d+/?$", path):
+        return 2  # article abstract
+    if "/issue/view/" in path:
+        return 3
+    if "/issue/archive" in path or "/issue/current" in path:
+        return 4
+    if any(hint in path for hint in CONTACT_HINTS):
+        return 5
     if any(marker in path for marker in JOURNAL_PRIORITY_MARKERS):
-        return True
-    return any(hint in path for hint in CONTACT_HINTS)
+        return 4
+    return 6
 
 
 def _should_skip_crawl_url(url: str) -> bool:
@@ -181,7 +205,9 @@ class SiteCrawler:
         self.control_state = control_state or (lambda: "running")
         self.resume_mode = resume_mode
         self.parser = HtmlParser()
-        self._page_queue: deque[tuple[str, int]] = deque()
+        # Heap items: (priority_rank, seq, depth, url) — lower rank first, FIFO within rank.
+        self._page_heap: list[tuple[int, int, int, str]] = []
+        self._queue_seq = 0
         self._queued: set[str] = set()
         self._playwright_queue: deque[tuple[str, int]] = deque()
         self._lock = threading.Lock()
@@ -195,6 +221,9 @@ class SiteCrawler:
         self._processed_since_gc = 0
         self._consecutive_network_errors = 0
         self._frontier = FrontierStore(self.duplicates.db, item.id)
+        self._deep_mode = bool(
+            settings.contact_scan_only or settings.download_complete_site
+        )
 
     def crawl(self) -> SiteResult:
         start = datetime.now(timezone.utc)
@@ -354,11 +383,12 @@ class SiteCrawler:
         downloader: FileDownloader,
         result: SiteResult,
     ) -> None:
-        page_workers = max(2, min(self.settings.page_workers, 32))
-        download_workers = max(2, min(self.settings.worker_threads, 24))
+        page_workers = max(2, min(self.settings.page_workers, 48))
+        download_workers = max(2, min(self.settings.worker_threads, 32))
         self.logger.info(
-            f"Stable crawl mode: {page_workers} parallel page fetches, "
-            f"{download_workers} parallel downloads"
+            f"Deep crawl mode={self._deep_mode}: {page_workers} page workers, "
+            f"{download_workers} download workers, "
+            f"max_pages={self.settings.max_pages_per_site}"
         )
         self._heartbeat_at = time.monotonic()
 
@@ -450,7 +480,12 @@ class SiteCrawler:
                         if pause:
                             time.sleep(pause)
 
+                    # Do NOT stop while downloads are still running — PDF scans
+                    # enqueue galley/deep HTML pages that must still be crawled.
                     if not pending_pages and not self._has_queued_pages():
+                        if self._pending_download_count() > 0:
+                            time.sleep(0.1)
+                            continue
                         break
 
                     if not done and pending_pages:
@@ -461,6 +496,41 @@ class SiteCrawler:
                     time.sleep(0.5)
 
             self._drain_downloads()
+            # Final deep passes: anything discovered while draining PDFs/docs.
+            extra_passes = 0
+            while (
+                self._has_queued_pages()
+                and self.control_state() != "stopped"
+                and extra_passes < 500
+                and self.duplicates.visited_count < self.settings.max_pages_per_site
+            ):
+                extra_passes += 1
+                self.logger.info(
+                    f"Deep crawl pass {extra_passes}: "
+                    f"{self._queue_size()} URL(s) left after document scans"
+                )
+                while self._has_queued_pages() and self.control_state() != "stopped":
+                    if self.duplicates.visited_count >= self.settings.max_pages_per_site:
+                        break
+                    item = self._pop_page()
+                    if item is None:
+                        break
+                    url, depth = item
+                    if self.duplicates.has_visited(url):
+                        continue
+                    if is_document_url(url, self.settings.download_file_types) or is_image_url(url):
+                        self._submit_download(
+                            download_pool, downloader, url, is_image=is_image_url(url)
+                        )
+                        self._mark_visited(url, 200)
+                        continue
+                    payload = self._http_fetch_page(url)
+                    self._handle_fetched_page(
+                        payload, depth, site_dir, downloader, download_pool, result
+                    )
+                self._drain_downloads()
+                if not self._has_queued_pages():
+                    break
 
         # Cap Playwright fallback so it cannot stall a site for many hours.
         if self.settings.use_playwright_fallback and self._playwright_queue:
@@ -639,23 +709,22 @@ class SiteCrawler:
             )
         self._flush_contacts()
 
-        # Light mode and complete-site mode never skip pages by depth.
+        # Deep mode: unlimited practical depth so every nested page/PDF is reached.
         max_depth = (
-            10_000
-            if (self.settings.download_complete_site or self.settings.contact_scan_only)
+            1_000_000
+            if self._deep_mode
             else self.settings.crawl_depth
         )
         if depth < max_depth:
             links = sorted(
                 parsed.internal_links,
-                key=lambda u: (0 if _is_priority_url(u) else 1),
+                key=lambda u: _url_priority_rank(u),
             )
             for link in links:
                 if _should_skip_crawl_url(link):
                     continue
                 if same_site(link, self.item.url):
-                    # Galley pages (/article/view/101/113) must be high priority —
-                    # otherwise they sit behind hundreds of abstract pages.
+                    # Ranked heap crawls galleys/PDFs before chrome links.
                     self._enqueue(link, depth + 1, priority=_is_priority_url(link))
 
         # From an article abstract, immediately schedule PDF + matching galley HTML.
@@ -799,7 +868,7 @@ class SiteCrawler:
             return
         self._heartbeat_at = now
         with self._lock:
-            qsize = len(self._page_queue)
+            qsize = len(self._page_heap)
             pw = len(self._playwright_queue)
         self.logger.info(
             "Heartbeat: "
@@ -978,18 +1047,22 @@ class SiteCrawler:
         return state
 
     def _pop_page(self) -> tuple[str, int] | None:
-        """Pop from memory only. Frontier entry stays until the URL is finished."""
+        """Pop deepest/highest-priority URL first. Frontier stays until finished."""
         with self._lock:
-            if not self._page_queue:
+            if not self._page_heap:
                 return None
-            url, depth = self._page_queue.popleft()
+            _rank, _seq, depth, url = heapq.heappop(self._page_heap)
             # Allow re-queue after offline / retry (visited check still applies).
             self._queued.discard(url)
             return url, depth
 
     def _has_queued_pages(self) -> bool:
         with self._lock:
-            return bool(self._page_queue)
+            return bool(self._page_heap)
+
+    def _queue_size(self) -> int:
+        with self._lock:
+            return len(self._page_heap)
 
     def _enqueue(self, url: str, depth: int, priority: bool = False) -> None:
         normalized = normalize_url(url)
@@ -997,19 +1070,22 @@ class SiteCrawler:
             return
         if _should_skip_crawl_url(normalized):
             return
+        rank = _url_priority_rank(normalized)
+        # Explicit priority=True bumps at least to journal-level urgency.
+        if priority and rank > 2:
+            rank = min(rank, 2)
         with self._lock:
             if normalized in self._queued or self.duplicates.has_visited(normalized):
                 return
-            if len(self._queued) >= self.settings.max_pages_per_site * 3:
+            # Deep mode allows a much larger frontier so no page/PDF is dropped.
+            max_queue = self.settings.max_pages_per_site * (10 if self._deep_mode else 3)
+            if len(self._queued) >= max_queue:
                 return
             self._queued.add(normalized)
-            item = (normalized, depth)
-            if priority:
-                self._page_queue.appendleft(item)
-            else:
-                self._page_queue.append(item)
+            self._queue_seq += 1
+            heapq.heappush(self._page_heap, (rank, self._queue_seq, depth, normalized))
             try:
-                self._frontier.add(normalized, depth, priority=priority)
+                self._frontier.add(normalized, depth, priority=rank)
             except Exception as exc:
                 self.logger.debug(f"Frontier persist failed for {normalized}: {exc}")
 
@@ -1058,7 +1134,7 @@ class SiteCrawler:
             return 0
         restored = 0
         stale = 0
-        for url, depth, priority in rows:
+        for url, depth, _stored_priority in rows:
             normalized = normalize_url(url)
             if not normalized:
                 continue
@@ -1070,11 +1146,14 @@ class SiteCrawler:
                 if normalized in self._queued:
                     continue
                 self._queued.add(normalized)
-                item = (normalized, int(depth))
-                if priority:
-                    self._page_queue.appendleft(item)
-                else:
-                    self._page_queue.append(item)
+                # Always rank from the URL. Older frontiers stored bool 0/1 which
+                # must not be treated as the new numeric deep-priority scale.
+                rank = _url_priority_rank(normalized)
+                self._queue_seq += 1
+                heapq.heappush(
+                    self._page_heap,
+                    (rank, self._queue_seq, int(depth), normalized),
+                )
                 restored += 1
         if stale:
             self.logger.info(f"Cleared {stale} already-visited URL(s) from saved frontier")
@@ -1132,15 +1211,26 @@ class SiteCrawler:
                 candidates.extend(
                     [
                         f"{journal}/issue/archive",
-                        f"{journal}/issue/archive/2",
-                        f"{journal}/issue/archive/3",
                         f"{journal}/issue/current",
-                        f"{journal}/search",
                     ]
                 )
+                # Paginate archive deeply (OJS uses /issue/archive/2, /3, ...)
+                for page_no in range(1, 201):
+                    if page_no == 1:
+                        candidates.append(f"{journal}/issue/archive")
+                    else:
+                        candidates.append(f"{journal}/issue/archive/{page_no}")
+                    candidates.append(f"{journal}/issue/archive?issuesPage={page_no}")
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
         for rel in candidates:
+            if rel not in seen:
+                seen.add(rel)
+                unique.append(rel)
+        for rel in unique:
             self._enqueue(urljoin(base, rel), 1, priority=True)
-        self.logger.info(f"Seeded {len(candidates)} journal archive/index URL(s)")
+        self.logger.info(f"Seeded {len(unique)} journal archive/index URL(s) for deep crawl")
 
     def _seed_oai_records(self, root: str) -> None:
         """Pull every article identifier from OAI-PMH (critical for OJS journals)."""

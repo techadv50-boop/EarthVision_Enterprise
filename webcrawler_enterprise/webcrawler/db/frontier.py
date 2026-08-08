@@ -15,6 +15,7 @@ class FrontierStore:
         self.db = db
         self.site_id = site_id
         self._lock = threading.Lock()
+        # normalized -> (url, depth, priority_rank)  lower rank = sooner
         self._pending_adds: dict[str, tuple[str, int, int]] = {}
         self._pending_removes: set[str] = set()
 
@@ -24,21 +25,22 @@ class FrontierStore:
             self._pending_removes.clear()
         self.db.execute("DELETE FROM frontier WHERE site_id = ?", (self.site_id,))
 
-    def add(self, url: str, depth: int, priority: bool = False) -> bool:
+    def add(self, url: str, depth: int, priority: bool | int = False) -> bool:
         normalized = normalize_url(url)
         if not normalized:
             return False
+        if isinstance(priority, bool):
+            rank = 1 if priority else 6
+        else:
+            rank = int(priority)
         with self._lock:
             self._pending_removes.discard(normalized)
-            pri = 1 if priority else 0
             prev = self._pending_adds.get(normalized)
             if prev is not None:
-                # Keep best priority / shallowest depth while still batched.
-                pri = max(prev[2], pri)
+                rank = min(prev[2], rank)
                 depth = min(prev[1], depth)
                 url = prev[0]
-            self._pending_adds[normalized] = (url, depth, pri)
-            # Flush often so power loss loses little progress.
+            self._pending_adds[normalized] = (url, depth, rank)
             if len(self._pending_adds) + len(self._pending_removes) >= 10:
                 self._flush_unlocked()
         return True
@@ -71,16 +73,18 @@ class FrontierStore:
                     )
                 if adds:
                     conn.executemany(
-                        "INSERT OR IGNORE INTO frontier "
+                        "INSERT INTO frontier "
                         "(site_id, url, normalized_url, depth, priority) "
-                        "VALUES (?, ?, ?, ?, ?)",
+                        "VALUES (?, ?, ?, ?, ?) "
+                        "ON CONFLICT(site_id, normalized_url) DO UPDATE SET "
+                        "priority = MIN(frontier.priority, excluded.priority), "
+                        "depth = MIN(frontier.depth, excluded.depth)",
                         [
                             (self.site_id, url, normalized, depth, priority)
                             for normalized, (url, depth, priority) in adds
                         ],
                     )
         except Exception:
-            # Re-queue failed batch so a later flush / end-of-site can retry.
             for n in removes:
                 self._pending_removes.add(n)
             for normalized, payload in adds:
@@ -95,11 +99,12 @@ class FrontierStore:
         )
         return int(row["c"]) if row else 0
 
-    def load_all(self) -> list[tuple[str, int, bool]]:
+    def load_all(self) -> list[tuple[str, int, int]]:
+        """Return (url, depth, priority_rank) with lower rank first."""
         self.flush()
         rows = self.db.fetchall(
             "SELECT url, depth, priority FROM frontier WHERE site_id = ? "
-            "ORDER BY priority DESC, id ASC",
+            "ORDER BY priority ASC, id ASC",
             (self.site_id,),
         )
-        return [(r["url"], int(r["depth"]), bool(r["priority"])) for r in rows]
+        return [(r["url"], int(r["depth"]), int(r["priority"])) for r in rows]

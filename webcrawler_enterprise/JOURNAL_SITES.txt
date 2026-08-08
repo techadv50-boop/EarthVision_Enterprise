@@ -17,16 +17,20 @@ What we found for https://hamdardislamicus.com.pk/
 What the crawler now does
 -------------------------
 1. Seeds OAI-PMH article list (every article view URL)
-2. Seeds issue/archive pages
+2. Seeds issue/archive pages deeply (paginated archives)
 3. Reads citation_pdf_url from every article page
 4. Treats /article/download/... as a PDF even without .pdf
-5. Scans PDF bytes for emails/phones (light mode does not save files)
+5. Scans every page of each PDF for emails/phones (light mode does not save files)
 6. Continues page discovery even while many PDFs are being scanned
-7. Crawls deep galley pages too, e.g.
-     /article/view/101
-     /article/view/101/113   ← now high priority (was delayed/skipped before)
+7. Uses a deep priority heap so PDFs/galleys are crawled before site chrome:
+     PDF /article/download/...     → highest
+     /article/view/101/113         → deep galley HTML
+     /article/view/101             → abstract
+     /issue/view|archive           → issues
 8. Skips citation-style junk URLs that used to bury real article pages
-9. Records scanned PDF URLs in pages_index.txt so coverage is visible
+9. Extra deep passes after document scans so newly found URLs are not dropped
+10. Records scanned PDF URLs in pages_index.txt so coverage is visible
+11. Defaults: max_pages=250000, crawl_depth=10000 (deep mode ignores depth cap)
 
 How to re-run for max contacts
 ------------------------------

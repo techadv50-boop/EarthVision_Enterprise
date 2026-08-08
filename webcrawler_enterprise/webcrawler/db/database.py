@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS frontier (
 );
 
 CREATE INDEX IF NOT EXISTS idx_frontier_site_priority
-    ON frontier(site_id, priority DESC, id ASC);
+    ON frontier(site_id, priority ASC, id ASC);
 """
 
 
@@ -138,6 +138,12 @@ class Database:
             conn = self._connect()
             try:
                 conn.executescript(SCHEMA)
+                # Recreate frontier index: lower priority rank must come first.
+                conn.execute("DROP INDEX IF EXISTS idx_frontier_site_priority")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_frontier_site_priority "
+                    "ON frontier(site_id, priority ASC, id ASC)"
+                )
                 conn.commit()
             finally:
                 conn.close()
