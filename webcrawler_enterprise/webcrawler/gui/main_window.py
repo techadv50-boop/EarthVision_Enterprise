@@ -31,7 +31,7 @@ from webcrawler.gui.login_dialog import ChangePasswordDialog
 from webcrawler.gui.progress_panel import ProgressPanel
 from webcrawler.gui.settings_dialog import SettingsDialog
 from webcrawler.gui.workers import CrawlWorker
-from webcrawler.queue.manager import QueueManager, QueueStatus
+from webcrawler.queue.manager import QueueManager
 from webcrawler.settings.manager import SettingsManager
 from webcrawler.utils.url import parse_url_list
 
