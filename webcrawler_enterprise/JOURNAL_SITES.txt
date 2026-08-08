@@ -30,7 +30,7 @@ What the crawler now does
 8. Skips citation-style junk URLs that used to bury real article pages
 9. Extra deep passes after document scans so newly found URLs are not dropped
 10. Records scanned PDF URLs in pages_index.txt so coverage is visible
-11. Defaults: max_pages=250000, crawl_depth=10000 (deep mode ignores depth cap)
+11. Defaults: max_pages=500000, crawl_depth=10000 (deep mode ignores depth cap)
 
 How to re-run for max contacts
 ------------------------------

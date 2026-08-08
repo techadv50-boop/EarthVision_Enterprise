@@ -57,7 +57,7 @@ def legacy_app_data_dir() -> Path:
 @dataclass
 class AppSettings:
     crawl_depth: int = 10000
-    max_pages_per_site: int = 250000
+    max_pages_per_site: int = 500000
     download_timeout: int = 45
     # Defaults tuned for deep site-wide contact discovery.
     worker_threads: int = 12
