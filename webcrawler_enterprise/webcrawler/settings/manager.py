@@ -40,9 +40,10 @@ def app_data_dir() -> Path:
 class AppSettings:
     crawl_depth: int = 100
     max_pages_per_site: int = 50000
-    download_timeout: int = 20
-    worker_threads: int = 16  # parallel file downloads
-    page_workers: int = 24  # parallel page fetches (main speed lever)
+    download_timeout: int = 25
+    # Stable defaults for multi-hour runs (can raise in Settings for speed).
+    worker_threads: int = 6
+    page_workers: int = 8
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -51,17 +52,22 @@ class AppSettings:
     download_file_types: list[str] = field(default_factory=lambda: list(DEFAULT_FILE_TYPES))
     ignore_robots_txt: bool = False
     follow_redirects: bool = True
-    retry_attempts: int = 2
+    retry_attempts: int = 3
     output_folder: str = ""
     last_urls: str = ""
-    page_timeout_ms: int = 15000
+    page_timeout_ms: int = 20000
     respect_same_host_only: bool = True
     # Download every reachable internal page, document, and image; rebuild contact files.
     download_complete_site: bool = True
     download_all_images: bool = True
-    fresh_site_crawl: bool = True
-    # Fast HTTP crawl by default; Playwright only for thin/failed pages (no skips).
+    # False = resume unfinished site instead of wiping progress (needed for long runs).
+    fresh_site_crawl: bool = False
+    # Playwright only for thin/failed pages; capped for stability.
     use_playwright_fallback: bool = True
+    max_playwright_fallback: int = 100
+    request_pause_ms: int = 50
+    max_download_queue: int = 40
+    max_download_bytes: int = 50 * 1024 * 1024
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

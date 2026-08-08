@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,10 +110,12 @@ class Database:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=60)
+        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=120)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 120000")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def _init_schema(self) -> None:
@@ -138,9 +141,20 @@ class Database:
                 conn.close()
 
     def execute(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> int:
-        with self.connection() as conn:
-            cur = conn.execute(sql, params)
-            return cur.lastrowid or 0
+        last_err: Exception | None = None
+        for attempt in range(5):
+            try:
+                with self.connection() as conn:
+                    cur = conn.execute(sql, params)
+                    return cur.lastrowid or 0
+            except sqlite3.OperationalError as exc:
+                last_err = exc
+                if "locked" not in str(exc).lower():
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        if last_err:
+            raise last_err
+        return 0
 
     def fetchone(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> sqlite3.Row | None:
         with self.connection() as conn:

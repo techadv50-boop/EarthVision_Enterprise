@@ -44,6 +44,9 @@ class FileDownloader:
         }
 
     def download(self, url: str, is_image: bool = False) -> Path | None:
+        if not url or any(ch in url for ch in ('"', "'", "`")):
+            self.logger.skipped(url or "", "invalid URL")
+            return None
         if not self.duplicates.should_download(url):
             self.logger.skipped(url, "duplicate URL")
             return None
@@ -51,6 +54,7 @@ class FileDownloader:
         headers = {"User-Agent": self.settings.user_agent}
         timeout = httpx.Timeout(self.settings.download_timeout)
         last_error: Exception | None = None
+        max_bytes = max(1_000_000, self.settings.max_download_bytes)
 
         for attempt in range(1, self.settings.retry_attempts + 1):
             try:
@@ -58,21 +62,39 @@ class FileDownloader:
                     headers=headers,
                     timeout=timeout,
                     follow_redirects=self.settings.follow_redirects,
-                    verify=True,
+                    verify=False,
+                    limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                 ) as client:
                     with client.stream("GET", url) as response:
+                        if response.status_code in {404, 410}:
+                            self.logger.skipped(url, f"HTTP {response.status_code}")
+                            self.duplicates.mark_download(url, None, "", "missing")
+                            return None
+                        if response.status_code in {429, 503}:
+                            raise httpx.HTTPStatusError(
+                                f"HTTP {response.status_code}",
+                                request=response.request,
+                                response=response,
+                            )
                         response.raise_for_status()
                         filename = self._filename_from_response(url, response)
                         dest = destination_path(self.site_dir, url, filename)
+                        written = 0
                         with open(dest, "wb") as fh:
                             for chunk in response.iter_bytes():
+                                written += len(chunk)
+                                if written > max_bytes:
+                                    fh.close()
+                                    dest.unlink(missing_ok=True)
+                                    self.logger.skipped(url, f"file larger than {max_bytes} bytes")
+                                    self.duplicates.mark_download(url, None, "", "too_large")
+                                    return None
                                 fh.write(chunk)
 
                 digest = sha256_file(dest)
                 if self.duplicates.has_hash(digest):
                     dest.unlink(missing_ok=True)
                     self.logger.skipped(url, "duplicate SHA-256")
-                    # Remember URL so we don't retry
                     self.duplicates.mark_download(url, digest, "", "duplicate")
                     return None
 
@@ -87,7 +109,6 @@ class FileDownloader:
                 if self.on_download:
                     self.on_download(url, str(dest))
 
-                # Extract contacts from documents
                 for email in extract_emails_from_file(dest):
                     self.duplicates.add_email(email)
                 for phone in extract_phones_from_file(
@@ -97,7 +118,16 @@ class FileDownloader:
                 return dest
             except Exception as exc:
                 last_error = exc
+                msg = str(exc).lower()
+                # Do not burn retries on hard client errors except rate limits.
+                if "404" in msg or "410" in msg:
+                    self.duplicates.mark_download(url, None, "", "missing")
+                    break
                 self.logger.warning(f"Download attempt {attempt} failed for {url}: {exc}")
+                time_sleep = min(0.4 * attempt, 3.0)
+                import time
+
+                time.sleep(time_sleep)
 
         self.logger.error(f"Failed to download {url}: {last_error}")
         return None

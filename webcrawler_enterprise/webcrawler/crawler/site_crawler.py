@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import re
 import threading
 import time
@@ -134,21 +135,29 @@ class SiteCrawler:
         self._flush_counter = 0
         self._pages_index: list[str] = []
         self._download_futures: set = set()
+        self._heartbeat_at = 0.0
+        self._processed_since_gc = 0
 
     def crawl(self) -> SiteResult:
         start = datetime.now(timezone.utc)
         site_dir = ensure_site_structure(site_folder(self.item.output_root, self.item.url))
         self._site_dir = site_dir
         self.logger.set_path(site_dir / "Logs" / "crawl_log.txt")
-        self.logger.info(f"Starting high-speed full-site download of {self.item.url}")
+        self.logger.info(f"Starting stable full-site download of {self.item.url}")
         self.logger.info(
             f"Workers: pages={self.settings.page_workers}, "
             f"downloads={self.settings.worker_threads}, region={self._phone_region}"
         )
 
-        if self.settings.fresh_site_crawl or self.settings.download_complete_site:
+        # Only wipe prior progress when user explicitly asks for a fresh crawl.
+        # Long runs must be resumable if the app/OS interrupts.
+        if self.settings.fresh_site_crawl:
             self.duplicates.clear_crawl_state(clear_contacts=True)
-            self.logger.info("Cleared previous crawl state for a fresh complete download")
+            self.logger.info("Cleared previous crawl state (Fresh crawl enabled)")
+        elif self.duplicates.visited_count:
+            self.logger.info(
+                f"Resuming site with {self.duplicates.visited_count} already visited pages"
+            )
 
         result = SiteResult(
             website=self.item.url,
@@ -240,12 +249,13 @@ class SiteCrawler:
         downloader: FileDownloader,
         result: SiteResult,
     ) -> None:
-        page_workers = max(4, min(self.settings.page_workers, 64))
-        download_workers = max(4, min(self.settings.worker_threads, 32))
+        page_workers = max(2, min(self.settings.page_workers, 32))
+        download_workers = max(2, min(self.settings.worker_threads, 24))
         self.logger.info(
-            f"Fast crawl mode: {page_workers} parallel page fetches, "
+            f"Stable crawl mode: {page_workers} parallel page fetches, "
             f"{download_workers} parallel downloads"
         )
+        self._heartbeat_at = time.monotonic()
 
         with ThreadPoolExecutor(max_workers=page_workers) as page_pool, ThreadPoolExecutor(
             max_workers=download_workers
@@ -253,85 +263,132 @@ class SiteCrawler:
             pending_pages: dict = {}
 
             while True:
-                state = self._wait_if_paused()
-                if state == "stopped":
-                    result.status = "Cancelled"
-                    self.logger.warning("Crawl stopped by user")
-                    break
-
-                if self.duplicates.visited_count >= self.settings.max_pages_per_site:
-                    self.logger.info("Reached max pages per website")
-                    break
-
-                # Reap finished page fetches
-                done = [fut for fut in list(pending_pages) if fut.done()]
-                for fut in done:
-                    url, depth = pending_pages.pop(fut)
-                    try:
-                        payload = fut.result()
-                    except Exception as exc:
-                        self.logger.error(f"Page worker error for {url}: {exc}")
-                        self.duplicates.mark_visited(url, None)
-                        continue
-                    self._handle_fetched_page(
-                        payload, depth, site_dir, downloader, download_pool, result
-                    )
-
-                # Fill page worker pool
-                while (
-                    len(pending_pages) < page_workers
-                    and self.duplicates.visited_count + len(pending_pages)
-                    < self.settings.max_pages_per_site
-                ):
-                    state = self.control_state()
-                    if state != "running":
+                try:
+                    state = self._wait_if_paused()
+                    if state == "stopped":
+                        result.status = "Cancelled"
+                        self.logger.warning("Crawl stopped by user")
                         break
-                    item = self._pop_page()
-                    if item is None:
+
+                    if self.duplicates.visited_count >= self.settings.max_pages_per_site:
+                        self.logger.info("Reached max pages per website")
                         break
-                    url, depth = item
-                    if self.duplicates.has_visited(url):
-                        continue
-                    if not self._allowed_by_robots(url):
-                        self.logger.skipped(url, "robots.txt")
-                        self.duplicates.mark_visited(url, 0)
-                        continue
-                    # Route obvious binaries straight to downloader
-                    if is_document_url(url, self.settings.download_file_types) or is_image_url(url):
-                        self.duplicates.mark_visited(url, 200)
-                        self._submit_download(
-                            download_pool,
-                            downloader,
-                            url,
-                            is_image=is_image_url(url),
+
+                    self._maybe_heartbeat(downloader, pending_pages)
+                    self._throttle_downloads()
+
+                    # Reap finished page fetches
+                    done = [fut for fut in list(pending_pages) if fut.done()]
+                    for fut in done:
+                        url, depth = pending_pages.pop(fut)
+                        try:
+                            payload = fut.result()
+                        except Exception as exc:
+                            self.logger.error(f"Page worker error for {url}: {exc}")
+                            self.duplicates.mark_visited(url, None)
+                            continue
+                        try:
+                            self._handle_fetched_page(
+                                payload, depth, site_dir, downloader, download_pool, result
+                            )
+                        except Exception as exc:
+                            self.logger.error(f"Failed processing {url}: {exc}")
+                            try:
+                                self.duplicates.mark_visited(url, None)
+                            except Exception:
+                                pass
+
+                    # Fill page worker pool
+                    while (
+                        len(pending_pages) < page_workers
+                        and self.duplicates.visited_count + len(pending_pages)
+                        < self.settings.max_pages_per_site
+                    ):
+                        state = self.control_state()
+                        if state != "running":
+                            break
+                        if self._pending_download_count() >= self.settings.max_download_queue:
+                            break
+                        item = self._pop_page()
+                        if item is None:
+                            break
+                        url, depth = item
+                        if self.duplicates.has_visited(url):
+                            continue
+                        if not self._allowed_by_robots(url):
+                            self.logger.skipped(url, "robots.txt")
+                            self.duplicates.mark_visited(url, 0)
+                            continue
+                        if is_document_url(url, self.settings.download_file_types) or is_image_url(url):
+                            self.duplicates.mark_visited(url, 200)
+                            self._submit_download(
+                                download_pool,
+                                downloader,
+                                url,
+                                is_image=is_image_url(url),
+                            )
+                            continue
+                        self._emit_progress(
+                            current_page=url,
+                            pages=self.duplicates.visited_count,
+                            emails=len(self.duplicates.emails),
+                            phones=len(self.duplicates.phones),
                         )
-                        continue
-                    self._emit_progress(
-                        current_page=url,
-                        pages=self.duplicates.visited_count,
-                        emails=len(self.duplicates.emails),
-                        phones=len(self.duplicates.phones),
-                    )
-                    fut = page_pool.submit(self._http_fetch_page, url)
-                    pending_pages[fut] = (url, depth)
+                        fut = page_pool.submit(self._http_fetch_page, url)
+                        pending_pages[fut] = (url, depth)
+                        pause = max(0, self.settings.request_pause_ms) / 1000.0
+                        if pause:
+                            time.sleep(pause)
 
-                # Idle: no pending and no queued pages
-                if not pending_pages and not self._has_queued_pages():
-                    break
+                    if not pending_pages and not self._has_queued_pages():
+                        break
 
-                if not done and pending_pages:
-                    time.sleep(0.02)
+                    if not done and pending_pages:
+                        time.sleep(0.05)
+                except Exception as exc:
+                    # Never let one loop error kill a multi-hour crawl.
+                    self.logger.error(f"Crawl loop recovered from error: {exc}")
+                    time.sleep(0.5)
 
-            # Drain download futures
             self._drain_downloads()
 
-        # Playwright fallback for thin/failed pages (completeness, not primary speed path)
+        # Cap Playwright fallback so it cannot stall a site for many hours.
         if self.settings.use_playwright_fallback and self._playwright_queue:
             if self.control_state() != "stopped":
-                self.logger.info(
-                    f"Playwright fallback for {len(self._playwright_queue)} page(s)"
-                )
-                self._run_playwright_fallback(site_dir, downloader, result)
+                max_pw = max(0, self.settings.max_playwright_fallback)
+                overflow = len(self._playwright_queue) - max_pw
+                if overflow > 0:
+                    self.logger.warning(
+                        f"Playwright fallback capped at {max_pw}; "
+                        f"ingesting {overflow} thin/failed page(s) from last HTTP content"
+                    )
+                    for _ in range(overflow):
+                        if not self._playwright_queue:
+                            break
+                        url, depth = self._playwright_queue.pop()
+                        payload = self._http_fetch_page(url)
+                        if payload.get("html"):
+                            try:
+                                self._ingest_html(
+                                    html=payload["html"],
+                                    url=url,
+                                    final_url=payload.get("final_url") or url,
+                                    status_code=payload.get("status"),
+                                    depth=depth,
+                                    site_dir=site_dir,
+                                    downloader=downloader,
+                                    download_pool=None,
+                                )
+                            except Exception as exc:
+                                self.logger.error(f"Overflow ingest failed {url}: {exc}")
+                                self.duplicates.mark_visited(url, None)
+                        else:
+                            self.duplicates.mark_visited(url, None)
+                if self._playwright_queue:
+                    self.logger.info(
+                        f"Playwright fallback for {len(self._playwright_queue)} page(s)"
+                    )
+                    self._run_playwright_fallback(site_dir, downloader, result)
 
     def _handle_fetched_page(
         self,
@@ -374,9 +431,12 @@ class SiteCrawler:
             return
 
         if _looks_thin(html) and self.settings.use_playwright_fallback:
-            self._playwright_queue.append((url, depth))
-            self.logger.info(f"Thin page, queued Playwright fallback: {url}")
-            return
+            if len(self._playwright_queue) < max(0, self.settings.max_playwright_fallback):
+                self._playwright_queue.append((url, depth))
+                self.logger.info(f"Thin page, queued Playwright fallback: {url}")
+                return
+            # Queue full: still ingest whatever HTML we have (do not skip forever)
+            self.logger.info(f"Thin page ingested without Playwright (cap reached): {url}")
 
         # Always ingest available HTML (never skip content we already fetched)
         self._ingest_html(
@@ -408,18 +468,22 @@ class SiteCrawler:
 
         try:
             html_path = html_mirror_path(site_dir, final_url)
-            html_path.write_text(html, encoding="utf-8")
-            self._pages_index.append(f"{final_url}\t{html_path.relative_to(site_dir)}")
+            html_path.write_text(html, encoding="utf-8", errors="ignore")
+            self._append_pages_index(final_url, html_path, site_dir)
         except Exception as exc:
             self.logger.warning(f"Could not save HTML for {final_url}: {exc}")
 
-        parsed = self.parser.parse(
-            html,
-            final_url,
-            self.item.url,
-            allowed_doc_types=self.settings.download_file_types,
-            phone_region=self._phone_region,
-        )
+        try:
+            parsed = self.parser.parse(
+                html,
+                final_url,
+                self.item.url,
+                allowed_doc_types=self.settings.download_file_types,
+                phone_region=self._phone_region,
+            )
+        except Exception as exc:
+            self.logger.error(f"HTML parse failed for {final_url}: {exc}")
+            return
 
         for email in parsed.emails:
             self.duplicates.add_email(email)
@@ -454,6 +518,11 @@ class SiteCrawler:
             for img_url in images:
                 self._submit_download(download_pool, downloader, img_url, is_image=True)
 
+        self._processed_since_gc += 1
+        if self._processed_since_gc >= 200:
+            self._processed_since_gc = 0
+            gc.collect()
+
         self._emit_progress(
             pages=self.duplicates.visited_count,
             documents=downloader.stats["documents"],
@@ -474,10 +543,17 @@ class SiteCrawler:
                     follow_redirects=self.settings.follow_redirects,
                     verify=False,
                     http2=False,
+                    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
                 ) as client:
                     response = client.get(url)
+                    if response.status_code in {429, 503}:
+                        wait = min(2.0 * attempt, 15.0)
+                        self.logger.warning(
+                            f"HTTP {response.status_code} for {url}; backing off {wait:.1f}s"
+                        )
+                        time.sleep(wait)
+                        continue
                     content_type = response.headers.get("content-type", "").lower()
-                    # If server returns a file instead of HTML, treat as download target
                     if any(
                         x in content_type
                         for x in (
@@ -506,7 +582,7 @@ class SiteCrawler:
                     }
             except Exception as exc:
                 last_error = exc
-                time.sleep(min(0.2 * attempt, 1.0))
+                time.sleep(min(0.35 * attempt, 2.0))
         return {
             "url": url,
             "html": "",
@@ -522,8 +598,15 @@ class SiteCrawler:
         url: str,
         is_image: bool,
     ) -> None:
+        if not url or '"' in url or "'" in url or " " in url.strip():
+            return
         if not self.duplicates.should_download(url):
             return
+        # Backpressure: avoid unbounded download future growth on large sites
+        while self._pending_download_count() >= self.settings.max_download_queue:
+            if self.control_state() == "stopped":
+                return
+            time.sleep(0.05)
         self._emit_progress(current_download=url)
         fut = pool.submit(downloader.download, url, is_image)
         with self._lock:
@@ -539,13 +622,57 @@ class SiteCrawler:
 
         fut.add_done_callback(_done)
 
+    def _pending_download_count(self) -> int:
+        with self._lock:
+            return sum(1 for f in self._download_futures if not f.done())
+
+    def _throttle_downloads(self) -> None:
+        # Keep memory/socket usage bounded during multi-hour runs.
+        while self._pending_download_count() > self.settings.max_download_queue:
+            if self.control_state() == "stopped":
+                return
+            time.sleep(0.1)
+
+    def _maybe_heartbeat(self, downloader: FileDownloader, pending_pages: dict) -> None:
+        now = time.monotonic()
+        if now - self._heartbeat_at < 30:
+            return
+        self._heartbeat_at = now
+        with self._lock:
+            qsize = len(self._page_queue)
+            pw = len(self._playwright_queue)
+        self.logger.info(
+            "Heartbeat: "
+            f"visited={self.duplicates.visited_count} queued={qsize} "
+            f"pending_pages={len(pending_pages)} downloads={self._pending_download_count()} "
+            f"emails={len(self.duplicates.emails)} phones={len(self.duplicates.phones)} "
+            f"docs={downloader.stats['documents']} pw_fallback={pw}"
+        )
+        self._flush_contacts(force=True)
+
+    def _append_pages_index(self, final_url: str, html_path: Path, site_dir: Path) -> None:
+        try:
+            rel = str(html_path.relative_to(site_dir))
+        except Exception:
+            rel = str(html_path)
+        line = f"{final_url}\t{rel}"
+        self._pages_index.append(line)
+        # Flush incrementally so a crash still leaves an index.
+        if len(self._pages_index) >= 25:
+            self._write_pages_index(site_dir, append_only=True)
+
     def _drain_downloads(self) -> None:
+        waited = 0.0
         while True:
             with self._lock:
                 pending = [f for f in self._download_futures if not f.done()]
             if not pending:
                 break
             time.sleep(0.05)
+            waited += 0.05
+            if waited > 600:
+                self.logger.warning("Download drain timeout; continuing site finalize")
+                break
 
     def _run_playwright_fallback(
         self,
@@ -826,10 +953,21 @@ class SiteCrawler:
             f"Full download rescan ({scanned} files): +{gained_e} emails, +{gained_p} phones"
         )
 
-    def _write_pages_index(self, site_dir: Path) -> None:
+    def _write_pages_index(self, site_dir: Path, append_only: bool = False) -> None:
         index_path = site_dir / "Reports" / "pages_index.txt"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        if append_only and self._pages_index:
+            chunk = "\n".join(self._pages_index) + "\n"
+            if not index_path.exists():
+                index_path.write_text("URL\tSaved As\n" + chunk, encoding="utf-8")
+            else:
+                with open(index_path, "a", encoding="utf-8") as fh:
+                    fh.write(chunk)
+            self._pages_index.clear()
+            return
         lines = ["URL\tSaved As", *self._pages_index]
         index_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        self._pages_index.clear()
 
     def _flush_contacts(self, force: bool = False) -> None:
         self._flush_counter += 1

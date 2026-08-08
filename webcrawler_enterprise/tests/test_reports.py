@@ -23,6 +23,16 @@ def test_html_mirror_path(tmp_path: Path):
     assert path.parent.exists()
 
 
+def test_html_mirror_path_hash_fallback_for_long_urls(tmp_path: Path):
+    folder = ensure_site_structure(site_folder(tmp_path, "https://example.com"))
+    deep = "https://example.com/" + "/".join([f"segment{i}-name" for i in range(40)])
+    path = html_mirror_path(folder, deep)
+    assert path.suffix == ".html"
+    assert path.exists() is False  # path created parent only
+    assert path.parent.exists()
+    assert len(str(path)) <= 260
+
+
 def test_reports(tmp_path: Path):
     site_dir = ensure_site_structure(site_folder(tmp_path, "https://mit.edu"))
     result = SiteResult(

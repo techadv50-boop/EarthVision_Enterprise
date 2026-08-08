@@ -155,98 +155,116 @@ class CrawlEngine:
         completed = 0
         try:
             while True:
-                if self.control_state() == "stopped":
-                    self.queue.cancel_remaining()
-                    break
-                while self.control_state() == "paused":
-                    time.sleep(0.2)
+                try:
                     if self.control_state() == "stopped":
                         self.queue.cancel_remaining()
                         break
-                if self.control_state() == "stopped":
-                    break
+                    while self.control_state() == "paused":
+                        time.sleep(0.2)
+                        if self.control_state() == "stopped":
+                            self.queue.cancel_remaining()
+                            break
+                    if self.control_state() == "stopped":
+                        break
 
-                item = self.queue.next_pending()
-                if item is None:
-                    break
+                    item = self.queue.next_pending()
+                    if item is None:
+                        break
 
-                remaining = self._pending_and_running_count()
-                self._progress.current_website = item.url
-                self._progress.websites_remaining = max(remaining - 1, 0)
-                self._progress.websites_completed = completed
-                self._progress.status = "Running"
-                self._emit()
+                    remaining = self._pending_and_running_count()
+                    self._progress.current_website = item.url
+                    self._progress.websites_remaining = max(remaining - 1, 0)
+                    self._progress.websites_completed = completed
+                    self._progress.status = "Running"
+                    self._emit()
 
-                self.queue.mark_running(item.id)
-                duplicates = DuplicateManager(self.db, item.id)
-                site_start = time.monotonic()
+                    self.queue.mark_running(item.id)
+                    duplicates = DuplicateManager(self.db, item.id)
+                    site_start = time.monotonic()
 
-                def site_progress(data: dict) -> None:
-                    for key, value in data.items():
-                        if key == "current_page":
-                            self._progress.current_page = value
-                        elif key == "current_download":
-                            self._progress.current_download = value
-                        elif key == "pages":
-                            self._progress.pages_crawled = value
-                        elif key == "documents":
-                            self._progress.documents_downloaded = value
-                        elif key == "emails":
-                            self._progress.emails_found = value
-                        elif key == "phones":
-                            self._progress.phone_numbers_found = value
-                    self._progress.elapsed_seconds = time.monotonic() - self._start_monotonic
+                    def site_progress(data: dict) -> None:
+                        for key, value in data.items():
+                            if key == "current_page":
+                                self._progress.current_page = value
+                            elif key == "current_download":
+                                self._progress.current_download = value
+                            elif key == "pages":
+                                self._progress.pages_crawled = value
+                            elif key == "documents":
+                                self._progress.documents_downloaded = value
+                            elif key == "emails":
+                                self._progress.emails_found = value
+                            elif key == "phones":
+                                self._progress.phone_numbers_found = value
+                        self._progress.elapsed_seconds = time.monotonic() - self._start_monotonic
+                        self._update_eta(completed)
+                        self._emit()
+
+                    crawler = SiteCrawler(
+                        item=item,
+                        settings=self.settings,
+                        duplicates=duplicates,
+                        logger=logger,
+                        on_progress=site_progress,
+                        control_state=self.control_state,
+                    )
+
+                    try:
+                        result = crawler.crawl()
+                    except Exception as exc:
+                        result = SiteResult(
+                            website=item.url,
+                            domain=item.domain,
+                            status="Failed",
+                            error=str(exc),
+                            start_time=datetime.now(timezone.utc).isoformat(),
+                            end_time=datetime.now(timezone.utc).isoformat(),
+                            site_dir=Path(item.output_root) / item.domain,
+                        )
+                        logger.error(f"Unhandled error for {item.url}: {exc}")
+
+                    try:
+                        write_summary(result)
+                    except Exception as exc:
+                        logger.error(f"Summary write failed for {item.url}: {exc}")
+                    try:
+                        append_master_report(item.output_root, result)
+                    except Exception as exc:
+                        logger.error(f"Master report update failed for {item.url}: {exc}")
+
+                    try:
+                        if result.status == "Completed":
+                            self.queue.mark_completed(item.id)
+                        elif result.status == "Cancelled":
+                            self.queue.mark_failed(item.id, "Cancelled by user")
+                            break
+                        else:
+                            self.queue.mark_failed(item.id, result.error or "Unknown error")
+                    except Exception as exc:
+                        logger.error(f"Queue status update failed for {item.url}: {exc}")
+
+                    completed += 1
+                    self._site_durations.append(time.monotonic() - site_start)
+                    if len(self._site_durations) > 200:
+                        self._site_durations = self._site_durations[-100:]
+                    self._progress.websites_completed = completed
+                    self._progress.websites_remaining = self._pending_and_running_count()
+                    self._progress.emails_found = result.emails
+                    self._progress.phone_numbers_found = result.phones
+                    self._progress.pages_crawled = result.pages_crawled
+                    self._progress.documents_downloaded = result.documents_downloaded
+                    self._progress.message = f"Finished {item.domain} ({result.status})"
                     self._update_eta(completed)
                     self._emit()
 
-                crawler = SiteCrawler(
-                    item=item,
-                    settings=self.settings,
-                    duplicates=duplicates,
-                    logger=logger,
-                    on_progress=site_progress,
-                    control_state=self.control_state,
-                )
-
-                try:
-                    result = crawler.crawl()
+                    if self.control_state() == "stopped":
+                        self.queue.cancel_remaining()
+                        break
                 except Exception as exc:
-                    result = SiteResult(
-                        website=item.url,
-                        domain=item.domain,
-                        status="Failed",
-                        error=str(exc),
-                        start_time=datetime.now(timezone.utc).isoformat(),
-                        end_time=datetime.now(timezone.utc).isoformat(),
-                        site_dir=Path(item.output_root) / item.domain,
-                    )
-                    logger.error(f"Unhandled error for {item.url}: {exc}")
-
-                write_summary(result)
-                append_master_report(item.output_root, result)
-
-                if result.status == "Completed":
-                    self.queue.mark_completed(item.id)
-                elif result.status == "Cancelled":
-                    self.queue.mark_failed(item.id, "Cancelled by user")
-                    break
-                else:
-                    self.queue.mark_failed(item.id, result.error or "Unknown error")
-
-                completed += 1
-                self._site_durations.append(time.monotonic() - site_start)
-                self._progress.websites_completed = completed
-                self._progress.websites_remaining = self._pending_and_running_count()
-                self._progress.emails_found = result.emails
-                self._progress.phone_numbers_found = result.phones
-                self._progress.pages_crawled = result.pages_crawled
-                self._progress.documents_downloaded = result.documents_downloaded
-                self._update_eta(completed)
-                self._emit()
-
-                if self.control_state() == "stopped":
-                    self.queue.cancel_remaining()
-                    break
+                    # Keep processing remaining websites after unexpected errors.
+                    logger.error(f"Crawl engine recovered from site-loop error: {exc}")
+                    time.sleep(1.0)
+                    continue
         finally:
             with self._state_lock:
                 self._state = "idle"
@@ -257,7 +275,10 @@ class CrawlEngine:
             self._progress.message = "All queued websites processed"
             self._emit()
             if self.on_finished:
-                self.on_finished()
+                try:
+                    self.on_finished()
+                except Exception:
+                    pass
 
     def _update_eta(self, completed: int) -> None:
         remaining = self._progress.websites_remaining
