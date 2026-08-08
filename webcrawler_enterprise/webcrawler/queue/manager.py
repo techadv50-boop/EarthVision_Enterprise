@@ -48,6 +48,32 @@ class QueueManager:
             )
             return cur.rowcount
 
+    def prepare_resume(self) -> int:
+        """Make unfinished work Pending again (power loss, offline, stop, errors)."""
+        recovered = self.recover_interrupted()
+        now = utcnow()
+        with self.db.connection() as conn:
+            cur = conn.execute(
+                "UPDATE queue_items SET status = ?, updated_at = ?, "
+                "error = COALESCE(error, ?) WHERE status IN (?, ?)",
+                (
+                    QueueStatus.PENDING.value,
+                    now,
+                    "Ready to resume",
+                    QueueStatus.FAILED.value,
+                    QueueStatus.CANCELLED.value,
+                ),
+            )
+            return recovered + cur.rowcount
+
+    def mark_pending(self, item_id: int, error: str | None = None) -> None:
+        """Leave a site unfinished so Resume can continue from the saved frontier."""
+        now = utcnow()
+        self.db.execute(
+            "UPDATE queue_items SET status=?, finished_at=NULL, updated_at=?, error=? WHERE id=?",
+            (QueueStatus.PENDING.value, now, (error or "")[:2000] or None, item_id),
+        )
+
     def clear_pending(self) -> None:
         self.db.execute(
             "DELETE FROM queue_items WHERE status IN (?, ?)",

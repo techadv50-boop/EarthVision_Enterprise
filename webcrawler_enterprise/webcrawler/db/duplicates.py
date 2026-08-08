@@ -114,6 +114,7 @@ class DuplicateManager:
         """Reset visited/download history so a site can be fully re-downloaded."""
         self.db.execute("DELETE FROM visited_pages WHERE site_id = ?", (self.site_id,))
         self.db.execute("DELETE FROM downloads WHERE site_id = ?", (self.site_id,))
+        self.db.execute("DELETE FROM frontier WHERE site_id = ?", (self.site_id,))
         self._visited.clear()
         self._download_urls.clear()
         self._download_hashes.clear()

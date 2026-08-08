@@ -3,7 +3,11 @@ WebCrawler Enterprise — Stable Long-Run Guide
 
 Confirmed stability improvements in this build:
 - Crawl loop recovers from per-page errors (does not stop the whole site)
+- Broken / 404 URLs are skipped; crawl continues to the next URL
+- URL frontier saved to SQLite — survives power loss, PC reboot, app crash
+- If internet drops, the crawl waits and continues automatically when online
 - Resume unfinished websites instead of wiping progress by default
+- On startup, the app offers to Resume unfinished websites
 - Heartbeat log every 30 seconds so you can see it is still alive
 - Download backpressure + size limits to avoid memory/disk blowups
 - SQLite busy retries for multi-hour writes
@@ -20,16 +24,18 @@ File -> Settings:
 - Playwright fallback: ON
 - Max pages: 50000 (or higher)
 
-If the app/PC restarts
-----------------------
-1. Open the app
-2. Click Resume (or Start with the same URLs)
-3. With Fresh crawl OFF, it continues from visited pages
+If the PC turns off / power cut / internet disconnects
+-----------------------------------------------------
+1. Open the app again when power/internet is back
+2. Click Yes on "Resume unfinished crawl?" (or click Resume)
+3. With Fresh crawl OFF, it continues from the last saved frontier
+   (already downloaded pages are not crawled again)
 
 If it looks stuck
 -----------------
 - Check Logs\crawl_log.txt for "Heartbeat:" lines
 - Heartbeats mean it is still working
+- "Still offline…" means it is waiting for internet, then will continue
 - Large sites can run many hours; that is expected
 
 Windows note

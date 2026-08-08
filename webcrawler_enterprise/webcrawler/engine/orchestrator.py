@@ -89,7 +89,7 @@ class CrawlEngine:
         if not urls:
             raise ValueError("No valid URLs provided")
 
-        self.queue.recover_interrupted()
+        self.queue.prepare_resume()
         self.queue.enqueue_many(urls, str(output.resolve()))
 
         with self._state_lock:
@@ -109,10 +109,10 @@ class CrawlEngine:
             raise RuntimeError("Crawl already in progress")
         if settings is not None:
             self.settings = settings
-        self.queue.recover_interrupted()
+        self.queue.prepare_resume()
         counts = self.queue.counts()
         if counts.get(QueueStatus.PENDING.value, 0) == 0:
-            raise ValueError("No pending websites to resume")
+            raise ValueError("No unfinished websites to resume")
         with self._state_lock:
             self._state = "running"
         self._start_monotonic = time.monotonic()
@@ -236,10 +236,18 @@ class CrawlEngine:
                         if result.status == "Completed":
                             self.queue.mark_completed(item.id)
                         elif result.status == "Cancelled":
-                            self.queue.mark_failed(item.id, "Cancelled by user")
+                            # Keep Pending so power-loss / offline / Stop can Resume mid-site.
+                            self.queue.mark_pending(
+                                item.id,
+                                result.error or "Interrupted — click Resume to continue",
+                            )
                             break
                         else:
-                            self.queue.mark_failed(item.id, result.error or "Unknown error")
+                            # Do not lose mid-site progress; Resume retries this site later.
+                            self.queue.mark_failed(
+                                item.id,
+                                result.error or "Failed — click Resume to continue from saved progress",
+                            )
                     except Exception as exc:
                         logger.error(f"Queue status update failed for {item.url}: {exc}")
 

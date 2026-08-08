@@ -19,6 +19,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 
 from webcrawler.db.duplicates import DuplicateManager
+from webcrawler.db.frontier import FrontierStore
 from webcrawler.downloader.file_downloader import FileDownloader
 from webcrawler.extractors.email import extract_emails_from_file
 from webcrawler.extractors.phone import extract_phones_from_file, region_from_url
@@ -27,6 +28,7 @@ from webcrawler.parser.html_parser import HtmlParser
 from webcrawler.queue.manager import QueueItem
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import ensure_site_structure, html_mirror_path, site_folder
+from webcrawler.utils.network import is_connectivity_error, is_online
 from webcrawler.utils.url import is_document_url, is_image_url, normalize_url, same_site
 
 CONTACT_HINTS = (
@@ -137,6 +139,8 @@ class SiteCrawler:
         self._download_futures: set = set()
         self._heartbeat_at = 0.0
         self._processed_since_gc = 0
+        self._consecutive_network_errors = 0
+        self._frontier = FrontierStore(self.duplicates.db, item.id)
 
     def crawl(self) -> SiteResult:
         start = datetime.now(timezone.utc)
@@ -150,14 +154,18 @@ class SiteCrawler:
         )
 
         # Only wipe prior progress when user explicitly asks for a fresh crawl.
-        # Long runs must be resumable if the app/OS interrupts.
+        # Power-loss / reboot must resume from visited pages + saved frontier.
         if self.settings.fresh_site_crawl:
             self.duplicates.clear_crawl_state(clear_contacts=True)
+            self._frontier.clear()
             self.logger.info("Cleared previous crawl state (Fresh crawl enabled)")
-        elif self.duplicates.visited_count:
-            self.logger.info(
-                f"Resuming site with {self.duplicates.visited_count} already visited pages"
-            )
+        else:
+            restored = self._restore_frontier_from_db()
+            if self.duplicates.visited_count or restored:
+                self.logger.info(
+                    f"Resuming site: visited={self.duplicates.visited_count}, "
+                    f"frontier_restored={restored}"
+                )
 
         result = SiteResult(
             website=self.item.url,
@@ -192,21 +200,41 @@ class SiteCrawler:
         downloader.on_download = _on_download
 
         root = normalize_url(self.item.url)
+        # Always ensure seeds/sitemaps are present; already-visited URLs are skipped later.
         self._enqueue(root, 0, priority=True)
         self._seed_contact_paths(root)
         self._load_robots(root)
         self._load_sitemaps(root)
+        if not self._wait_until_online():
+            result.status = "Cancelled"
+            result.error = "Stopped while waiting for internet"
+            return self._finalize_result(result, start, downloader, site_dir)
 
         try:
             self._run_fast_crawl(site_dir, downloader, result)
             if result.status != "Cancelled":
                 result.status = "Completed"
+                # Site finished cleanly — frontier no longer needed.
+                self._frontier.clear()
         except Exception as exc:
+            # Keep frontier so the site can resume after crash/power loss.
             result.status = "Failed"
             result.error = str(exc)
-            self.logger.error(f"Site crawl failed: {exc}")
+            self.logger.error(f"Site crawl failed (progress saved for resume): {exc}")
 
-        self._rescan_all_downloaded_files(site_dir)
+        return self._finalize_result(result, start, downloader, site_dir)
+
+    def _finalize_result(
+        self,
+        result: SiteResult,
+        start: datetime,
+        downloader: FileDownloader,
+        site_dir: Path,
+    ) -> SiteResult:
+        try:
+            self._rescan_all_downloaded_files(site_dir)
+        except Exception as exc:
+            self.logger.error(f"Final rescan error: {exc}")
         self._write_pages_index(site_dir)
         self._flush_contacts(force=True)
 
@@ -231,7 +259,8 @@ class SiteCrawler:
         self.logger.info(
             f"Finished {self.item.url}: pages={result.pages_crawled} "
             f"docs={result.documents_downloaded} emails={result.emails} phones={result.phones} "
-            f"status={result.status} time={result.processing_time}"
+            f"status={result.status} time={result.processing_time} "
+            f"frontier_left={self._frontier.count()}"
         )
         self._emit_progress(
             pages=result.pages_crawled,
@@ -285,7 +314,10 @@ class SiteCrawler:
                             payload = fut.result()
                         except Exception as exc:
                             self.logger.error(f"Page worker error for {url}: {exc}")
-                            self.duplicates.mark_visited(url, None)
+                            if not is_online(self.item.url):
+                                self._enqueue(url, depth, priority=True)
+                            else:
+                                self._mark_visited(url, None)
                             continue
                         try:
                             self._handle_fetched_page(
@@ -294,7 +326,7 @@ class SiteCrawler:
                         except Exception as exc:
                             self.logger.error(f"Failed processing {url}: {exc}")
                             try:
-                                self.duplicates.mark_visited(url, None)
+                                self._mark_visited(url, None)
                             except Exception:
                                 pass
 
@@ -314,13 +346,14 @@ class SiteCrawler:
                             break
                         url, depth = item
                         if self.duplicates.has_visited(url):
+                            self._frontier_forget(url)
                             continue
                         if not self._allowed_by_robots(url):
                             self.logger.skipped(url, "robots.txt")
-                            self.duplicates.mark_visited(url, 0)
+                            self._mark_visited(url, 0)
                             continue
                         if is_document_url(url, self.settings.download_file_types) or is_image_url(url):
-                            self.duplicates.mark_visited(url, 200)
+                            self._mark_visited(url, 200)
                             self._submit_download(
                                 download_pool,
                                 downloader,
@@ -381,9 +414,9 @@ class SiteCrawler:
                                 )
                             except Exception as exc:
                                 self.logger.error(f"Overflow ingest failed {url}: {exc}")
-                                self.duplicates.mark_visited(url, None)
+                                self._mark_visited(url, None)
                         else:
-                            self.duplicates.mark_visited(url, None)
+                            self._mark_visited(url, None)
                 if self._playwright_queue:
                     self.logger.info(
                         f"Playwright fallback for {len(self._playwright_queue)} page(s)"
@@ -406,7 +439,7 @@ class SiteCrawler:
         error = payload.get("error")
 
         if payload.get("binary"):
-            self.duplicates.mark_visited(url, status or 200)
+            self._mark_visited(url, status or 200)
             self._submit_download(
                 download_pool,
                 downloader,
@@ -416,19 +449,35 @@ class SiteCrawler:
             return
 
         if error and not html:
-            # Retry with Playwright later so nothing is permanently skipped
-            if self.settings.use_playwright_fallback:
-                self._playwright_queue.append((url, depth))
-                self.logger.warning(f"Queued Playwright fallback for {url}: {error}")
-            else:
-                self.logger.error(f"Failed {url}: {error}")
-                self.duplicates.mark_visited(url, None)
+            offline = (not is_online(self.item.url)) or is_connectivity_error(error)
+            if offline and not is_online(self.item.url):
+                # Offline / connection drop: wait for internet, then retry this URL later.
+                self._consecutive_network_errors += 1
+                self.logger.warning(
+                    f"Internet disconnected while fetching {url}. Waiting to resume…"
+                )
+                if self._wait_until_online():
+                    self._enqueue(url, depth, priority=True)
+                    self.logger.info(f"Back online — requeued {url}")
+                else:
+                    self._enqueue(url, depth, priority=True)
+                    result.status = "Cancelled"
+                    result.error = "Interrupted while offline (progress saved for Resume)"
+                return
+            # Online but this specific URL is broken/unreachable — skip and continue.
+            self.logger.warning(f"Broken URL skipped, continuing: {url} ({error})")
+            self._mark_visited(url, None)
+            self._consecutive_network_errors = 0
             return
 
         if status and status >= 400:
-            self.logger.warning(f"HTTP {status} for {url}")
-            self.duplicates.mark_visited(url, status)
+            # Broken page (404/403/etc.) — ignore and move forward.
+            self.logger.warning(f"HTTP {status} skipped, continuing: {url}")
+            self._mark_visited(url, status)
+            self._consecutive_network_errors = 0
             return
+
+        self._consecutive_network_errors = 0
 
         if _looks_thin(html) and self.settings.use_playwright_fallback:
             if len(self._playwright_queue) < max(0, self.settings.max_playwright_fallback):
@@ -461,9 +510,9 @@ class SiteCrawler:
         downloader: FileDownloader,
         download_pool: ThreadPoolExecutor | None,
     ) -> None:
-        self.duplicates.mark_visited(normalize_url(final_url), status_code)
+        self._mark_visited(normalize_url(final_url), status_code)
         if normalize_url(final_url) != normalize_url(url):
-            self.duplicates.mark_visited(url, status_code)
+            self._mark_visited(url, status_code)
         self.logger.page_visited(final_url, status_code)
 
         try:
@@ -708,7 +757,7 @@ class SiteCrawler:
                     ).document_links:
                         downloader.download(doc)
                 else:
-                    self.duplicates.mark_visited(url, None)
+                    self._mark_visited(url, None)
             return
 
         with sync_playwright() as p:
@@ -728,6 +777,7 @@ class SiteCrawler:
                         break
                     url, depth = self._playwright_queue.popleft()
                     if self.duplicates.has_visited(url):
+                        self._frontier_forget(url)
                         continue
                     try:
                         response = page.goto(
@@ -750,11 +800,18 @@ class SiteCrawler:
                         final_url = payload.get("final_url") or url
                         status = payload.get("status")
                         if not html:
-                            self.duplicates.mark_visited(url, None)
+                            if not is_online(self.item.url):
+                                self._enqueue(url, depth, priority=True)
+                            else:
+                                self.logger.warning(
+                                    f"Broken URL skipped after Playwright, continuing: {url}"
+                                )
+                                self._mark_visited(url, None)
                             continue
 
                     if status and status >= 400 and not html:
-                        self.duplicates.mark_visited(url, status)
+                        self.logger.warning(f"HTTP {status} skipped, continuing: {url}")
+                        self._mark_visited(url, status)
                         continue
 
                     self._ingest_html(
@@ -797,10 +854,14 @@ class SiteCrawler:
         return state
 
     def _pop_page(self) -> tuple[str, int] | None:
+        """Pop from memory only. Frontier entry stays until the URL is finished."""
         with self._lock:
-            if self._page_queue:
-                return self._page_queue.popleft()
-        return None
+            if not self._page_queue:
+                return None
+            url, depth = self._page_queue.popleft()
+            # Allow re-queue after offline / retry (visited check still applies).
+            self._queued.discard(url)
+            return url, depth
 
     def _has_queued_pages(self) -> bool:
         with self._lock:
@@ -808,6 +869,8 @@ class SiteCrawler:
 
     def _enqueue(self, url: str, depth: int, priority: bool = False) -> None:
         normalized = normalize_url(url)
+        if not normalized:
+            return
         with self._lock:
             if normalized in self._queued or self.duplicates.has_visited(normalized):
                 return
@@ -819,6 +882,76 @@ class SiteCrawler:
                 self._page_queue.appendleft(item)
             else:
                 self._page_queue.append(item)
+            try:
+                self._frontier.add(normalized, depth, priority=priority)
+            except Exception as exc:
+                self.logger.debug(f"Frontier persist failed for {normalized}: {exc}")
+
+    def _mark_visited(self, url: str, status_code: int | None = None) -> None:
+        self.duplicates.mark_visited(url, status_code)
+        self._frontier_forget(url)
+
+    def _frontier_forget(self, url: str) -> None:
+        try:
+            self._frontier.remove(url)
+        except Exception:
+            pass
+
+    def _restore_frontier_from_db(self) -> int:
+        """Reload unfinished URLs after power loss / reboot / crash."""
+        rows = self._frontier.load_all()
+        if not rows:
+            return 0
+        restored = 0
+        stale = 0
+        for url, depth, priority in rows:
+            normalized = normalize_url(url)
+            if not normalized:
+                continue
+            if self.duplicates.has_visited(normalized):
+                self._frontier_forget(normalized)
+                stale += 1
+                continue
+            with self._lock:
+                if normalized in self._queued:
+                    continue
+                self._queued.add(normalized)
+                item = (normalized, int(depth))
+                if priority:
+                    self._page_queue.appendleft(item)
+                else:
+                    self._page_queue.append(item)
+                restored += 1
+        if stale:
+            self.logger.info(f"Cleared {stale} already-visited URL(s) from saved frontier")
+        return restored
+
+    def _wait_until_online(self) -> bool:
+        """Block while offline. Returns False if the user stops the crawl."""
+        if is_online(self.item.url):
+            return True
+        self.logger.warning(
+            f"Network offline — progress is saved; waiting to resume {self.item.url}"
+        )
+        waited = 0
+        while not is_online(self.item.url):
+            state = self.control_state()
+            if state == "stopped":
+                self.logger.warning("Stopped while offline — click Resume when back online")
+                return False
+            while self.control_state() == "paused":
+                time.sleep(0.2)
+                if self.control_state() == "stopped":
+                    return False
+            time.sleep(5)
+            waited += 5
+            if waited % 60 == 0:
+                self.logger.info(
+                    f"Still offline after {waited}s — will continue automatically when internet returns"
+                )
+        self.logger.info("Network back online — continuing from saved frontier")
+        self._consecutive_network_errors = 0
+        return True
 
     def _seed_contact_paths(self, root: str) -> None:
         parsed = urlparse(root)

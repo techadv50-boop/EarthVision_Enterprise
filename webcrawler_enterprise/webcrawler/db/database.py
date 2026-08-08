@@ -93,6 +93,21 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Persisted crawl frontier so power-loss / reboot can resume mid-site.
+CREATE TABLE IF NOT EXISTS frontier (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    normalized_url TEXT NOT NULL,
+    depth INTEGER NOT NULL DEFAULT 0,
+    priority INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(site_id, normalized_url),
+    FOREIGN KEY(site_id) REFERENCES queue_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_frontier_site_priority
+    ON frontier(site_id, priority DESC, id ASC);
 """
 
 

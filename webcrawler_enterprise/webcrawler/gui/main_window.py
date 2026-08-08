@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -25,10 +25,12 @@ from PySide6.QtWidgets import (
 
 from webcrawler import __app_name__, __version__
 from webcrawler.auth.manager import AuthManager, UserAccount
+from webcrawler.db.database import Database
 from webcrawler.gui.login_dialog import ChangePasswordDialog
 from webcrawler.gui.progress_panel import ProgressPanel
 from webcrawler.gui.settings_dialog import SettingsDialog
 from webcrawler.gui.workers import CrawlWorker
+from webcrawler.queue.manager import QueueManager, QueueStatus
 from webcrawler.settings.manager import SettingsManager
 from webcrawler.utils.url import parse_url_list
 
@@ -60,6 +62,8 @@ class MainWindow(QMainWindow):
         self._set_running_ui(False)
         if self.user:
             self.statusBar().showMessage(f"Signed in as {self.user.username} ({self.user.role})")
+        # After power loss / crash / offline stop, offer to continue automatically.
+        QTimer.singleShot(250, self._offer_auto_resume)
 
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -241,10 +245,41 @@ class MainWindow(QMainWindow):
             # Resume unfinished queue from disk after interruption
             try:
                 self._set_running_ui(True)
+                self._append_log("Resuming unfinished websites from saved progress…")
                 self.worker.resume_queue(self.settings)
             except Exception as exc:
                 self._set_running_ui(False)
                 QMessageBox.information(self, "Resume", str(exc))
+
+    def _offer_auto_resume(self) -> None:
+        """If the PC/app stopped mid-crawl, continue from the saved frontier."""
+        try:
+            qm = QueueManager(Database())
+            unfinished = qm.prepare_resume()
+            counts = qm.counts()
+            pending = counts.get(QueueStatus.PENDING.value, 0)
+            if pending <= 0:
+                return
+            reply = QMessageBox.question(
+                self,
+                "Resume unfinished crawl?",
+                f"Found {pending} unfinished website(s)"
+                + (f" ({unfinished} recovered after interruption)." if unfinished else ".")
+                + "\n\nContinue from where it stopped?\n"
+                "(Broken URLs are skipped; visited pages are not re-downloaded.)",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self._resume()
+            else:
+                self.resume_btn.setEnabled(True)
+                self.statusBar().showMessage(
+                    f"{pending} unfinished website(s) — click Resume when ready",
+                    8000,
+                )
+        except Exception:
+            pass
 
     def _stop(self) -> None:
         self.worker.stop()
@@ -277,7 +312,8 @@ class MainWindow(QMainWindow):
         self.output_edit.setReadOnly(running)
         self.browse_btn.setEnabled(not running)
         self.pause_btn.setEnabled(running)
-        self.resume_btn.setEnabled(False)
+        # Resume stays available when idle so power-loss recovery is one click.
+        self.resume_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
