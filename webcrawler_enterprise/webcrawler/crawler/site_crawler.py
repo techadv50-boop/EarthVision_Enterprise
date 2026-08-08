@@ -149,11 +149,18 @@ class SiteCrawler:
         site_dir = ensure_site_structure(site_folder(self.item.output_root, self.item.url))
         self._site_dir = site_dir
         self.logger.set_path(site_dir / "Logs" / "crawl_log.txt")
-        self.logger.info(f"Starting stable full-site download of {self.item.url}")
+        mode = "LIGHT contact-scan" if self.settings.contact_scan_only else "FULL download"
+        self.logger.info(f"Starting {mode} crawl of {self.item.url}")
         self.logger.info(
             f"Workers: pages={self.settings.page_workers}, "
-            f"downloads={self.settings.worker_threads}, region={self._phone_region}"
+            f"downloads={self.settings.worker_threads}, region={self._phone_region}, "
+            f"contact_scan_only={self.settings.contact_scan_only}"
         )
+        if self.settings.contact_scan_only:
+            self.logger.info(
+                "Light mode: every page/PDF/doc is read for emails & phones; "
+                "files are NOT saved to disk"
+            )
 
         # Resume continues saved progress. Start always begins the listed site from scratch.
         if self.resume_mode and not self.settings.fresh_site_crawl:
@@ -185,12 +192,13 @@ class SiteCrawler:
         )
 
         def _on_download(url: str, path: str) -> None:
-            for email in extract_emails_from_file(Path(path)):
-                self.duplicates.add_email(email)
-            for phone in extract_phones_from_file(
-                Path(path), default_region=self._phone_region
-            ):
-                self.duplicates.add_phone(phone)
+            if path:
+                for email in extract_emails_from_file(Path(path)):
+                    self.duplicates.add_email(email)
+                for phone in extract_phones_from_file(
+                    Path(path), default_region=self._phone_region
+                ):
+                    self.duplicates.add_phone(phone)
             self._flush_contacts()
             self._emit_progress(
                 current_download=url,
@@ -233,10 +241,11 @@ class SiteCrawler:
         downloader: FileDownloader,
         site_dir: Path,
     ) -> SiteResult:
-        try:
-            self._rescan_all_downloaded_files(site_dir)
-        except Exception as exc:
-            self.logger.error(f"Final rescan error: {exc}")
+        if not self.settings.contact_scan_only:
+            try:
+                self._rescan_all_downloaded_files(site_dir)
+            except Exception as exc:
+                self.logger.error(f"Final rescan error: {exc}")
         self._write_pages_index(site_dir)
         self._flush_contacts(force=True)
 
@@ -524,12 +533,16 @@ class SiteCrawler:
             self._mark_visited(url, status_code)
         self.logger.page_visited(final_url, status_code)
 
-        try:
-            html_path = html_mirror_path(site_dir, final_url)
-            html_path.write_text(html, encoding="utf-8", errors="ignore")
-            self._append_pages_index(final_url, html_path, site_dir)
-        except Exception as exc:
-            self.logger.warning(f"Could not save HTML for {final_url}: {exc}")
+        if self.settings.contact_scan_only:
+            # Light mode: do not mirror HTML to disk; still record the visited URL.
+            self._append_pages_index(final_url, None, site_dir)
+        else:
+            try:
+                html_path = html_mirror_path(site_dir, final_url)
+                html_path.write_text(html, encoding="utf-8", errors="ignore")
+                self._append_pages_index(final_url, html_path, site_dir)
+            except Exception as exc:
+                self.logger.warning(f"Could not save HTML for {final_url}: {exc}")
 
         try:
             parsed = self.parser.parse(
@@ -553,8 +566,11 @@ class SiteCrawler:
             )
         self._flush_contacts()
 
+        # Light mode and complete-site mode never skip pages by depth.
         max_depth = (
-            10_000 if self.settings.download_complete_site else self.settings.crawl_depth
+            10_000
+            if (self.settings.download_complete_site or self.settings.contact_scan_only)
+            else self.settings.crawl_depth
         )
         if depth < max_depth:
             links = sorted(
@@ -568,13 +584,14 @@ class SiteCrawler:
         if download_pool is not None:
             for doc_url in parsed.document_links:
                 self._submit_download(download_pool, downloader, doc_url, is_image=False)
-            images = parsed.image_links
-            if not (
-                self.settings.download_all_images or self.settings.download_complete_site
-            ):
-                images = images[:40]
-            for img_url in images:
-                self._submit_download(download_pool, downloader, img_url, is_image=True)
+            if not self.settings.contact_scan_only:
+                images = parsed.image_links
+                if not (
+                    self.settings.download_all_images or self.settings.download_complete_site
+                ):
+                    images = images[:40]
+                for img_url in images:
+                    self._submit_download(download_pool, downloader, img_url, is_image=True)
 
         self._processed_since_gc += 1
         if self._processed_since_gc >= 200:
@@ -712,11 +729,16 @@ class SiteCrawler:
             pass
         self._flush_contacts(force=True)
 
-    def _append_pages_index(self, final_url: str, html_path: Path, site_dir: Path) -> None:
-        try:
-            rel = str(html_path.relative_to(site_dir))
-        except Exception:
-            rel = str(html_path)
+    def _append_pages_index(
+        self, final_url: str, html_path: Path | None, site_dir: Path
+    ) -> None:
+        if html_path is None:
+            rel = "(scanned, not saved)"
+        else:
+            try:
+                rel = str(html_path.relative_to(site_dir))
+            except Exception:
+                rel = str(html_path)
         line = f"{final_url}\t{rel}"
         self._pages_index.append(line)
         # Flush incrementally so a crash still leaves an index.
@@ -847,10 +869,14 @@ class SiteCrawler:
                     )
                     for doc_url in parsed.document_links:
                         downloader.download(doc_url)
-                    images = parsed.image_links
-                    if self.settings.download_all_images or self.settings.download_complete_site:
-                        for img_url in images:
-                            downloader.download(img_url, True)
+                    if not self.settings.contact_scan_only:
+                        images = parsed.image_links
+                        if (
+                            self.settings.download_all_images
+                            or self.settings.download_complete_site
+                        ):
+                            for img_url in images:
+                                downloader.download(img_url, True)
             finally:
                 try:
                     page.close()

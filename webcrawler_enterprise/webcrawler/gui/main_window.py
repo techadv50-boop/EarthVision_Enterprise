@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -119,6 +120,16 @@ class MainWindow(QMainWindow):
         folder_row.addWidget(self.open_folder_btn)
         left.addLayout(folder_row)
 
+        self.light_mode = QCheckBox(
+            "Light mode — crawl ALL pages for emails & phones only (no file downloads, faster)"
+        )
+        self.light_mode.setChecked(bool(self.settings.contact_scan_only))
+        self.light_mode.setToolTip(
+            "Reads every HTML page and linked PDF/DOC/XLS/etc. for contacts, "
+            "then discards the file. Does not save website files to disk."
+        )
+        left.addWidget(self.light_mode)
+
         btn_row = QHBoxLayout()
         self.start_btn = QPushButton("Start")
         self.pause_btn = QPushButton("Pause")
@@ -158,10 +169,12 @@ class MainWindow(QMainWindow):
             self.output_edit.setText(self.settings.output_folder)
         if self.settings.last_urls:
             self.urls_edit.setPlainText(self.settings.last_urls)
+        self.light_mode.setChecked(bool(self.settings.contact_scan_only))
 
     def _persist_inputs(self) -> None:
         self.settings.output_folder = self.output_edit.text().strip()
         self.settings.last_urls = self.urls_edit.toPlainText()
+        self.settings.contact_scan_only = self.light_mode.isChecked()
         self.settings_manager.save(self.settings)
 
     def _browse_output(self) -> None:
@@ -183,9 +196,11 @@ class MainWindow(QMainWindow):
             subprocess.Popen(["xdg-open", path])
 
     def _open_settings(self) -> None:
+        self.settings.contact_scan_only = self.light_mode.isChecked()
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
             self.settings = dialog.result_settings()
+            self.light_mode.setChecked(bool(self.settings.contact_scan_only))
             self.settings_manager.save(self.settings)
             self.statusBar().showMessage("Settings saved", 3000)
 
@@ -225,7 +240,8 @@ class MainWindow(QMainWindow):
         Path(output).mkdir(parents=True, exist_ok=True)
         self._persist_inputs()
         self.log_view.clear()
-        self._append_log(f"Queued {len(urls)} website(s). Starting…")
+        mode = "LIGHT contact-scan" if self.settings.contact_scan_only else "FULL download"
+        self._append_log(f"Queued {len(urls)} website(s). Starting ({mode})…")
         self._set_running_ui(True)
         self.worker.start(urls_text, output, self.settings)
 
@@ -309,6 +325,7 @@ class MainWindow(QMainWindow):
         self.urls_edit.setReadOnly(running)
         self.output_edit.setReadOnly(running)
         self.browse_btn.setEnabled(not running)
+        self.light_mode.setEnabled(not running)
         self.pause_btn.setEnabled(running)
         # Resume stays available when idle so power-loss recovery is one click.
         self.resume_btn.setEnabled(not running)

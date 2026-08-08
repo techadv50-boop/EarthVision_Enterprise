@@ -24,26 +24,35 @@ Download the CI artifact named **WebCrawlerEnterprise-Standalone-Windows**, unzi
 - Python 3.11+ ([download](https://www.python.org/downloads/)) with **Add to PATH** enabled
 - Internet connection for first setup and crawling
 
+## Modes
+- **Light mode (recommended for contacts):** crawls every page, reads PDF/docs for
+  emails & phones only, does NOT save website files. Faster.
+- **Full download:** saves HTML + documents + images to disk (slower).
+
+Toggle on the main screen:
+`Light mode — crawl ALL pages for emails & phones only`
+
 ## Output
 Choose an output folder in the app. Each website creates:
 
 ```
 YourFolder\
   domain.com\
-    HTML\
-    PDF\ Word\ Excel\ PowerPoint\ Images\
     emails.txt
     phone_numbers.txt
     Reports\
     Logs\
+    HTML\ PDF\ ...   (only in Full download mode)
   Master_Report.xlsx
 ```
 
+See LIGHT_MODE.txt for details.
+
 ## Speed settings
 File → Settings:
-- Page workers: 24–48
-- Download workers: 16–32
-- Keep “Download complete website” enabled
+- Page workers: 12–24
+- Download workers: 8–16
+- Keep Light mode ON for contact collection
 
 ## Troubleshooting
 - If `Setup.bat` fails, open Command Prompt in this folder and run:

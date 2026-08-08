@@ -1,7 +1,9 @@
-"""HTTP file downloader with SHA-256 duplicate detection."""
+"""HTTP file downloader / contact scanner with SHA-256 duplicate detection."""
 
 from __future__ import annotations
 
+import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 from urllib.parse import unquote, urlparse
@@ -14,7 +16,7 @@ from webcrawler.extractors.phone import extract_phones_from_file
 from webcrawler.logger.crawl_logger import CrawlLogger
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import destination_path, folder_for_extension
-from webcrawler.utils.hashing import sha256_file
+from webcrawler.utils.hashing import sha256_bytes, sha256_file
 from webcrawler.utils.url import extension_of
 
 
@@ -44,6 +46,111 @@ class FileDownloader:
         }
 
     def download(self, url: str, is_image: bool = False) -> Path | None:
+        """Full mode saves files. Light mode scans for contacts and discards bytes."""
+        if self.settings.contact_scan_only:
+            self.scan(url, is_image=is_image)
+            return None
+        return self._download_to_disk(url, is_image=is_image)
+
+    def scan(self, url: str, is_image: bool = False) -> bool:
+        """Fetch a URL, extract emails/phones, do not keep the file on disk."""
+        if not url or any(ch in url for ch in ('"', "'", "`")):
+            self.logger.skipped(url or "", "invalid URL")
+            return False
+        if not self.duplicates.should_download(url):
+            self.logger.skipped(url, "duplicate URL")
+            return False
+
+        # Images almost never contain plain-text emails/phones; skip for speed.
+        if is_image or folder_for_extension(extension_of(url) or "") == "Images":
+            self.duplicates.mark_download(url, None, "", "scan_skip_image")
+            self.logger.skipped(url, "light mode skips image files")
+            return False
+
+        headers = {"User-Agent": self.settings.user_agent}
+        timeout = httpx.Timeout(self.settings.download_timeout)
+        last_error: Exception | None = None
+        max_bytes = max(1_000_000, min(self.settings.max_download_bytes, 20 * 1024 * 1024))
+
+        for attempt in range(1, self.settings.retry_attempts + 1):
+            tmp_path: Path | None = None
+            try:
+                with httpx.Client(
+                    headers=headers,
+                    timeout=timeout,
+                    follow_redirects=self.settings.follow_redirects,
+                    verify=False,
+                    limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                ) as client:
+                    with client.stream("GET", url) as response:
+                        if response.status_code in {404, 410}:
+                            self.logger.skipped(url, f"HTTP {response.status_code}")
+                            self.duplicates.mark_download(url, None, "", "missing")
+                            return False
+                        if response.status_code in {429, 503}:
+                            raise httpx.HTTPStatusError(
+                                f"HTTP {response.status_code}",
+                                request=response.request,
+                                response=response,
+                            )
+                        response.raise_for_status()
+                        filename = self._filename_from_response(url, response)
+                        ext = Path(filename).suffix.lower() or extension_of(url) or ".bin"
+                        chunks: list[bytes] = []
+                        written = 0
+                        for chunk in response.iter_bytes():
+                            written += len(chunk)
+                            if written > max_bytes:
+                                self.logger.skipped(url, f"file larger than {max_bytes} bytes")
+                                self.duplicates.mark_download(url, None, "", "too_large")
+                                return False
+                            chunks.append(chunk)
+                        data = b"".join(chunks)
+
+                digest = sha256_bytes(data)
+                if self.duplicates.has_hash(digest):
+                    self.logger.skipped(url, "duplicate SHA-256")
+                    self.duplicates.mark_download(url, digest, "", "duplicate")
+                    return False
+
+                file_type = folder_for_extension(ext)
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                    tmp.write(data)
+                    tmp_path = Path(tmp.name)
+
+                emails = extract_emails_from_file(tmp_path)
+                phones = extract_phones_from_file(tmp_path, default_region=self.phone_region)
+                for email in emails:
+                    self.duplicates.add_email(email)
+                for phone in phones:
+                    self.duplicates.add_phone(phone)
+
+                if not self.duplicates.mark_download(url, digest, "", f"scan:{file_type}"):
+                    return False
+
+                self._bump_stats(file_type, is_image=False)
+                self.logger.info(
+                    f"Scanned (not saved) {url} → +{len(emails)} emails, +{len(phones)} phones"
+                )
+                if self.on_download:
+                    self.on_download(url, "")
+                return True
+            except Exception as exc:
+                last_error = exc
+                msg = str(exc).lower()
+                if "404" in msg or "410" in msg:
+                    self.duplicates.mark_download(url, None, "", "missing")
+                    break
+                self.logger.warning(f"Scan attempt {attempt} failed for {url}: {exc}")
+                time.sleep(min(0.4 * attempt, 3.0))
+            finally:
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
+
+        self.logger.error(f"Failed to scan {url}: {last_error}")
+        return False
+
+    def _download_to_disk(self, url: str, is_image: bool = False) -> Path | None:
         if not url or any(ch in url for ch in ('"', "'", "`")):
             self.logger.skipped(url or "", "invalid URL")
             return None
@@ -119,15 +226,11 @@ class FileDownloader:
             except Exception as exc:
                 last_error = exc
                 msg = str(exc).lower()
-                # Do not burn retries on hard client errors except rate limits.
                 if "404" in msg or "410" in msg:
                     self.duplicates.mark_download(url, None, "", "missing")
                     break
                 self.logger.warning(f"Download attempt {attempt} failed for {url}: {exc}")
-                time_sleep = min(0.4 * attempt, 3.0)
-                import time
-
-                time.sleep(time_sleep)
+                time.sleep(min(0.4 * attempt, 3.0))
 
         self.logger.error(f"Failed to download {url}: {last_error}")
         return None

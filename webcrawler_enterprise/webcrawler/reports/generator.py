@@ -31,7 +31,7 @@ def write_summary(result: SiteResult) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = f"""Website URL: {result.website}
 Total Pages Crawled: {result.pages_crawled}
-Total Documents Downloaded: {result.documents_downloaded}
+Total Documents Downloaded / Scanned: {result.documents_downloaded}
 PDFs: {result.pdfs}
 Word Files: {result.word_files}
 Excel Files: {result.excel_files}
@@ -43,6 +43,7 @@ Start Time: {result.start_time}
 End Time: {result.end_time}
 Total Processing Time: {result.processing_time}
 Status: {result.status}
+Notes: emails.txt and phone_numbers.txt are written in the site folder.
 """
     if result.error:
         content += f"Error: {result.error}\n"

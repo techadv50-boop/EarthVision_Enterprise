@@ -60,6 +60,8 @@ class AppSettings:
     # Download every reachable internal page, document, and image; rebuild contact files.
     download_complete_site: bool = True
     download_all_images: bool = True
+    # Light mode: crawl every page/PDF/doc for emails & phones only — do not save files.
+    contact_scan_only: bool = True
     # False = resume unfinished site instead of wiping progress (needed for long runs).
     fresh_site_crawl: bool = False
     # Playwright only for thin/failed pages; capped for stability.

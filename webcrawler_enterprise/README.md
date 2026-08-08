@@ -8,7 +8,8 @@ Professional Windows desktop application that crawls websites sequentially, down
 - Master reset code `NTZHSS` restores the admin account
 - Multiline URL input with blank-line ignore and automatic deduplication
 - Sequential multi-site processing (one website at a time)
-- **Complete website download** (all reachable pages, documents, images)
+- **Light mode (default):** crawl all pages and scan PDF/docs for emails & phones only (no file downloads)
+- **Full download mode:** save complete website (HTML, documents, images)
 - **High-speed parallel crawl** (many pages/downloads at once; Playwright only as fallback)
 - Sitemap discovery + contact-page prioritization
 - Document download: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, CSV, TXT, ZIP

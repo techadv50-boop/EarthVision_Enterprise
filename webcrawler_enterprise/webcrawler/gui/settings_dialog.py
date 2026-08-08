@@ -61,6 +61,10 @@ class SettingsDialog(QDialog):
         self.complete_site.setChecked(settings.download_complete_site)
         self.all_images = QCheckBox("Download all images")
         self.all_images.setChecked(settings.download_all_images)
+        self.contact_scan = QCheckBox(
+            "Light mode — contacts only (crawl all pages, do not save files)"
+        )
+        self.contact_scan.setChecked(settings.contact_scan_only)
         self.fresh_crawl = QCheckBox(
             "Also wipe progress when using Resume (Start always begins from scratch)"
         )
@@ -84,6 +88,7 @@ class SettingsDialog(QDialog):
             self.follow_redirects,
             self.complete_site,
             self.all_images,
+            self.contact_scan,
             self.fresh_crawl,
             self.pw_fallback,
         ):
@@ -116,6 +121,7 @@ class SettingsDialog(QDialog):
                 "follow_redirects": self.follow_redirects.isChecked(),
                 "download_complete_site": self.complete_site.isChecked(),
                 "download_all_images": self.all_images.isChecked(),
+                "contact_scan_only": self.contact_scan.isChecked(),
                 "fresh_site_crawl": self.fresh_crawl.isChecked(),
                 "use_playwright_fallback": self.pw_fallback.isChecked(),
             }
