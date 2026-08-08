@@ -24,6 +24,11 @@ File -> Settings:
 - Playwright fallback: ON
 - Max pages: 50000 (or higher)
 
+Data isolation
+--------------
+- This build uses ONLY: %APPDATA%\WebCrawlerEnterprise_v2
+- It never opens/copies: %APPDATA%\WebCrawlerEnterprise (old program)
+
 Start vs resume
 ---------------
 - Start = crawl ONLY the URLs currently in the box, from scratch
