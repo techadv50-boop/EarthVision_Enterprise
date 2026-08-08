@@ -124,16 +124,13 @@ class QueueManager:
             (QueueStatus.PENDING.value, QueueStatus.CANCELLED.value),
         )
 
-    def start_new_batch(self, urls: Iterable[str], output_root: str) -> list[QueueItem]:
-        """Start button: queue exactly these URLs from scratch (ignore old unfinished)."""
-        from webcrawler.db.duplicates import DuplicateManager
-
+    def abandon_all_unfinished(self) -> int:
+        """Park every unfinished site so nothing resumes until the user Starts again."""
         now = utcnow()
         with self.db.connection() as conn:
-            # Park every unfinished site so the run loop only sees the new list.
-            conn.execute(
-                "UPDATE queue_items SET status = ?, updated_at = ?, "
-                "error = ? WHERE status IN (?, ?, ?, ?)",
+            cur = conn.execute(
+                "UPDATE queue_items SET status = ?, updated_at = ?, error = ? "
+                "WHERE status IN (?, ?, ?, ?)",
                 (
                     QueueStatus.CANCELLED.value,
                     now,
@@ -144,13 +141,19 @@ class QueueManager:
                     QueueStatus.CANCELLED.value,
                 ),
             )
-            # Drop saved frontiers for superseded sites (listed sites are cleared below).
             conn.execute(
                 "DELETE FROM frontier WHERE site_id IN "
                 "(SELECT id FROM queue_items WHERE status = ? AND error = ?)",
                 (QueueStatus.CANCELLED.value, "Superseded by new Start"),
             )
+            return cur.rowcount
 
+    def start_new_batch(self, urls: Iterable[str], output_root: str) -> list[QueueItem]:
+        """Start button: queue exactly these URLs from scratch (ignore old unfinished)."""
+        from webcrawler.db.duplicates import DuplicateManager
+
+        self.abandon_all_unfinished()
+        now = utcnow()
         items = self.enqueue_many(urls, output_root)
         for item in items:
             # Start = from scratch for each listed site.

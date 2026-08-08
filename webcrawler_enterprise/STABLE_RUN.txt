@@ -24,20 +24,19 @@ File -> Settings:
 - Playwright fallback: ON
 - Max pages: 50000 (or higher)
 
-Start vs auto-resume
---------------------
+Start vs resume
+---------------
 - Start = crawl ONLY the URLs currently in the box, from scratch
 - Broken / 404 URLs are skipped; crawl continues to the next URL
-- If the PC restarts or the app reopens after a disconnect, it
-  AUTO-RESUMES unfinished websites from the saved frontier
-- Click Start with a new URL list anytime to abandon old work and
-  begin only those box URLs from scratch
+- URL box opens empty (old lists are not shown)
+- Nothing crawls until you click Start (or approve Resume)
+- After disconnect / reboot, the app ASKS before resuming (default: No)
 
 If the PC turns off / power cut / internet disconnects
 -----------------------------------------------------
 1. Open the app again when power/internet is back
-2. It automatically continues from the last saved page queue
-3. Already visited pages are not crawled again
+2. If asked "Resume unfinished crawl?", click Yes only if you want that
+3. Or click No, paste URLs, and Start from scratch
 
 Speed tips
 ----------

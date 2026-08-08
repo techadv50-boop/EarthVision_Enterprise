@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
         self._set_running_ui(False)
         if self.user:
             self.statusBar().showMessage(f"Signed in as {self.user.username} ({self.user.role})")
-        # After power loss / crash / offline stop, offer to continue automatically.
+        # Ask before resuming — never start a crawl without approval.
         QTimer.singleShot(250, self._offer_auto_resume)
 
     def _build_menu(self) -> None:
@@ -80,6 +80,9 @@ class MainWindow(QMainWindow):
         change_pw = QAction("Change Password…", self)
         change_pw.triggered.connect(self._change_password)
         account.addAction(change_pw)
+        clear_session = QAction("Clear saved URLs & pending resume…", self)
+        clear_session.triggered.connect(self._clear_saved_session)
+        account.addAction(clear_session)
 
         help_menu = self.menuBar().addMenu("&Help")
         about = QAction("About", self)
@@ -165,10 +168,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def _restore_settings(self) -> None:
+        # Keep output folder convenience, but always open with an empty URL box
+        # so an old program's list is never shown as if it were the new job.
         if self.settings.output_folder:
             self.output_edit.setText(self.settings.output_folder)
-        if self.settings.last_urls:
-            self.urls_edit.setPlainText(self.settings.last_urls)
+        self.urls_edit.clear()
         self.light_mode.setChecked(bool(self.settings.contact_scan_only))
 
     def _persist_inputs(self) -> None:
@@ -271,32 +275,67 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Resume", str(exc))
 
     def _offer_auto_resume(self) -> None:
-        """After power loss / disconnect, automatically continue saved progress.
-
-        Start (manual) still uses only the URLs currently in the box, from scratch.
-        """
+        """After power loss / disconnect, ask before continuing — never auto-start."""
         try:
             qm = QueueManager(Database())
             items = qm.list_resumable()
             if not items:
                 return
-            # Show the URLs that will continue so the box matches the active job.
+            sample = "\n".join(f"• {item.url}" for item in items[:8])
+            extra = "" if len(items) <= 8 else f"\n• …and {len(items) - 8} more"
+            reply = QMessageBox.question(
+                self,
+                "Resume unfinished crawl?",
+                f"Found {len(items)} unfinished website(s) from a previous run:\n\n"
+                f"{sample}{extra}\n\n"
+                "Yes = continue those websites from where they stopped.\n"
+                "No = leave the URL box empty. Click Start only when you are ready "
+                "with the URLs you type yourself.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                self.resume_btn.setEnabled(True)
+                self.statusBar().showMessage(
+                    "Resume available — nothing is running until you approve",
+                    8000,
+                )
+                return
             self.urls_edit.setPlainText("\n".join(item.url for item in items))
             if items[0].output_root:
                 self.output_edit.setText(items[0].output_root)
             self._persist_inputs()
             self._append_log(
-                f"Power-loss / disconnect recovery: auto-resuming {len(items)} "
-                "unfinished website(s) from saved progress…"
-            )
-            self.statusBar().showMessage(
-                f"Auto-resuming {len(items)} unfinished website(s)…", 8000
+                f"Resuming {len(items)} unfinished website(s) after your approval…"
             )
             self._set_running_ui(True)
             self.worker.resume_queue(self.settings)
         except Exception as exc:
             self._set_running_ui(False)
-            self._append_log(f"Auto-resume skipped: {exc}")
+            self._append_log(f"Resume prompt skipped: {exc}")
+
+    def _clear_saved_session(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Clear saved session?",
+            "This clears the URL box and cancels any unfinished resume queue.\n"
+            "It does not delete already-saved emails/phone files in your output folder.\n\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            QueueManager(Database()).abandon_all_unfinished()
+        except Exception as exc:
+            QMessageBox.warning(self, "Clear session", str(exc))
+            return
+        self.urls_edit.clear()
+        self.settings.last_urls = ""
+        self.settings_manager.save(self.settings)
+        self._append_log("Cleared saved URLs and pending resume queue.")
+        self.statusBar().showMessage("Session cleared — paste URLs and click Start", 6000)
 
     def _stop(self) -> None:
         self.worker.stop()

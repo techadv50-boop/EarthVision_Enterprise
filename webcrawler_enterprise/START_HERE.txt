@@ -19,6 +19,10 @@ Download the CI artifact named **WebCrawlerEnterprise-Standalone-Windows**, unzi
 | Password | `admin` (change on first login) |
 | Master reset | `NTZHSS` |
 
+If an older install was on this PC, the new build resets login to `admin` / `admin`
+once, clears old URLs, and will **not** crawl until you click **Start**.
+If login still fails, use **Master Reset…** with code `NTZHSS`.
+
 ## Requirements
 - Windows 10/11
 - Python 3.11+ ([download](https://www.python.org/downloads/)) with **Add to PATH** enabled
