@@ -31,6 +31,8 @@ from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import ensure_site_structure, html_mirror_path, site_folder
 from webcrawler.utils.network import is_connectivity_error, is_online
 from webcrawler.utils.url import (
+    download_url_from_galley_view,
+    galley_view_from_download_url,
     is_document_url,
     is_image_url,
     looks_like_document_path,
@@ -163,14 +165,12 @@ def _should_skip_crawl_url(url: str) -> bool:
 
 def _galley_view_from_download(url: str) -> str | None:
     """Map /article/download/{article}/{galley}[/file] → /article/view/{article}/{galley}."""
-    m = re.search(
-        r"(https?://[^?#]+/article/)download/(\d+)/(\d+)(?:/\d+)?/?$",
-        url or "",
-        re.I,
-    )
-    if not m:
-        return None
-    return f"{m.group(1)}view/{m.group(2)}/{m.group(3)}"
+    return galley_view_from_download_url(url)
+
+
+def _download_from_galley_view(url: str) -> str | None:
+    """Map PDF-button /article/view/{article}/{galley} → /article/download/{article}/{galley}."""
+    return download_url_from_galley_view(url)
 
 
 def _looks_thin(html: str) -> bool:
@@ -730,22 +730,26 @@ class SiteCrawler:
         # From an article abstract, immediately schedule PDF + matching galley HTML.
         self._enqueue_journal_children(final_url, parsed.document_links, parsed.internal_links)
 
-        if download_pool is not None:
-            for doc_url in parsed.document_links:
-                if _should_skip_crawl_url(doc_url):
-                    continue
-                self._submit_download(download_pool, downloader, doc_url, is_image=False)
-                galley = _galley_view_from_download(doc_url)
-                if galley:
-                    self._enqueue(galley, depth + 1, priority=True)
-            if not self.settings.contact_scan_only:
-                images = parsed.image_links
-                if not (
-                    self.settings.download_all_images or self.settings.download_complete_site
-                ):
-                    images = images[:40]
-                for img_url in images:
-                    self._submit_download(download_pool, downloader, img_url, is_image=True)
+        # Explicit OJS PDF harvest: every PDF button (/article/view/id/galley) also
+        # opens the real file at /article/download/id/galley and scans it for emails.
+        self._harvest_and_schedule_pdfs(
+            page_url=final_url,
+            html=html,
+            document_links=parsed.document_links,
+            internal_links=parsed.internal_links,
+            depth=depth,
+            downloader=downloader,
+            download_pool=download_pool,
+        )
+
+        if download_pool is not None and not self.settings.contact_scan_only:
+            images = parsed.image_links
+            if not (
+                self.settings.download_all_images or self.settings.download_complete_site
+            ):
+                images = images[:40]
+            for img_url in images:
+                self._submit_download(download_pool, downloader, img_url, is_image=True)
 
         self._processed_since_gc += 1
         if self._processed_since_gc >= 200:
@@ -1106,15 +1110,119 @@ class SiteCrawler:
             if re.search(rf"/article/view/{article_id}/\d+", link):
                 self._enqueue(link, 1, priority=True)
                 queued += 1
+                download = _download_from_galley_view(link)
+                if download:
+                    self._enqueue(download, 1, priority=True)
+                    queued += 1
         for doc in document_links:
             if f"/article/download/{article_id}/" in doc:
                 galley = _galley_view_from_download(doc)
                 if galley:
                     self._enqueue(galley, 1, priority=True)
                     queued += 1
+                self._enqueue(doc, 1, priority=True)
+                queued += 1
         if queued:
             self.logger.info(
-                f"Queued {queued} galley/deep URL(s) under article/view/{article_id}"
+                f"Queued {queued} galley/PDF URL(s) under article/view/{article_id}"
+            )
+
+    def _harvest_and_schedule_pdfs(
+        self,
+        page_url: str,
+        html: str,
+        document_links: list[str],
+        internal_links: list[str],
+        depth: int,
+        downloader: FileDownloader,
+        download_pool: ThreadPoolExecutor | None,
+    ) -> None:
+        """Find every PDF button / download link on a page and scan the PDF bytes."""
+        downloads: list[str] = []
+        galleys: list[str] = []
+        seen_dl: set[str] = set()
+        seen_galley: set[str] = set()
+
+        def _add_download(u: str) -> None:
+            n = normalize_url(u)
+            if not n or n in seen_dl or _should_skip_crawl_url(n):
+                return
+            if not same_site(n, self.item.url):
+                return
+            if not (looks_like_document_path(n) or "/article/download/" in n):
+                # Synthesize from galley view when needed.
+                synthesized = _download_from_galley_view(n)
+                if synthesized:
+                    _add_download(synthesized)
+                    _add_galley(n)
+                return
+            seen_dl.add(n)
+            downloads.append(n)
+
+        def _add_galley(u: str) -> None:
+            n = normalize_url(u)
+            if not n or n in seen_galley or _should_skip_crawl_url(n):
+                return
+            if not same_site(n, self.item.url):
+                return
+            if not re.search(r"/article/view/\d+/\d+", n):
+                return
+            seen_galley.add(n)
+            galleys.append(n)
+
+        for doc in document_links:
+            _add_download(doc)
+            galley = _galley_view_from_download(doc)
+            if galley:
+                _add_galley(galley)
+        for link in internal_links:
+            if re.search(r"/article/view/\d+/\d+", link or ""):
+                _add_galley(link)
+                download = _download_from_galley_view(link)
+                if download:
+                    _add_download(download)
+            if looks_like_document_path(link or ""):
+                _add_download(link)
+
+        # Belt-and-suspenders: regex over raw HTML for any missed PDF targets.
+        for match in re.finditer(
+            r"""(?:https?:)?//[^"'\\\s<>]+/article/download/\d+/\d+(?:/\d+)?""",
+            html or "",
+            re.I,
+        ):
+            _add_download(urljoin(page_url, match.group(0).replace("\\/", "/")))
+        for match in re.finditer(
+            r"""(?:https?:)?//[^"'\\\s<>]+/article/view/\d+/\d+/?""",
+            html or "",
+            re.I,
+        ):
+            galley = urljoin(page_url, match.group(0).replace("\\/", "/"))
+            _add_galley(galley)
+            download = _download_from_galley_view(galley)
+            if download:
+                _add_download(download)
+        for match in re.finditer(
+            r"""pdfUrl\s*=\s*["']([^"']+)["']""", html or "", re.I
+        ):
+            _add_download(urljoin(page_url, match.group(1).replace("\\/", "/")))
+
+        for galley in galleys:
+            self._enqueue(galley, depth + 1, priority=True)
+
+        scheduled = 0
+        for doc_url in downloads:
+            self._enqueue(doc_url, depth + 1, priority=True)
+            if download_pool is not None:
+                self._submit_download(download_pool, downloader, doc_url, is_image=False)
+                scheduled += 1
+            else:
+                scheduled += 1
+
+        if downloads or galleys:
+            self.logger.info(
+                f"PDF harvest on {page_url}: "
+                f"{len(downloads)} PDF download(s), {len(galleys)} galley page(s) "
+                f"(scheduled={scheduled})"
             )
 
     def _mark_visited(self, url: str, status_code: int | None = None) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import tldextract
@@ -174,6 +175,30 @@ def looks_like_document_path(url: str) -> bool:
     if "format=pdf" in query or "type=pdf" in query or "download=pdf" in query:
         return True
     return False
+
+
+def download_url_from_galley_view(url: str) -> str | None:
+    """Map OJS PDF-button URL /article/view/{id}/{galley} → /article/download/{id}/{galley}."""
+    m = re.search(
+        r"(https?://[^?#]+/article/)view/(\d+)/(\d+)/?$",
+        url or "",
+        re.I,
+    )
+    if not m:
+        return None
+    return f"{m.group(1)}download/{m.group(2)}/{m.group(3)}"
+
+
+def galley_view_from_download_url(url: str) -> str | None:
+    """Map /article/download/{id}/{galley}[/file] → /article/view/{id}/{galley}."""
+    m = re.search(
+        r"(https?://[^?#]+/article/)download/(\d+)/(\d+)(?:/\d+)?/?$",
+        url or "",
+        re.I,
+    )
+    if not m:
+        return None
+    return f"{m.group(1)}view/{m.group(2)}/{m.group(3)}"
 
 
 def is_document_url(url: str, allowed_types: list[str] | None = None) -> bool:

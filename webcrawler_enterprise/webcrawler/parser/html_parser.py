@@ -12,6 +12,7 @@ from webcrawler.extractors.phone import extract_phones_from_text, region_from_ur
 from webcrawler.utils.url import (
     DOCUMENT_EXTENSIONS,
     IMAGE_EXTENSIONS,
+    download_url_from_galley_view,
     extension_of,
     is_document_url,
     is_image_url,
@@ -26,6 +27,19 @@ CITATION_PDF_RE = re.compile(
 )
 CITATION_PDF_RE_ALT = re.compile(
     r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_pdf_url["\']',
+    re.IGNORECASE,
+)
+# OJS PDF endpoints embedded in HTML / JS (including pdfJsViewer).
+ARTICLE_DOWNLOAD_RE = re.compile(
+    r"""(?:https?:)?//[^"'\\\s<>]+/article/download/\d+/\d+(?:/\d+)?""",
+    re.IGNORECASE,
+)
+ARTICLE_GALLEY_VIEW_RE = re.compile(
+    r"""(?:https?:)?//[^"'\\\s<>]+/article/view/\d+/\d+/?""",
+    re.IGNORECASE,
+)
+JS_PDF_URL_RE = re.compile(
+    r"""pdfUrl\s*=\s*["']([^"']+)["']""",
     re.IGNORECASE,
 )
 
@@ -114,6 +128,18 @@ class HtmlParser:
             for match in pattern.finditer(raw_html):
                 _add_document(urljoin(page_url, match.group(1).strip()))
 
+        # Raw HTML / JS scan — OJS embeds PDF URLs in scripts that BeautifulSoup removes.
+        for match in ARTICLE_DOWNLOAD_RE.finditer(raw_html):
+            _add_document(urljoin(page_url, match.group(0).replace("\\/", "/")))
+        for match in JS_PDF_URL_RE.finditer(raw_html):
+            _add_document(urljoin(page_url, match.group(1).replace("\\/", "/")))
+        for match in ARTICLE_GALLEY_VIEW_RE.finditer(raw_html):
+            galley = urljoin(page_url, match.group(0).replace("\\/", "/"))
+            _add_link(galley)
+            download = download_url_from_galley_view(galley)
+            if download:
+                _add_document(download)
+
         for tag in soup.find_all("meta"):
             name = (tag.get("name") or tag.get("property") or "").strip().lower()
             content = (tag.get("content") or "").strip()
@@ -147,7 +173,25 @@ class HtmlParser:
                 continue
             if lower.startswith(("javascript:", "data:", "#")):
                 continue
-            _add_link(urljoin(page_url, href))
+            absolute = urljoin(page_url, href)
+            classes = " ".join(tag.get("class") or []).lower()
+            text = (tag.get_text(" ", strip=True) or "").lower()
+            # OJS "PDF" button → /article/view/{id}/{galley}; also queue real download.
+            is_pdf_button = (
+                "obj_galley_link" in classes
+                or "pdf" in classes
+                or text.strip() == "pdf"
+                or tag.get("download") is not None
+            )
+            _add_link(absolute)
+            if is_pdf_button:
+                download = download_url_from_galley_view(absolute)
+                if download:
+                    _add_document(download)
+                elif looks_like_document_path(absolute) or is_document_url(
+                    absolute, allowed_doc_types
+                ):
+                    _add_document(absolute)
 
         for tag in soup.find_all(["iframe", "embed", "object"]):
             src = (tag.get("src") or tag.get("data") or "").strip()
@@ -157,6 +201,16 @@ class HtmlParser:
                 or "pdf" in src.lower()
             ):
                 _add_document(urljoin(page_url, src))
+            # pdf.js viewer?file=<encoded download url>
+            if "file=" in (src or "").lower():
+                try:
+                    from urllib.parse import parse_qs, unquote as _unquote, urlparse as _up
+
+                    qs = parse_qs(_up(src).query)
+                    for file_url in qs.get("file", []):
+                        _add_document(urljoin(page_url, _unquote(file_url)))
+                except Exception:
+                    pass
 
         for tag in soup.find_all("img"):
             src = tag.get("src")
