@@ -41,6 +41,22 @@ INVALID_SUFFIXES = {
 INVALID_LOCAL_PARTS = {"email", "name", "user", "username", "example", "domain", "your"}
 
 
+# Common false positives pulled from PDF hyphenation / layout noise.
+INVALID_TLDS = {
+    "https",
+    "http",
+    "also",
+    "moreover",
+    "modern",
+    "ten",
+    "pdf",
+    "docx",
+    "html",
+    "com0",
+    "edu0",
+}
+
+
 def _clean_email(email: str) -> str | None:
     email = html.unescape(email or "").strip().rstrip(".,;:)>]}'\"").lower()
     email = email.replace(" ", "")
@@ -59,6 +75,12 @@ def _clean_email(email: str) -> str | None:
     if not re.search(r"\.[A-Za-z]{2,}$", domain):
         return None
     if re.fullmatch(r"[\d.]+", domain):
+        return None
+    tld = domain.rsplit(".", 1)[-1]
+    if tld in INVALID_TLDS:
+        return None
+    # Reject locals that are mostly page-number noise: 235-262@...
+    if re.fullmatch(r"[\d\-]+", local):
         return None
     if len(local) > 64 or len(email) > 254:
         return None
@@ -131,25 +153,34 @@ def extract_emails_from_file(path: Path) -> set[str]:
 
 
 def _pdf_text(path: Path) -> str:
+    """Extract text from PDFs. Prefer PyMuPDF for speed; cover many pages."""
     chunks: list[str] = []
+    # Author/contact emails are usually early, but scan deep enough for appendices.
+    max_pages = 200
+    try:
+        import fitz
+
+        doc = fitz.open(path)
+        try:
+            for i, page in enumerate(doc):
+                if i >= max_pages:
+                    break
+                chunks.append(page.get_text() or "")
+        finally:
+            doc.close()
+        if any(c.strip() for c in chunks):
+            return "\n".join(chunks)
+    except Exception:
+        chunks = []
+
     try:
         import pdfplumber
 
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages[:50]:
+            for page in pdf.pages[:max_pages]:
                 chunks.append(page.extract_text() or "")
     except Exception:
-        try:
-            import fitz
-
-            doc = fitz.open(path)
-            for i, page in enumerate(doc):
-                if i >= 50:
-                    break
-                chunks.append(page.get_text())
-            doc.close()
-        except Exception:
-            return ""
+        return ""
     return "\n".join(chunks)
 
 

@@ -70,7 +70,7 @@ class FileDownloader:
         headers = {"User-Agent": self.settings.user_agent}
         timeout = httpx.Timeout(self.settings.download_timeout)
         last_error: Exception | None = None
-        max_bytes = max(1_000_000, min(self.settings.max_download_bytes, 20 * 1024 * 1024))
+        max_bytes = max(1_000_000, self.settings.max_download_bytes)
 
         for attempt in range(1, self.settings.retry_attempts + 1):
             tmp_path: Path | None = None
@@ -94,10 +94,22 @@ class FileDownloader:
                                 response=response,
                             )
                         response.raise_for_status()
+                        content_type = (response.headers.get("content-type") or "").lower()
                         filename = self._filename_from_response(url, response)
-                        ext = Path(filename).suffix.lower() or extension_of(url) or ".bin"
+                        ext = Path(filename).suffix.lower() or extension_of(url)
+                        # OJS-style /article/download/123/456 has no .pdf suffix.
+                        if not ext or ext == ".bin":
+                            if "pdf" in content_type:
+                                ext = ".pdf"
+                            elif "msword" in content_type or "wordprocessingml" in content_type:
+                                ext = ".docx"
+                            elif "spreadsheet" in content_type or "excel" in content_type:
+                                ext = ".xlsx"
+                            else:
+                                ext = ".bin"
                         chunks: list[bytes] = []
                         written = 0
+                        # Light mode previously capped at 20MB and skipped large journal PDFs.
                         for chunk in response.iter_bytes():
                             written += len(chunk)
                             if written > max_bytes:
@@ -112,6 +124,10 @@ class FileDownloader:
                     self.logger.skipped(url, "duplicate SHA-256")
                     self.duplicates.mark_download(url, digest, "", "duplicate")
                     return False
+
+                # Magic-byte fallback when Content-Type is wrong/missing.
+                if ext == ".bin" and data[:5] == b"%PDF-":
+                    ext = ".pdf"
 
                 file_type = folder_for_extension(ext)
                 with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:

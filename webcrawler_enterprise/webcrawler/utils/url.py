@@ -144,7 +144,44 @@ def extension_of(url: str) -> str:
     return ""
 
 
+# Extension-less CMS/journal download endpoints (Open Journal Systems, etc.).
+DOCUMENT_PATH_MARKERS = (
+    "/article/download/",
+    "/articles/download/",
+    "/index.php/article/download/",
+    "/download/article/",
+    "/bitstream/handle/",
+    "/bitstream/",
+    "/viewfile/",
+    "/getfile/",
+    "/file/download/",
+    "/pdfviewer/",
+)
+
+
+def looks_like_document_path(url: str) -> bool:
+    """True for known PDF/document endpoints that omit .pdf in the URL."""
+    path = urlparse(ensure_scheme(url)).path.lower()
+    if any(marker in path for marker in DOCUMENT_PATH_MARKERS):
+        # Skip citation-style exports (ris/bibtex), keep submission downloads.
+        if "citationstylelanguage" in path:
+            return False
+        return True
+    # /galley/.../download or ?file=...&format=pdf
+    if "/galley/" in path and "download" in path:
+        return True
+    query = urlparse(ensure_scheme(url)).query.lower()
+    if "format=pdf" in query or "type=pdf" in query or "download=pdf" in query:
+        return True
+    return False
+
+
 def is_document_url(url: str, allowed_types: list[str] | None = None) -> bool:
+    if looks_like_document_path(url):
+        # Path-based PDFs count whenever PDF (or all docs) are allowed.
+        allowed = {t.lower().lstrip(".") for t in (allowed_types or ["pdf"])}
+        if not allowed or "pdf" in allowed or "*" in allowed:
+            return True
     ext = extension_of(url).lstrip(".")
     if not ext:
         return False

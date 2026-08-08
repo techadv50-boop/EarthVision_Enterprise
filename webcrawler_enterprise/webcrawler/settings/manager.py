@@ -86,8 +86,8 @@ class AppSettings:
     use_playwright_fallback: bool = True
     max_playwright_fallback: int = 100
     request_pause_ms: int = 0
-    max_download_queue: int = 80
-    max_download_bytes: int = 50 * 1024 * 1024
+    max_download_queue: int = 300
+    max_download_bytes: int = 80 * 1024 * 1024
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

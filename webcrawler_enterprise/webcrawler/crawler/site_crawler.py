@@ -62,6 +62,13 @@ SEED_PATHS = (
     "/directory",
     "/admissions",
     "/admissions/contact",
+    # Journal / OJS discovery (issues → articles → PDF downloads)
+    "/issue/archive",
+    "/issue/current",
+    "/articles",
+    "/archives",
+    "/index.php/hi/issue/archive",
+    "/index.php/index/issue/archive",
 )
 
 
@@ -213,8 +220,10 @@ class SiteCrawler:
         # Always ensure seeds/sitemaps are present; already-visited URLs are skipped later.
         self._enqueue(root, 0, priority=True)
         self._seed_contact_paths(root)
+        self._seed_journal_paths(root)
         self._load_robots(root)
         self._load_sitemaps(root)
+        self._seed_oai_records(root)
         if not self._wait_until_online():
             result.status = "Cancelled"
             result.error = "Stopped while waiting for internet"
@@ -354,8 +363,8 @@ class SiteCrawler:
                         state = self.control_state()
                         if state != "running":
                             break
-                        if self._pending_download_count() >= self.settings.max_download_queue:
-                            break
+                        # Never stall page discovery because downloads are busy —
+                        # journal sites need issue/article HTML crawl to find PDFs.
                         item = self._pop_page()
                         if item is None:
                             break
@@ -368,13 +377,14 @@ class SiteCrawler:
                             self._mark_visited(url, 0)
                             continue
                         if is_document_url(url, self.settings.download_file_types) or is_image_url(url):
-                            self._mark_visited(url, 200)
+                            # Scan/download first; mark visited so HTML crawl won't re-fetch.
                             self._submit_download(
                                 download_pool,
                                 downloader,
                                 url,
                                 is_image=is_image_url(url),
                             )
+                            self._mark_visited(url, 200)
                             continue
                         self._emit_progress(
                             current_page=url,
@@ -454,13 +464,17 @@ class SiteCrawler:
         error = payload.get("error")
 
         if payload.get("binary"):
-            self._mark_visited(url, status or 200)
+            # Scan PDF/doc bytes for contacts; mark visited after queueing scan.
+            target = final_url or url
             self._submit_download(
                 download_pool,
                 downloader,
-                final_url or url,
+                target,
                 is_image=("image/" in str(error)),
             )
+            self._mark_visited(url, status or 200)
+            if normalize_url(target) != normalize_url(url):
+                self._mark_visited(target, status or 200)
             return
 
         if error and not html:
@@ -1001,6 +1015,103 @@ class SiteCrawler:
         base = f"{parsed.scheme}://{parsed.netloc}"
         for path in SEED_PATHS:
             self._enqueue(urljoin(base, path), 1, priority=True)
+
+    def _seed_journal_paths(self, root: str) -> None:
+        """Seed Open Journal Systems archive/index pages from the journal path."""
+        parsed = urlparse(root)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip("/")
+        candidates = [
+            f"{path}/issue/archive",
+            f"{path}/issue/current",
+            f"{path}/gateway/plugin/WebFeedGatewayPlugin/atom",
+        ]
+        # Also try parent journal path: /index.php/hi from /index.php/hi/...
+        parts = [p for p in path.split("/") if p]
+        if "index.php" in parts:
+            idx = parts.index("index.php")
+            if idx + 1 < len(parts):
+                journal = "/" + "/".join(parts[: idx + 2])
+                candidates.extend(
+                    [
+                        f"{journal}/issue/archive",
+                        f"{journal}/issue/archive/2",
+                        f"{journal}/issue/archive/3",
+                        f"{journal}/issue/current",
+                        f"{journal}/search",
+                    ]
+                )
+        for rel in candidates:
+            self._enqueue(urljoin(base, rel), 1, priority=True)
+        self.logger.info(f"Seeded {len(candidates)} journal archive/index URL(s)")
+
+    def _seed_oai_records(self, root: str) -> None:
+        """Pull every article identifier from OAI-PMH (critical for OJS journals)."""
+        parsed = urlparse(root)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip("/")
+        oai_candidates = [
+            urljoin(base, f"{path}/oai"),
+            urljoin(base, "/oai"),
+            urljoin(base, "/index.php/hi/oai"),
+            urljoin(base, "/index.php/index/oai"),
+        ]
+        # Derive /index.php/<journal>/oai from root.
+        parts = [p for p in path.split("/") if p]
+        if "index.php" in parts:
+            idx = parts.index("index.php")
+            if idx + 1 < len(parts):
+                journal = "/" + "/".join(parts[: idx + 2])
+                oai_candidates.insert(0, urljoin(base, f"{journal}/oai"))
+
+        seen_oai: set[str] = set()
+        total_articles = 0
+        for oai_base in oai_candidates:
+            if oai_base in seen_oai:
+                continue
+            seen_oai.add(oai_base)
+            token: str | None = None
+            pages = 0
+            while pages < 200:
+                pages += 1
+                if token:
+                    oai_url = f"{oai_base}?verb=ListIdentifiers&resumptionToken={token}"
+                else:
+                    oai_url = f"{oai_base}?verb=ListIdentifiers&metadataPrefix=oai_dc"
+                payload = self._http_fetch_page(oai_url)
+                xml = payload.get("html") or ""
+                if not xml or "<identifier>" not in xml:
+                    break
+                ids = re.findall(r"<identifier>([^<]+)</identifier>", xml)
+                if not ids:
+                    break
+                for ident in ids:
+                    # oai:...:article/77 → article view + common download guess via crawl
+                    m = re.search(r"(article)/(\d+)$", ident)
+                    if not m:
+                        continue
+                    article_id = m.group(2)
+                    # Build article view under the same journal prefix as OAI.
+                    journal_prefix = oai_base.rsplit("/oai", 1)[0]
+                    view_url = f"{journal_prefix}/article/view/{article_id}"
+                    self._enqueue(view_url, 1, priority=True)
+                    total_articles += 1
+                token_match = re.search(
+                    r"<resumptionToken[^>]*>([^<]+)</resumptionToken>", xml
+                )
+                token = token_match.group(1).strip() if token_match else None
+                if not token:
+                    break
+            if total_articles:
+                break
+
+        if total_articles:
+            self.logger.info(
+                f"OAI-PMH seeded {total_articles} article page(s) "
+                f"(PDF links resolved via citation_pdf_url on each article)"
+            )
+        else:
+            self.logger.info("OAI-PMH: no article identifiers found (non-OJS site or disabled)")
 
     def _load_sitemaps(self, root: str) -> None:
         parsed = urlparse(root)
