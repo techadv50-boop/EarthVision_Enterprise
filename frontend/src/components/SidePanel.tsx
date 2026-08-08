@@ -31,7 +31,7 @@ export default function SidePanel() {
   const Component = panel.component;
 
   return (
-    <div className="absolute top-4 right-4 w-[22rem] max-h-[calc(100vh-6rem)] panel p-4 z-20 overflow-y-auto animate-slide-in">
+    <div className="absolute top-4 right-4 w-[20rem] max-h-[calc(100vh-6rem)] panel p-4 z-20 overflow-y-auto animate-slide-in">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-base font-semibold tracking-wide">{panel.title}</h2>
         <button onClick={() => setActivePanel(null)} className="p-1 hover:text-sateye-mist/60">

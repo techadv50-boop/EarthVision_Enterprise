@@ -212,6 +212,7 @@ export const offlineApi = {
   addImageToStack: (id: string, data: Record<string, unknown>) =>
     api.post(`/offline/stacks/${encodeURIComponent(id)}/images`, data),
   formats: () => api.get('/offline/formats'),
+  vectorFormats: () => api.get('/offline/formats/vector'),
   uploadToStack: (file: File, fields: {
     place_name: string;
     acquisition_date: string;

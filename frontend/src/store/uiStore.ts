@@ -27,7 +27,7 @@ interface UIState {
 
 export const useUIStore = create<UIState>((set) => ({
   sidebarOpen: true,
-  activePanel: 'upload',
+  activePanel: null,
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setActivePanel: (panel) =>
     set((s) => ({

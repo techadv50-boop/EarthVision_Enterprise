@@ -2,7 +2,8 @@ import { useEffect } from 'react';
 import GlobeViewer from '@/map/GlobeViewer';
 import DrawingTools from '@/map/DrawingTools';
 import MapControls from '@/map/MapControls';
-import Toolbar from '@/components/Toolbar';
+import LeftSidebar from '@/components/LeftSidebar';
+import DrawToolbar from '@/components/DrawToolbar';
 import SidePanel from '@/components/SidePanel';
 import Header from '@/components/Header';
 import NotificationToast from '@/components/NotificationToast';
@@ -32,7 +33,8 @@ export default function DashboardPage() {
         <GlobeViewer />
         <DrawingTools />
         <MapControls />
-        <Toolbar />
+        <LeftSidebar />
+        <DrawToolbar />
         <SidePanel />
         <DateSlider />
       </div>

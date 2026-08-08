@@ -49,7 +49,7 @@ export default function DateSlider() {
   const pct = maxIndex <= 0 ? 0 : (safeIndex / maxIndex) * 100;
 
   return (
-    <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30 w-[min(720px,92vw)] animate-fade-in">
+    <div className="absolute bottom-8 left-[22rem] right-4 md:left-1/2 md:-translate-x-1/2 md:right-auto z-30 w-[min(720px,calc(100vw-24rem))] animate-fade-in">
       <div className="panel px-5 py-4 border-sateye-teal/25 shadow-glow">
         <div className="flex items-center justify-between mb-3 gap-3">
           <div className="min-w-0">

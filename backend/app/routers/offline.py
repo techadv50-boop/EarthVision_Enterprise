@@ -130,18 +130,62 @@ async def upload_elevation(
     return {"ok": True, "path": str(dest), "subtype": subtype, "layers": service.list_layers()}
 
 
+@router.get("/formats/vector")
+async def list_vector_formats():
+    from app.services.vector_ingest_service import VectorIngestService
+
+    return VectorIngestService.supported_formats()
+
+
 @router.post("/layers/upload-vector")
 async def upload_vector(
     current_user: Annotated[User, Depends(get_current_user)],
     file: UploadFile = File(...),
 ):
+    """Upload vector data (point / line / polygon): GeoJSON, Shapefile ZIP, KML, GPX, GML."""
+    from app.services.vector_ingest_service import VectorIngestService
+
     _ = current_user
-    service = OfflineLayersService()
-    safe = Path(file.filename or "layer.geojson").name
-    dest = service.vector_dir / f"user_{safe}"
-    content = await file.read()
-    dest.write_bytes(content)
-    return {"ok": True, "path": str(dest), "layers": service.list_layers()}
+    ingest = VectorIngestService()
+    filename = file.filename or "layer.geojson"
+    if not ingest.is_supported(filename):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported vector format. Accepted: "
+                f"{', '.join(ingest.supported_formats()['extensions'])}"
+            ),
+        )
+
+    layers = OfflineLayersService()
+    dest_dir = layers.vector_dir
+    staging = dest_dir / f"_staging_{Path(filename).name}"
+    with staging.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    result: dict[str, Any] | None = None
+    try:
+        result = ingest.ingest(staging, dest_dir, original_filename=filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if staging.exists():
+            keep = Path(result["original_path"]).resolve() if result else None
+            if keep is None or staging.resolve() != keep:
+                staging.unlink(missing_ok=True)
+
+    assert result is not None
+    return {
+        "ok": True,
+        "path": result["original_path"],
+        "geojson_path": result["geojson_path"],
+        "original_format": result["original_format"],
+        "feature_count": result["feature_count"],
+        "geometry_counts": result["geometry_counts"],
+        "bbox": result["bbox"],
+        "geojson": result["geojson"],
+        "layers": layers.list_layers(),
+    }
 
 
 # ── GIS Tools (148) ─────────────────────────────────────────────────

@@ -41,7 +41,19 @@ SAT EYE is the offline PC edition of the Earth Observation workspace.
 
 ## Multi-format ingest
 
-`GET /api/v1/offline/formats` lists accepted extensions (GeoTIFF, JPEG2000, JPG/PNG/WebP, HDF/NetCDF, IMG, ASCII grid, etc.). Uploads are normalized to a **working GeoTIFF** so all 148 GIS tools can run on any accepted format.
+`GET /api/v1/offline/formats` lists accepted raster extensions (GeoTIFF, JPEG2000, JPG/PNG/WebP, HDF/NetCDF, IMG, ASCII grid, etc.). Uploads are normalized to a **working GeoTIFF** so all 148 GIS tools can run on any accepted format.
+
+## Vector data (point / line / polygon)
+
+`GET /api/v1/offline/formats/vector` and `POST /api/v1/offline/layers/upload-vector` accept GeoJSON, Shapefile ZIP, KML/KMZ, GPX, GML. Features are rendered on the globe and counted by geometry type.
+
+## Left sidebar
+
+The main workspace left bar provides:
+
+1. **Add Raster Data** — upload supported imagery (date required)
+2. **Add Vector Data** — upload point/line/polygon files
+3. **Toolbox** — all 148 GIS tools searchable/filterable below the upload buttons
 
 ## GIS tools
 
