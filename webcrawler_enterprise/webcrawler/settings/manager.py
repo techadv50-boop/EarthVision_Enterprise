@@ -41,9 +41,9 @@ class AppSettings:
     crawl_depth: int = 100
     max_pages_per_site: int = 50000
     download_timeout: int = 25
-    # Stable defaults for multi-hour runs (can raise in Settings for speed).
-    worker_threads: int = 6
-    page_workers: int = 8
+    # Defaults tuned for speed; lower in Settings if a site rate-limits you.
+    worker_threads: int = 8
+    page_workers: int = 12
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -65,8 +65,8 @@ class AppSettings:
     # Playwright only for thin/failed pages; capped for stability.
     use_playwright_fallback: bool = True
     max_playwright_fallback: int = 100
-    request_pause_ms: int = 50
-    max_download_queue: int = 40
+    request_pause_ms: int = 0
+    max_download_queue: int = 80
     max_download_bytes: int = 50 * 1024 * 1024
 
     def to_dict(self) -> dict[str, Any]:

@@ -66,6 +66,19 @@ class QueueManager:
             )
             return recovered + cur.rowcount
 
+    def count_unfinished(self) -> int:
+        """Count sites that Resume can continue (does not mutate)."""
+        row = self.db.fetchone(
+            "SELECT COUNT(*) AS c FROM queue_items WHERE status IN (?, ?, ?, ?)",
+            (
+                QueueStatus.PENDING.value,
+                QueueStatus.RUNNING.value,
+                QueueStatus.FAILED.value,
+                QueueStatus.CANCELLED.value,
+            ),
+        )
+        return int(row["c"]) if row else 0
+
     def mark_pending(self, item_id: int, error: str | None = None) -> None:
         """Leave a site unfinished so Resume can continue from the saved frontier."""
         now = utcnow()
@@ -79,6 +92,44 @@ class QueueManager:
             "DELETE FROM queue_items WHERE status IN (?, ?)",
             (QueueStatus.PENDING.value, QueueStatus.CANCELLED.value),
         )
+
+    def start_new_batch(self, urls: Iterable[str], output_root: str) -> list[QueueItem]:
+        """Start button: queue exactly these URLs from scratch (ignore old unfinished)."""
+        from webcrawler.db.duplicates import DuplicateManager
+
+        now = utcnow()
+        with self.db.connection() as conn:
+            # Park every unfinished site so the run loop only sees the new list.
+            conn.execute(
+                "UPDATE queue_items SET status = ?, updated_at = ?, "
+                "error = ? WHERE status IN (?, ?, ?, ?)",
+                (
+                    QueueStatus.CANCELLED.value,
+                    now,
+                    "Superseded by new Start",
+                    QueueStatus.PENDING.value,
+                    QueueStatus.RUNNING.value,
+                    QueueStatus.FAILED.value,
+                    QueueStatus.CANCELLED.value,
+                ),
+            )
+            # Drop saved frontiers for superseded sites (listed sites are cleared below).
+            conn.execute(
+                "DELETE FROM frontier WHERE site_id IN "
+                "(SELECT id FROM queue_items WHERE status = ? AND error = ?)",
+                (QueueStatus.CANCELLED.value, "Superseded by new Start"),
+            )
+
+        items = self.enqueue_many(urls, output_root)
+        for item in items:
+            # Start = from scratch for each listed site.
+            DuplicateManager(self.db, item.id).clear_crawl_state(clear_contacts=True)
+            self.db.execute(
+                "UPDATE queue_items SET error=NULL, started_at=NULL, finished_at=NULL, "
+                "updated_at=? WHERE id=?",
+                (now, item.id),
+            )
+        return items
 
     def enqueue_many(self, urls: Iterable[str], output_root: str) -> list[QueueItem]:
         items: list[QueueItem] = []

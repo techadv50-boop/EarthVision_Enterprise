@@ -252,30 +252,28 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Resume", str(exc))
 
     def _offer_auto_resume(self) -> None:
-        """If the PC/app stopped mid-crawl, continue from the saved frontier."""
+        """Offer Resume for old unfinished work. Start always uses the URL box only."""
         try:
             qm = QueueManager(Database())
-            unfinished = qm.prepare_resume()
-            counts = qm.counts()
-            pending = counts.get(QueueStatus.PENDING.value, 0)
-            if pending <= 0:
+            unfinished = qm.count_unfinished()
+            if unfinished <= 0:
                 return
             reply = QMessageBox.question(
                 self,
                 "Resume unfinished crawl?",
-                f"Found {pending} unfinished website(s)"
-                + (f" ({unfinished} recovered after interruption)." if unfinished else ".")
-                + "\n\nContinue from where it stopped?\n"
-                "(Broken URLs are skipped; visited pages are not re-downloaded.)",
+                f"Found {unfinished} unfinished website(s) from a previous run.\n\n"
+                "Yes = continue those old websites from where they stopped.\n"
+                "No = ignore them. Click Start with the URLs currently in the box "
+                "to begin a new crawl from scratch.",
                 QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
+                QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
                 self._resume()
             else:
                 self.resume_btn.setEnabled(True)
                 self.statusBar().showMessage(
-                    f"{pending} unfinished website(s) — click Resume when ready",
+                    f"{unfinished} old website(s) ignored — Start uses the URL box only",
                     8000,
                 )
         except Exception:

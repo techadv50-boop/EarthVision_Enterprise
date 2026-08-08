@@ -62,7 +62,7 @@ class SettingsDialog(QDialog):
         self.all_images = QCheckBox("Download all images")
         self.all_images.setChecked(settings.download_all_images)
         self.fresh_crawl = QCheckBox(
-            "Fresh crawl each Start (wipe resume data — disable for long stable runs)"
+            "Also wipe progress when using Resume (Start always begins from scratch)"
         )
         self.fresh_crawl.setChecked(settings.fresh_site_crawl)
         self.pw_fallback = QCheckBox("Playwright fallback for JS/empty pages")

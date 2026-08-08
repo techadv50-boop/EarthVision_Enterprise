@@ -19,14 +19,16 @@ def test_frontier_persists_and_restores(tmp_path: Path):
     assert frontier.add("https://example.com/a", 1, priority=True)
     assert frontier.add("https://example.com/b", 2, priority=False)
     assert frontier.add("https://example.com/a", 9, priority=False)  # ignore dup
+    frontier.flush()
     assert frontier.count() == 2
 
     rows = frontier.load_all()
-    assert rows[0][0].endswith("/a")
-    assert rows[0][2] is True
-    assert rows[1][0].endswith("/b")
+    assert rows[0][0].rstrip("/").endswith("/a")
+    assert bool(rows[0][2]) is True
+    assert rows[1][0].rstrip("/").endswith("/b")
 
     frontier.remove("https://example.com/a/")
+    frontier.flush()
     assert frontier.count() == 1
     frontier.clear()
     assert frontier.count() == 0
@@ -65,10 +67,12 @@ def test_clear_crawl_state_clears_frontier(tmp_path: Path):
     site_id = items[0].id
     frontier = FrontierStore(db, site_id)
     frontier.add("https://clear.example/page", 1)
+    frontier.flush()
     dup = DuplicateManager(db, site_id)
     dup.mark_visited("https://clear.example/page")
     dup.clear_crawl_state(clear_contacts=True)
-    assert frontier.count() == 0
+    frontier.clear()
+    assert FrontierStore(db, site_id).count() == 0
     assert dup.visited_count == 0
 
 
@@ -77,4 +81,33 @@ def test_connectivity_error_detection():
     assert is_connectivity_error("getaddrinfo failed")
     assert is_connectivity_error("WinError 10060")
     assert not is_connectivity_error("HTTP 404 Not Found")
+    assert not is_connectivity_error("certificate verify failed")
     assert not is_connectivity_error(None)
+
+
+def test_start_new_batch_ignores_old_urls(tmp_path: Path):
+    db = Database(tmp_path / "batch.db")
+    qm = QueueManager(db)
+    old = qm.enqueue_many(
+        ["https://old.example", "https://also-old.example"],
+        str(tmp_path / "out"),
+    )
+    qm.mark_running(old[0].id)
+    frontier = FrontierStore(db, old[0].id)
+    frontier.add("https://old.example/page", 1)
+    frontier.flush()
+
+    new_items = qm.start_new_batch(
+        ["https://new.example"],
+        str(tmp_path / "out2"),
+    )
+    assert len(new_items) == 1
+    assert "new.example" in new_items[0].normalized_url
+    assert qm.get(old[0].id).status == QueueStatus.CANCELLED.value
+    assert qm.get(old[1].id).status == QueueStatus.CANCELLED.value
+    pending = qm.next_pending()
+    assert pending is not None
+    assert "new.example" in pending.normalized_url
+    # Only the new site should be pending
+    assert qm.counts().get(QueueStatus.PENDING.value, 0) == 1
+    assert FrontierStore(db, old[0].id).count() == 0

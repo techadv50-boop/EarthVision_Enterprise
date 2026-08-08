@@ -24,12 +24,24 @@ File -> Settings:
 - Playwright fallback: ON
 - Max pages: 50000 (or higher)
 
+Start vs Resume
+---------------
+- Start = crawl ONLY the URLs currently in the box, from scratch
+- Resume = continue old unfinished websites from a previous run
+- If an old-run dialog appears, choose No unless you want the old URLs
+
 If the PC turns off / power cut / internet disconnects
 -----------------------------------------------------
 1. Open the app again when power/internet is back
 2. Click Yes on "Resume unfinished crawl?" (or click Resume)
-3. With Fresh crawl OFF, it continues from the last saved frontier
+3. It continues from the last saved frontier
    (already downloaded pages are not crawled again)
+
+Speed tips
+----------
+- Page workers: 12–24
+- Download workers: 8–16
+- Request pause is 0 by default
 
 If it looks stuck
 -----------------

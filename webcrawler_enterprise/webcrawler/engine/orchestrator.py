@@ -66,6 +66,7 @@ class CrawlEngine:
         self._progress = ProgressState()
         self._start_monotonic = 0.0
         self._site_durations: list[float] = []
+        self._resume_mode = False
 
     @property
     def progress(self) -> ProgressState:
@@ -89,8 +90,9 @@ class CrawlEngine:
         if not urls:
             raise ValueError("No valid URLs provided")
 
-        self.queue.prepare_resume()
-        self.queue.enqueue_many(urls, str(output.resolve()))
+        # Start = only the URLs in the box, from scratch (do not resume old sites).
+        self._resume_mode = False
+        items = self.queue.start_new_batch(urls, str(output.resolve()))
 
         with self._state_lock:
             self._state = "running"
@@ -98,7 +100,7 @@ class CrawlEngine:
         self._site_durations = []
         self._progress = ProgressState(
             status="Running",
-            websites_total=self._pending_and_running_count(),
+            websites_total=len(items),
         )
         self._thread = threading.Thread(target=self._run_loop, name="CrawlEngine", daemon=True)
         self._thread.start()
@@ -109,6 +111,7 @@ class CrawlEngine:
             raise RuntimeError("Crawl already in progress")
         if settings is not None:
             self.settings = settings
+        self._resume_mode = True
         self.queue.prepare_resume()
         counts = self.queue.counts()
         if counts.get(QueueStatus.PENDING.value, 0) == 0:
@@ -207,6 +210,7 @@ class CrawlEngine:
                         logger=logger,
                         on_progress=site_progress,
                         control_state=self.control_state,
+                        resume_mode=self._resume_mode,
                     )
 
                     try:

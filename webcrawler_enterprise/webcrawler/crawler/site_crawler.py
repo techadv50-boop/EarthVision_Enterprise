@@ -119,6 +119,7 @@ class SiteCrawler:
         logger: CrawlLogger,
         on_progress: ProgressCallback | None = None,
         control_state: ControlFlag | None = None,
+        resume_mode: bool = False,
     ) -> None:
         self.item = item
         self.settings = settings
@@ -126,6 +127,7 @@ class SiteCrawler:
         self.logger = logger
         self.on_progress = on_progress
         self.control_state = control_state or (lambda: "running")
+        self.resume_mode = resume_mode
         self.parser = HtmlParser()
         self._page_queue: deque[tuple[str, int]] = deque()
         self._queued: set[str] = set()
@@ -153,19 +155,19 @@ class SiteCrawler:
             f"downloads={self.settings.worker_threads}, region={self._phone_region}"
         )
 
-        # Only wipe prior progress when user explicitly asks for a fresh crawl.
-        # Power-loss / reboot must resume from visited pages + saved frontier.
-        if self.settings.fresh_site_crawl:
-            self.duplicates.clear_crawl_state(clear_contacts=True)
-            self._frontier.clear()
-            self.logger.info("Cleared previous crawl state (Fresh crawl enabled)")
-        else:
+        # Resume continues saved progress. Start always begins the listed site from scratch.
+        if self.resume_mode and not self.settings.fresh_site_crawl:
             restored = self._restore_frontier_from_db()
             if self.duplicates.visited_count or restored:
                 self.logger.info(
                     f"Resuming site: visited={self.duplicates.visited_count}, "
                     f"frontier_restored={restored}"
                 )
+        else:
+            if self.duplicates.visited_count:
+                self.duplicates.clear_crawl_state(clear_contacts=True)
+            self._frontier.clear()
+            self.logger.info("Starting site from scratch")
 
         result = SiteResult(
             website=self.item.url,
@@ -256,6 +258,10 @@ class SiteCrawler:
         result.phones_list = phones
         result.site_dir = site_dir
 
+        try:
+            self._frontier.flush()
+        except Exception:
+            pass
         self.logger.info(
             f"Finished {self.item.url}: pages={result.pages_crawled} "
             f"docs={result.documents_downloaded} emails={result.emails} phones={result.phones} "
@@ -449,10 +455,14 @@ class SiteCrawler:
             return
 
         if error and not html:
-            offline = (not is_online(self.item.url)) or is_connectivity_error(error)
-            if offline and not is_online(self.item.url):
-                # Offline / connection drop: wait for internet, then retry this URL later.
-                self._consecutive_network_errors += 1
+            self._consecutive_network_errors += 1
+            # Only pause for offline after several connectivity failures in a row.
+            # Single broken URLs must not trigger slow network probes.
+            if (
+                self._consecutive_network_errors >= 8
+                and is_connectivity_error(error)
+                and not is_online(self.item.url, timeout=1.0)
+            ):
                 self.logger.warning(
                     f"Internet disconnected while fetching {url}. Waiting to resume…"
                 )
@@ -464,10 +474,9 @@ class SiteCrawler:
                     result.status = "Cancelled"
                     result.error = "Interrupted while offline (progress saved for Resume)"
                 return
-            # Online but this specific URL is broken/unreachable — skip and continue.
+            # Broken / unreachable URL — skip and move forward immediately.
             self.logger.warning(f"Broken URL skipped, continuing: {url} ({error})")
             self._mark_visited(url, None)
-            self._consecutive_network_errors = 0
             return
 
         if status and status >= 400:
@@ -697,6 +706,10 @@ class SiteCrawler:
             f"emails={len(self.duplicates.emails)} phones={len(self.duplicates.phones)} "
             f"docs={downloader.stats['documents']} pw_fallback={pw}"
         )
+        try:
+            self._frontier.flush()
+        except Exception:
+            pass
         self._flush_contacts(force=True)
 
     def _append_pages_index(self, final_url: str, html_path: Path, site_dir: Path) -> None:
