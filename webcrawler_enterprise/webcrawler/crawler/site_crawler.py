@@ -468,13 +468,17 @@ class SiteCrawler:
             # Only pause for offline after several connectivity failures in a row.
             # Single broken URLs must not trigger slow network probes.
             if (
-                self._consecutive_network_errors >= 8
+                self._consecutive_network_errors >= 3
                 and is_connectivity_error(error)
                 and not is_online(self.item.url, timeout=1.0)
             ):
                 self.logger.warning(
                     f"Internet disconnected while fetching {url}. Waiting to resume…"
                 )
+                try:
+                    self._frontier.flush()
+                except Exception:
+                    pass
                 if self._wait_until_online():
                     self._enqueue(url, depth, priority=True)
                     self.logger.info(f"Back online — requeued {url}")
@@ -710,7 +714,7 @@ class SiteCrawler:
 
     def _maybe_heartbeat(self, downloader: FileDownloader, pending_pages: dict) -> None:
         now = time.monotonic()
-        if now - self._heartbeat_at < 30:
+        if now - self._heartbeat_at < 15:
             return
         self._heartbeat_at = now
         with self._lock:

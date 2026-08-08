@@ -38,7 +38,8 @@ class FrontierStore:
                 depth = min(prev[1], depth)
                 url = prev[0]
             self._pending_adds[normalized] = (url, depth, pri)
-            if len(self._pending_adds) + len(self._pending_removes) >= 40:
+            # Flush often so power loss loses little progress.
+            if len(self._pending_adds) + len(self._pending_removes) >= 10:
                 self._flush_unlocked()
         return True
 
@@ -47,7 +48,7 @@ class FrontierStore:
         with self._lock:
             self._pending_adds.pop(normalized, None)
             self._pending_removes.add(normalized)
-            if len(self._pending_removes) >= 40:
+            if len(self._pending_removes) >= 10:
                 self._flush_unlocked()
 
     def flush(self) -> None:

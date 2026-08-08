@@ -241,7 +241,10 @@ class MainWindow(QMainWindow):
         self._persist_inputs()
         self.log_view.clear()
         mode = "LIGHT contact-scan" if self.settings.contact_scan_only else "FULL download"
-        self._append_log(f"Queued {len(urls)} website(s). Starting ({mode})…")
+        self._append_log(
+            f"Start from scratch with {len(urls)} URL(s) from the box ({mode}). "
+            "Old unfinished sites are ignored."
+        )
         self._set_running_ui(True)
         self.worker.start(urls_text, output, self.settings)
 
@@ -268,32 +271,32 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Resume", str(exc))
 
     def _offer_auto_resume(self) -> None:
-        """Offer Resume for old unfinished work. Start always uses the URL box only."""
+        """After power loss / disconnect, automatically continue saved progress.
+
+        Start (manual) still uses only the URLs currently in the box, from scratch.
+        """
         try:
             qm = QueueManager(Database())
-            unfinished = qm.count_unfinished()
-            if unfinished <= 0:
+            items = qm.list_resumable()
+            if not items:
                 return
-            reply = QMessageBox.question(
-                self,
-                "Resume unfinished crawl?",
-                f"Found {unfinished} unfinished website(s) from a previous run.\n\n"
-                "Yes = continue those old websites from where they stopped.\n"
-                "No = ignore them. Click Start with the URLs currently in the box "
-                "to begin a new crawl from scratch.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+            # Show the URLs that will continue so the box matches the active job.
+            self.urls_edit.setPlainText("\n".join(item.url for item in items))
+            if items[0].output_root:
+                self.output_edit.setText(items[0].output_root)
+            self._persist_inputs()
+            self._append_log(
+                f"Power-loss / disconnect recovery: auto-resuming {len(items)} "
+                "unfinished website(s) from saved progress…"
             )
-            if reply == QMessageBox.Yes:
-                self._resume()
-            else:
-                self.resume_btn.setEnabled(True)
-                self.statusBar().showMessage(
-                    f"{unfinished} old website(s) ignored — Start uses the URL box only",
-                    8000,
-                )
-        except Exception:
-            pass
+            self.statusBar().showMessage(
+                f"Auto-resuming {len(items)} unfinished website(s)…", 8000
+            )
+            self._set_running_ui(True)
+            self.worker.resume_queue(self.settings)
+        except Exception as exc:
+            self._set_running_ui(False)
+            self._append_log(f"Auto-resume skipped: {exc}")
 
     def _stop(self) -> None:
         self.worker.stop()

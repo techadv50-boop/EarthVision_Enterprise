@@ -49,35 +49,66 @@ class QueueManager:
             return cur.rowcount
 
     def prepare_resume(self) -> int:
-        """Make unfinished work Pending again (power loss, offline, stop, errors)."""
+        """Make interrupted work Pending again (power loss / offline / crash).
+
+        Sites cancelled by a newer Start ("Superseded by new Start") stay ignored.
+        """
         recovered = self.recover_interrupted()
         now = utcnow()
         with self.db.connection() as conn:
-            cur = conn.execute(
+            cur_failed = conn.execute(
                 "UPDATE queue_items SET status = ?, updated_at = ?, "
-                "error = COALESCE(error, ?) WHERE status IN (?, ?)",
+                "error = COALESCE(error, ?) WHERE status = ?",
                 (
                     QueueStatus.PENDING.value,
                     now,
                     "Ready to resume",
                     QueueStatus.FAILED.value,
-                    QueueStatus.CANCELLED.value,
                 ),
             )
-            return recovered + cur.rowcount
+            cur_cancelled = conn.execute(
+                "UPDATE queue_items SET status = ?, updated_at = ?, "
+                "error = COALESCE(error, ?) WHERE status = ? "
+                "AND IFNULL(error, '') NOT LIKE ?",
+                (
+                    QueueStatus.PENDING.value,
+                    now,
+                    "Ready to resume",
+                    QueueStatus.CANCELLED.value,
+                    "Superseded by new Start%",
+                ),
+            )
+            return recovered + cur_failed.rowcount + cur_cancelled.rowcount
 
     def count_unfinished(self) -> int:
-        """Count sites that Resume can continue (does not mutate)."""
+        """Count sites Resume can continue (excludes superseded-by-Start sites)."""
         row = self.db.fetchone(
-            "SELECT COUNT(*) AS c FROM queue_items WHERE status IN (?, ?, ?, ?)",
+            "SELECT COUNT(*) AS c FROM queue_items WHERE status IN (?, ?, ?, ?) "
+            "AND IFNULL(error, '') NOT LIKE ?",
             (
                 QueueStatus.PENDING.value,
                 QueueStatus.RUNNING.value,
                 QueueStatus.FAILED.value,
                 QueueStatus.CANCELLED.value,
+                "Superseded by new Start%",
             ),
         )
         return int(row["c"]) if row else 0
+
+    def list_resumable(self) -> list[QueueItem]:
+        """Unfinished sites that should continue after disconnect / reboot."""
+        rows = self.db.fetchall(
+            "SELECT * FROM queue_items WHERE status IN (?, ?, ?, ?) "
+            "AND IFNULL(error, '') NOT LIKE ? ORDER BY id ASC",
+            (
+                QueueStatus.PENDING.value,
+                QueueStatus.RUNNING.value,
+                QueueStatus.FAILED.value,
+                QueueStatus.CANCELLED.value,
+                "Superseded by new Start%",
+            ),
+        )
+        return [self._row_to_item(r) for r in rows]
 
     def mark_pending(self, item_id: int, error: str | None = None) -> None:
         """Leave a site unfinished so Resume can continue from the saved frontier."""

@@ -32,6 +32,11 @@ Download the CI artifact named **WebCrawlerEnterprise-Standalone-Windows**, unzi
 Toggle on the main screen:
 `Light mode — crawl ALL pages for emails & phones only`
 
+## Start / broken URLs / auto-resume
+- **Start** uses only the URLs in the box, from scratch
+- Broken URLs are skipped; work continues on the next URL
+- After internet drop or PC restart, the app **auto-resumes** from where it stopped
+
 ## Output
 Choose an output folder in the app. Each website creates:
 
