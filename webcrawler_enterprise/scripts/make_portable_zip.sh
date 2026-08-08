@@ -22,6 +22,7 @@ cp "$ROOT/START_HERE.txt" "$STAGE/"
 cp "$ROOT/README_STANDALONE.txt" "$STAGE/" 2>/dev/null || true
 cp "$ROOT/STABLE_RUN.txt" "$STAGE/" 2>/dev/null || true
 cp "$ROOT/LIGHT_MODE.txt" "$STAGE/" 2>/dev/null || true
+cp "$ROOT/JOURNAL_SITES.txt" "$STAGE/" 2>/dev/null || true
 cp "$ROOT/webcrawler_enterprise.spec" "$STAGE/" 2>/dev/null || true
 
 # Optional tests for developers
