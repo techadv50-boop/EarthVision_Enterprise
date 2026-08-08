@@ -22,6 +22,11 @@ What the crawler now does
 4. Treats /article/download/... as a PDF even without .pdf
 5. Scans PDF bytes for emails/phones (light mode does not save files)
 6. Continues page discovery even while many PDFs are being scanned
+7. Crawls deep galley pages too, e.g.
+     /article/view/101
+     /article/view/101/113   ← now high priority (was delayed/skipped before)
+8. Skips citation-style junk URLs that used to bury real article pages
+9. Records scanned PDF URLs in pages_index.txt so coverage is visible
 
 How to re-run for max contacts
 ------------------------------

@@ -99,9 +99,54 @@ ProgressCallback = Callable[[dict], None]
 ControlFlag = Callable[[], str]
 
 
+# Journal content must outrank citation-style / UI chrome links.
+JOURNAL_PRIORITY_MARKERS = (
+    "/article/view/",
+    "/article/download/",
+    "/issue/view/",
+    "/issue/archive",
+    "/issue/current",
+)
+
+# Do not waste crawl budget on OJS chrome / export endpoints.
+SKIP_URL_MARKERS = (
+    "citationstylelanguage",
+    "/login",
+    "/user/register",
+    "/user/home",
+    "/user/profile",
+    "return=json",
+    "/gateway/plugin/webfeed",
+    "/$$$call$$$",
+    "/api/v1/",
+    "/notification/",
+    "/rt/",
+    "/about/submissions",
+)
+
+
 def _is_priority_url(url: str) -> bool:
     path = urlparse(url).path.lower()
+    if any(marker in path for marker in JOURNAL_PRIORITY_MARKERS):
+        return True
     return any(hint in path for hint in CONTACT_HINTS)
+
+
+def _should_skip_crawl_url(url: str) -> bool:
+    raw = (url or "").lower()
+    return any(marker in raw for marker in SKIP_URL_MARKERS)
+
+
+def _galley_view_from_download(url: str) -> str | None:
+    """Map /article/download/{article}/{galley}[/file] → /article/view/{article}/{galley}."""
+    m = re.search(
+        r"(https?://[^?#]+/article/)download/(\d+)/(\d+)(?:/\d+)?/?$",
+        url or "",
+        re.I,
+    )
+    if not m:
+        return None
+    return f"{m.group(1)}view/{m.group(2)}/{m.group(3)}"
 
 
 def _looks_thin(html: str) -> bool:
@@ -206,6 +251,13 @@ class SiteCrawler:
                     Path(path), default_region=self._phone_region
                 ):
                     self.duplicates.add_phone(phone)
+            # Record scanned document URLs so depth/coverage is visible in pages_index.
+            if self._site_dir is not None:
+                self._append_pages_index(url, None, self._site_dir)
+            # Also crawl the HTML galley page for the same article/galley ids.
+            galley = _galley_view_from_download(url)
+            if galley:
+                self._enqueue(galley, 1, priority=True)
             self._flush_contacts()
             self._emit_progress(
                 current_download=url,
@@ -515,13 +567,16 @@ class SiteCrawler:
 
         self._consecutive_network_errors = 0
 
+        # Always ingest first so deep links (e.g. /article/view/101/113) are never lost
+        # while waiting on Playwright. Playwright may re-fetch later for richer HTML.
         if _looks_thin(html) and self.settings.use_playwright_fallback:
             if len(self._playwright_queue) < max(0, self.settings.max_playwright_fallback):
                 self._playwright_queue.append((url, depth))
-                self.logger.info(f"Thin page, queued Playwright fallback: {url}")
-                return
-            # Queue full: still ingest whatever HTML we have (do not skip forever)
-            self.logger.info(f"Thin page ingested without Playwright (cap reached): {url}")
+                self.logger.info(
+                    f"Thin page queued for Playwright after link ingest: {url}"
+                )
+            else:
+                self.logger.info(f"Thin page ingested without Playwright (cap reached): {url}")
 
         # Always ingest available HTML (never skip content we already fetched)
         self._ingest_html(
@@ -596,12 +651,24 @@ class SiteCrawler:
                 key=lambda u: (0 if _is_priority_url(u) else 1),
             )
             for link in links:
+                if _should_skip_crawl_url(link):
+                    continue
                 if same_site(link, self.item.url):
+                    # Galley pages (/article/view/101/113) must be high priority —
+                    # otherwise they sit behind hundreds of abstract pages.
                     self._enqueue(link, depth + 1, priority=_is_priority_url(link))
+
+        # From an article abstract, immediately schedule PDF + matching galley HTML.
+        self._enqueue_journal_children(final_url, parsed.document_links, parsed.internal_links)
 
         if download_pool is not None:
             for doc_url in parsed.document_links:
+                if _should_skip_crawl_url(doc_url):
+                    continue
                 self._submit_download(download_pool, downloader, doc_url, is_image=False)
+                galley = _galley_view_from_download(doc_url)
+                if galley:
+                    self._enqueue(galley, depth + 1, priority=True)
             if not self.settings.contact_scan_only:
                 images = parsed.image_links
                 if not (
@@ -928,6 +995,8 @@ class SiteCrawler:
         normalized = normalize_url(url)
         if not normalized:
             return
+        if _should_skip_crawl_url(normalized):
+            return
         with self._lock:
             if normalized in self._queued or self.duplicates.has_visited(normalized):
                 return
@@ -943,6 +1012,34 @@ class SiteCrawler:
                 self._frontier.add(normalized, depth, priority=priority)
             except Exception as exc:
                 self.logger.debug(f"Frontier persist failed for {normalized}: {exc}")
+
+    def _enqueue_journal_children(
+        self,
+        page_url: str,
+        document_links: list[str],
+        internal_links: list[str],
+    ) -> None:
+        """Ensure /article/view/{id}/{galley} pages are queued right after abstracts."""
+        path = urlparse(page_url).path
+        m = re.search(r"/article/view/(\d+)/?$", path)
+        if not m:
+            return
+        article_id = m.group(1)
+        queued = 0
+        for link in internal_links:
+            if re.search(rf"/article/view/{article_id}/\d+", link):
+                self._enqueue(link, 1, priority=True)
+                queued += 1
+        for doc in document_links:
+            if f"/article/download/{article_id}/" in doc:
+                galley = _galley_view_from_download(doc)
+                if galley:
+                    self._enqueue(galley, 1, priority=True)
+                    queued += 1
+        if queued:
+            self.logger.info(
+                f"Queued {queued} galley/deep URL(s) under article/view/{article_id}"
+            )
 
     def _mark_visited(self, url: str, status_code: int | None = None) -> None:
         self.duplicates.mark_visited(url, status_code)
