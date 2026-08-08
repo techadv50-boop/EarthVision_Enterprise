@@ -19,6 +19,9 @@ Professional Windows desktop application that crawls websites sequentially, down
 - `Reports/Summary.txt`, `Reports/pages_index.txt`, `Logs/crawl_log.txt`
 - Root `Master_Report.xlsx` appended after each site
 - SQLite queue with Pending / Running / Completed / Failed / Cancelled and crash resume
+- Persisted URL frontier: survives power loss, PC reboot, and internet disconnects
+- Broken / 404 URLs are skipped; crawl continues to the next page
+- Auto-offers Resume on startup when unfinished websites remain
 - Configurable settings persisted automatically
 - Start / Pause / Resume / Stop controls with live progress
 
