@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DOI → ReDIF Converter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #14211c;
+      --muted: #4d6359;
+      --paper: #f3efe4;
+      --panel: rgba(255, 252, 245, 0.88);
+      --line: rgba(20, 33, 28, 0.12);
+      --accent: #0f6b4c;
+      --accent-deep: #0a4633;
+      --warn: #8a3b12;
+      --danger: #8f1d1d;
+      --ok: #0f6b4c;
+      --shadow: 0 18px 50px rgba(20, 33, 28, 0.12);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: "DM Sans", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(15, 107, 76, 0.18), transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, rgba(138, 59, 18, 0.12), transparent 50%),
+        linear-gradient(180deg, #efe8d8 0%, var(--paper) 45%, #e7f0ea 100%);
+    }
+
+    .wrap {
+      width: min(1100px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2.5rem 0 4rem;
+    }
+
+    header {
+      display: grid;
+      gap: 0.75rem;
+      margin-bottom: 1.75rem;
+      max-width: 42rem;
+    }
+
+    .brand {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      margin: 0;
+    }
+
+    .lede {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.55;
+      max-width: 38rem;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+      padding: 1.25rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 1rem;
+    }
+
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    label {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.45rem;
+    }
+
+    textarea, input[type="text"], input[type="number"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      border-radius: 12px;
+      padding: 0.85rem 0.95rem;
+      font: inherit;
+      color: var(--ink);
+      outline: none;
+    }
+
+    textarea {
+      min-height: 220px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+
+    textarea:focus, input:focus {
+      border-color: rgba(15, 107, 76, 0.45);
+      box-shadow: 0 0 0 3px rgba(15, 107, 76, 0.12);
+    }
+
+    .drop {
+      border: 1.5px dashed rgba(15, 107, 76, 0.35);
+      border-radius: 14px;
+      padding: 1.25rem;
+      background: rgba(15, 107, 76, 0.04);
+      text-align: center;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }
+
+    .drop:hover, .drop.dragover {
+      background: rgba(15, 107, 76, 0.08);
+      border-color: var(--accent);
+    }
+
+    .drop strong { display: block; margin-bottom: 0.25rem; }
+    .drop span { color: var(--muted); font-size: 0.92rem; }
+    .file-name { margin-top: 0.65rem; color: var(--accent-deep); font-size: 0.92rem; }
+
+    .controls {
+      display: grid;
+      gap: 0.9rem;
+      margin-top: 1rem;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 120px;
+      gap: 0.75rem;
+    }
+
+    @media (max-width: 600px) {
+      .row { grid-template-columns: 1fr; }
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-top: 1.1rem;
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 0.8rem 1.2rem;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+    }
+
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #f7fff9;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-deep); }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .btn-secondary:hover:not(:disabled) { background: rgba(20, 33, 28, 0.04); }
+
+    .status {
+      margin-top: 1rem;
+      color: var(--muted);
+      font-size: 0.95rem;
+      min-height: 1.4em;
+    }
+
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin: 1.25rem 0 0.75rem;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .chip b { color: var(--ink); font-weight: 700; }
+
+    .results {
+      margin-top: 1rem;
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.9rem 1rem;
+      background: #fffdf8;
+      animation: rise 0.35s ease both;
+    }
+
+    .card.fail { border-color: rgba(143, 29, 29, 0.25); background: #fff7f5; }
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: baseline;
+    }
+    .card h3 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+    .badge {
+      flex: none;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--ok);
+    }
+    .card.fail .badge { color: var(--danger); }
+    .meta {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    details {
+      margin-top: 0.55rem;
+    }
+    summary {
+      cursor: pointer;
+      color: var(--accent-deep);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    pre {
+      margin: 0.5rem 0 0;
+      max-height: 240px;
+      overflow: auto;
+      background: #14211c;
+      color: #e8f2ec;
+      border-radius: 10px;
+      padding: 0.85rem;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    footer {
+      margin-top: 1.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1 class="brand">DOI → ReDIF</h1>
+      <p class="lede">
+        Paste DOIs or upload an Excel/text list. Each DOI is opened, metadata is extracted,
+        and a ReDIF article file is generated — one <code>.redif</code> per DOI.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="grid">
+        <div>
+          <label for="dois">Paste DOIs</label>
+          <textarea id="dois" placeholder="https://doi.org/10.33411/IJIST/1936&#10;10.33411/IJIST/20190101011&#10;..."></textarea>
+        </div>
+        <div>
+          <label>Upload list</label>
+          <div class="drop" id="dropzone">
+            <strong>Drop .xlsx / .txt / .csv here</strong>
+            <span>or click to browse</span>
+            <div class="file-name" id="fileName"></div>
+          </div>
+          <input type="file" id="file" accept=".xlsx,.xlsm,.txt,.csv,.tsv" hidden />
+
+          <div class="controls">
+            <div>
+              <label for="handlePrefix">RePEc handle prefix</label>
+              <input id="handlePrefix" type="text" value="RePEc:abq:IJIST1" />
+            </div>
+            <div class="row">
+              <div>
+                <label for="concurrency">Concurrency</label>
+                <input id="concurrency" type="number" min="1" max="10" value="5" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn-primary" id="btnConvert">Extract &amp; preview</button>
+        <button class="btn-secondary" id="btnZip" disabled>Download ZIP</button>
+        <button class="btn-secondary" id="btnClear">Clear</button>
+      </div>
+      <div class="status" id="status">Ready.</div>
+    </section>
+
+    <section id="summary" hidden>
+      <div class="stats" id="stats"></div>
+      <div class="results" id="results"></div>
+    </section>
+
+    <footer>
+      Sources: journal landing page citation metadata, enriched with Crossref when needed.
+      Output format matches ReDIF-Article 1.0 (e.g. <code>V8i3p1429-1448.redif</code>).
+    </footer>
+  </div>
+
+  <script>
+    const els = {
+      dois: document.getElementById("dois"),
+      file: document.getElementById("file"),
+      dropzone: document.getElementById("dropzone"),
+      fileName: document.getElementById("fileName"),
+      handlePrefix: document.getElementById("handlePrefix"),
+      concurrency: document.getElementById("concurrency"),
+      btnConvert: document.getElementById("btnConvert"),
+      btnZip: document.getElementById("btnZip"),
+      btnClear: document.getElementById("btnClear"),
+      status: document.getElementById("status"),
+      summary: document.getElementById("summary"),
+      stats: document.getElementById("stats"),
+      results: document.getElementById("results"),
+    };
+
+    let lastPayload = null;
+    let uploadedDois = [];
+
+    function setBusy(busy, msg) {
+      els.btnConvert.disabled = busy;
+      els.btnZip.disabled = busy || !lastPayload;
+      if (msg) els.status.textContent = msg;
+    }
+
+    function currentTextDois() {
+      return els.dois.value.trim();
+    }
+
+    function buildPayload() {
+      const text = currentTextDois();
+      const dois = uploadedDois.slice();
+      return {
+        text,
+        dois,
+        handle_prefix: els.handlePrefix.value.trim() || "RePEc:abq:IJIST1",
+        concurrency: Number(els.concurrency.value || 5),
+      };
+    }
+
+    async function loadFile(file) {
+      if (!file) return;
+      els.fileName.textContent = file.name;
+      const form = new FormData();
+      form.append("file", file);
+      setBusy(true, `Reading ${file.name}…`);
+      try {
+        const res = await fetch("/api/parse-upload", { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to parse file");
+        uploadedDois = data.dois || [];
+        els.status.textContent = `Loaded ${uploadedDois.length} DOI(s) from ${file.name}. You can still paste more below.`;
+      } catch (err) {
+        uploadedDois = [];
+        els.status.textContent = err.message || String(err);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    els.dropzone.addEventListener("click", () => els.file.click());
+    els.file.addEventListener("change", () => loadFile(els.file.files[0]));
+    ["dragenter", "dragover"].forEach((evt) => {
+      els.dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        els.dropzone.classList.add("dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach((evt) => {
+      els.dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        els.dropzone.classList.remove("dragover");
+      });
+    });
+    els.dropzone.addEventListener("drop", (e) => {
+      const file = e.dataTransfer.files?.[0];
+      if (file) loadFile(file);
+    });
+
+    function renderResults(data) {
+      els.summary.hidden = false;
+      els.stats.innerHTML = `
+        <div class="chip">Total <b>${data.total}</b></div>
+        <div class="chip">Succeeded <b>${data.succeeded}</b></div>
+        <div class="chip">Failed <b>${data.failed}</b></div>
+      `;
+      els.results.innerHTML = "";
+      for (const item of data.results) {
+        const card = document.createElement("article");
+        card.className = "card" + (item.ok ? "" : " fail");
+        const authors = (item.authors || []).map((a) => a.name).join("; ");
+        card.innerHTML = `
+          <div class="card-top">
+            <h3>${escapeHtml(item.title || item.doi)}</h3>
+            <div class="badge">${item.ok ? "OK" : "Failed"}</div>
+          </div>
+          <p class="meta">
+            ${escapeHtml(item.doi)}<br/>
+            ${item.ok ? `${escapeHtml(item.filename || "")} · Vol ${escapeHtml(item.volume || "—")} Issue ${escapeHtml(item.issue || "—")} · pp ${escapeHtml(item.pages || "—")} · ${escapeHtml(item.month || "")} ${escapeHtml(item.year || "")}` : escapeHtml(item.error || "Unknown error")}
+            ${authors ? `<br/>${escapeHtml(authors)}` : ""}
+          </p>
+          ${item.redif ? `<details><summary>View ReDIF</summary><pre>${escapeHtml(item.redif)}</pre></details>` : ""}
+        `;
+        els.results.appendChild(card);
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    els.btnConvert.addEventListener("click", async () => {
+      const payload = buildPayload();
+      if (!payload.text && !(payload.dois && payload.dois.length)) {
+        els.status.textContent = "Paste DOIs or upload a file first.";
+        return;
+      }
+      setBusy(true, "Extracting metadata from DOIs… this can take a while for large lists.");
+      try {
+        const res = await fetch("/api/convert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Conversion failed");
+        lastPayload = payload;
+        renderResults(data);
+        els.status.textContent = `Done. ${data.succeeded}/${data.total} succeeded.`;
+        els.btnZip.disabled = data.succeeded === 0;
+      } catch (err) {
+        els.status.textContent = err.message || String(err);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    els.btnZip.addEventListener("click", async () => {
+      const payload = lastPayload || buildPayload();
+      if (!payload.text && !(payload.dois && payload.dois.length)) {
+        els.status.textContent = "Nothing to export.";
+        return;
+      }
+      setBusy(true, "Building ZIP of .redif files…");
+      try {
+        const res = await fetch("/api/export-zip", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.detail || "ZIP export failed");
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "redif-export.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        els.status.textContent = "ZIP download started.";
+      } catch (err) {
+        els.status.textContent = err.message || String(err);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    els.btnClear.addEventListener("click", () => {
+      els.dois.value = "";
+      els.file.value = "";
+      els.fileName.textContent = "";
+      uploadedDois = [];
+      lastPayload = null;
+      els.summary.hidden = true;
+      els.results.innerHTML = "";
+      els.stats.innerHTML = "";
+      els.btnZip.disabled = true;
+      els.status.textContent = "Cleared.";
+    });
+  </script>
+</body>
+</html>
