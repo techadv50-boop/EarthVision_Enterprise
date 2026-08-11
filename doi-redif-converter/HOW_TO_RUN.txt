@@ -1,0 +1,44 @@
+DOI → ReDIF Converter
+=====================
+
+OPTION A — Double-click starter (needs Python installed once)
+------------------------------------------------------------
+Windows:
+  1. Open this folder
+  2. Double-click: Start_DOI_REDIF_Converter.bat
+  3. First time only, if it fails, open PowerShell here and run:
+
+       python -m venv .venv
+       .\.venv\Scripts\Activate.ps1
+       pip install -r requirements.txt
+       python DOI_REDIF_Converter.py
+
+macOS / Linux:
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  python DOI_REDIF_Converter.py
+
+
+OPTION B — Standalone program (no Python needed)
+------------------------------------------------
+1. Build it:
+
+     pip install -r requirements-build.txt
+     python build_app.py
+
+2. Run the file created in the dist\ folder:
+     Windows: DOI_REDIF_Converter.exe
+     macOS/Linux: DOI_REDIF_Converter
+
+Or download the ready-made zip from GitHub Actions / Releases
+(DOI_REDIF_Converter-windows.zip / macos / linux).
+
+
+Using the app
+-------------
+- A browser window opens automatically
+- Keep the small control window open
+- Paste DOIs or upload your Excel list
+- Click Extract & preview, then Download ZIP
+- Internet connection is required
