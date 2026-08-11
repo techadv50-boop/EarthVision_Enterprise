@@ -7,3 +7,8 @@ redif_out/
 *.zip
 .DS_Store
 .env
+build/
+dist/
+release/
+*.spec.bak
+DOI_REDIF_Converter.exe

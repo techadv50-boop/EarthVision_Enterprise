@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import zipfile
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -13,10 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .extractor import dois_from_xlsx_bytes, extract_many, parse_doi_list
+from .paths import app_root, static_dir
 from .redif import DEFAULT_REPEC_HANDLE_PREFIX, build_filename, to_redif
 
-ROOT = Path(__file__).resolve().parent.parent
-STATIC = ROOT / "static"
+ROOT = app_root()
+STATIC = static_dir()
 
 app = FastAPI(
     title="DOI → ReDIF Converter",
