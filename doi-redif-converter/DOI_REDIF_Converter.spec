@@ -30,6 +30,7 @@ a = Analysis(
         'app.jobs',
         'app.report',
         'app.cli',
+        'app.gui',
         'openpyxl',
         'bs4',
         'lxml',

@@ -7,7 +7,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from .extractor import dois_from_xlsx_bytes, extract_many, parse_doi_list
+from .extractor import dois_from_xlsx_bytes, extract_many, parse_input_list
 from .redif import DEFAULT_REPEC_HANDLE_PREFIX, build_filename, to_redif
 from .report import build_summary, failed_entries, format_failed_csv, format_report_text
 
@@ -20,11 +20,11 @@ def _load_dois(args: argparse.Namespace) -> list[str]:
         if path.suffix.lower() in {".xlsx", ".xlsm"}:
             dois.extend(dois_from_xlsx_bytes(raw))
         else:
-            dois.extend(parse_doi_list(raw.decode("utf-8", errors="ignore")))
+            dois.extend(parse_input_list(raw.decode("utf-8", errors="ignore")))
     if args.dois:
         dois.extend(args.dois)
     if not sys.stdin.isatty():
-        dois.extend(parse_doi_list(sys.stdin.read()))
+        dois.extend(parse_input_list(sys.stdin.read()))
 
     seen: set[str] = set()
     unique: list[str] = []

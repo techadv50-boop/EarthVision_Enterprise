@@ -42,7 +42,7 @@ def main() -> int:
         except Exception:
             pass
         _show_error(
-            "The program failed to start.\n\n"
+            "The standalone program failed to start.\n\n"
             f"Details were saved to:\n{log_file}\n\n"
             f"{details[-1200:]}"
         )

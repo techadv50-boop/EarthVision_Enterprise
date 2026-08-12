@@ -52,8 +52,9 @@ def build_filename(meta: ArticleMeta) -> str:
     issue = (meta.issue or "0").strip()
     pages = (meta.pages or "0").strip().replace(" ", "")
     if not pages:
-        # fall back to DOI suffix
-        suffix = meta.doi.rstrip("/").split("/")[-1]
+        # fall back to DOI / URL slug
+        ref = meta.doi or meta.landing_url or meta.input_ref or "unknown"
+        suffix = ref.rstrip("/").split("/")[-1]
         pages = re.sub(r"[^A-Za-z0-9_-]+", "-", suffix) or "unknown"
     return f"V{volume}i{issue}p{pages}.redif"
 
@@ -105,7 +106,8 @@ def to_redif(meta: ArticleMeta, handle_prefix: str = DEFAULT_REPEC_HANDLE_PREFIX
     if meta.month:
         lines.append(_line("Month", month_name(meta.month)))
 
-    lines.append(_line("DOI", normalize_doi_url(meta.doi)))
+    if meta.doi:
+        lines.append(_line("DOI", normalize_doi_url(meta.doi)))
 
     for link in meta.file_links:
         lines.append(_line("File-URL", link.url))

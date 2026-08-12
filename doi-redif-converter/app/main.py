@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .extractor import dois_from_xlsx_bytes, extract_many, parse_doi_list
+from .extractor import dois_from_xlsx_bytes, extract_many, parse_input_list
 from .jobs import build_job_zip, create_job, get_job
 from .paths import app_root, static_dir
 from .redif import DEFAULT_REPEC_HANDLE_PREFIX, build_filename, to_redif
@@ -66,7 +66,7 @@ class ConvertResponse(BaseModel):
 def _collect_dois(dois: list[str] | None, text: str | None) -> list[str]:
     collected: list[str] = []
     seen: set[str] = set()
-    for item in list(dois or []) + parse_doi_list(text or ""):
+    for item in list(dois or []) + parse_input_list(text or ""):
         key = item.lower()
         if key in seen:
             continue
@@ -114,7 +114,7 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("latin-1", errors="ignore")
-        dois = parse_doi_list(text)
+        dois = parse_input_list(text)
     return {"count": len(dois), "dois": dois}
 
 
@@ -195,12 +195,12 @@ async def convert_upload(
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("latin-1", errors="ignore")
-        dois = parse_doi_list(text)
+        dois = parse_input_list(text)
 
     if not dois:
-        raise HTTPException(status_code=400, detail="No valid DOIs found in upload")
-    if len(dois) > 1000:
-        raise HTTPException(status_code=400, detail="Maximum 1000 DOIs per request")
+        raise HTTPException(status_code=400, detail="No valid DOIs/URLs found in upload")
+    if len(dois) > 2000:
+        raise HTTPException(status_code=400, detail="Maximum 2000 DOIs/URLs per request")
 
     concurrency = max(1, min(concurrency or 5, 10))
     metas = await extract_many(dois, concurrency=concurrency)

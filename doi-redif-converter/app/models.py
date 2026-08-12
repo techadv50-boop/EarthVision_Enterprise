@@ -18,7 +18,7 @@ class FileLink:
 
 @dataclass
 class ArticleMeta:
-    doi: str
+    doi: str = ""
     title: str = ""
     abstract: str = ""
     keywords: list[str] = field(default_factory=list)
@@ -31,6 +31,7 @@ class ArticleMeta:
     month: str = ""
     file_links: list[FileLink] = field(default_factory=list)
     landing_url: str = ""
+    input_ref: str = ""  # original DOI or article URL provided by user
     source: str = ""
     error: str | None = None
 

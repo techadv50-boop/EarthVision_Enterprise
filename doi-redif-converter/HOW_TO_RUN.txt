@@ -1,49 +1,38 @@
-DOI → ReDIF Converter
-=====================
+DOI / URL → ReDIF Converter (Standalone)
+========================================
 
-OPTION A — Double-click starter (needs Python installed once)
-------------------------------------------------------------
-Windows:
-  1. Open this folder
-  2. Double-click: Start_DOI_REDIF_Converter.bat
-  3. First time only, if it fails, open PowerShell here and run:
+This is a desktop program. It opens its own window.
+It does NOT require a browser.
 
-       python -m venv .venv
-       .\.venv\Scripts\Activate.ps1
-       pip install -r requirements.txt
-       python DOI_REDIF_Converter.py
+Windows
+-------
+1. Unzip DOI_REDIF_Converter-windows.zip
+2. Double-click Run_DOI_REDIF_Converter.bat
+   (or DOI_REDIF_Converter.exe)
+3. If SmartScreen appears: More info → Run anyway
 
-macOS / Linux:
-  python3 -m venv .venv
-  source .venv/bin/activate
-  pip install -r requirements.txt
-  python DOI_REDIF_Converter.py
+What you can paste / upload
+---------------------------
+- DOIs: 10.33411/IJIST/1936
+- DOI links: https://doi.org/10.33411/IJIST/1936
+- Article page URLs (even without DOI):
+  https://journal.50sea.com/index.php/IJIST/article/view/1936
 
-
-OPTION B — Standalone program (no Python needed)
-------------------------------------------------
-1. Build it:
-
-     pip install -r requirements-build.txt
-     python build_app.py
-
-2. Run the file created in the dist\ folder:
-     Windows: DOI_REDIF_Converter.exe
-     macOS/Linux: DOI_REDIF_Converter
-
-Or download the ready-made zip from GitHub Actions / Releases
-(DOI_REDIF_Converter-windows.zip / macos / linux).
-
+One item per line.
 
 Using the app
 -------------
-- A browser window opens automatically
-- Keep the small control window open
-- Paste DOIs or upload your Excel list
-- Click Extract & preview, then Download ZIP
-- Internet connection is required
-- If a DOI is inaccessible / 404, it is skipped and the next DOI continues
-- At the end you get a final report: done / failed / left, and which DOIs failed
-- The ZIP also contains:
-    _conversion_report.txt
-    _failed.csv
+1. Paste DOIs/URLs or click Load Excel/Text
+2. Click Start conversion
+3. Watch progress (done / left)
+4. Bad/404 items are skipped automatically
+5. At the end, use:
+   - Export ZIP…
+   - Save .redif folder…
+6. Report files included:
+   - _conversion_report.txt
+   - _failed.csv
+
+If it fails to open
+-------------------
+Check DOI_REDIF_Converter.log in the same folder.

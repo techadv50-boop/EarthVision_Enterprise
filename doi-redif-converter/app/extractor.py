@@ -40,6 +40,20 @@ def clean_doi(value: str) -> str:
     return value
 
 
+def clean_url(value: str) -> str:
+    value = (value or "").strip().strip("<>[]()'\"")
+    if not value:
+        return ""
+    value = value.split()[0].strip().rstrip(".,);]")
+    if not re.match(r"^https?://", value, flags=re.I):
+        return ""
+    return value
+
+
+def is_doi_org_url(value: str) -> bool:
+    return bool(re.search(r"https?://(dx\.)?doi\.org/", value or "", flags=re.I))
+
+
 def parse_doi_list(text: str) -> list[str]:
     """Parse DOIs from pasted text (one per line, comma, or whitespace separated)."""
     parts = re.split(r"[\s,;]+", text or "")
@@ -58,7 +72,49 @@ def parse_doi_list(text: str) -> list[str]:
     return out
 
 
-def dois_from_xlsx_bytes(data: bytes) -> list[str]:
+def parse_input_list(text: str) -> list[str]:
+    """Parse DOIs and/or article URLs from pasted text.
+
+    Prefer one item per line. Article URLs (http/https) are kept as-is.
+    DOI links and bare DOIs are normalized to DOI strings.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(item: str) -> None:
+        key = item.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(item)
+
+    raw = text or ""
+    lines = raw.splitlines()
+    if len(lines) <= 1 and re.search(r"https?://", raw, flags=re.I):
+        # Split URL-heavy blobs carefully
+        chunks = re.split(r"[\n\r]+|,\s*(?=https?://)|;\s*(?=https?://)", raw)
+    else:
+        chunks = lines if lines else [raw]
+
+    for chunk in chunks:
+        chunk = (chunk or "").strip().strip(",;")
+        if not chunk:
+            continue
+        url = clean_url(chunk)
+        if url:
+            if is_doi_org_url(url):
+                doi = clean_doi(url)
+                if doi:
+                    add(doi)
+            else:
+                add(url)
+            continue
+        for doi in parse_doi_list(chunk):
+            add(doi)
+    return out
+
+
+def inputs_from_xlsx_bytes(data: bytes) -> list[str]:
     from io import BytesIO
 
     from openpyxl import load_workbook
@@ -71,14 +127,19 @@ def dois_from_xlsx_bytes(data: bytes) -> list[str]:
             for cell in row:
                 if cell is None:
                     continue
-                for doi in parse_doi_list(str(cell)):
-                    key = doi.lower()
+                for item in parse_input_list(str(cell)):
+                    key = item.lower()
                     if key in seen:
                         continue
                     seen.add(key)
-                    out.append(doi)
+                    out.append(item)
     wb.close()
     return out
+
+
+def dois_from_xlsx_bytes(data: bytes) -> list[str]:
+    """Backward-compatible alias: returns DOIs and article URLs."""
+    return inputs_from_xlsx_bytes(data)
 
 
 def _strip_jats(text: str) -> str:
@@ -392,9 +453,10 @@ async def extract_doi(
     timeout: float = 45.0,
 ) -> ArticleMeta:
     """Extract one DOI. Never raises — failures become ArticleMeta.error so batching can continue."""
+    original = (doi or "").strip()
     doi = clean_doi(doi)
     if not doi:
-        return ArticleMeta(doi="", error="Empty DOI")
+        return ArticleMeta(doi="", input_ref=original, error="Empty DOI")
 
     owns_client = client is None
     if owns_client:
@@ -405,7 +467,7 @@ async def extract_doi(
         )
 
     assert client is not None
-    meta = ArticleMeta(doi=doi)
+    meta = ArticleMeta(doi=doi, input_ref=original or doi)
 
     try:
         # 1) Resolve DOI to landing page HTML
@@ -451,6 +513,7 @@ async def extract_doi(
 
         # Ensure DOI URL casing prefers input DOI
         meta.doi = doi
+        meta.input_ref = original or doi
         if meta.month and meta.month.isdigit():
             meta.month = month_name(meta.month)
 
@@ -460,10 +523,119 @@ async def extract_doi(
 
         return meta
     except Exception as exc:  # noqa: BLE001 — never break the batch
-        return ArticleMeta(doi=doi, error=f"Unexpected error: {exc}")
+        return ArticleMeta(doi=doi, input_ref=original or doi, error=f"Unexpected error: {exc}")
     finally:
         if owns_client:
             await client.aclose()
+
+
+async def extract_url(
+    url: str,
+    client: httpx.AsyncClient | None = None,
+    timeout: float = 45.0,
+) -> ArticleMeta:
+    """Extract metadata directly from an article page URL (works even without a DOI)."""
+    original = (url or "").strip()
+    url = clean_url(url)
+    if not url:
+        return ArticleMeta(input_ref=original, error="Empty or invalid URL")
+
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=timeout,
+            headers={"User-Agent": USER_AGENT},
+        )
+    assert client is not None
+
+    try:
+        try:
+            resp = await client.get(
+                url,
+                headers={"Accept": "text/html,application/xhtml+xml"},
+            )
+        except httpx.TimeoutException:
+            return ArticleMeta(input_ref=original, landing_url=url, error="Article URL timed out")
+        except httpx.HTTPError as exc:
+            return ArticleMeta(
+                input_ref=original,
+                landing_url=url,
+                error=f"Article URL not accessible: {exc}",
+            )
+
+        content_type = (resp.headers.get("content-type") or "").lower()
+        landing = str(resp.url)
+        if resp.status_code >= 400:
+            return ArticleMeta(
+                input_ref=original,
+                landing_url=landing,
+                error=_http_error_message(resp.status_code, "Article URL"),
+            )
+        if "html" not in content_type:
+            return ArticleMeta(
+                input_ref=original,
+                landing_url=landing,
+                error=f"Article URL returned non-HTML content ({content_type or 'unknown'})",
+            )
+
+        meta = _extract_from_html(resp.text, landing, doi="")
+        meta.input_ref = original
+        meta.landing_url = landing
+        meta.source = "article-url"
+
+        page_doi = clean_doi(meta.doi) if meta.doi else ""
+        if page_doi:
+            meta.doi = page_doi
+            try:
+                xref = await _fetch_crossref(client, page_doi)
+                if xref:
+                    meta = _merge_crossref(meta, xref)
+                    meta.doi = page_doi
+                    meta.input_ref = original
+            except Exception:
+                pass
+        else:
+            meta.doi = ""
+
+        if not meta.title:
+            meta.error = meta.error or "Could not extract article metadata from URL"
+        else:
+            meta.error = None
+
+        if meta.month and str(meta.month).isdigit():
+            meta.month = month_name(meta.month)
+
+        if not meta.file_links:
+            meta.file_links = [FileLink(url=landing, format="text/html")]
+        else:
+            # Ensure the provided article URL is present as HTML link
+            if not any(l.url.rstrip("/") == landing.rstrip("/") for l in meta.file_links):
+                meta.file_links.append(FileLink(url=landing, format="text/html"))
+
+        return meta
+    except Exception as exc:  # noqa: BLE001
+        return ArticleMeta(input_ref=original, landing_url=url, error=f"Unexpected error: {exc}")
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
+async def extract_item(
+    value: str,
+    client: httpx.AsyncClient | None = None,
+    timeout: float = 45.0,
+) -> ArticleMeta:
+    """Extract from a DOI or an article URL."""
+    value = (value or "").strip()
+    if not value:
+        return ArticleMeta(error="Empty input")
+    url = clean_url(value)
+    if url:
+        if is_doi_org_url(url):
+            return await extract_doi(url, client=client, timeout=timeout)
+        return await extract_url(url, client=client, timeout=timeout)
+    return await extract_doi(value, client=client, timeout=timeout)
 
 
 async def extract_many(
@@ -471,11 +643,11 @@ async def extract_many(
     concurrency: int = 5,
     progress_cb=None,
 ) -> list[ArticleMeta]:
-    """Extract many DOIs.
+    """Extract many DOIs and/or article URLs.
 
     progress_cb, if provided, is called with dict events:
-      {"phase":"start","index":i,"doi":doi,"total":n}
-      {"phase":"done","index":i,"doi":doi,"total":n,"meta":ArticleMeta}
+      {"phase":"start","index":i,"doi":ref,"total":n}
+      {"phase":"done","index":i,"doi":ref,"total":n,"meta":ArticleMeta}
     For backward compatibility it also accepts legacy callbacks of form (index, meta).
     """
     sem = asyncio.Semaphore(concurrency)
@@ -498,25 +670,27 @@ async def extract_many(
         headers={"User-Agent": USER_AGENT},
     ) as client:
 
-        async def worker(idx: int, doi: str) -> None:
+        async def worker(idx: int, ref: str) -> None:
             async with sem:
-                _emit({"phase": "start", "index": idx, "doi": doi, "total": total})
+                _emit({"phase": "start", "index": idx, "doi": ref, "total": total})
                 try:
-                    meta = await extract_doi(doi, client=client)
-                except Exception as exc:  # noqa: BLE001 — skip bad DOIs, continue list
-                    meta = ArticleMeta(doi=clean_doi(doi) or doi, error=f"Skipped due to error: {exc}")
+                    meta = await extract_item(ref, client=client)
+                except Exception as exc:  # noqa: BLE001 — skip bad items, continue list
+                    meta = ArticleMeta(input_ref=ref, error=f"Skipped due to error: {exc}")
                 results[idx] = meta
                 _emit(
                     {
                         "phase": "done",
                         "index": idx,
-                        "doi": doi,
+                        "doi": ref,
                         "total": total,
                         "meta": meta,
                     }
                 )
 
-        # return_exceptions ensures one broken task cannot abort the whole batch
         await asyncio.gather(*(worker(i, d) for i, d in enumerate(dois)), return_exceptions=False)
 
-    return [r if r is not None else ArticleMeta(doi=dois[i], error="Unknown failure") for i, r in enumerate(results)]
+    return [
+        r if r is not None else ArticleMeta(input_ref=dois[i], error="Unknown failure")
+        for i, r in enumerate(results)
+    ]
