@@ -42,3 +42,8 @@ Using the app
 - Paste DOIs or upload your Excel list
 - Click Extract & preview, then Download ZIP
 - Internet connection is required
+- If a DOI is inaccessible / 404, it is skipped and the next DOI continues
+- At the end you get a final report: done / failed / left, and which DOIs failed
+- The ZIP also contains:
+    _conversion_report.txt
+    _failed.csv

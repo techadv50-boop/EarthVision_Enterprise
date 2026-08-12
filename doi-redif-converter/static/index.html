@@ -226,6 +226,31 @@
       word-break: break-word;
     }
 
+    .report-box {
+      margin: 0.9rem 0 1rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffdf8;
+      padding: 1rem 1.1rem;
+    }
+    .report-box h2 {
+      margin: 0 0 0.55rem;
+      font-family: "Fraunces", Georgia, serif;
+      font-size: 1.2rem;
+    }
+    .report-box pre {
+      margin: 0;
+      max-height: 280px;
+      background: #14211c;
+      color: #e8f2ec;
+      border-radius: 10px;
+      padding: 0.85rem;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+
     .stats {
       display: flex;
       flex-wrap: wrap;
@@ -379,6 +404,14 @@
 
     <section id="summary" hidden>
       <div class="stats" id="stats"></div>
+      <div class="report-box" id="reportBox" hidden>
+        <h2>Final report</h2>
+        <pre id="reportText"></pre>
+        <div class="actions" style="margin-top:0.75rem">
+          <button class="btn-secondary" id="btnCopyReport" type="button">Copy report</button>
+          <button class="btn-secondary" id="btnDownloadFailed" type="button">Download failed DOIs CSV</button>
+        </div>
+      </div>
       <div class="results" id="results"></div>
     </section>
 
@@ -408,10 +441,16 @@
       summary: document.getElementById("summary"),
       stats: document.getElementById("stats"),
       results: document.getElementById("results"),
+      reportBox: document.getElementById("reportBox"),
+      reportText: document.getElementById("reportText"),
+      btnCopyReport: document.getElementById("btnCopyReport"),
+      btnDownloadFailed: document.getElementById("btnDownloadFailed"),
     };
 
     let lastPayload = null;
     let lastJobId = null;
+    let lastFailedDois = [];
+    let lastReportText = "";
     let uploadedDois = [];
 
     function setBusy(busy, msg) {
@@ -450,12 +489,16 @@
         parts.push(`Current: ${job.current_doi}`);
       }
       els.progressMeta.textContent = parts.join(" · ");
-      els.status.textContent =
-        job.status === "completed"
-          ? `Done. ${job.succeeded}/${job.total} succeeded.`
-          : job.status === "failed"
-            ? `Failed: ${job.error || "unknown error"}`
-            : `Working… ${done} of ${total} processed, ${left} remaining.`;
+      if (job.status === "completed") {
+        const failed = job.failed || 0;
+        els.status.textContent =
+          `Completed list. Done: ${job.succeeded || 0} · Failed: ${failed} · Left: 0` +
+          (failed ? ` · See final report for DOIs that could not be converted.` : "");
+      } else if (job.status === "failed") {
+        els.status.textContent = `Job error: ${job.error || "unknown error"}`;
+      } else {
+        els.status.textContent = `Working… ${done} of ${total} processed, ${left} remaining. Bad DOIs are skipped automatically.`;
+      }
     }
 
     function currentTextDois() {
@@ -512,22 +555,58 @@
       if (file) loadFile(file);
     });
 
+    function renderReport(data) {
+      lastFailedDois = data.failed_dois || (data.report && data.report.failed_dois) || [];
+      lastReportText = data.report_text || "";
+      if (!lastReportText && data.report) {
+        const r = data.report;
+        const lines = [
+          "DOI → ReDIF Conversion Report",
+          "=============================",
+          `Total DOIs in list : ${r.total || 0}`,
+          `Processed          : ${r.processed || 0}`,
+          `Succeeded (done)   : ${r.succeeded || 0}`,
+          `Failed (not done)  : ${r.failed || 0}`,
+          `Left incomplete    : ${r.left || 0}`,
+          "",
+        ];
+        if (lastFailedDois.length) {
+          lines.push("DOIs that could not be converted:");
+          lines.push("---------------------------------");
+          for (const item of lastFailedDois) {
+            lines.push(`- ${item.doi}`);
+            lines.push(`  Reason: ${item.error || "Unknown error"}`);
+          }
+        } else {
+          lines.push("All accessible DOIs were converted successfully.");
+        }
+        lastReportText = lines.join("\n");
+      }
+      els.reportBox.hidden = false;
+      els.reportText.textContent = lastReportText || "No report available.";
+    }
+
     function renderResults(data) {
       els.summary.hidden = false;
       els.stats.innerHTML = `
         <div class="chip">Total <b>${data.total}</b></div>
-        <div class="chip">Succeeded <b>${data.succeeded}</b></div>
+        <div class="chip">Done <b>${data.succeeded}</b></div>
         <div class="chip">Failed <b>${data.failed}</b></div>
+        <div class="chip">Left <b>0</b></div>
       `;
+      renderReport(data);
       els.results.innerHTML = "";
-      for (const item of data.results || []) {
+
+      // Show failed DOIs first for visibility
+      const items = [...(data.results || [])].sort((a, b) => Number(a.ok) - Number(b.ok));
+      for (const item of items) {
         const card = document.createElement("article");
         card.className = "card" + (item.ok ? "" : " fail");
         const authors = (item.authors || []).map((a) => a.name).join("; ");
         card.innerHTML = `
           <div class="card-top">
             <h3>${escapeHtml(item.title || item.doi)}</h3>
-            <div class="badge">${item.ok ? "OK" : "Failed"}</div>
+            <div class="badge">${item.ok ? "OK" : "Failed / Skipped"}</div>
           </div>
           <p class="meta">
             ${escapeHtml(item.doi)}<br/>
@@ -591,7 +670,8 @@
         }
         updateProgress(finalJob);
         renderResults(finalJob);
-        els.btnZip.disabled = (finalJob.succeeded || 0) === 0;
+        // ZIP always available after completion (includes report even if some/all failed)
+        els.btnZip.disabled = false;
       } catch (err) {
         els.status.textContent = err.message || String(err);
       } finally {
@@ -604,7 +684,7 @@
         els.status.textContent = "Run Extract & preview first.";
         return;
       }
-      setBusy(true, "Building ZIP of .redif files…");
+      setBusy(true, "Building ZIP (.redif files + final report)…");
       try {
         const res = await fetch(`/api/jobs/${lastJobId}/zip`);
         if (!res.ok) {
@@ -620,12 +700,39 @@
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-        els.status.textContent = "ZIP download started.";
+        els.status.textContent = "ZIP download started (includes _conversion_report.txt and _failed.csv).";
       } catch (err) {
         els.status.textContent = err.message || String(err);
       } finally {
         setBusy(false);
       }
+    });
+
+    els.btnCopyReport.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(lastReportText || els.reportText.textContent || "");
+        els.status.textContent = "Report copied to clipboard.";
+      } catch {
+        els.status.textContent = "Could not copy report.";
+      }
+    });
+
+    els.btnDownloadFailed.addEventListener("click", () => {
+      const lines = ["doi,error"];
+      for (const item of lastFailedDois) {
+        const doi = String(item.doi || "").replaceAll('"', "'");
+        const err = String(item.error || "").replaceAll('"', "'");
+        lines.push(`"${doi}","${err}"`);
+      }
+      const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "failed-dois.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
     });
 
     els.btnClear.addEventListener("click", () => {
@@ -635,9 +742,13 @@
       uploadedDois = [];
       lastPayload = null;
       lastJobId = null;
+      lastFailedDois = [];
+      lastReportText = "";
       els.summary.hidden = true;
       els.results.innerHTML = "";
       els.stats.innerHTML = "";
+      els.reportBox.hidden = true;
+      els.reportText.textContent = "";
       els.progressWrap.hidden = true;
       els.btnZip.disabled = true;
       els.status.textContent = "Cleared.";

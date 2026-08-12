@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .extractor import dois_from_xlsx_bytes, extract_many, parse_doi_list
 from .redif import DEFAULT_REPEC_HANDLE_PREFIX, build_filename, to_redif
+from .report import build_summary, failed_entries, format_failed_csv, format_report_text
 
 
 def _load_dois(args: argparse.Namespace) -> list[str]:
@@ -46,13 +47,24 @@ async def _run(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Converting {len(dois)} DOI(s)…")
-    metas = await extract_many(dois, concurrency=args.concurrency)
+    done = 0
+
+    def on_progress(event: dict) -> None:
+        nonlocal done
+        if event.get("phase") != "done":
+            return
+        done += 1
+        meta = event["meta"]
+        left = len(dois) - done
+        status = "OK" if meta.ok else "FAIL"
+        print(f"[{done}/{len(dois)} | {left} left] {status} {meta.doi}")
+
+    metas = await extract_many(dois, concurrency=args.concurrency, progress_cb=on_progress)
 
     ok = 0
     used: dict[str, int] = {}
     for meta in metas:
         if not meta.ok:
-            print(f"FAIL  {meta.doi}: {meta.error}", file=sys.stderr)
             continue
         name = build_filename(meta)
         count = used.get(name, 0)
@@ -62,10 +74,22 @@ async def _run(args: argparse.Namespace) -> int:
             name = f"{stem}_{count + 1}.redif"
         path = out_dir / name
         path.write_bytes(to_redif(meta, handle_prefix=args.handle_prefix).encode("utf-8"))
-        print(f"OK    {meta.doi} -> {path.name}")
         ok += 1
 
-    print(f"Done: {ok}/{len(metas)} succeeded → {out_dir}")
+    failed = failed_entries(metas)
+    summary = build_summary(
+        total=len(metas),
+        succeeded=ok,
+        failed=len(failed),
+        failed_dois=failed,
+    )
+    report_text = format_report_text(summary)
+    (out_dir / "_conversion_report.txt").write_text(report_text, encoding="utf-8")
+    (out_dir / "_failed.csv").write_text(format_failed_csv(failed), encoding="utf-8")
+
+    print()
+    print(report_text)
+    print(f"Files written to: {out_dir}")
     return 0 if ok else 2
 
 

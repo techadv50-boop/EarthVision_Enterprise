@@ -374,11 +374,24 @@ def _merge_crossref(meta: ArticleMeta, data: dict) -> ArticleMeta:
     return meta
 
 
+def _http_error_message(status_code: int, where: str) -> str:
+    if status_code == 404:
+        return f"{where} returned HTTP 404 (not found)"
+    if status_code == 403:
+        return f"{where} returned HTTP 403 (forbidden)"
+    if status_code >= 500:
+        return f"{where} returned HTTP {status_code} (server error)"
+    if status_code >= 400:
+        return f"{where} returned HTTP {status_code}"
+    return f"{where} returned HTTP {status_code}"
+
+
 async def extract_doi(
     doi: str,
     client: httpx.AsyncClient | None = None,
     timeout: float = 45.0,
 ) -> ArticleMeta:
+    """Extract one DOI. Never raises — failures become ArticleMeta.error so batching can continue."""
     doi = clean_doi(doi)
     if not doi:
         return ArticleMeta(doi="", error="Empty DOI")
@@ -402,20 +415,34 @@ async def extract_doi(
                 headers={"Accept": "text/html,application/xhtml+xml"},
             )
             content_type = (resp.headers.get("content-type") or "").lower()
-            if resp.status_code < 400 and "html" in content_type:
+            meta.landing_url = str(resp.url)
+            if resp.status_code >= 400:
+                meta.error = _http_error_message(resp.status_code, "DOI landing page")
+            elif "html" in content_type:
                 meta = _extract_from_html(resp.text, str(resp.url), doi)
             else:
-                meta.landing_url = str(resp.url)
+                meta.error = f"DOI landing page returned non-HTML content ({content_type or 'unknown'})"
+        except httpx.TimeoutException:
+            meta.error = "DOI landing page timed out"
+        except httpx.HTTPError as exc:
+            meta.error = f"DOI landing page not accessible: {exc}"
         except Exception as exc:  # noqa: BLE001
             meta.error = f"Landing page fetch failed: {exc}"
 
-        # 2) Enrich / fill gaps from Crossref
+        # 2) Enrich / fill gaps from Crossref (also helps when landing page 404s)
         try:
             xref = await _fetch_crossref(client, doi)
-            meta = _merge_crossref(meta, xref)
+            if xref:
+                meta = _merge_crossref(meta, xref)
+            elif not meta.title:
+                # Keep prior landing-page error if present; otherwise note Crossref miss
+                meta.error = meta.error or "DOI not found in Crossref"
+        except httpx.TimeoutException:
+            if not meta.title:
+                meta.error = meta.error or "Crossref lookup timed out"
         except Exception as exc:  # noqa: BLE001
             if not meta.title:
-                meta.error = f"Crossref fetch failed: {exc}"
+                meta.error = meta.error or f"Crossref fetch failed: {exc}"
 
         if not meta.title:
             meta.error = meta.error or "Could not extract article metadata"
@@ -432,6 +459,8 @@ async def extract_doi(
             meta.file_links = [FileLink(url=meta.landing_url, format="text/html")]
 
         return meta
+    except Exception as exc:  # noqa: BLE001 — never break the batch
+        return ArticleMeta(doi=doi, error=f"Unexpected error: {exc}")
     finally:
         if owns_client:
             await client.aclose()
@@ -472,7 +501,10 @@ async def extract_many(
         async def worker(idx: int, doi: str) -> None:
             async with sem:
                 _emit({"phase": "start", "index": idx, "doi": doi, "total": total})
-                meta = await extract_doi(doi, client=client)
+                try:
+                    meta = await extract_doi(doi, client=client)
+                except Exception as exc:  # noqa: BLE001 — skip bad DOIs, continue list
+                    meta = ArticleMeta(doi=clean_doi(doi) or doi, error=f"Skipped due to error: {exc}")
                 results[idx] = meta
                 _emit(
                     {
@@ -484,6 +516,7 @@ async def extract_many(
                     }
                 )
 
-        await asyncio.gather(*(worker(i, d) for i, d in enumerate(dois)))
+        # return_exceptions ensures one broken task cannot abort the whole batch
+        await asyncio.gather(*(worker(i, d) for i, d in enumerate(dois)), return_exceptions=False)
 
     return [r if r is not None else ArticleMeta(doi=dois[i], error="Unknown failure") for i, r in enumerate(results)]

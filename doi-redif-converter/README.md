@@ -77,3 +77,10 @@ python -m app.cli -i samples/DOI_Record.xlsx -o redif_out
 Authors, affiliations, title, abstract, keywords, journal, volume, issue, pages, year, month, DOI, file URLs, and RePEc handle (`RePEc:abq:IJIST1:...` by default).
 
 Author emails are included only when publicly available on the article page or Crossref.
+
+## Failures and final report
+
+- Inaccessible / 404 DOIs are skipped automatically; processing continues to the end of the list
+- Live progress shows done / left while running
+- Final report shows total, succeeded, failed, and the exact DOIs that could not be converted
+- ZIP export always includes `_conversion_report.txt` and `_failed.csv`

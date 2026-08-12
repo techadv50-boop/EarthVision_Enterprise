@@ -216,6 +216,8 @@ async def convert_upload(
 
 @app.post("/api/export-zip")
 async def export_zip(payload: ConvertRequest) -> StreamingResponse:
+    from .report import build_summary, failed_entries, format_failed_csv, format_report_text
+
     dois = _collect_dois(payload.dois, payload.text)
     if not dois:
         raise HTTPException(status_code=400, detail="No valid DOIs provided")
@@ -225,6 +227,14 @@ async def export_zip(payload: ConvertRequest) -> StreamingResponse:
 
     buf = io.BytesIO()
     used_names: dict[str, int] = {}
+    failed = failed_entries(metas)
+    succeeded = sum(1 for m in metas if m.ok)
+    summary = build_summary(
+        total=len(metas),
+        succeeded=succeeded,
+        failed=len(failed),
+        failed_dois=failed,
+    )
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for meta in metas:
             if not meta.ok:
@@ -237,14 +247,8 @@ async def export_zip(payload: ConvertRequest) -> StreamingResponse:
                 name = f"{stem}_{count + 1}.redif"
             zf.writestr(name, to_redif(meta, handle_prefix=payload.handle_prefix))
 
-        # include a manifest of failures
-        failures = [m for m in metas if not m.ok]
-        if failures:
-            lines = ["doi,error"]
-            for m in failures:
-                err = (m.error or "failed").replace('"', "'")
-                lines.append(f'"{m.doi}","{err}"')
-            zf.writestr("_failed.csv", "\n".join(lines) + "\n")
+        zf.writestr("_conversion_report.txt", format_report_text(summary))
+        zf.writestr("_failed.csv", format_failed_csv(failed))
 
     buf.seek(0)
     return StreamingResponse(

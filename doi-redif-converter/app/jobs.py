@@ -14,6 +14,7 @@ from typing import Any, Callable
 from .extractor import extract_many
 from .models import ArticleMeta
 from .redif import build_filename, to_redif
+from .report import build_summary, failed_entries, format_failed_csv, format_report_text
 
 
 @dataclass
@@ -56,6 +57,24 @@ class JobState:
             if self.done > 0 and self.left > 0 and self.started_at:
                 rate = self.done / max(0.001, (time.time() - self.started_at))
                 eta = round(self.left / rate, 1) if rate > 0 else None
+            if self.metas:
+                failed_dois = failed_entries(self.metas)
+            else:
+                failed_dois = [
+                    {
+                        "doi": r.get("doi", ""),
+                        "error": r.get("error") or "Unknown error",
+                    }
+                    for r in self.recent
+                    if not r.get("ok")
+                ]
+            summary = build_summary(
+                total=self.total,
+                succeeded=self.succeeded,
+                failed=self.failed,
+                failed_dois=failed_dois,
+                elapsed_sec=elapsed,
+            )
             data = {
                 "job_id": self.id,
                 "status": self.status,
@@ -74,6 +93,9 @@ class JobState:
                 "updated_at": self.updated_at,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
+                "report": summary,
+                "failed_dois": summary["failed_dois"] if self.status in {"completed", "failed"} else [],
+                "report_text": format_report_text(summary) if self.status == "completed" else "",
             }
             if include_results:
                 serialized = []
@@ -204,6 +226,17 @@ def build_job_zip(job: JobState) -> bytes:
         raise RuntimeError("Job is not completed")
     buf = io.BytesIO()
     used_names: dict[str, int] = {}
+    failed = failed_entries(job.metas)
+    elapsed = None
+    if job.started_at and job.finished_at:
+        elapsed = round(job.finished_at - job.started_at, 1)
+    summary = build_summary(
+        total=job.total,
+        succeeded=job.succeeded,
+        failed=job.failed,
+        failed_dois=failed,
+        elapsed_sec=elapsed,
+    )
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for meta in job.metas:
             if not meta.ok:
@@ -216,11 +249,7 @@ def build_job_zip(job: JobState) -> bytes:
                 name = f"{stem}_{count + 1}.redif"
             zf.writestr(name, to_redif(meta, handle_prefix=job.handle_prefix))
 
-        failures = [m for m in job.metas if not m.ok]
-        if failures:
-            lines = ["doi,error"]
-            for m in failures:
-                err = (m.error or "failed").replace('"', "'")
-                lines.append(f'"{m.doi}","{err}"')
-            zf.writestr("_failed.csv", "\n".join(lines) + "\n")
+        # Always include final report files
+        zf.writestr("_conversion_report.txt", format_report_text(summary))
+        zf.writestr("_failed.csv", format_failed_csv(failed))
     return buf.getvalue()
