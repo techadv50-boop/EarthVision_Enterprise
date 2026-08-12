@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .extractor import dois_from_xlsx_bytes, extract_many, parse_doi_list
+from .jobs import build_job_zip, create_job, get_job
 from .paths import app_root, static_dir
 from .redif import DEFAULT_REPEC_HANDLE_PREFIX, build_filename, to_redif
 
@@ -117,13 +118,55 @@ async def parse_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"count": len(dois), "dois": dois}
 
 
+@app.post("/api/jobs")
+async def start_job(payload: ConvertRequest) -> dict[str, Any]:
+    """Start a background conversion job and return a job_id for progress polling."""
+    dois = _collect_dois(payload.dois, payload.text)
+    if not dois:
+        raise HTTPException(status_code=400, detail="No valid DOIs provided")
+    if len(dois) > 2000:
+        raise HTTPException(status_code=400, detail="Maximum 2000 DOIs per request")
+
+    concurrency = max(1, min(payload.concurrency or 5, 10))
+    job = create_job(
+        dois=dois,
+        handle_prefix=payload.handle_prefix,
+        concurrency=concurrency,
+        result_factory=_to_result,
+    )
+    return job.snapshot()
+
+
+@app.get("/api/jobs/{job_id}")
+async def job_status(job_id: str, include_results: bool = False) -> dict[str, Any]:
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job.snapshot(include_results=include_results)
+
+
+@app.get("/api/jobs/{job_id}/zip")
+async def job_zip(job_id: str) -> StreamingResponse:
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "completed":
+        raise HTTPException(status_code=409, detail=f"Job is {job.status}, not completed")
+    data = build_job_zip(job)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="redif-export.zip"'},
+    )
+
+
 @app.post("/api/convert", response_model=ConvertResponse)
 async def convert(payload: ConvertRequest) -> ConvertResponse:
     dois = _collect_dois(payload.dois, payload.text)
     if not dois:
         raise HTTPException(status_code=400, detail="No valid DOIs provided")
-    if len(dois) > 1000:
-        raise HTTPException(status_code=400, detail="Maximum 1000 DOIs per request")
+    if len(dois) > 2000:
+        raise HTTPException(status_code=400, detail="Maximum 2000 DOIs per request")
 
     concurrency = max(1, min(payload.concurrency or 5, 10))
     metas = await extract_many(dois, concurrency=concurrency)

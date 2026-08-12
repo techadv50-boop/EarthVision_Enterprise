@@ -191,6 +191,41 @@
       min-height: 1.4em;
     }
 
+    .progress-wrap {
+      margin-top: 0.9rem;
+      padding: 0.9rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffdf8;
+    }
+    .progress-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      font-weight: 650;
+      margin-bottom: 0.55rem;
+    }
+    .progress-bar {
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(20, 33, 28, 0.08);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0f6b4c, #1f9d6d);
+      transition: width 0.25s ease;
+    }
+    .progress-meta {
+      margin-top: 0.55rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
     .stats {
       display: flex;
       flex-wrap: wrap;
@@ -332,6 +367,14 @@
         <button class="btn-secondary" id="btnClear">Clear</button>
       </div>
       <div class="status" id="status">Ready.</div>
+      <div class="progress-wrap" id="progressWrap" hidden>
+        <div class="progress-top">
+          <span id="progressLabel">0 / 0</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-meta" id="progressMeta"></div>
+      </div>
     </section>
 
     <section id="summary" hidden>
@@ -357,18 +400,62 @@
       btnZip: document.getElementById("btnZip"),
       btnClear: document.getElementById("btnClear"),
       status: document.getElementById("status"),
+      progressWrap: document.getElementById("progressWrap"),
+      progressLabel: document.getElementById("progressLabel"),
+      progressPct: document.getElementById("progressPct"),
+      progressFill: document.getElementById("progressFill"),
+      progressMeta: document.getElementById("progressMeta"),
       summary: document.getElementById("summary"),
       stats: document.getElementById("stats"),
       results: document.getElementById("results"),
     };
 
     let lastPayload = null;
+    let lastJobId = null;
     let uploadedDois = [];
 
     function setBusy(busy, msg) {
       els.btnConvert.disabled = busy;
-      els.btnZip.disabled = busy || !lastPayload;
+      els.btnZip.disabled = busy || !lastJobId;
       if (msg) els.status.textContent = msg;
+    }
+
+    function formatSeconds(sec) {
+      if (sec == null || Number.isNaN(sec)) return "—";
+      const s = Math.max(0, Math.round(sec));
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}m ${r}s`;
+    }
+
+    function updateProgress(job) {
+      els.progressWrap.hidden = false;
+      const total = job.total || 0;
+      const done = job.done || 0;
+      const left = job.left != null ? job.left : Math.max(0, total - done);
+      const pct = job.percent != null ? job.percent : (total ? Math.round(100 * done / total) : 0);
+      els.progressLabel.textContent = `${done} / ${total} done · ${left} left`;
+      els.progressPct.textContent = `${pct}%`;
+      els.progressFill.style.width = `${pct}%`;
+      const parts = [
+        `OK ${job.succeeded || 0}`,
+        `Failed ${job.failed || 0}`,
+        `Elapsed ${formatSeconds(job.elapsed_sec)}`,
+      ];
+      if (job.status === "running" || job.status === "queued") {
+        parts.push(`ETA ${formatSeconds(job.eta_sec)}`);
+      }
+      if (job.current_doi) {
+        parts.push(`Current: ${job.current_doi}`);
+      }
+      els.progressMeta.textContent = parts.join(" · ");
+      els.status.textContent =
+        job.status === "completed"
+          ? `Done. ${job.succeeded}/${job.total} succeeded.`
+          : job.status === "failed"
+            ? `Failed: ${job.error || "unknown error"}`
+            : `Working… ${done} of ${total} processed, ${left} remaining.`;
     }
 
     function currentTextDois() {
@@ -433,7 +520,7 @@
         <div class="chip">Failed <b>${data.failed}</b></div>
       `;
       els.results.innerHTML = "";
-      for (const item of data.results) {
+      for (const item of data.results || []) {
         const card = document.createElement("article");
         card.className = "card" + (item.ok ? "" : " fail");
         const authors = (item.authors || []).map((a) => a.name).join("; ");
@@ -461,25 +548,50 @@
         .replaceAll('"', "&quot;");
     }
 
+    async function pollJob(jobId) {
+      while (true) {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.detail || "Failed to read job status");
+        updateProgress(job);
+        if (job.status === "completed" || job.status === "failed") {
+          return job;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
     els.btnConvert.addEventListener("click", async () => {
       const payload = buildPayload();
       if (!payload.text && !(payload.dois && payload.dois.length)) {
         els.status.textContent = "Paste DOIs or upload a file first.";
         return;
       }
-      setBusy(true, "Extracting metadata from DOIs… this can take a while for large lists.");
+      setBusy(true, "Starting conversion…");
+      els.progressWrap.hidden = false;
+      updateProgress({ total: 0, done: 0, left: 0, percent: 0, succeeded: 0, failed: 0, status: "queued" });
       try {
-        const res = await fetch("/api/convert", {
+        const startRes = await fetch("/api/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Conversion failed");
+        const started = await startRes.json();
+        if (!startRes.ok) throw new Error(started.detail || "Could not start job");
         lastPayload = payload;
-        renderResults(data);
-        els.status.textContent = `Done. ${data.succeeded}/${data.total} succeeded.`;
-        els.btnZip.disabled = data.succeeded === 0;
+        lastJobId = started.job_id;
+        updateProgress(started);
+
+        await pollJob(lastJobId);
+        const finalRes = await fetch(`/api/jobs/${lastJobId}?include_results=true`);
+        const finalJob = await finalRes.json();
+        if (!finalRes.ok) throw new Error(finalJob.detail || "Failed to load results");
+        if (finalJob.status === "failed") {
+          throw new Error(finalJob.error || "Conversion failed");
+        }
+        updateProgress(finalJob);
+        renderResults(finalJob);
+        els.btnZip.disabled = (finalJob.succeeded || 0) === 0;
       } catch (err) {
         els.status.textContent = err.message || String(err);
       } finally {
@@ -488,18 +600,13 @@
     });
 
     els.btnZip.addEventListener("click", async () => {
-      const payload = lastPayload || buildPayload();
-      if (!payload.text && !(payload.dois && payload.dois.length)) {
-        els.status.textContent = "Nothing to export.";
+      if (!lastJobId) {
+        els.status.textContent = "Run Extract & preview first.";
         return;
       }
       setBusy(true, "Building ZIP of .redif files…");
       try {
-        const res = await fetch("/api/export-zip", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
+        const res = await fetch(`/api/jobs/${lastJobId}/zip`);
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(data.detail || "ZIP export failed");
@@ -527,9 +634,11 @@
       els.fileName.textContent = "";
       uploadedDois = [];
       lastPayload = null;
+      lastJobId = null;
       els.summary.hidden = true;
       els.results.innerHTML = "";
       els.stats.innerHTML = "";
+      els.progressWrap.hidden = true;
       els.btnZip.disabled = true;
       els.status.textContent = "Cleared.";
     });

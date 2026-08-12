@@ -442,8 +442,26 @@ async def extract_many(
     concurrency: int = 5,
     progress_cb=None,
 ) -> list[ArticleMeta]:
+    """Extract many DOIs.
+
+    progress_cb, if provided, is called with dict events:
+      {"phase":"start","index":i,"doi":doi,"total":n}
+      {"phase":"done","index":i,"doi":doi,"total":n,"meta":ArticleMeta}
+    For backward compatibility it also accepts legacy callbacks of form (index, meta).
+    """
     sem = asyncio.Semaphore(concurrency)
     results: list[ArticleMeta | None] = [None] * len(dois)
+    total = len(dois)
+
+    def _emit(event: dict) -> None:
+        if not progress_cb:
+            return
+        try:
+            progress_cb(event)
+        except TypeError:
+            # Legacy signature: progress_cb(index, meta)
+            if event.get("phase") == "done":
+                progress_cb(event["index"], event["meta"])
 
     async with httpx.AsyncClient(
         follow_redirects=True,
@@ -453,10 +471,18 @@ async def extract_many(
 
         async def worker(idx: int, doi: str) -> None:
             async with sem:
+                _emit({"phase": "start", "index": idx, "doi": doi, "total": total})
                 meta = await extract_doi(doi, client=client)
                 results[idx] = meta
-                if progress_cb:
-                    progress_cb(idx, meta)
+                _emit(
+                    {
+                        "phase": "done",
+                        "index": idx,
+                        "doi": doi,
+                        "total": total,
+                        "meta": meta,
+                    }
+                )
 
         await asyncio.gather(*(worker(i, d) for i, d in enumerate(dois)))
 
