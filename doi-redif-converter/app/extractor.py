@@ -585,6 +585,11 @@ async def extract_url(
         meta.source = "article-url"
 
         page_doi = clean_doi(meta.doi) if meta.doi else ""
+        if not page_doi:
+            # Fallback: find a DOI-looking token on the page body
+            found = re.search(r"\b(10\.\d{4,9}/[^\s<>\"']+)", resp.text or "", flags=re.I)
+            if found:
+                page_doi = clean_doi(found.group(1))
         if page_doi:
             meta.doi = page_doi
             try:

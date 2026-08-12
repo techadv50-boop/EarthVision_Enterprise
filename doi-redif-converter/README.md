@@ -1,24 +1,23 @@
-# DOI → ReDIF Converter
+# DOI / URL → ReDIF Converter
 
-Turn a list of DOIs into one **ReDIF-Article 1.0** file per DOI (IJIST / RePEc style, e.g. `V8i3p1429-1448.redif`).
+Turn a list of **DOIs and/or article page URLs** into one **ReDIF-Article 1.0** file each (IJIST / RePEc style, e.g. `V8i3p1429-1448.redif`).
 
-## Easiest: download and run (no Python)
+## Easiest: download and run (standalone desktop)
 
-After CI builds finish, download the zip for your OS from the GitHub Actions artifacts or a Release:
+Download from GitHub Releases:
 
 | System | File |
 |--------|------|
-| Windows | `DOI_REDIF_Converter-windows.zip` → run `DOI_REDIF_Converter.exe` |
+| Windows | `DOI_REDIF_Converter-windows.zip` → run `Run_DOI_REDIF_Converter.bat` |
 | macOS | `DOI_REDIF_Converter-macos.zip` → run `DOI_REDIF_Converter` |
 | Linux | `DOI_REDIF_Converter-linux.zip` → run `DOI_REDIF_Converter` |
 
 1. Unzip
 2. Double-click the program
-3. Your browser opens the app UI
-4. Keep the small control window open while using it
-5. Paste DOIs or upload Excel → **Extract & preview** → **Download ZIP**
+3. A **desktop window** opens (no browser)
+4. Paste DOIs / article URLs or load Excel → **Start conversion** → **Export ZIP**
 
-Internet is required (to open each DOI / Crossref).
+Internet is required (to open each DOI/URL / Crossref).
 
 ### Build the standalone program yourself
 
