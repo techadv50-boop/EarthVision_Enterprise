@@ -37,6 +37,11 @@ def clean_doi(value: str) -> str:
     value = value.strip("<>[]()'\"")
     value = re.sub(r"^https?://(dx\.)?doi\.org/", "", value, flags=re.I)
     value = value.split("?")[0].split("#")[0].strip().rstrip("/")
+    # Strip trailing punctuation commonly copied from citations
+    value = value.rstrip(".,;:)")
+    # Keep only plausible DOI shapes
+    if not re.match(r"^10\.\d{4,9}/\S+$", value):
+        return ""
     return value
 
 
@@ -584,12 +589,11 @@ async def extract_url(
         meta.landing_url = landing
         meta.source = "article-url"
 
+        # Only trust explicit citation/DOI meta — never scrape random reference DOIs from the body
         page_doi = clean_doi(meta.doi) if meta.doi else ""
         if not page_doi:
-            # Fallback: find a DOI-looking token on the page body
-            found = re.search(r"\b(10\.\d{4,9}/[^\s<>\"']+)", resp.text or "", flags=re.I)
-            if found:
-                page_doi = clean_doi(found.group(1))
+            page_doi = _infer_doi_from_known_hosts(landing, resp.text)
+
         if page_doi:
             meta.doi = page_doi
             try:
@@ -598,6 +602,7 @@ async def extract_url(
                     meta = _merge_crossref(meta, xref)
                     meta.doi = page_doi
                     meta.input_ref = original
+                    meta.source = "article-url+crossref"
             except Exception:
                 pass
         else:
@@ -624,6 +629,22 @@ async def extract_url(
     finally:
         if owns_client:
             await client.aclose()
+
+
+def _infer_doi_from_known_hosts(landing_url: str, html: str) -> str:
+    """Best-effort DOI inference for known hosts when citation_doi meta is missing."""
+    landing = (landing_url or "").lower()
+    # 50sea IJIST OJS articles often omit citation_doi; article id is in DC.Identifier / URL
+    if "journal.50sea.com" in landing and "/ijist/" in landing:
+        soup = BeautifulSoup(html or "", "lxml")
+        article_id = _first(_meta_values(soup, "DC.Identifier", "dc.identifier"))
+        if not article_id or not article_id.isdigit():
+            m = re.search(r"/article/view/(\d+)", landing_url or "", flags=re.I)
+            if m:
+                article_id = m.group(1)
+        if article_id and article_id.isdigit():
+            return f"10.33411/IJIST/{article_id}"
+    return ""
 
 
 async def extract_item(

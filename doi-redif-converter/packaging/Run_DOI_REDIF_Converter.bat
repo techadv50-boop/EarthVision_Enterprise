@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo ============================================
 echo  DOI / URL -^> ReDIF Converter
-echo  Standalone desktop app (no browser)
+echo  Standalone desktop app (NO browser)
 echo ============================================
 echo.
 echo Starting...
@@ -13,14 +13,14 @@ echo   click More info  -^>  Run anyway
 echo.
 
 if exist "DOI_REDIF_Converter.exe" (
-  "DOI_REDIF_Converter.exe"
-  if errorlevel 1 (
-    echo.
-    echo Program exited with an error.
-    echo Check DOI_REDIF_Converter.log in this folder.
-    pause
-  )
-  exit /b %errorlevel%
+  start "" "DOI_REDIF_Converter.exe"
+  echo Launched DOI_REDIF_Converter.exe
+  echo A desktop window should open (not a browser).
+  echo You can paste DOIs or article URLs.
+  echo If nothing opens, check DOI_REDIF_Converter.log
+  echo.
+  pause
+  exit /b 0
 )
 
 echo ERROR: DOI_REDIF_Converter.exe not found in this folder.

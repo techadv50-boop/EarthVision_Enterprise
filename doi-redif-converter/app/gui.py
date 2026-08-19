@@ -43,10 +43,18 @@ class ConverterApp(tk.Tk):
         self.title(APP_TITLE)
         self.geometry("980x720")
         self.minsize(860, 640)
+        try:
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after(600, lambda: self.attributes("-topmost", False))
+        except Exception:
+            pass
 
         self.handle_var = StringVar(value=DEFAULT_REPEC_HANDLE_PREFIX)
         self.concurrency_var = IntVar(value=5)
-        self.status_var = StringVar(value="Ready. Paste DOIs and/or article URLs, then click Start.")
+        self.status_var = StringVar(
+            value="Ready. Paste DOIs and/or article URLs (no DOI needed), then click Start."
+        )
         self.progress_var = StringVar(value="0 / 0 done · 0 left")
         self.percent_var = StringVar(value="0%")
 
@@ -63,7 +71,7 @@ class ConverterApp(tk.Tk):
         hdr.pack(anchor=W, **pad)
         ttk.Label(
             root,
-            text="Standalone desktop app — no browser. Accepts DOIs and article page URLs (one per line).",
+            text="True standalone desktop app (no browser). Paste DOIs and/or article page URLs — one per line.",
         ).pack(anchor=W, padx=12)
 
         body = ttk.Panedwindow(root, orient=tk.VERTICAL)
