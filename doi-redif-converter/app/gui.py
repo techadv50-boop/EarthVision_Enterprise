@@ -46,14 +46,15 @@ class ConverterApp(tk.Tk):
         try:
             self.lift()
             self.attributes("-topmost", True)
-            self.after(600, lambda: self.attributes("-topmost", False))
+            self.after(800, lambda: self.attributes("-topmost", False))
+            self.focus_force()
         except Exception:
             pass
 
         self.handle_var = StringVar(value=DEFAULT_REPEC_HANDLE_PREFIX)
         self.concurrency_var = IntVar(value=5)
         self.status_var = StringVar(
-            value="Ready. Paste DOIs and/or article URLs (no DOI needed), then click Start."
+            value="Standalone desktop mode. Paste DOIs and/or article URLs (no DOI required), then Start."
         )
         self.progress_var = StringVar(value="0 / 0 done · 0 left")
         self.percent_var = StringVar(value="0%")

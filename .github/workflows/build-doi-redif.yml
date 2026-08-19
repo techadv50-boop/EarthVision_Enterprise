@@ -47,7 +47,7 @@ jobs:
 
       - name: Build executable
         working-directory: doi-redif-converter
-        run: python build_app.py
+        run: python build_standalone.py
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
@@ -55,10 +55,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Copy-Item dist/DOI_REDIF_Converter.exe release/
-          Copy-Item packaging/Run_DOI_REDIF_Converter.bat release/
+          Copy-Item dist/DOI_URL_REDIF_Standalone.exe release/
+          Copy-Item packaging/Run_Standalone.bat release/
+          Copy-Item packaging/READ_ME_FIRST.txt release/
           Copy-Item README.md release/
-          Copy-Item HOW_TO_RUN.txt release/
           Compress-Archive -Path release/* -DestinationPath "${{ matrix.artifact }}.zip" -Force
 
       - name: Package artifact (Unix)
@@ -66,10 +66,10 @@ jobs:
         working-directory: doi-redif-converter
         run: |
           mkdir -p release
-          cp dist/DOI_REDIF_Converter release/
-          chmod +x release/DOI_REDIF_Converter
+          cp dist/DOI_URL_REDIF_Standalone release/
+          chmod +x release/DOI_URL_REDIF_Standalone
+          cp packaging/READ_ME_FIRST.txt release/
           cp README.md release/
-          cp HOW_TO_RUN.txt release/
           zip -r "${{ matrix.artifact }}.zip" release
 
       - name: Upload artifact
