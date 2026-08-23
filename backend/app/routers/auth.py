@@ -5,12 +5,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.dependencies import get_current_user
 from app.core.security import create_access_token, decode_token
 from app.database.session import get_db
 from app.models.user import User
 from app.schemas.auth import (
     PasswordChange,
+    PasswordReset,
     TokenRefresh,
     TokenResponse,
     UserCreate,
@@ -58,6 +60,25 @@ async def login(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
     return TokenResponse(**service.create_tokens(user))
+
+
+@router.post("/reset-password")
+async def reset_password(
+    body: PasswordReset,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    import secrets
+
+    settings = get_settings()
+    expected = (settings.master_reset_password or "").encode()
+    provided = (body.master_password or "").encode()
+    if not expected or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid master reset password")
+    service = AuthService(db)
+    user = await service.reset_password_with_master(body.email, body.new_password)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"message": "Password reset successfully"}
 
 
 @router.post("/refresh", response_model=TokenResponse)

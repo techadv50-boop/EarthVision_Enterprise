@@ -1,23 +1,49 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { BookOpen, Loader2 } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
+import { authApi } from '@/services/api';
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('demo');
-  const [password, setPassword] = useState('Demo@123456');
+  const [username, setUsername] = useState('citation@xdgen.com');
+  const [password, setPassword] = useState('pak123');
+  const [masterPassword, setMasterPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [showReset, setShowReset] = useState(false);
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const { login, isLoading } = useAuthStore();
+  const [resetting, setResetting] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setInfo('');
     try {
       await login(username, password);
       navigate('/');
     } catch {
-      setError('Invalid credentials. Try demo / Demo@123456');
+      setError('Invalid credentials. Use citation@xdgen.com / pak123');
+    }
+  };
+
+  const handleReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setInfo('');
+    setResetting(true);
+    try {
+      await authApi.resetPassword(username, masterPassword, newPassword);
+      setPassword(newPassword);
+      setMasterPassword('');
+      setNewPassword('');
+      setShowReset(false);
+      setInfo('Password reset. Sign in with the new password.');
+    } catch {
+      setError('Reset failed. Check the email and master reset password.');
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -29,51 +55,112 @@ export default function LoginPage() {
         <div className="text-center mb-8">
           <BookOpen className="w-16 h-16 text-earth-400 mx-auto mb-4" />
           <h1 className="text-2xl font-bold">Citation Assistant</h1>
-          <p className="text-gray-500 mt-2">IJIST archive · house citations</p>
+          <p className="text-gray-500 mt-2">xdgen.com · IJIST archive</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="text-sm text-gray-400 mb-1 block">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="input-field"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-sm text-gray-400 mb-1 block">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="input-field"
-              required
-            />
-          </div>
+        {!showReset ? (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="text-sm text-gray-400 mb-1 block">Email</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="input-field"
+                autoComplete="username"
+                required
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-400 mb-1 block">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="input-field"
+                autoComplete="current-password"
+                required
+              />
+            </div>
 
-          {error && <p className="text-red-400 text-sm">{error}</p>}
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {info && <p className="text-earth-400 text-sm">{info}</p>}
 
-          <button type="submit" disabled={isLoading} className="btn-primary w-full flex items-center justify-center gap-2">
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Sign In'}
-          </button>
-        </form>
-
-        <div className="mt-6 text-center text-sm text-gray-500">
-          <p>
-            No account?{' '}
-            <Link to="/register" className="text-earth-400 hover:underline">
-              Create one
-            </Link>
-          </p>
-        </div>
-
-        <div className="mt-4 text-center text-xs text-gray-600">
-          <p>Demo: demo / Demo@123456</p>
-          <p className="mt-1">Admin: admin / Admin@123456</p>
-        </div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Sign In'}
+            </button>
+            <button
+              type="button"
+              className="w-full text-sm text-gray-500 hover:text-earth-400"
+              onClick={() => {
+                setShowReset(true);
+                setError('');
+                setInfo('');
+              }}
+            >
+              Forgot password? Use master reset
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleReset} className="space-y-4">
+            <p className="text-sm text-gray-400">
+              Enter the account email, the master reset password, and a new login password.
+            </p>
+            <div>
+              <label className="text-sm text-gray-400 mb-1 block">Email</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="input-field"
+                required
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-400 mb-1 block">Master reset password</label>
+              <input
+                type="password"
+                value={masterPassword}
+                onChange={(e) => setMasterPassword(e.target.value)}
+                className="input-field"
+                required
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-400 mb-1 block">New password</label>
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="input-field"
+                minLength={6}
+                required
+              />
+            </div>
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+            <button
+              type="submit"
+              disabled={resetting}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              {resetting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Reset password'}
+            </button>
+            <button
+              type="button"
+              className="w-full text-sm text-gray-500 hover:text-earth-400"
+              onClick={() => {
+                setShowReset(false);
+                setError('');
+              }}
+            >
+              Back to sign in
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );

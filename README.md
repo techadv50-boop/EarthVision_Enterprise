@@ -55,13 +55,19 @@ App: http://localhost:5173
 
 | User | Password | Role |
 |------|----------|------|
+| citation@xdgen.com | pak123 | Operator (dashboard) |
+| Master reset | NTZHSS | Resets the operator password |
 | admin | Admin@123456 | Administrator |
 | demo | Demo@123456 | Analyst |
+
+Production host: **https://xdgen.com** (Cloudflare Tunnel on a VPS). See `docs/HOSTING.md`.
 
 ### Docker
 
 ```bash
 docker compose up -d
+# On a VPS, also start the Cloudflare tunnel (xdgen.com):
+# docker compose --profile tunnel up -d
 ```
 
 Access via http://localhost:8080

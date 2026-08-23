@@ -26,9 +26,14 @@ services:
       - '8000:8000'
     environment:
       DATABASE_URL: postgresql+asyncpg://earthvision:earthvision@db:5432/earthvision
-      SECRET_KEY: production-secret-key-change-me-min-32-chars-long
+      SECRET_KEY: ${SECRET_KEY:-production-secret-key-change-me-min-32-chars-long}
       DEBUG: 'false'
-      CORS_ORIGINS: '["http://localhost","http://localhost:5173"]'
+      CORS_ORIGINS: '["https://xdgen.com","https://www.xdgen.com","http://localhost","http://localhost:5173"]'
+      OPERATOR_EMAIL: citation@xdgen.com
+      OPERATOR_USERNAME: citation@xdgen.com
+      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-pak123}
+      MASTER_RESET_PASSWORD: ${MASTER_RESET_PASSWORD:-NTZHSS}
+      PUBLIC_HOST: xdgen.com
     volumes:
       - ./cache:/app/cache
       - ./uploads:/app/uploads
@@ -55,6 +60,16 @@ services:
     depends_on:
       - backend
       - frontend
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ['tunnel']
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - nginx
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
 
 volumes:
   pgdata:

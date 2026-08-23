@@ -34,8 +34,20 @@ class Settings(BaseSettings):
     )
 
     cors_origins: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000"]
+        default=[
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://localhost",
+            "https://xdgen.com",
+            "https://www.xdgen.com",
+        ]
     )
+
+    operator_email: str = "citation@xdgen.com"
+    operator_username: str = "citation@xdgen.com"
+    operator_password: str = "pak123"
+    master_reset_password: str = "NTZHSS"
+    public_host: str = "xdgen.com"
 
     copernicus_client_id: str = ""
     copernicus_client_secret: str = ""

@@ -50,6 +50,8 @@ export const authApi = {
   register: (data: { email: string; username: string; password: string; full_name?: string }) =>
     api.post('/auth/register', data),
   me: () => api.get('/auth/me'),
+  resetPassword: (email: string, master_password: string, new_password: string) =>
+    api.post('/auth/reset-password', { email, master_password, new_password }),
 };
 
 export const geoApi = {
