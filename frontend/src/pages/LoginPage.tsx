@@ -55,7 +55,7 @@ export default function LoginPage() {
         <div className="text-center mb-8">
           <BookOpen className="w-16 h-16 text-earth-400 mx-auto mb-4" />
           <h1 className="text-2xl font-bold">Citation Assistant</h1>
-          <p className="text-gray-500 mt-2">xdgen.com · IJIST archive</p>
+          <p className="text-gray-500 mt-2">citation.xdgen.com · IJIST archive</p>
         </div>
 
         {!showReset ? (

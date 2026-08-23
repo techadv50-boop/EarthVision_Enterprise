@@ -1,12 +1,12 @@
-# Host xdgen.com on a VPS with Cloudflare Tunnel
+# Host citation.xdgen.com on a VPS with Cloudflare Tunnel
 
-The Citation Assistant is meant to be reached at **https://xdgen.com**. The VPS does not need a public IP or opened HTTP ports: Cloudflare Tunnel (`cloudflared`) dials out to Cloudflare, which serves the site.
+The Citation Assistant is meant to be reached at **https://citation.xdgen.com**. Keep **https://xdgen.com** as your main website. The VPS does not need a public IP or opened HTTP ports: Cloudflare Tunnel (`cloudflared`) dials out to Cloudflare, which serves the app.
 
 ## Login
 
 | | |
 |---|---|
-| URL | https://xdgen.com |
+| URL | https://citation.xdgen.com |
 | Email | `citation@xdgen.com` |
 | Password | `pak123` |
 | Master reset password | `NTZHSS` |
@@ -18,13 +18,14 @@ On the login page, **Forgot password? Use master reset** accepts `NTZHSS` plus a
 1. Domain `xdgen.com` must already be on Cloudflare (nameservers pointed at Cloudflare).
 2. Zero Trust → **Networks** → **Tunnels** → **Create a tunnel** (Cloudflared).
 3. Copy the **tunnel token**.
-4. Add a public hostname:
-   - **Subdomain**: (empty) or `www`
+4. Add a public hostname for this app:
+   - **Subdomain**: `citation`
    - **Domain**: `xdgen.com`
-   - **Service**: `http://nginx:80`
-5. Optional: add `www.xdgen.com` the same way (same service).
+   - **Type**: HTTP
+   - **URL**: `nginx:80` (Docker) or `localhost:8080` if nginx is published on the host
+5. Leave apex `xdgen.com` pointed at your main website (Pages, origin, or a different tunnel hostname). Do not route `xdgen.com` to this stack unless you want the citation app to replace the main site.
 
-The hostname must point at the Docker service name `nginx` because `cloudflared` runs on the same Compose network.
+Cloudflare creates the `citation` DNS CNAME automatically when you save the public hostname.
 
 ## 2. VPS
 
@@ -53,8 +54,8 @@ SECRET_KEY=generate-a-long-random-string-at-least-32-characters
 OPERATOR_EMAIL=citation@xdgen.com
 OPERATOR_PASSWORD=pak123
 MASTER_RESET_PASSWORD=NTZHSS
-CORS_ORIGINS=["https://xdgen.com","https://www.xdgen.com"]
-PUBLIC_HOST=xdgen.com
+CORS_ORIGINS=["https://citation.xdgen.com","https://xdgen.com","https://www.xdgen.com"]
+PUBLIC_HOST=citation.xdgen.com
 ```
 
 Start the stack **with the tunnel profile**:
@@ -64,9 +65,6 @@ cd /opt/xdgen
 docker compose --profile tunnel up -d --build
 ```
 
-- App containers: `db`, `backend`, `frontend`, `nginx`
-- Tunnel: `cloudflared` (only with `--profile tunnel`)
-
 Check:
 
 ```bash
@@ -74,22 +72,8 @@ docker compose ps
 docker compose logs -f cloudflared
 ```
 
-Visit https://xdgen.com and sign in with `citation@xdgen.com` / `pak123`.
-
-## 3. Without Docker (dev)
-
-```bash
-# backend
-cd backend && pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-# frontend
-cd frontend && npm ci && npm run build
-# serve dist behind nginx, proxy /api to :8000
-```
-
-Then run `cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN"` on the VPS, with the public hostname service set to `http://localhost:80` (your nginx).
+Visit https://citation.xdgen.com and sign in with `citation@xdgen.com` / `pak123`.
 
 ## SSL
 
-Cloudflare terminates HTTPS for `xdgen.com`. Keep the tunnel service as **HTTP** to the local nginx container; do not put a separate Let's Encrypt cert on the VPS unless you also change the tunnel service to HTTPS.
+Cloudflare terminates HTTPS for `citation.xdgen.com`. Keep the tunnel service as **HTTP** to nginx; you do not need Let's Encrypt on the VPS.

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
             "http://localhost",
             "https://xdgen.com",
             "https://www.xdgen.com",
+            "https://citation.xdgen.com",
         ]
     )
 
@@ -47,7 +48,7 @@ class Settings(BaseSettings):
     operator_username: str = "citation@xdgen.com"
     operator_password: str = "pak123"
     master_reset_password: str = "NTZHSS"
-    public_host: str = "xdgen.com"
+    public_host: str = "citation.xdgen.com"
 
     copernicus_client_id: str = ""
     copernicus_client_secret: str = ""

@@ -28,12 +28,12 @@ services:
       DATABASE_URL: postgresql+asyncpg://earthvision:earthvision@db:5432/earthvision
       SECRET_KEY: ${SECRET_KEY:-production-secret-key-change-me-min-32-chars-long}
       DEBUG: 'false'
-      CORS_ORIGINS: '["https://xdgen.com","https://www.xdgen.com","http://localhost","http://localhost:5173"]'
+      CORS_ORIGINS: '["https://citation.xdgen.com","https://xdgen.com","https://www.xdgen.com","http://localhost","http://localhost:5173"]'
       OPERATOR_EMAIL: citation@xdgen.com
       OPERATOR_USERNAME: citation@xdgen.com
       OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-pak123}
       MASTER_RESET_PASSWORD: ${MASTER_RESET_PASSWORD:-NTZHSS}
-      PUBLIC_HOST: xdgen.com
+      PUBLIC_HOST: citation.xdgen.com
     volumes:
       - ./cache:/app/cache
       - ./uploads:/app/uploads
