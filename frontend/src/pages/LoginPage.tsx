@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Globe, Loader2 } from 'lucide-react';
+import { BookOpen, Loader2 } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 
 export default function LoginPage() {
@@ -27,9 +27,9 @@ export default function LoginPage() {
 
       <div className="relative panel p-8 w-full max-w-md">
         <div className="text-center mb-8">
-          <Globe className="w-16 h-16 text-earth-400 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold">EarthVision Enterprise</h1>
-          <p className="text-gray-500 mt-2">Earth Observation Platform</p>
+          <BookOpen className="w-16 h-16 text-earth-400 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold">Citation Assistant</h1>
+          <p className="text-gray-500 mt-2">IJIST archive · house citations</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

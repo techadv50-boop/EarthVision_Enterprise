@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
 
+    serpapi_key: str = ""
+    crossref_mailto: str = "citation-assistant@example.com"
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: object) -> List[str]:

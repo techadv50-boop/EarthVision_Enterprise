@@ -3,7 +3,14 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
+import AppLayout from '@/components/AppLayout';
 import DashboardPage from '@/pages/DashboardPage';
+import JournalVolumesPage from '@/pages/JournalVolumesPage';
+import VolumeIssuesPage from '@/pages/VolumeIssuesPage';
+import IssueArticlesPage from '@/pages/IssueArticlesPage';
+import ManuscriptsPage from '@/pages/ManuscriptsPage';
+import ManuscriptReviewPage from '@/pages/ManuscriptReviewPage';
+import ArchiveSearchPage from '@/pages/ArchiveSearchPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
 import BillingSuccessPage from '@/pages/BillingSuccessPage';
 import BillingCancelPage from '@/pages/BillingCancelPage';
@@ -39,13 +46,23 @@ export default function App() {
       <Route path="/billing/cancel" element={<BillingCancelPage />} />
       <Route path="/auth/copernicus/callback" element={<CopernicusCallbackPage />} />
       <Route
-        path="/"
         element={
           <ProtectedRoute>
-            <DashboardPage />
+            <AppLayout />
           </ProtectedRoute>
         }
-      />
+      >
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/journals/:journalId" element={<JournalVolumesPage />} />
+        <Route path="/journals/:journalId/volumes/:volume" element={<VolumeIssuesPage />} />
+        <Route
+          path="/journals/:journalId/volumes/:volume/issues/:issueNumber"
+          element={<IssueArticlesPage />}
+        />
+        <Route path="/manuscripts" element={<ManuscriptsPage />} />
+        <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
+        <Route path="/archive" element={<ArchiveSearchPage />} />
+      </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

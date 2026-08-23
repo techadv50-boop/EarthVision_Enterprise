@@ -6,12 +6,18 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.database.session import AsyncSessionLocal, init_db
+from app.services.auth_service import AuthService
 
 
 @pytest.fixture
 async def client():
-    """Lifespan-aware AsyncClient (runs app startup / DB seed)."""
-    transport = ASGITransport(app=app, lifespan="on")
+    """ASGI client with database initialized (httpx 0.28 has no lifespan=)."""
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        await AuthService(session).seed_default_data()
+        await session.commit()
+    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
