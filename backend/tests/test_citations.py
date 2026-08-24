@@ -194,14 +194,42 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
     pdf_bytes = _pdf_from_text(GALLEY_WATER)
 
     async def fake_fetch(url: str):
-        if url.endswith("/archive"):
-            html = b'<html><a href="https://example.test/issue/view/1">Vol 8</a></html>'
-            return 200, html, "text/html"
-        if "/issue/view/" in url:
-            html = b'<html><a href="https://example.test/article/download/9/file.pdf">PDF</a></html>'
-            return 200, html, "text/html"
-        if url.endswith(".pdf") or "download" in url:
+        pages = {
+            "https://example.test/issue/archive": (
+                b"<html>"
+                b'<a href="https://example.test/issue/view/1">Vol 8</a>'
+                b'<a href="https://example.test/issue/archive/2">Next</a>'
+                b'<a href="https://example.test/files/vol8/">Folder</a>'
+                b"</html>"
+            ),
+            "https://example.test/issue/archive/2": (
+                b"<html><a href='https://example.test/issue/view/2'>Vol 8 Issue 2</a></html>"
+            ),
+            "https://example.test/issue/view/1": (
+                b"<html>"
+                b'<a href="https://example.test/article/view/9">Article</a>'
+                b'<a href="https://example.test/article/view/9/11">PDF</a>'
+                b"</html>"
+            ),
+            "https://example.test/issue/view/2": (
+                b"<html><a href='https://example.test/article/download/8/b.pdf'>PDF</a></html>"
+            ),
+            "https://example.test/files/vol8/": (
+                b"<html>"
+                b'<a href="https://example.test/files/vol8/nested/">nested</a>'
+                b'<a href="https://example.test/files/vol8/root.pdf">paper</a>'
+                b"</html>"
+            ),
+            "https://example.test/files/vol8/nested/": (
+                b'<html><a href="https://example.test/files/vol8/nested/deep.pdf">deep</a></html>'
+            ),
+        }
+        if url in pages:
+            return 200, pages[url], "text/html"
+        if url.endswith(".pdf") or "/download/" in url or "/article/view/9/11" in url:
             return 200, pdf_bytes, "application/pdf"
+        if url.endswith("/robots.txt"):
+            return 404, b"", "text/plain"
         return 404, b"", "text/plain"
 
     from app.services import crawler as crawler_mod
@@ -220,10 +248,11 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
     job = await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)
     assert job.status_code == 200
     body = job.json()
-    assert body["status"] in {"completed", "failed"}
-    assert body.get("articles_saved") or body.get("articles_saved") or 0 >= 0
-    if body["status"] == "completed":
-        assert body["articles_saved"] >= 1
+    assert body["status"] == "completed", body
+    assert body["articles_found"] == 4
+    assert body["articles_saved"] >= 1
+    assert body["articles_remaining"] == 0
+    assert "Found 4 PDF" in (body.get("message") or "") or "Done." in (body.get("message") or "")
 
     arts = await client.get(
         f"/api/v1/journals/{jid}/volumes/8/issues/5/articles", headers=headers

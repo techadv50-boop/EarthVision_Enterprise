@@ -11,6 +11,40 @@ interface Volume {
   missing: boolean;
 }
 
+function CrawlProgress({ crawl }: { crawl: Record<string, unknown> }) {
+  const found = Number(crawl.articles_found || 0);
+  const saved = Number(crawl.articles_saved || 0);
+  const skipped = Number(crawl.articles_skipped || 0);
+  const remaining = Math.max(0, found - saved - skipped);
+  const processed = saved + skipped;
+  const phase = String(crawl.phase || crawl.status || '');
+  const scanning = phase === 'scanning' || (found === 0 && (phase === 'running' || phase === 'queued'));
+  const percent = found > 0 ? Math.min(100, Math.round((processed / found) * 100)) : scanning ? 8 : 0;
+  const message = String(
+    crawl.message ||
+      (scanning
+        ? 'Scanning folders and subfolders for PDF files…'
+        : found
+          ? `Found ${found} PDF files. Loaded ${saved}, ${remaining} left.`
+          : String(crawl.status))
+  );
+
+  return (
+    <div className="space-y-2 text-sm">
+      <p className="text-earth-400">{message}</p>
+      <div className="h-2 rounded bg-gray-800 overflow-hidden">
+        <div className="h-full bg-earth-500 transition-all" style={{ width: `${percent}%` }} />
+      </div>
+      <p className="text-xs text-gray-400">
+        {scanning
+          ? `Searching… ${Number(crawl.pages_crawled || 0)} pages opened`
+          : `PDFs found: ${found} · loaded ${saved} · left ${remaining}` +
+            (skipped ? ` · skipped ${skipped}` : '')}
+      </p>
+    </div>
+  );
+}
+
 export default function JournalVolumesPage() {
   const { journalId } = useParams();
   const id = Number(journalId);
@@ -51,7 +85,7 @@ export default function JournalVolumesPage() {
       const { data: job } = await citationApi.crawlJob(jobId);
       setCrawl(job);
       if (job.status === 'running' || job.status === 'queued') {
-        setTimeout(() => void poll(jobId), 1500);
+        setTimeout(() => void poll(jobId), 800);
       } else {
         setMsg(`Crawl ${job.status}`);
         await load();
@@ -93,10 +127,7 @@ export default function JournalVolumesPage() {
             Crawl archive
           </button>
           {crawl && (
-            <p className="text-xs text-gray-400">
-              {String(crawl.status)} · saved {String(crawl.articles_saved)} · skipped{' '}
-              {String(crawl.articles_skipped)} · found {String(crawl.articles_found)}
-            </p>
+            <CrawlProgress crawl={crawl} />
           )}
         </div>
       </div>
