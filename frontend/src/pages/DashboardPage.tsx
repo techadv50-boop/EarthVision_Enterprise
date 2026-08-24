@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { citationApi } from '@/services/api';
 
 interface Journal {
@@ -31,6 +31,14 @@ export default function DashboardPage() {
     void load();
   }, []);
 
+  const remove = async (id: number, title: string) => {
+    if (!window.confirm(`Remove “${title}” from this shelf? Papers stored under it will be deleted.`)) {
+      return;
+    }
+    await citationApi.journals.remove(id);
+    await load();
+  };
+
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -43,8 +51,13 @@ export default function DashboardPage() {
       });
       setOpen(false);
       await load();
-    } catch {
-      setError('Could not create journal');
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      setError(
+        status === 409
+          ? 'That journal is already on the shelf. Open the existing card instead of adding it again.'
+          : 'Could not create journal'
+      );
     }
   };
 
@@ -96,11 +109,25 @@ export default function DashboardPage() {
           >
             <div className="flex justify-between items-start">
               <h3 className="font-semibold text-lg pr-4">{j.name}</h3>
-              {j.has_gaps && (
-                <span className="text-xs bg-amber-900/50 text-amber-300 px-2 py-1 rounded">
-                  Gaps
-                </span>
-              )}
+              <div className="flex items-center gap-2 shrink-0">
+                {j.has_gaps && (
+                  <span className="text-xs bg-amber-900/50 text-amber-300 px-2 py-1 rounded">
+                    Gaps
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="p-1 text-gray-500 hover:text-red-400"
+                  title="Remove journal"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void remove(j.id, j.name);
+                  }}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <p className="text-gray-400 text-sm mt-1">{j.abbreviation}</p>
             <p className="mt-4 text-3xl font-bold text-earth-400">{j.article_count}</p>

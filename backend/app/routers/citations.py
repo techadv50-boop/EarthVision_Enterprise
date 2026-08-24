@@ -99,8 +99,16 @@ def _is_cited(article: Article) -> bool:
 
 @router.post("/journals", response_model=JournalOut, status_code=status.HTTP_201_CREATED)
 async def create_journal(body: JournalCreate, db: Db, _user: CurrentUser):
+    taken = await db.execute(
+        select(Journal).where(func.lower(Journal.name) == body.name.strip().lower())
+    )
+    if taken.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A journal with this name already exists. Open that card instead of adding it again.",
+        )
     journal = Journal(
-        name=body.name,
+        name=body.name.strip(),
         abbreviation=body.abbreviation,
         publisher=body.publisher,
         issn=body.issn,
@@ -172,7 +180,14 @@ async def update_journal(journal_id: int, body: JournalUpdate, db: Db, _user: Cu
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(journal, field, value)
     await db.flush()
-    return (await list_journals(db, _user))[0] if False else await get_journal(journal_id, db, _user)
+    return await get_journal(journal_id, db, _user)
+
+
+@router.delete("/journals/{journal_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_journal(journal_id: int, db: Db, _user: CurrentUser):
+    journal = await _journal_or_404(db, journal_id)
+    await db.delete(journal)
+    await db.flush()
 
 
 @router.get("/journals/{journal_id}/volumes", response_model=list[VolumeOut])

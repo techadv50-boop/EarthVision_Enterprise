@@ -177,6 +177,7 @@ export const citationApi = {
     get: (id: number) => api.get(`/journals/${id}`),
     create: (data: Record<string, unknown>) => api.post('/journals', data),
     update: (id: number, data: Record<string, unknown>) => api.patch(`/journals/${id}`, data),
+    remove: (id: number) => api.delete(`/journals/${id}`),
     volumes: (id: number) => api.get(`/journals/${id}/volumes`),
     issues: (id: number, volume: number) => api.get(`/journals/${id}/volumes/${volume}/issues`),
     articles: (id: number, volume: number, issue: number) =>

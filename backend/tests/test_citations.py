@@ -275,3 +275,26 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
                 f"/api/v1/journals/{jid}/volumes/8/issues/5/articles", headers=headers
             )
         ).json()["issue"]["article_count"]
+
+
+@pytest.mark.asyncio
+async def test_journal_duplicate_and_delete(client: AsyncClient):
+    headers = await _auth(client)
+    first = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Once Only Journal", "abbreviation": "OOJ"},
+    )
+    assert first.status_code == 201, first.text
+    jid = first.json()["id"]
+    second = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "once only journal", "abbreviation": "OOJ"},
+    )
+    assert second.status_code == 409
+    deleted = await client.delete(f"/api/v1/journals/{jid}", headers=headers)
+    assert deleted.status_code == 204
+    listing = await client.get("/api/v1/journals", headers=headers)
+    names = [row["name"] for row in listing.json()]
+    assert "Once Only Journal" not in names
