@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import get_settings
 from app.models.citation import Article
@@ -18,6 +19,10 @@ OPENALEX = "https://api.openalex.org/works"
 SCHOLAR = "https://scholar.google.com/scholar"
 DOI_PREFIX_RE = re.compile(r"^(https?://)?(dx\.)?doi\.org/", re.I)
 CITED_BY_RE = re.compile(r"Cited by\s+(\d+)", re.I)
+SCHOLAR_CITES_RE = re.compile(
+    r'href="(https?://scholar\.google\.[^"]*?/scholar\?[^"]*cites=\d+[^"]*|/scholar\?[^"]*cites=\d+[^"]*)"',
+    re.I,
+)
 BROWSER_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -36,6 +41,108 @@ def _crossref_headers() -> dict[str, str]:
     settings = get_settings()
     mail = getattr(settings, "crossref_mailto", None) or "citation-assistant@example.com"
     return {"User-Agent": f"CitationAssistant/1.0 (mailto:{mail})"}
+
+
+def _openalex_headers() -> dict[str, str]:
+    settings = get_settings()
+    mail = getattr(settings, "crossref_mailto", None) or "citation-assistant@example.com"
+    return {"User-Agent": f"CitationAssistant/1.0 (mailto:{mail})"}
+
+
+def _citing_record(
+    *,
+    source: str,
+    title: str,
+    authors: str = "",
+    year: int | None = None,
+    venue: str = "",
+    doi: str | None = None,
+    url: str | None = None,
+) -> dict:
+    doi = normalize_doi(doi) if doi else None
+    return {
+        "source": source,
+        "title": title,
+        "authors": authors,
+        "year": year,
+        "venue": venue,
+        "doi": doi,
+        "url": url or (f"https://doi.org/{doi}" if doi else None),
+    }
+
+
+def _openalex_authors(work: dict) -> str:
+    names = []
+    for item in work.get("authorships") or []:
+        name = ((item.get("author") or {}).get("display_name") or "").strip()
+        if name:
+            names.append(name)
+        if len(names) >= 8:
+            break
+    return ", ".join(names)
+
+
+def _from_openalex_work(work: dict) -> dict:
+    doi = (work.get("ids") or {}).get("doi") or work.get("doi")
+    loc = work.get("primary_location") or {}
+    venue = ((loc.get("source") or {}).get("display_name") or "").strip()
+    url = loc.get("landing_page_url") or (work.get("ids") or {}).get("doi") or work.get("id")
+    return _citing_record(
+        source="openalex",
+        title=(work.get("display_name") or work.get("title") or "").strip(),
+        authors=_openalex_authors(work),
+        year=work.get("publication_year"),
+        venue=venue,
+        doi=doi,
+        url=url,
+    )
+
+
+async def fetch_citing_works(article: Article) -> list[dict]:
+    """Return works that cite this article so the operator can open the original records."""
+    doi = normalize_doi(article.doi)
+    title = (article.title or "").strip()
+    headers = _openalex_headers()
+    works: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(row: dict) -> None:
+        key = (row.get("doi") or row.get("url") or row.get("title") or "").lower()
+        if not key or key in seen or not row.get("title"):
+            return
+        seen.add(key)
+        works.append(row)
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), headers=headers, follow_redirects=True) as client:
+            work = None
+            if doi:
+                resp = await client.get(f"{OPENALEX}/doi:{doi}")
+                if resp.status_code == 200:
+                    work = resp.json()
+            if work is None and title:
+                resp = await client.get(
+                    OPENALEX,
+                    params={"search": title, "per-page": 5},
+                )
+                if resp.status_code == 200:
+                    for item in (resp.json().get("results") or []):
+                        if _title_overlap(title, item.get("display_name") or item.get("title") or ""):
+                            work = item
+                            break
+            if work:
+                oid = str(work.get("id") or "").rsplit("/", 1)[-1]
+                if oid:
+                    cited = await client.get(
+                        OPENALEX,
+                        params={"filter": f"cites:{oid}", "per-page": 50, "sort": "publication_year:desc"},
+                    )
+                    if cited.status_code == 200:
+                        for item in cited.json().get("results") or []:
+                            _add(_from_openalex_work(item))
+    except Exception:
+        return works
+    return works
 
 
 def _title_overlap(left: str, right: str) -> bool:
@@ -115,11 +222,17 @@ async def _scholar_html(title: str, doi: Optional[str]) -> tuple[int, Optional[s
             if not match:
                 continue
             link = None
-            href = re.search(r'href="(https?://scholar\.google\.[^"]+|/?scholar\?[^"]*q=([^"]+))"', resp.text)
-            if href:
-                link = href.group(1)
+            cites = SCHOLAR_CITES_RE.search(resp.text or "")
+            if cites:
+                link = cites.group(1)
                 if link.startswith("/"):
                     link = "https://scholar.google.com" + link
+            else:
+                href = re.search(r'href="(https?://scholar\.google\.[^"]+|/?scholar\?[^"]*q=([^"]+))"', resp.text)
+                if href:
+                    link = href.group(1)
+                    if link.startswith("/"):
+                        link = "https://scholar.google.com" + link
             return int(match.group(1)), link, "ok"
     return 0, None, "unavailable"
 
@@ -183,6 +296,14 @@ async def sync_article_citations(db: AsyncSession, article: Article) -> Article:
             status = sc_status if sc_status != "unavailable" else "partial"
     except Exception:
         status = "stale" if status != "ok" else "partial"
+    try:
+        article.citing_works = await fetch_citing_works(article)
+        flag_modified(article, "citing_works")
+    except Exception:
+        if not article.citing_works:
+            article.citing_works = []
+        if status == "ok":
+            status = "partial"
     article.citation_synced_at = datetime.now(timezone.utc)
     article.citation_sync_status = status
     await db.flush()

@@ -83,6 +83,7 @@ def _article_out(article: Article) -> ArticleOut:
         citation_sync_status=article.citation_sync_status,
         crossref_work_url=article.crossref_work_url,
         scholar_url=article.scholar_url,
+        citing_works=article.citing_works or [],
         house_citation=house_citation_for(article) if issue else None,
     )
 

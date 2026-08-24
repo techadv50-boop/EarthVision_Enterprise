@@ -173,12 +173,29 @@ async def test_citation_sync_and_operator_patch(client: AsyncClient, monkeypatch
     monkeypatch.setattr(counts_mod, "fetch_crossref", fake_crossref)
     monkeypatch.setattr(counts_mod, "fetch_scholar", fake_scholar)
 
+    async def fake_citing(article):
+        return [
+            {
+                "source": "openalex",
+                "title": "A later paper that cites this work",
+                "authors": "A. Reviewer, B. Editor",
+                "year": 2024,
+                "venue": "Example Journal",
+                "doi": "10.9999/cite",
+                "url": "https://doi.org/10.9999/cite",
+            }
+        ]
+
+    monkeypatch.setattr(counts_mod, "fetch_citing_works", fake_citing)
+
     synced = await client.post(f"/api/v1/articles/{aid}/sync-citations", headers=headers)
     assert synced.status_code == 200, synced.text
     body = synced.json()
     assert body["crossref_citation_count"] == 14
     assert body["scholar_citation_count"] == 20
     assert body["doi"] == "10.1234/fake"
+    assert body["citing_works"][0]["authors"] == "A. Reviewer, B. Editor"
+    assert body["citing_works"][0]["doi"] == "10.9999/cite"
 
     patched = await client.patch(
         f"/api/v1/articles/{aid}",

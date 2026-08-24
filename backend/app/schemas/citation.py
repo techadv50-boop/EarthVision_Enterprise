@@ -104,6 +104,7 @@ class ArticleOut(BaseModel):
     citation_sync_status: Optional[str] = None
     crossref_work_url: Optional[str] = None
     scholar_url: Optional[str] = None
+    citing_works: list[Any] = Field(default_factory=list)
     house_citation: Optional[str] = None
 
     model_config = {"from_attributes": True}

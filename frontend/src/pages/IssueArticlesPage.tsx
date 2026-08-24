@@ -14,6 +14,15 @@ interface Article {
   scholar_url?: string;
   citation_sync_status?: string;
   citation_synced_at?: string;
+  citing_works?: {
+    source?: string;
+    title?: string;
+    authors?: string;
+    year?: number;
+    venue?: string;
+    doi?: string;
+    url?: string;
+  }[];
 }
 
 interface Payload {
@@ -163,9 +172,37 @@ export default function IssueArticlesPage() {
               </button>
             </div>
             {a.scholar_url && (
-              <a className="text-xs text-earth-400 mt-2 inline-block" href={a.scholar_url}>
-                Scholar record
+              <a className="text-xs text-earth-400 mt-2 inline-block mr-3" href={a.scholar_url} target="_blank" rel="noreferrer">
+                {a.scholar_url.includes("cites=") ? "Google Scholar cited-by list" : "Google Scholar record"}
               </a>
+            )}
+            {(a.citing_works || []).length > 0 && (
+              <div className="mt-4">
+                <p className="text-sm font-medium mb-2">
+                  Cited by {(a.citing_works || []).length} record{(a.citing_works || []).length === 1 ? "" : "s"}
+                </p>
+                <ul className="space-y-2">
+                  {(a.citing_works || []).map((work, idx) => {
+                    const href = work.url || (work.doi ? `https://doi.org/${work.doi}` : undefined);
+                    return (
+                      <li key={`${work.doi || work.url || work.title || idx}`} className="text-sm text-gray-300">
+                        <span className="text-gray-500 mr-2">{idx + 1}.</span>
+                        {href ? (
+                          <a className="text-earth-400 hover:underline" href={href} target="_blank" rel="noreferrer">
+                            {work.title}
+                          </a>
+                        ) : (
+                          <span>{work.title}</span>
+                        )}
+                        <div className="text-xs text-gray-500 ml-5">
+                          {[work.authors, work.year, work.venue].filter(Boolean).join(" · ")}
+                          {work.doi ? ` · DOI ${work.doi}` : ""}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
           </div>
         ))}

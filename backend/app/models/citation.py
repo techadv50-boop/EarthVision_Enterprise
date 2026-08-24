@@ -100,6 +100,7 @@ class Article(Base):
     citation_sync_status: Mapped[Optional[str]] = mapped_column(String(32))
     crossref_work_url: Mapped[Optional[str]] = mapped_column(String(1000))
     scholar_url: Mapped[Optional[str]] = mapped_column(String(1000))
+    citing_works: Mapped[Any] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
