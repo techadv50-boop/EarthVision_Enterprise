@@ -109,6 +109,19 @@ export default function JournalVolumesPage() {
     setJournal(j);
     setVolumes(vols);
     setArchiveUrl(j.archive_url || '');
+    try {
+      const { data: job } = await citationApi.journals.latestCrawl(id);
+      if (job?.inventory?.length) {
+        setCrawl(job);
+        const next: Record<string, boolean> = {};
+        for (const row of job.inventory as InventoryRow[]) {
+          next[row.url] = false;
+        }
+        setSelected(next);
+      }
+    } catch {
+      /* no prior scan */
+    }
   };
 
   useEffect(() => {

@@ -399,6 +399,22 @@ async def start_crawl(
     return CrawlJobOut.model_validate(job)
 
 
+@router.get("/journals/{journal_id}/latest-crawl", response_model=CrawlJobOut)
+async def latest_crawl(journal_id: int, db: Db, _user: CurrentUser):
+    await _journal_or_404(db, journal_id)
+    job = (
+        await db.execute(
+            select(CrawlJob)
+            .where(CrawlJob.journal_id == journal_id)
+            .order_by(CrawlJob.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="No crawl job found")
+    return CrawlJobOut.model_validate(job)
+
+
 @router.get("/crawl-jobs/{job_id}", response_model=CrawlJobOut)
 async def get_crawl_job(job_id: int, db: Db, _user: CurrentUser):
     job = await db.get(CrawlJob, job_id)

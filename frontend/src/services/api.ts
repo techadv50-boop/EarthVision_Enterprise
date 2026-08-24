@@ -192,6 +192,7 @@ export const citationApi = {
     uploadText: (id: number, data: Record<string, unknown>) =>
       api.post(`/journals/${id}/papers-text`, data),
     crawl: (id: number, archive_url: string) => api.post(`/journals/${id}/crawl`, { archive_url }),
+    latestCrawl: (id: number) => api.get(`/journals/${id}/latest-crawl`),
   },
   crawlJob: (id: number) => api.get(`/crawl-jobs/${id}`),
   cancelCrawl: (id: number) => api.post(`/crawl-jobs/${id}/cancel`),
