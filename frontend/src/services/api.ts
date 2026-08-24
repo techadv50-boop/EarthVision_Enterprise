@@ -215,6 +215,7 @@ export const citationApi = {
     },
     suggest: (id: number) => api.post(`/manuscripts/${id}/suggest`),
     export: (id: number) => api.get(`/manuscripts/${id}/export`),
+    remove: (id: number) => api.delete(`/manuscripts/${id}`),
   },
   patchSuggestion: (id: number, status: string) => api.patch(`/suggestions/${id}`, { status }),
   searchArchive: (params: Record<string, string | number | undefined>) =>

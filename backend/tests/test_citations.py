@@ -11,6 +11,8 @@ from reportlab.pdfgen import canvas
 
 from tests.test_citation_parser import GALLEY_EDDSA, GALLEY_WATER
 from app.services.citation_counts import normalize_doi
+from xml.sax.saxutils import escape
+import zipfile
 
 
 def test_normalize_doi():
@@ -256,6 +258,66 @@ async def test_journal_ingest_coverage_and_match(client: AsyncClient):
     search = await client.get("/api/v1/archive/search", headers=headers, params={"q": "watermarking"})
     assert search.status_code == 200
     assert search.json()["count"] >= 1
+
+
+def _docx_from_text(text: str) -> bytes:
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body><w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p></w:body></w:document>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("word/document.xml", document)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Word Suggestion Journal", "abbreviation": "WSJ"},
+    )
+    jid = created.json()["id"]
+    await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={"filename": "water.txt", "text": GALLEY_WATER},
+    )
+    docx = _docx_from_text(
+        "This manuscript reviews drinking water contamination, Water Quality Index (WQI) "
+        "and SPI modelling for groundwater in rural Sindh and Khairpur."
+    )
+    up = await client.post(
+        "/api/v1/manuscripts",
+        headers=headers,
+        files={
+            "file": (
+                "water-review.docx",
+                docx,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert up.status_code == 201, up.text
+    mid = up.json()["id"]
+    sug = await client.post(f"/api/v1/manuscripts/{mid}/suggest", headers=headers)
+    assert sug.status_code == 200, sug.text
+    detail = (await client.get(f"/api/v1/manuscripts/{mid}", headers=headers)).json()
+    blob = " ".join(
+        s["reason"] + " " + (s.get("article") or {}).get("title", "")
+        for p in detail["paragraphs"]
+        for s in p["suggestions"]
+    )
+    assert "Water" in blob or "Drinking" in blob
+    listing = await client.get("/api/v1/manuscripts", headers=headers)
+    assert any(row["id"] == mid for row in listing.json())
+    deleted = await client.delete(f"/api/v1/manuscripts/{mid}", headers=headers)
+    assert deleted.status_code == 204, deleted.text
+    listing = await client.get("/api/v1/manuscripts", headers=headers)
+    assert all(row["id"] != mid for row in listing.json())
 
 
 @pytest.mark.asyncio

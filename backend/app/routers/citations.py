@@ -45,7 +45,7 @@ from app.services.citation_counts import sync_article_citations
 from app.services.crawler import run_crawl_job, run_download_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
 from app.services.matcher import house_citation_for, suggest_for_manuscript
-from app.services.pdf_text import extract_pdf_text
+from app.services.manuscript_text import extract_manuscript_text, suffix_for
 
 router = APIRouter(tags=["Citation Assistant"])
 
@@ -626,23 +626,29 @@ async def upload_manuscript(
     file: UploadFile = File(...),
 ):
     data = await file.read()
-    text, _status = extract_pdf_text(data)
-    if not text.strip() and data:
-        try:
-            text = data.decode("utf-8")
-        except Exception:
-            text = ""
+    filename = file.filename or "manuscript.pdf"
+    lower = filename.lower()
+    if lower.endswith(".doc") and not lower.endswith(".docx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Old .doc files are not supported. Save the manuscript as .docx or PDF.",
+        )
+    text = extract_manuscript_text(data, filename)
     if not text.strip():
-        raise HTTPException(status_code=400, detail="Could not extract text from manuscript")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read text from that file. Upload a Word (.docx) or PDF manuscript.",
+        )
     from app.core.config import get_settings
     from pathlib import Path
+    from uuid import uuid4
 
     dest_dir = Path(get_settings().upload_dir) / "manuscripts"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / (file.filename or "manuscript.pdf")
+    dest = dest_dir / f"{uuid4().hex[:8]}_{Path(filename).stem}{suffix_for(filename)}"
     dest.write_bytes(data)
     manuscript = Manuscript(
-        title=file.filename,
+        title=filename,
         pdf_path=str(dest),
         full_text=text,
         status="uploaded",
@@ -703,6 +709,23 @@ async def list_manuscripts(db: Db, _user: CurrentUser):
             )
         )
     return out
+
+
+@router.delete("/manuscripts/{manuscript_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
+    manuscript = await db.get(Manuscript, manuscript_id)
+    if manuscript is None:
+        raise HTTPException(status_code=404, detail="Manuscript not found")
+    path = manuscript.pdf_path
+    await db.delete(manuscript)
+    await db.flush()
+    if path:
+        from pathlib import Path
+
+        stored = Path(path)
+        if stored.exists() and stored.is_file():
+            stored.unlink()
+    return None
 
 
 @router.get("/manuscripts/{manuscript_id}", response_model=ManuscriptDetail)
