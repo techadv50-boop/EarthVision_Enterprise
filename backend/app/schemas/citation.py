@@ -190,6 +190,7 @@ class SuggestionOut(BaseModel):
     reason: str
     house_citation: Optional[str] = None
     status: str
+    citation_number: Optional[int] = None
     article: Optional[ArticleOut] = None
 
 
@@ -197,7 +198,16 @@ class ParagraphOut(BaseModel):
     id: int
     index: int
     text: str
+    display_text: str = ""
+    citation_numbers: list[int] = Field(default_factory=list)
     suggestions: list[SuggestionOut] = Field(default_factory=list)
+
+
+class ReferenceOut(BaseModel):
+    number: int
+    house_citation: str = ""
+    article_id: Optional[int] = None
+    title: Optional[str] = None
 
 
 class ManuscriptDetail(BaseModel):
@@ -206,6 +216,7 @@ class ManuscriptDetail(BaseModel):
     status: str
     full_text: str = ""
     paragraphs: list[ParagraphOut] = Field(default_factory=list)
+    references: list[ReferenceOut] = Field(default_factory=list)
 
 
 class SuggestionPatch(BaseModel):

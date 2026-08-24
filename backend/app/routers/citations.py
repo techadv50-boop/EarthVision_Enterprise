@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -36,6 +37,7 @@ from app.schemas.citation import (
     ManuscriptDetail,
     ManuscriptOut,
     ParagraphOut,
+    ReferenceOut,
     SuggestionOut,
     SuggestionPatch,
     TextPaperIn,
@@ -45,6 +47,7 @@ from app.services.citation_counts import sync_article_citations
 from app.services.crawler import run_crawl_job, run_download_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
 from app.services.matcher import house_citation_for, suggest_for_manuscript
+from app.services.manuscript_export import assign_citations, build_amended_docx
 from app.services.manuscript_text import extract_manuscript_text, suffix_for
 
 router = APIRouter(tags=["Citation Assistant"])
@@ -750,26 +753,26 @@ async def get_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
         suggestions = []
         for sug in para.suggestions:
             suggestions.append(
-                SuggestionOut(
-                    id=sug.id,
-                    paragraph_id=sug.paragraph_id,
-                    article_id=sug.article_id,
-                    score=sug.score,
-                    reason=sug.reason,
-                    house_citation=sug.house_citation,
-                    status=sug.status,
-                    article=_article_out(sug.article) if sug.article else None,
-                )
+                {
+                    "id": sug.id,
+                    "paragraph_id": sug.paragraph_id,
+                    "article_id": sug.article_id,
+                    "score": sug.score,
+                    "reason": sug.reason,
+                    "house_citation": sug.house_citation,
+                    "status": sug.status,
+                    "article": _article_out(sug.article).model_dump() if sug.article else None,
+                }
             )
-        paragraphs.append(
-            ParagraphOut(id=para.id, index=para.index, text=para.text, suggestions=suggestions)
-        )
+        paragraphs.append({"id": para.id, "index": para.index, "text": para.text, "suggestions": suggestions})
+    cited_paras, references = assign_citations(paragraphs)
     return ManuscriptDetail(
         id=manuscript.id,
         title=manuscript.title,
         status=manuscript.status,
         full_text=manuscript.full_text or "",
-        paragraphs=paragraphs,
+        paragraphs=[ParagraphOut(**row) for row in cited_paras],
+        references=[ReferenceOut(**row) for row in references],
     )
 
 
@@ -805,18 +808,19 @@ async def patch_suggestion(suggestion_id: int, body: SuggestionPatch, db: Db, _u
 
 
 @router.get("/manuscripts/{manuscript_id}/export")
-async def export_citations(manuscript_id: int, db: Db, _user: CurrentUser):
-    rows = list(
-        (
-            await db.execute(
-                select(CitationSuggestion)
-                .where(
-                    CitationSuggestion.manuscript_id == manuscript_id,
-                    CitationSuggestion.status == "accepted",
-                )
-                .order_by(CitationSuggestion.id)
-            )
-        ).scalars().all()
+async def export_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
+    from pathlib import Path
+
+    detail = await get_manuscript(manuscript_id, db, _user)
+    data = build_amended_docx(
+        title=detail.title or "Manuscript",
+        paragraphs=[p.model_dump() for p in detail.paragraphs],
+        references=[r.model_dump() for r in detail.references],
     )
-    lines = [s.house_citation or s.reason for s in rows]
-    return {"count": len(lines), "citations": lines, "text": "\n".join(f"[{i+1}] {t}" for i, t in enumerate(lines))}
+    stem = Path(detail.title or "manuscript").stem or "manuscript"
+    filename = f"{stem}-cited.docx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

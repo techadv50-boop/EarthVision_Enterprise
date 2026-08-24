@@ -214,7 +214,8 @@ export const citationApi = {
       });
     },
     suggest: (id: number) => api.post(`/manuscripts/${id}/suggest`),
-    export: (id: number) => api.get(`/manuscripts/${id}/export`),
+    export: (id: number) =>
+      api.get(`/manuscripts/${id}/export`, { responseType: 'blob' }),
     remove: (id: number) => api.delete(`/manuscripts/${id}`),
   },
   patchSuggestion: (id: number, status: string) => api.patch(`/suggestions/${id}`, { status }),

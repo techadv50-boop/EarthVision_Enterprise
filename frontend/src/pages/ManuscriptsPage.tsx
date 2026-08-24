@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { citationApi } from '@/services/api';
@@ -11,6 +12,7 @@ interface Ms {
 }
 
 export default function ManuscriptsPage() {
+  const navigate = useNavigate();
   const [items, setItems] = useState<Ms[]>([]);
   const [msg, setMsg] = useState('');
 
@@ -24,13 +26,12 @@ export default function ManuscriptsPage() {
   }, []);
 
   const upload = async (file: File) => {
-    setMsg(`Reading ${file.name}…`);
+    setMsg(`Opening ${file.name}…`);
     try {
       const { data } = await citationApi.manuscripts.upload(file);
-      setMsg('Matching against the journal archive…');
+      setMsg('Matching each paragraph against the journal archive…');
       await citationApi.manuscripts.suggest(data.id);
-      await load();
-      setMsg('Suggestions ready.');
+      navigate(`/manuscripts/${data.id}`);
     } catch {
       setMsg('Could not read that file. Upload a Word (.docx) or PDF manuscript.');
     }
@@ -47,8 +48,9 @@ export default function ManuscriptsPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">New manuscript</h2>
       <p className="text-gray-400 mb-4">
-        Upload a Word document (.docx) or PDF. Citation suggestions come only from this journal’s
-        archive.
+        Upload a Word document (.docx) or PDF. It opens as a document in the centre of the page, with
+        a citation suggestion and reason under each paragraph. Accept the ones you want; export writes
+        those references into a new Word file.
       </p>
       <input
         type="file"
