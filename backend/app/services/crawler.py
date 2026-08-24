@@ -1,4 +1,4 @@
-"""Recursively crawl a journal archive (folders + OJS pages) and ingest every PDF."""
+"""Fast OJS archive inventory, then download PDFs only for issues the operator selects."""
 
 from __future__ import annotations
 
@@ -10,17 +10,24 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database.session import AsyncSessionLocal
 from app.models.citation import CrawlJob, Journal
 from app.services.ingest import ingest_pdf_bytes
 
 USER_AGENT = "CitationAssistant/1.0 (journal archive ingest)"
-MAX_PAGES = 8000
+MAX_ARCHIVE_PAGES = 80
+ISSUE_CONCURRENCY = 12
 
-ISSUE_HREF = re.compile(r"/issue/view/\d+", re.I)
-ARTICLE_GALLEY_HREF = re.compile(r"/article/view/\d+/\d+", re.I)
+ISSUE_VIEW_HREF = re.compile(r"/issue/view/\d+", re.I)
+ARCHIVE_HREF = re.compile(r"/issue/archive(?:/\d+)?/?$", re.I)
+ARTICLE_VIEW_HREF = re.compile(r"/article/view/(\d+)(?:/(\d+))?", re.I)
 ARTICLE_DOWNLOAD_HREF = re.compile(r"/article/download/", re.I)
+VOL_ISSUE_HREF = re.compile(
+    r"Vol\.?\s*(\d+)\s*(?:No\.?|Issue)\s*(\d+)(?:\s*\((\d{4})\))?",
+    re.I,
+)
 
 SKIP_PATH = re.compile(
     r"(login|logout|register|lostPassword|search|\$\$\$call\$\$\$|"
@@ -47,54 +54,20 @@ def _clean(url: str) -> str:
     return urldefrag(url)[0].strip()
 
 
-def _journal_prefix(archive: str) -> str:
-    path = urlparse(archive).path or "/"
-    match = re.search(r"(.*?/index\.php/[^/]+)", path, re.I)
-    if match:
-        return match.group(1).rstrip("/")
-    if path.rstrip("/").endswith("/archive"):
-        return path[: path.lower().rfind("/archive")].rstrip("/") or "/"
-    if path.endswith("/"):
-        return path.rstrip("/") or "/"
-    return path.rsplit("/", 1)[0] or "/"
-
-
-def _in_scope(archive: str, url: str) -> bool:
-    if not _same_host(archive, url):
-        return False
-    path = urlparse(url).path or "/"
-    if SKIP_PATH.search(path):
-        return False
-    prefix = _journal_prefix(archive)
-    if prefix and (path == prefix or path.startswith(prefix + "/")):
-        return True
-    lowered = path.lower()
-    return any(
-        token in lowered
-        for token in ("/issue/", "/article/", "/download", "/galley", "/archive", "/files/", "/pdf")
-    )
-
-
 def is_pdf_url(url: str, link_text: str = "") -> bool:
     path = (urlparse(url).path or "").lower()
     if path.endswith(".pdf") or ".pdf?" in url.lower():
         return True
     if ARTICLE_DOWNLOAD_HREF.search(path) or "/download/" in path:
         return True
-    if ARTICLE_GALLEY_HREF.search(path):
+    match = ARTICLE_VIEW_HREF.search(path)
+    if match and match.group(2):
         return True
     if "galley" in path and "pdf" in (path + " " + (link_text or "").lower()):
         return True
     if PDF_LINK_TEXT.match(link_text or ""):
         return True
     return False
-
-
-def _should_skip_href(url: str) -> bool:
-    if not url or url.startswith(("mailto:", "javascript:", "tel:", "data:")):
-        return True
-    path = urlparse(url).path or ""
-    return bool(SKIP_EXT.search(path) or SKIP_PATH.search(path))
 
 
 def extract_anchors(html: str, base: str) -> list[tuple[str, str]]:
@@ -125,28 +98,10 @@ def extract_links(html: str, base: str) -> list[str]:
 
 async def default_fetch(url: str) -> tuple[int, bytes, str]:
     async with httpx.AsyncClient(
-        timeout=40.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}
+        timeout=30.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}
     ) as client:
         resp = await client.get(url)
         return resp.status_code, resp.content, resp.headers.get("content-type") or ""
-
-
-def _robots_allows(robots_txt: str, path: str) -> bool:
-    """Honor Disallow lines for a generic User-agent: * block."""
-    in_star = False
-    for raw in robots_txt.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        lower = line.lower()
-        if lower.startswith("user-agent:"):
-            in_star = "*" in line.split(":", 1)[-1]
-            continue
-        if in_star and lower.startswith("disallow:"):
-            rule = line.split(":", 1)[-1].strip()
-            if rule and path.startswith(rule):
-                return False
-    return True
 
 
 def _is_pdf_payload(content: bytes, content_type: str) -> bool:
@@ -161,24 +116,22 @@ def _is_html_payload(content: bytes, content_type: str) -> bool:
     return head.startswith(b"<!doctype html") or head.startswith(b"<html")
 
 
-def _remaining(job: CrawlJob) -> int:
-    return max(
-        0,
-        int(job.articles_found or 0)
-        - int(job.articles_saved or 0)
-        - int(job.articles_skipped or 0),
-    )
+def _parse_vol_issue(text: str) -> tuple[int | None, int | None, int | None]:
+    match = VOL_ISSUE_HREF.search(text or "")
+    if not match:
+        return None, None, None
+    year = int(match.group(3)) if match.group(3) else None
+    return int(match.group(1)), int(match.group(2)), year
 
 
-def _scan_message(pages: int, pdfs: int) -> str:
-    return f"Scanning folders… {pages} pages opened, {pdfs} PDF files found so far"
-
-
-def _download_message(job: CrawlJob) -> str:
-    found = int(job.articles_found or 0)
-    saved = int(job.articles_saved or 0)
-    left = _remaining(job)
-    return f"Found {found} PDF files. Loaded {saved}, {left} left."
+def _unique(urls: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
 
 
 async def _commit_progress(db: AsyncSession, job: CrawlJob) -> None:
@@ -186,7 +139,14 @@ async def _commit_progress(db: AsyncSession, job: CrawlJob) -> None:
     await db.refresh(job)
 
 
-async def run_crawl_job(job_id: int, fetch=default_fetch, delay: float = 0.05) -> None:
+def _inventory_message(job: CrawlJob) -> str:
+    issues = int(job.issues_found or 0)
+    articles = int(job.articles_found or 0)
+    return f"Found {issues} issues · {articles} articles. Choose which issues to download."
+
+
+async def run_crawl_job(job_id: int, fetch=default_fetch, delay: float = 0.0) -> None:
+    """Scan the archive for issues and article counts. Does not download PDFs."""
     async with AsyncSessionLocal() as db:
         job = await db.get(CrawlJob, job_id)
         if job is None:
@@ -200,63 +160,103 @@ async def run_crawl_job(job_id: int, fetch=default_fetch, delay: float = 0.05) -
             return
         job.status = "running"
         job.phase = "scanning"
-        job.message = "Scanning archive folders for PDF files…"
+        job.message = "Listing issues and article counts…"
         job.started_at = datetime.now(timezone.utc)
         job.error_log = list(job.error_log or [])
+        job.inventory = []
         await db.commit()
         try:
-            await _crawl(db, job, journal, fetch, delay)
+            await _scan_issues(db, job, fetch, delay)
+            if job.cancel_requested:
+                job.status = "cancelled"
+                job.phase = "cancelled"
+                job.message = "Issue scan cancelled."
+                job.finished_at = datetime.now(timezone.utc)
+            else:
+                job.status = "awaiting_selection"
+                job.phase = "awaiting_selection"
+                job.message = _inventory_message(job)
+        except Exception as exc:
+            job.status = "failed"
+            job.phase = "failed"
+            job.message = f"Issue scan failed: {exc}"
+            job.error_log = (job.error_log or []) + [str(exc)]
+            job.finished_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def run_download_job(
+    job_id: int,
+    issue_urls: list[str],
+    fetch=default_fetch,
+    delay: float = 0.02,
+) -> None:
+    """Download PDFs only for the issues the operator selected."""
+    async with AsyncSessionLocal() as db:
+        job = await db.get(CrawlJob, job_id)
+        if job is None:
+            return
+        journal = await db.get(Journal, job.journal_id)
+        if journal is None:
+            job.status = "failed"
+            job.message = "Journal not found"
+            await db.commit()
+            return
+        inventory = list(job.inventory or [])
+        selected = {_clean(url) for url in issue_urls}
+        chosen = [row for row in inventory if _clean(str(row.get("url") or "")) in selected]
+        pdf_urls: list[str] = []
+        for row in chosen:
+            pdf_urls.extend(row.get("pdf_urls") or [])
+        pdf_urls = _unique(pdf_urls)
+        job.status = "running"
+        job.phase = "downloading"
+        job.articles_found = len(pdf_urls)
+        job.articles_saved = 0
+        job.articles_skipped = 0
+        job.cancel_requested = False
+        job.finished_at = None
+        job.message = (
+            f"Downloading {len(pdf_urls)} PDFs from {len(chosen)} selected issue(s)…"
+        )
+        await db.commit()
+        try:
+            await _download_pdfs(db, job, journal, pdf_urls, fetch, delay)
             if job.cancel_requested:
                 job.status = "cancelled"
                 job.phase = "cancelled"
                 job.message = (
-                    f"Cancelled after finding {job.articles_found} PDFs. "
-                    f"Loaded {job.articles_saved}, {_remaining(job)} left."
+                    f"Download cancelled. Loaded {job.articles_saved}, "
+                    f"{max(0, job.articles_found - job.articles_saved - job.articles_skipped)} left."
                 )
             else:
                 job.status = "completed"
                 job.phase = "completed"
                 job.message = (
-                    f"Done. Found {job.articles_found} PDF files, "
-                    f"loaded {job.articles_saved}, skipped {job.articles_skipped}."
+                    f"Done. Loaded {job.articles_saved} PDFs from {len(chosen)} issue(s), "
+                    f"skipped {job.articles_skipped}."
                 )
+                for row in inventory:
+                    if _clean(str(row.get("url") or "")) in selected:
+                        row["downloaded"] = True
+                job.inventory = inventory
+                flag_modified(job, "inventory")
         except Exception as exc:
             job.status = "failed"
             job.phase = "failed"
-            job.message = f"Crawl failed: {exc}"
+            job.message = f"Download failed: {exc}"
             job.error_log = (job.error_log or []) + [str(exc)]
         job.finished_at = datetime.now(timezone.utc)
         await db.commit()
 
 
-async def _crawl(
-    db: AsyncSession, job: CrawlJob, journal: Journal, fetch, delay: float
-) -> None:
+async def _scan_issues(db: AsyncSession, job: CrawlJob, fetch, delay: float) -> None:
     archive = job.archive_url
-    parsed = urlparse(archive)
-    robots_txt = ""
-    try:
-        rst, rbody, _rct = await fetch(f"{parsed.scheme}://{parsed.netloc}/robots.txt")
-        if rst < 400:
-            robots_txt = rbody.decode("utf-8", errors="ignore")
-    except Exception:
-        robots_txt = ""
-
     queue: deque[str] = deque([_clean(archive)])
     seen_pages: set[str] = set()
-    pdf_urls: list[str] = []
-    seen_pdfs: set[str] = set()
+    issues: dict[str, dict] = {}
 
-    def remember_pdf(url: str) -> None:
-        clean = _clean(url)
-        if not clean or clean in seen_pdfs:
-            return
-        if robots_txt and not _robots_allows(robots_txt, urlparse(clean).path):
-            return
-        seen_pdfs.add(clean)
-        pdf_urls.append(clean)
-
-    while queue and len(seen_pages) < MAX_PAGES:
+    while queue and len(seen_pages) < MAX_ARCHIVE_PAGES:
         if job.cancel_requested:
             return
         page_url = queue.popleft()
@@ -264,58 +264,123 @@ async def _crawl(
             continue
         seen_pages.add(page_url)
         job.pages_crawled = len(seen_pages)
-        if ISSUE_HREF.search(page_url):
-            job.issues_found = (job.issues_found or 0) + 1
-        job.articles_found = len(pdf_urls)
-        job.message = _scan_message(len(seen_pages), len(pdf_urls))
-        if len(seen_pages) == 1 or len(seen_pages) % 5 == 0:
-            await _commit_progress(db, job)
-
-        await asyncio.sleep(delay)
+        job.message = f"Reading archive page {len(seen_pages)}…"
+        await _commit_progress(db, job)
+        if delay:
+            await asyncio.sleep(delay)
         try:
             status, body, ctype = await fetch(page_url)
         except Exception as exc:
             job.error_log = (job.error_log or []) + [f"{page_url}: {exc}"]
             continue
-        if status >= 400:
-            job.error_log = (job.error_log or []) + [f"{page_url}: HTTP {status}"]
-            continue
-        if _is_pdf_payload(body, ctype):
-            remember_pdf(page_url)
-            continue
-        if not _is_html_payload(body, ctype):
+        if status >= 400 or not _is_html_payload(body, ctype):
             continue
         html = body.decode("utf-8", errors="ignore")
         for href, text in extract_anchors(html, page_url):
-            if _should_skip_href(href) or not _same_host(archive, href):
+            if not href or not _same_host(archive, href):
                 continue
-            if is_pdf_url(href, text):
-                remember_pdf(href)
+            path = urlparse(href).path or ""
+            if SKIP_PATH.search(path) or SKIP_EXT.search(path):
                 continue
-            if not _in_scope(archive, href):
-                continue
-            if href not in seen_pages:
+            if ARCHIVE_HREF.search(href) and href not in seen_pages:
                 queue.append(href)
+            if ISSUE_VIEW_HREF.search(href):
+                key = _clean(href)
+                title = text or key
+                volume, number, year = _parse_vol_issue(title)
+                if key not in issues:
+                    issues[key] = {
+                        "url": key,
+                        "title": title,
+                        "volume": volume,
+                        "issue_number": number,
+                        "year": year,
+                        "article_count": 0,
+                        "pdf_urls": [],
+                        "downloaded": False,
+                    }
+                elif title and len(title) > len(str(issues[key].get("title") or "")):
+                    issues[key]["title"] = title
+                    if volume:
+                        issues[key]["volume"] = volume
+                        issues[key]["issue_number"] = number
+                        issues[key]["year"] = year
 
-    job.pages_crawled = len(seen_pages)
-    job.issues_found = job.issues_found or sum(
-        1 for url in seen_pages if ISSUE_HREF.search(url)
-    )
-    job.articles_found = len(pdf_urls)
-    job.phase = "downloading"
-    job.message = (
-        f"Found {len(pdf_urls)} PDF files in total. Loading…"
-        if pdf_urls
-        else "No PDF files found in this archive."
-    )
+    issue_list = list(issues.values())
+    job.issues_found = len(issue_list)
+    job.message = f"Found {len(issue_list)} issues. Counting articles…"
     await _commit_progress(db, job)
 
+    semaphore = asyncio.Semaphore(ISSUE_CONCURRENCY)
+
+    async def inspect(row: dict) -> dict:
+        async with semaphore:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                status, body, ctype = await fetch(row["url"])
+            except Exception as exc:
+                row["error"] = str(exc)
+                return row
+            if status >= 400 or not _is_html_payload(body, ctype):
+                return row
+            html = body.decode("utf-8", errors="ignore")
+            heading = _parse_vol_issue(html)
+            if heading[0] and not row.get("volume"):
+                row["volume"], row["issue_number"], row["year"] = heading
+            article_ids: set[str] = set()
+            pdfs: list[str] = []
+            for href, text in extract_anchors(html, row["url"]):
+                if not _same_host(archive, href):
+                    continue
+                match = ARTICLE_VIEW_HREF.search(href)
+                if match:
+                    article_ids.add(match.group(1))
+                    if match.group(2) or is_pdf_url(href, text):
+                        pdfs.append(_clean(href))
+                elif is_pdf_url(href, text):
+                    pdfs.append(_clean(href))
+            row["pdf_urls"] = _unique(pdfs)
+            row["article_count"] = len(article_ids) or len(row["pdf_urls"])
+            return row
+
+    inspected = await asyncio.gather(*(inspect(row) for row in issue_list))
+    inspected.sort(
+        key=lambda row: (
+            -(row.get("volume") or 0),
+            -(row.get("issue_number") or 0),
+            str(row.get("title") or ""),
+        )
+    )
+    job.inventory = inspected
+    flag_modified(job, "inventory")
+    job.issues_found = len(inspected)
+    job.articles_found = sum(int(row.get("article_count") or 0) for row in inspected)
+    job.pages_crawled = len(seen_pages) + len(inspected)
+    job.message = _inventory_message(job)
+    await _commit_progress(db, job)
+
+
+async def _download_pdfs(
+    db: AsyncSession,
+    job: CrawlJob,
+    journal: Journal,
+    pdf_urls: list[str],
+    fetch,
+    delay: float,
+) -> None:
     for index, pdf_url in enumerate(pdf_urls):
         if job.cancel_requested:
             return
-        job.message = _download_message(job)
-        await _commit_progress(db, job)
-        await asyncio.sleep(delay)
+        left = max(0, len(pdf_urls) - index)
+        job.message = (
+            f"Downloading PDFs… loaded {job.articles_saved}, {left} left "
+            f"of {len(pdf_urls)}."
+        )
+        if index == 0 or index % 2 == 0:
+            await _commit_progress(db, job)
+        if delay:
+            await asyncio.sleep(delay)
         try:
             status, content, ctype = await fetch(pdf_url)
             if status >= 400:
@@ -327,7 +392,7 @@ async def _crawl(
                 nested = [
                     href
                     for href, text in extract_anchors(html, pdf_url)
-                    if is_pdf_url(href, text) and _same_host(archive, href)
+                    if is_pdf_url(href, text) and _same_host(job.archive_url, href)
                 ]
                 fetched = False
                 for nested_url in nested:
@@ -356,6 +421,4 @@ async def _crawl(
         except Exception as exc:
             job.articles_skipped += 1
             job.error_log = (job.error_log or []) + [f"{pdf_url}: {exc}"]
-
-    job.message = _download_message(job)
     await db.commit()

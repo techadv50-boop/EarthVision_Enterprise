@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 
 import pytest
 from httpx import AsyncClient
@@ -197,36 +198,31 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
         pages = {
             "https://example.test/issue/archive": (
                 b"<html>"
-                b'<a href="https://example.test/issue/view/1">Vol 8</a>'
+                b'<a href="https://example.test/issue/view/1">Vol. 8 No. 5 (2026)</a>'
                 b'<a href="https://example.test/issue/archive/2">Next</a>'
-                b'<a href="https://example.test/files/vol8/">Folder</a>'
                 b"</html>"
             ),
             "https://example.test/issue/archive/2": (
-                b"<html><a href='https://example.test/issue/view/2'>Vol 8 Issue 2</a></html>"
+                b"<html><a href='https://example.test/issue/view/2'>Vol. 8 No. 2 (2026)</a></html>"
             ),
             "https://example.test/issue/view/1": (
                 b"<html>"
                 b'<a href="https://example.test/article/view/9">Article</a>'
                 b'<a href="https://example.test/article/view/9/11">PDF</a>'
+                b'<a href="https://example.test/article/view/10">Second</a>'
+                b'<a href="https://example.test/article/view/10/12">PDF</a>'
                 b"</html>"
             ),
             "https://example.test/issue/view/2": (
-                b"<html><a href='https://example.test/article/download/8/b.pdf'>PDF</a></html>"
-            ),
-            "https://example.test/files/vol8/": (
                 b"<html>"
-                b'<a href="https://example.test/files/vol8/nested/">nested</a>'
-                b'<a href="https://example.test/files/vol8/root.pdf">paper</a>'
+                b'<a href="https://example.test/article/view/8">Other</a>'
+                b'<a href="https://example.test/article/download/8/b.pdf">PDF</a>'
                 b"</html>"
-            ),
-            "https://example.test/files/vol8/nested/": (
-                b'<html><a href="https://example.test/files/vol8/nested/deep.pdf">deep</a></html>'
             ),
         }
         if url in pages:
             return 200, pages[url], "text/html"
-        if url.endswith(".pdf") or "/download/" in url or "/article/view/9/11" in url:
+        if url.endswith(".pdf") or "/download/" in url or re.search(r"/article/view/\d+/\d+", url):
             return 200, pdf_bytes, "application/pdf"
         if url.endswith("/robots.txt"):
             return 404, b"", "text/plain"
@@ -248,33 +244,52 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
     job = await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)
     assert job.status_code == 200
     body = job.json()
-    assert body["status"] == "completed", body
-    assert body["articles_found"] == 4
-    assert body["articles_saved"] >= 1
-    assert body["articles_remaining"] == 0
-    assert "Found 4 PDF" in (body.get("message") or "") or "Done." in (body.get("message") or "")
+    assert body["status"] == "awaiting_selection", body
+    assert body["issues_found"] == 2
+    by_url = {row["url"]: row for row in body["inventory"]}
+    assert by_url["https://example.test/issue/view/1"]["article_count"] == 2
+    assert by_url["https://example.test/issue/view/2"]["article_count"] == 1
+    assert body["articles_found"] == 3
+    listing = await client.get("/api/v1/journals", headers=headers)
+    crawled = next(row for row in listing.json() if row["id"] == jid)
+    assert crawled["article_count"] == 0
 
-    arts = await client.get(
-        f"/api/v1/journals/{jid}/volumes/8/issues/5/articles", headers=headers
-    )
-    assert arts.status_code == 200
-    assert arts.json()["issue"]["article_count"] >= 1
-
-    start2 = await client.post(
-        f"/api/v1/journals/{jid}/crawl",
+    unknown = await client.post(
+        f"/api/v1/crawl-jobs/{job_id}/download",
         headers=headers,
-        json={"archive_url": "https://example.test/issue/archive"},
+        json={"issue_urls": ["https://example.test/issue/view/999"]},
     )
-    job2 = start2.json()["id"]
-    await crawler_mod.run_crawl_job(job2, fetch=fake_fetch)
-    dup = (await client.get(f"/api/v1/crawl-jobs/{job2}", headers=headers)).json()
-    if dup["status"] == "completed":
-        assert dup["articles_skipped"] >= 1
-        assert arts.json()["issue"]["article_count"] == (
-            await client.get(
-                f"/api/v1/journals/{jid}/volumes/8/issues/5/articles", headers=headers
-            )
-        ).json()["issue"]["article_count"]
+    assert unknown.status_code == 400
+
+    queued = await client.post(
+        f"/api/v1/crawl-jobs/{job_id}/download",
+        headers=headers,
+        json={"issue_urls": ["https://example.test/issue/view/1"]},
+    )
+    assert queued.status_code == 200, queued.text
+    downloaded = (await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)).json()
+    if downloaded["status"] != "completed":
+        await crawler_mod.run_download_job(
+            job_id, ["https://example.test/issue/view/1"], fetch=fake_fetch
+        )
+        downloaded = (await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)).json()
+
+    assert downloaded["status"] == "completed", downloaded
+    assert downloaded["articles_saved"] >= 1
+    assert downloaded["articles_remaining"] == 0
+    listing = await client.get("/api/v1/journals", headers=headers)
+    crawled = next(row for row in listing.json() if row["id"] == jid)
+    assert crawled["article_count"] >= 1
+    first_count = crawled["article_count"]
+
+    await crawler_mod.run_download_job(
+        job_id, ["https://example.test/issue/view/1"], fetch=fake_fetch
+    )
+    dup = (await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)).json()
+    assert dup["articles_skipped"] >= 1
+    listing = await client.get("/api/v1/journals", headers=headers)
+    crawled = next(row for row in listing.json() if row["id"] == jid)
+    assert crawled["article_count"] == first_count
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,7 @@ from app.schemas.citation import (
     ArticleOut,
     ArticlePatch,
     CoverageOut,
+    CrawlDownloadIn,
     CrawlJobOut,
     CrawlStart,
     IssueStatsOut,
@@ -41,7 +42,7 @@ from app.schemas.citation import (
     VolumeOut,
 )
 from app.services.citation_counts import sync_article_citations
-from app.services.crawler import run_crawl_job
+from app.services.crawler import run_crawl_job, run_download_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
 from app.services.matcher import house_citation_for, suggest_for_manuscript
 from app.services.pdf_text import extract_pdf_text
@@ -414,6 +415,46 @@ async def cancel_crawl(job_id: int, db: Db, _user: CurrentUser):
     if job.status == "queued":
         job.status = "cancelled"
     await db.flush()
+    return CrawlJobOut.model_validate(job)
+
+
+@router.post("/crawl-jobs/{job_id}/download", response_model=CrawlJobOut)
+async def start_download(
+    job_id: int,
+    body: CrawlDownloadIn,
+    background: BackgroundTasks,
+    db: Db,
+    _user: CurrentUser,
+):
+    job = await db.get(CrawlJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Crawl job not found")
+    if job.status == "running":
+        raise HTTPException(status_code=409, detail="This job is already running")
+    inventory = list(job.inventory or [])
+    if not inventory:
+        raise HTTPException(
+            status_code=400,
+            detail="Scan the archive first so issues can be listed",
+        )
+    known = {str(row.get("url") or "").rstrip("/") for row in inventory}
+    selected = []
+    seen: set[str] = set()
+    for url in body.issue_urls:
+        key = url.rstrip("/")
+        if key in known and key not in seen:
+            selected.append(url)
+            seen.add(key)
+    if not selected:
+        raise HTTPException(
+            status_code=400,
+            detail="None of the selected issue URLs are in this scan",
+        )
+    job.status = "queued"
+    job.phase = "downloading"
+    job.message = f"Queued download of {len(selected)} issue(s)…"
+    await db.flush()
+    background.add_task(run_download_job, job_id, selected)
     return CrawlJobOut.model_validate(job)
 
 

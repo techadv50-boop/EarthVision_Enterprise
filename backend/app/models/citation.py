@@ -141,6 +141,7 @@ class CrawlJob(Base):
     pages_crawled: Mapped[int] = mapped_column(Integer, default=0)
     phase: Mapped[Optional[str]] = mapped_column(String(32), default="queued")
     message: Mapped[Optional[str]] = mapped_column(String(500))
+    inventory: Mapped[Any] = mapped_column(JSON, default=list)
     error_log: Mapped[Any] = mapped_column(JSON, default=list)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

@@ -195,6 +195,8 @@ export const citationApi = {
   },
   crawlJob: (id: number) => api.get(`/crawl-jobs/${id}`),
   cancelCrawl: (id: number) => api.post(`/crawl-jobs/${id}/cancel`),
+  downloadCrawl: (id: number, issue_urls: string[]) =>
+    api.post(`/crawl-jobs/${id}/download`, { issue_urls }),
   patchArticle: (id: number, data: Record<string, unknown>) => api.patch(`/articles/${id}`, data),
   syncArticle: (id: number) => api.post(`/articles/${id}/sync-citations`),
   syncIssue: (id: number) => api.post(`/issues/${id}/sync-citations`),

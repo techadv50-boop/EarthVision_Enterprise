@@ -143,6 +143,7 @@ class CrawlJobOut(BaseModel):
     pages_crawled: int = 0
     phase: Optional[str] = None
     message: Optional[str] = None
+    inventory: list[Any] = Field(default_factory=list)
     error_log: Any = []
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
@@ -154,6 +155,12 @@ class CrawlJobOut(BaseModel):
         saved = int(self.articles_saved or 0)
         skipped = int(self.articles_skipped or 0)
         self.articles_remaining = max(0, found - saved - skipped)
+        if self.inventory is None:
+            self.inventory = []
+
+
+class CrawlDownloadIn(BaseModel):
+    issue_urls: list[str] = Field(..., min_length=1, max_length=400)
 
 
 class TextPaperIn(BaseModel):

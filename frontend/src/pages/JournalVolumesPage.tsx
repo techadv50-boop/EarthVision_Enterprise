@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { citationApi } from '@/services/api';
 
@@ -11,7 +11,37 @@ interface Volume {
   missing: boolean;
 }
 
-function CrawlProgress({ crawl }: { crawl: Record<string, unknown> }) {
+type InventoryRow = {
+  url: string;
+  title?: string;
+  volume?: number | null;
+  issue_number?: number | null;
+  year?: number | null;
+  article_count?: number;
+  downloaded?: boolean;
+};
+
+type CrawlJob = Record<string, unknown> & {
+  id?: number;
+  status?: string;
+  phase?: string;
+  message?: string;
+  inventory?: InventoryRow[];
+};
+
+function issueLabel(row: InventoryRow) {
+  if (row.volume && row.issue_number) {
+    const year = row.year ? ` (${row.year})` : '';
+    return `Vol. ${row.volume} No. ${row.issue_number}${year}`;
+  }
+  return row.title || row.url;
+}
+
+function isActiveStatus(status?: string) {
+  return status === 'running' || status === 'queued';
+}
+
+function CrawlProgress({ crawl }: { crawl: CrawlJob }) {
   const found = Number(crawl.articles_found || 0);
   const saved = Number(crawl.articles_saved || 0);
   const skipped = Number(crawl.articles_skipped || 0);
@@ -23,9 +53,9 @@ function CrawlProgress({ crawl }: { crawl: Record<string, unknown> }) {
   const message = String(
     crawl.message ||
       (scanning
-        ? 'Scanning folders and subfolders for PDF files…'
+        ? 'Listing issues and article counts…'
         : found
-          ? `Found ${found} PDF files. Loaded ${saved}, ${remaining} left.`
+          ? `Found ${found} PDFs. Loaded ${saved}, ${remaining} left.`
           : String(crawl.status))
   );
 
@@ -52,8 +82,19 @@ export default function JournalVolumesPage() {
   const [volumes, setVolumes] = useState<Volume[]>([]);
   const [files, setFiles] = useState<FileList | null>(null);
   const [archiveUrl, setArchiveUrl] = useState('');
-  const [crawl, setCrawl] = useState<Record<string, unknown> | null>(null);
+  const [crawl, setCrawl] = useState<CrawlJob | null>(null);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState('');
+
+  const inventory = useMemo(
+    () => (Array.isArray(crawl?.inventory) ? (crawl?.inventory as InventoryRow[]) : []),
+    [crawl]
+  );
+  const awaitingSelection =
+    crawl?.status === 'awaiting_selection' ||
+    (crawl?.phase === 'awaiting_selection' && !isActiveStatus(crawl?.status));
+  const downloading = isActiveStatus(crawl?.status) && String(crawl?.phase || '') === 'downloading';
+  const scanning = isActiveStatus(crawl?.status) && !downloading;
 
   const load = async () => {
     const [{ data: j }, { data: vols }] = await Promise.all([
@@ -69,6 +110,26 @@ export default function JournalVolumesPage() {
     void load();
   }, [id]);
 
+  const pollJob = async (jobId: number) => {
+    const { data: job } = await citationApi.crawlJob(jobId);
+    setCrawl(job);
+    if (isActiveStatus(job.status)) {
+      setTimeout(() => void pollJob(jobId), 600);
+      return;
+    }
+    if (job.status === 'awaiting_selection') {
+      const next: Record<string, boolean> = {};
+      for (const row of (job.inventory || []) as InventoryRow[]) {
+        next[row.url] = false;
+      }
+      setSelected(next);
+      setMsg('Choose which issues to download. Unchecked issues are left on the site.');
+      return;
+    }
+    setMsg(job.message || `Crawl ${job.status}`);
+    await load();
+  };
+
   const upload = async () => {
     if (!files?.length) return;
     setMsg('Uploading…');
@@ -78,21 +139,40 @@ export default function JournalVolumesPage() {
   };
 
   const startCrawl = async () => {
-    setMsg('Starting crawler…');
+    setMsg('Scanning issues…');
+    setSelected({});
     const { data } = await citationApi.journals.crawl(id, archiveUrl);
     setCrawl(data);
-    const poll = async (jobId: number) => {
-      const { data: job } = await citationApi.crawlJob(jobId);
-      setCrawl(job);
-      if (job.status === 'running' || job.status === 'queued') {
-        setTimeout(() => void poll(jobId), 800);
-      } else {
-        setMsg(`Crawl ${job.status}`);
-        await load();
-      }
-    };
-    void poll(data.id);
+    void pollJob(data.id);
   };
+
+  const startDownload = async () => {
+    if (!crawl?.id) return;
+    const issueUrls = Object.entries(selected)
+      .filter(([, on]) => on)
+      .map(([url]) => url);
+    if (!issueUrls.length) {
+      setMsg('Select at least one issue to download, or leave them all unchecked.');
+      return;
+    }
+    setMsg('Downloading selected issue PDFs…');
+    const { data } = await citationApi.downloadCrawl(crawl.id, issueUrls);
+    setCrawl(data);
+    void pollJob(data.id);
+  };
+
+  const toggleAll = (value: boolean) => {
+    const next: Record<string, boolean> = {};
+    for (const row of inventory) {
+      next[row.url] = row.downloaded ? false : value;
+    }
+    setSelected(next);
+  };
+
+  const selectedCount = inventory.filter((row) => selected[row.url]).length;
+  const selectedArticles = inventory
+    .filter((row) => selected[row.url])
+    .reduce((sum, row) => sum + Number(row.article_count || 0), 0);
 
   return (
     <div>
@@ -116,22 +196,104 @@ export default function JournalVolumesPage() {
           </button>
         </div>
         <div className="panel p-4 space-y-3">
-          <h3 className="font-medium">2. Import from archive URL</h3>
+          <h3 className="font-medium">2. Scan archive issues</h3>
+          <p className="text-xs text-gray-400">
+            Lists every issue and how many articles it contains. PDFs are not downloaded until you
+            choose which issues to fetch.
+          </p>
           <input
             className="input-field"
             value={archiveUrl}
             onChange={(e) => setArchiveUrl(e.target.value)}
             placeholder="https://journal.50sea.com/index.php/IJIST/issue/archive"
           />
-          <button className="btn-primary" type="button" onClick={() => void startCrawl()}>
-            Crawl archive
-          </button>
-          {crawl && (
-            <CrawlProgress crawl={crawl} />
-          )}
+          <div className="flex gap-2">
+            <button
+              className="btn-primary"
+              type="button"
+              disabled={scanning || downloading || !archiveUrl}
+              onClick={() => void startCrawl()}
+            >
+              Scan issues
+            </button>
+            {(scanning || downloading) && crawl?.id ? (
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => void citationApi.cancelCrawl(Number(crawl.id))}
+              >
+                Cancel
+              </button>
+            ) : null}
+          </div>
+          {crawl && (scanning || downloading) && <CrawlProgress crawl={crawl} />}
         </div>
       </div>
       {msg && <p className="text-earth-400 text-sm mb-4">{msg}</p>}
+
+      {awaitingSelection && inventory.length > 0 && (
+        <div className="panel p-4 mb-8 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-medium">Issues found</h3>
+              <p className="text-sm text-gray-400">
+                {inventory.length} issues · {inventory.reduce((n, row) => n + Number(row.article_count || 0), 0)}{' '}
+                articles. Tick issues to download; leave the rest.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button className="btn-secondary" type="button" onClick={() => toggleAll(true)}>
+                Select all
+              </button>
+              <button className="btn-secondary" type="button" onClick={() => toggleAll(false)}>
+                Leave all
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-gray-400 border-b border-gray-800">
+                <tr>
+                  <th className="py-2 pr-3 w-10">Get</th>
+                  <th className="py-2 pr-3">Issue</th>
+                  <th className="py-2 pr-3 text-right">Articles</th>
+                  <th className="py-2 pl-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {inventory.map((row) => (
+                  <tr key={row.url} className="border-b border-gray-800/80">
+                    <td className="py-2 pr-3">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selected[row.url])}
+                        disabled={Boolean(row.downloaded)}
+                        onChange={(e) =>
+                          setSelected((prev) => ({ ...prev, [row.url]: e.target.checked }))
+                        }
+                      />
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{issueLabel(row)}</div>
+                      {row.title && row.volume ? (
+                        <div className="text-xs text-gray-500 truncate max-w-xl">{row.title}</div>
+                      ) : null}
+                    </td>
+                    <td className="py-2 pr-3 text-right font-medium">{Number(row.article_count || 0)}</td>
+                    <td className="py-2 pl-3 text-xs text-gray-400">
+                      {row.downloaded ? 'Downloaded' : selected[row.url] ? 'Will download' : 'Leave'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button className="btn-primary" type="button" onClick={() => void startDownload()}>
+            Download {selectedCount} selected issue{selectedCount === 1 ? '' : 's'}
+            {selectedArticles ? ` (${selectedArticles} articles)` : ''}
+          </button>
+        </div>
+      )}
 
       <div className="space-y-2">
         {volumes.map((v) =>

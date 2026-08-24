@@ -59,4 +59,5 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("crawl_jobs", "pages_crawled", "INTEGER DEFAULT 0")
     _add_if_missing("crawl_jobs", "phase", "VARCHAR(32)")
     _add_if_missing("crawl_jobs", "message", "VARCHAR(500)")
+    _add_if_missing("crawl_jobs", "inventory", "JSON")
 
