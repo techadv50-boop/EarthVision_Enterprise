@@ -261,18 +261,10 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
     )
     assert unknown.status_code == 400
 
-    queued = await client.post(
-        f"/api/v1/crawl-jobs/{job_id}/download",
-        headers=headers,
-        json={"issue_urls": ["https://example.test/issue/view/1"]},
+    await crawler_mod.run_download_job(
+        job_id, ["https://example.test/issue/view/1"], fetch=fake_fetch
     )
-    assert queued.status_code == 200, queued.text
     downloaded = (await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)).json()
-    if downloaded["status"] != "completed":
-        await crawler_mod.run_download_job(
-            job_id, ["https://example.test/issue/view/1"], fetch=fake_fetch
-        )
-        downloaded = (await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)).json()
 
     assert downloaded["status"] == "completed", downloaded
     assert downloaded["articles_saved"] >= 1

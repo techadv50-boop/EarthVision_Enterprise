@@ -9,11 +9,14 @@ from app.database.base import Base
 
 settings = get_settings()
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.debug,
-    future=True,
-)
+_engine_kwargs: dict = {
+    "echo": settings.debug,
+    "future": True,
+}
+if settings.database_url.startswith("sqlite"):
+    _engine_kwargs["connect_args"] = {"timeout": 30}
+
+engine = create_async_engine(settings.database_url, **_engine_kwargs)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
@@ -38,6 +41,9 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_sqlite_columns)
+        if "sqlite" in settings.database_url:
+            await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+            await conn.exec_driver_sql("PRAGMA busy_timeout=30000")
 
 
 def _ensure_sqlite_columns(sync_conn) -> None:

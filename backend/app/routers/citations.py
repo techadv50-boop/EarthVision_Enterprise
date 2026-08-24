@@ -394,6 +394,7 @@ async def start_crawl(
     db.add(job)
     await db.flush()
     job_id = job.id
+    await db.commit()
     background.add_task(run_crawl_job, job_id)
     return CrawlJobOut.model_validate(job)
 
@@ -453,7 +454,7 @@ async def start_download(
     job.status = "queued"
     job.phase = "downloading"
     job.message = f"Queued download of {len(selected)} issue(s)…"
-    await db.flush()
+    await db.commit()
     background.add_task(run_download_job, job_id, selected)
     return CrawlJobOut.model_validate(job)
 

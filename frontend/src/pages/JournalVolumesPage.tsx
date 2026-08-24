@@ -90,11 +90,16 @@ export default function JournalVolumesPage() {
     () => (Array.isArray(crawl?.inventory) ? (crawl?.inventory as InventoryRow[]) : []),
     [crawl]
   );
-  const awaitingSelection =
-    crawl?.status === 'awaiting_selection' ||
-    (crawl?.phase === 'awaiting_selection' && !isActiveStatus(crawl?.status));
   const downloading = isActiveStatus(crawl?.status) && String(crawl?.phase || '') === 'downloading';
   const scanning = isActiveStatus(crawl?.status) && !downloading;
+  const awaitingSelection =
+    inventory.length > 0 &&
+    !scanning &&
+    !downloading &&
+    (crawl?.status === 'awaiting_selection' ||
+      crawl?.status === 'completed' ||
+      crawl?.status === 'cancelled' ||
+      crawl?.phase === 'awaiting_selection');
 
   const load = async () => {
     const [{ data: j }, { data: vols }] = await Promise.all([
@@ -117,12 +122,14 @@ export default function JournalVolumesPage() {
       setTimeout(() => void pollJob(jobId), 600);
       return;
     }
-    if (job.status === 'awaiting_selection') {
+    if (job.status === 'awaiting_selection' || Array.isArray(job.inventory)) {
       const next: Record<string, boolean> = {};
       for (const row of (job.inventory || []) as InventoryRow[]) {
         next[row.url] = false;
       }
       setSelected(next);
+    }
+    if (job.status === 'awaiting_selection') {
       setMsg('Choose which issues to download. Unchecked issues are left on the site.');
       return;
     }
