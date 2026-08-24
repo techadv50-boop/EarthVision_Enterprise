@@ -10,6 +10,12 @@ from httpx import AsyncClient
 from reportlab.pdfgen import canvas
 
 from tests.test_citation_parser import GALLEY_EDDSA, GALLEY_WATER
+from app.services.citation_counts import normalize_doi
+
+
+def test_normalize_doi():
+    assert normalize_doi("https://doi.org/10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
+    assert normalize_doi("doi:10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
 
 
 def _pdf_from_text(text: str) -> bytes:
@@ -181,6 +187,14 @@ async def test_citation_sync_and_operator_patch(client: AsyncClient, monkeypatch
     )
     assert patched.status_code == 200
     assert patched.json()["scholar_citation_count"] == 21
+
+    listing = await client.get(f"/api/v1/journals/{jid}/issues", headers=headers)
+    assert listing.status_code == 200
+    row = listing.json()[0]
+    assert row["scholar_total"] == 21
+    assert row["crossref_total"] == 14
+    assert row["cited_count"] >= 1
+    assert row["citations_synced"] is True
 
 
 @pytest.mark.asyncio

@@ -42,10 +42,19 @@ export default function IssueArticlesPage() {
   const load = async () => {
     const { data: payload } = await citationApi.journals.articles(id, vol, iss);
     setData(payload);
+    return payload as Payload;
   };
 
   useEffect(() => {
-    void load();
+    void (async () => {
+      const payload = await load();
+      const need = (payload.articles || []).some((a) => !a.citation_synced_at);
+      if (!need || !payload.issue.id) return;
+      setMsg('Fetching Crossref and Google Scholar cited-by counts…');
+      await citationApi.syncIssue(payload.issue.id);
+      await load();
+      setMsg('');
+    })();
   }, [id, vol, iss]);
 
   const sync = async () => {

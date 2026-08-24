@@ -14,6 +14,7 @@ interface IssueRow {
   uncited_count: number;
   scholar_total: number;
   crossref_total: number;
+  citations_synced?: boolean;
 }
 
 export default function VolumeIssuesPage() {
@@ -21,9 +22,26 @@ export default function VolumeIssuesPage() {
   const id = Number(journalId);
   const vol = Number(volume);
   const [issues, setIssues] = useState<IssueRow[]>([]);
+  const [msg, setMsg] = useState('');
+
+  const load = async () => {
+    const { data } = await citationApi.journals.issues(id, vol);
+    setIssues(data);
+    return data as IssueRow[];
+  };
 
   useEffect(() => {
-    void citationApi.journals.issues(id, vol).then(({ data }) => setIssues(data));
+    void (async () => {
+      const data = await load();
+      const need = data.filter((iss) => iss.id && iss.article_count && !iss.citations_synced);
+      if (!need.length) return;
+      setMsg('Fetching Crossref and Google Scholar cited-by counts…');
+      for (const iss of need) {
+        await citationApi.syncIssue(iss.id);
+      }
+      await load();
+      setMsg('');
+    })();
   }, [id, vol]);
 
   return (
@@ -36,13 +54,19 @@ export default function VolumeIssuesPage() {
         Each issue shows how many articles live there, and how many have been cited in Crossref vs
         Google Scholar.
       </p>
+      {msg && <p className="text-earth-400 text-sm mb-4">{msg}</p>}
       <div className="grid md:grid-cols-2 gap-4">
         {issues.map((iss) => {
+          const cited = Number(iss.cited_count ?? (iss as { cited_count?: number }).cited_count ?? 0);
+          const uncited = Number(iss.uncited_count ?? (iss as { uncited_count?: number }).uncited_count ?? 0);
+          const scholar = Number(iss.scholar_total ?? (iss as { scholar_total?: number }).scholar_total ?? 0);
+          const crossref = Number(iss.crossref_total ?? (iss as { crossref_total?: number }).crossref_total ?? 0);
+          const articles = Number(iss.article_count ?? (iss as { article_count?: number }).article_count ?? 0);
           const data = [
-            { name: 'Cited', value: iss.cited_count },
-            { name: 'Not cited', value: iss.uncited_count },
+            { name: 'Cited', value: cited },
+            { name: 'Not cited', value: uncited },
           ];
-          const empty = iss.article_count === 0;
+          const empty = articles === 0;
           return (
             <Link
               key={`${iss.issue_number}-${iss.id}`}
@@ -54,15 +78,14 @@ export default function VolumeIssuesPage() {
                   Issue {iss.issue_number}
                   {iss.month ? ` · ${iss.month} ${iss.year ?? ''}` : ''}
                 </h3>
-                <span className="text-gray-400 text-sm">{iss.article_count} articles</span>
+                <span className="text-gray-400 text-sm">{articles} articles</span>
               </div>
               {iss.id === 0 ? (
                 <p className="text-amber-300 text-sm mt-3">Issue missing from archive</p>
               ) : (
                 <>
                   <p className="text-sm text-gray-400 mt-2">
-                    {iss.cited_count} cited · Scholar {iss.scholar_total} · Crossref{' '}
-                    {iss.crossref_total} · {iss.uncited_count} not cited
+                    {cited} cited · Scholar {scholar} · Crossref {crossref} · {uncited} not cited
                   </p>
                   <div className="h-40 mt-2">
                     <ResponsiveContainer>

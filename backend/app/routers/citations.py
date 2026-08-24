@@ -98,6 +98,23 @@ def _is_cited(article: Article) -> bool:
     return (article.scholar_citation_count or 0) > 0 or (article.crossref_citation_count or 0) > 0
 
 
+def _issue_stats(issue: Issue, arts: list[Article]) -> IssueStatsOut:
+    cited = [a for a in arts if _is_cited(a)]
+    return IssueStatsOut(
+        id=issue.id,
+        volume=issue.volume,
+        issue_number=issue.issue_number,
+        year=issue.year,
+        month=issue.month,
+        article_count=len(arts),
+        cited_count=len(cited),
+        uncited_count=len(arts) - len(cited),
+        scholar_total=sum(a.scholar_citation_count or 0 for a in arts),
+        crossref_total=sum(a.crossref_citation_count or 0 for a in arts),
+        citations_synced=bool(arts) and all(a.citation_synced_at for a in arts),
+    )
+
+
 @router.post("/journals", response_model=JournalOut, status_code=status.HTTP_201_CREATED)
 async def create_journal(body: JournalCreate, db: Db, _user: CurrentUser):
     taken = await db.execute(
@@ -227,6 +244,27 @@ async def list_volumes(journal_id: int, db: Db, _user: CurrentUser):
     return out
 
 
+@router.get("/journals/{journal_id}/issues", response_model=list[IssueStatsOut])
+async def list_journal_issues(journal_id: int, db: Db, _user: CurrentUser):
+    await _journal_or_404(db, journal_id)
+    issues = list(
+        (
+            await db.execute(
+                select(Issue)
+                .where(Issue.journal_id == journal_id)
+                .order_by(Issue.volume.desc(), Issue.issue_number.desc())
+            )
+        ).scalars().all()
+    )
+    out: list[IssueStatsOut] = []
+    for issue in issues:
+        arts = list(
+            (await db.execute(select(Article).where(Article.issue_id == issue.id))).scalars().all()
+        )
+        out.append(_issue_stats(issue, arts))
+    return out
+
+
 @router.get(
     "/journals/{journal_id}/volumes/{volume}/issues",
     response_model=list[IssueStatsOut],
@@ -258,21 +296,7 @@ async def list_issues(journal_id: int, volume: int, db: Db, _user: CurrentUser):
             arts = list(
                 (await db.execute(select(Article).where(Article.issue_id == issue.id))).scalars().all()
             )
-            cited = [a for a in arts if _is_cited(a)]
-            out.append(
-                IssueStatsOut(
-                    id=issue.id,
-                    volume=issue.volume,
-                    issue_number=issue.issue_number,
-                    year=issue.year,
-                    month=issue.month,
-                    article_count=len(arts),
-                    cited_count=len(cited),
-                    uncited_count=len(arts) - len(cited),
-                    scholar_total=sum(a.scholar_citation_count or 0 for a in arts),
-                    crossref_total=sum(a.crossref_citation_count or 0 for a in arts),
-                )
-            )
+            out.append(_issue_stats(issue, arts))
     return out
 
 
@@ -303,20 +327,8 @@ async def list_issue_articles(
         ).scalars().all()
     )
     coverage = compute_issue_coverage(arts, issue)
-    cited = [a for a in arts if _is_cited(a)]
     return {
-        "issue": IssueStatsOut(
-            id=issue.id,
-            volume=issue.volume,
-            issue_number=issue.issue_number,
-            year=issue.year,
-            month=issue.month,
-            article_count=len(arts),
-            cited_count=len(cited),
-            uncited_count=len(arts) - len(cited),
-            scholar_total=sum(a.scholar_citation_count or 0 for a in arts),
-            crossref_total=sum(a.crossref_citation_count or 0 for a in arts),
-        ),
+        "issue": _issue_stats(issue, arts),
         "articles": [_article_out(a) for a in arts],
         "coverage": coverage,
     }
@@ -584,6 +596,26 @@ async def sync_issue_citations(issue_id: int, db: Db, _user: CurrentUser):
         await sync_article_citations(db, article)
         synced.append(_article_out(article))
     return {"articles": synced}
+
+
+@router.post("/journals/{journal_id}/sync-citations")
+async def sync_journal_citations(journal_id: int, db: Db, _user: CurrentUser):
+    await _journal_or_404(db, journal_id)
+    arts = list(
+        (
+            await db.execute(
+                select(Article)
+                .options(selectinload(Article.issue).selectinload(Issue.journal))
+                .join(Issue, Article.issue_id == Issue.id)
+                .where(Issue.journal_id == journal_id)
+            )
+        ).scalars().all()
+    )
+    synced = []
+    for article in arts[:80]:
+        await sync_article_citations(db, article)
+        synced.append(_article_out(article))
+    return {"synced": len(synced), "articles": synced}
 
 
 @router.post("/manuscripts", status_code=status.HTTP_201_CREATED)

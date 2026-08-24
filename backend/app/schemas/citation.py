@@ -59,6 +59,7 @@ class IssueStatsOut(BaseModel):
     uncited_count: int = 0
     scholar_total: int = 0
     crossref_total: int = 0
+    citations_synced: bool = False
 
 
 class PageRange(BaseModel):

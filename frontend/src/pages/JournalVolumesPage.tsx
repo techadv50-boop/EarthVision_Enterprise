@@ -21,6 +21,20 @@ type InventoryRow = {
   downloaded?: boolean;
 };
 
+type LocalIssue = {
+  id: number;
+  volume: number;
+  issue_number: number;
+  year?: number;
+  month?: string;
+  article_count: number;
+  cited_count: number;
+  uncited_count: number;
+  scholar_total: number;
+  crossref_total: number;
+  citations_synced?: boolean;
+};
+
 type CrawlJob = Record<string, unknown> & {
   id?: number;
   status?: string;
@@ -29,12 +43,12 @@ type CrawlJob = Record<string, unknown> & {
   inventory?: InventoryRow[];
 };
 
-function issueLabel(row: InventoryRow) {
+function issueLabel(row: { volume?: number | null; issue_number?: number | null; year?: number | null; title?: string; url?: string; month?: string }) {
   if (row.volume && row.issue_number) {
-    const year = row.year ? ` (${row.year})` : '';
-    return `Vol. ${row.volume} No. ${row.issue_number}${year}`;
+    const when = row.month || row.year ? ` (${[row.month, row.year].filter(Boolean).join(' ')})` : '';
+    return `Vol. ${row.volume} No. ${row.issue_number}${when}`;
   }
-  return row.title || row.url;
+  return row.title || row.url || 'Issue';
 }
 
 function isActiveStatus(status?: string) {
@@ -80,11 +94,13 @@ export default function JournalVolumesPage() {
   const id = Number(journalId);
   const [journal, setJournal] = useState<{ name: string; archive_url?: string } | null>(null);
   const [volumes, setVolumes] = useState<Volume[]>([]);
+  const [localIssues, setLocalIssues] = useState<LocalIssue[]>([]);
   const [files, setFiles] = useState<FileList | null>(null);
   const [archiveUrl, setArchiveUrl] = useState('');
   const [crawl, setCrawl] = useState<CrawlJob | null>(null);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
   const inventory = useMemo(
     () => (Array.isArray(crawl?.inventory) ? (crawl?.inventory as InventoryRow[]) : []),
@@ -92,22 +108,81 @@ export default function JournalVolumesPage() {
   );
   const downloading = isActiveStatus(crawl?.status) && String(crawl?.phase || '') === 'downloading';
   const scanning = isActiveStatus(crawl?.status) && !downloading;
-  const awaitingSelection =
-    inventory.length > 0 &&
-    !scanning &&
-    !downloading &&
-    (crawl?.status === 'awaiting_selection' ||
-      crawl?.status === 'completed' ||
-      crawl?.status === 'cancelled' ||
-      crawl?.phase === 'awaiting_selection');
+
+  const localByKey = useMemo(() => {
+    const map = new Map<string, LocalIssue>();
+    for (const iss of localIssues) {
+      map.set(`${iss.volume}-${iss.issue_number}`, iss);
+    }
+    return map;
+  }, [localIssues]);
+
+  const issueRows = useMemo(() => {
+    const rows: Array<{
+      key: string;
+      url?: string;
+      volume?: number | null;
+      issue_number?: number | null;
+      year?: number | null;
+      month?: string;
+      title?: string;
+      article_count: number;
+      scholar_total: number;
+      crossref_total: number;
+      cited_count: number;
+      downloaded: boolean;
+      localId?: number;
+    }> = [];
+    const seen = new Set<string>();
+    for (const row of inventory) {
+      const key = row.volume && row.issue_number ? `${row.volume}-${row.issue_number}` : row.url;
+      const local = row.volume && row.issue_number ? localByKey.get(`${row.volume}-${row.issue_number}`) : undefined;
+      rows.push({
+        key,
+        url: row.url,
+        volume: row.volume,
+        issue_number: row.issue_number,
+        year: local?.year ?? row.year,
+        month: local?.month,
+        title: row.title,
+        article_count: Number(local?.article_count || row.article_count || 0),
+        scholar_total: local?.scholar_total || 0,
+        crossref_total: local?.crossref_total || 0,
+        cited_count: local?.cited_count || 0,
+        downloaded: Boolean(local || row.downloaded),
+        localId: local?.id,
+      });
+      seen.add(key);
+    }
+    for (const iss of localIssues) {
+      const key = `${iss.volume}-${iss.issue_number}`;
+      if (seen.has(key)) continue;
+      rows.push({
+        key,
+        volume: iss.volume,
+        issue_number: iss.issue_number,
+        year: iss.year,
+        month: iss.month,
+        article_count: iss.article_count,
+        scholar_total: iss.scholar_total,
+        crossref_total: iss.crossref_total,
+        cited_count: iss.cited_count,
+        downloaded: true,
+        localId: iss.id,
+      });
+    }
+    return rows;
+  }, [inventory, localIssues, localByKey]);
 
   const load = async () => {
-    const [{ data: j }, { data: vols }] = await Promise.all([
+    const [{ data: j }, { data: vols }, issuesRes] = await Promise.all([
       citationApi.journals.get(id),
       citationApi.journals.volumes(id),
+      citationApi.journals.allIssues(id).catch(() => ({ data: [] as LocalIssue[] })),
     ]);
     setJournal(j);
     setVolumes(vols);
+    setLocalIssues(issuesRes.data || []);
     setArchiveUrl(j.archive_url || '');
     try {
       const { data: job } = await citationApi.journals.latestCrawl(id);
@@ -122,10 +197,32 @@ export default function JournalVolumesPage() {
     } catch {
       /* no prior scan */
     }
+    return issuesRes.data || [];
+  };
+
+  const refreshCitations = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setMsg('Looking up Crossref and Google Scholar cited-by counts…');
+    try {
+      await citationApi.journals.syncCitations(id);
+      await load();
+      setMsg('Citation counts updated from Crossref and Google Scholar.');
+    } catch {
+      setMsg('Could not refresh citation counts. Try again in a moment.');
+    } finally {
+      setSyncing(false);
+    }
   };
 
   useEffect(() => {
-    void load();
+    void (async () => {
+      const issues = await load();
+      const needsSync = issues.some((iss) => iss.article_count > 0 && !iss.citations_synced);
+      if (needsSync) {
+        await refreshCitations();
+      }
+    })();
   }, [id]);
 
   const pollJob = async (jobId: number) => {
@@ -144,6 +241,7 @@ export default function JournalVolumesPage() {
     }
     if (job.status === 'awaiting_selection') {
       setMsg('Choose which issues to download. Unchecked issues are left on the site.');
+      await load();
       return;
     }
     setMsg(job.message || `Crawl ${job.status}`);
@@ -155,7 +253,10 @@ export default function JournalVolumesPage() {
     setMsg('Uploading…');
     await citationApi.journals.uploadPapers(id, Array.from(files));
     setMsg('Papers filed into the archive.');
-    await load();
+    const issues = await load();
+    if (issues.some((iss) => iss.article_count > 0 && !iss.citations_synced)) {
+      await refreshCitations();
+    }
   };
 
   const startCrawl = async () => {
@@ -202,7 +303,7 @@ export default function JournalVolumesPage() {
       <h2 className="text-2xl font-semibold mb-2">{journal?.name}</h2>
       <p className="text-gray-400 mb-6">Volumes and article totals. Missing volume numbers are flagged.</p>
 
-      <div className="grid md:grid-cols-2 gap-4 mb-8">
+      <div className="grid md:grid-cols-2 gap-4 mb-4">
         <div className="panel p-4 space-y-3">
           <h3 className="font-medium">1. Upload PDFs</h3>
           <input
@@ -219,7 +320,7 @@ export default function JournalVolumesPage() {
           <h3 className="font-medium">2. Scan archive issues</h3>
           <p className="text-xs text-gray-400">
             Lists every issue and how many articles it contains. PDFs are not downloaded until you
-            choose which issues to fetch.
+            choose which issues to fetch. Citation counts come from the DOI (Crossref) and Google Scholar.
           </p>
           <input
             className="input-field"
@@ -227,7 +328,7 @@ export default function JournalVolumesPage() {
             onChange={(e) => setArchiveUrl(e.target.value)}
             placeholder="https://journal.50sea.com/index.php/IJIST/issue/archive"
           />
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button
               className="btn-primary"
               type="button"
@@ -245,30 +346,38 @@ export default function JournalVolumesPage() {
                 Cancel
               </button>
             ) : null}
+            {localIssues.length > 0 && (
+              <button className="btn-secondary" type="button" disabled={syncing} onClick={() => void refreshCitations()}>
+                {syncing ? 'Refreshing citations…' : 'Refresh citation counts'}
+              </button>
+            )}
           </div>
           {crawl && (scanning || downloading) && <CrawlProgress crawl={crawl} />}
         </div>
       </div>
       {msg && <p className="text-earth-400 text-sm mb-4">{msg}</p>}
 
-      {awaitingSelection && inventory.length > 0 && (
+      {issueRows.length > 0 && (
         <div className="panel p-4 mb-8 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="font-medium">Issues found</h3>
+              <h3 className="font-medium">2. Issues</h3>
               <p className="text-sm text-gray-400">
-                {inventory.length} issues · {inventory.reduce((n, row) => n + Number(row.article_count || 0), 0)}{' '}
-                articles. Tick issues to download; leave the rest.
+                {issueRows.length} issues ·{' '}
+                {issueRows.reduce((n, row) => n + Number(row.article_count || 0), 0)} articles.
+                Tick remote issues to download; leave the rest on the site.
               </p>
             </div>
-            <div className="flex gap-2">
-              <button className="btn-secondary" type="button" onClick={() => toggleAll(true)}>
-                Select all
-              </button>
-              <button className="btn-secondary" type="button" onClick={() => toggleAll(false)}>
-                Leave all
-              </button>
-            </div>
+            {inventory.length > 0 && (
+              <div className="flex gap-2">
+                <button className="btn-secondary" type="button" onClick={() => toggleAll(true)}>
+                  Select all
+                </button>
+                <button className="btn-secondary" type="button" onClick={() => toggleAll(false)}>
+                  Leave all
+                </button>
+              </div>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -277,41 +386,66 @@ export default function JournalVolumesPage() {
                   <th className="py-2 pr-3 w-10">Get</th>
                   <th className="py-2 pr-3">Issue</th>
                   <th className="py-2 pr-3 text-right">Articles</th>
+                  <th className="py-2 pr-3 text-right">Scholar</th>
+                  <th className="py-2 pr-3 text-right">Crossref</th>
                   <th className="py-2 pl-3">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {inventory.map((row) => (
-                  <tr key={row.url} className="border-b border-gray-800/80">
+                {issueRows.map((row) => (
+                  <tr key={row.key} className="border-b border-gray-800/80">
                     <td className="py-2 pr-3">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(selected[row.url])}
-                        disabled={Boolean(row.downloaded)}
-                        onChange={(e) =>
-                          setSelected((prev) => ({ ...prev, [row.url]: e.target.checked }))
-                        }
-                      />
+                      {row.url ? (
+                        <input
+                          type="checkbox"
+                          checked={Boolean(selected[row.url])}
+                          disabled={Boolean(row.downloaded) && !inventory.find((i) => i.url === row.url)}
+                          onChange={(e) =>
+                            setSelected((prev) => ({ ...prev, [row.url!]: e.target.checked }))
+                          }
+                        />
+                      ) : (
+                        <span className="text-gray-600">—</span>
+                      )}
                     </td>
                     <td className="py-2 pr-3">
-                      <div>{issueLabel(row)}</div>
+                      {row.localId && row.volume ? (
+                        <Link
+                          to={`/journals/${id}/volumes/${row.volume}/issues/${row.issue_number}`}
+                          className="hover:text-earth-400"
+                        >
+                          {issueLabel(row)}
+                        </Link>
+                      ) : (
+                        <div>{issueLabel(row)}</div>
+                      )}
                       {row.title && row.volume ? (
                         <div className="text-xs text-gray-500 truncate max-w-xl">{row.title}</div>
                       ) : null}
                     </td>
                     <td className="py-2 pr-3 text-right font-medium">{Number(row.article_count || 0)}</td>
+                    <td className="py-2 pr-3 text-right">{row.scholar_total}</td>
+                    <td className="py-2 pr-3 text-right">{row.crossref_total}</td>
                     <td className="py-2 pl-3 text-xs text-gray-400">
-                      {row.downloaded ? 'Downloaded' : selected[row.url] ? 'Will download' : 'Leave'}
+                      {row.downloaded
+                        ? row.cited_count
+                          ? `On file · ${row.cited_count} cited`
+                          : 'On file'
+                        : selected[row.url || '']
+                          ? 'Will download'
+                          : 'Leave'}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <button className="btn-primary" type="button" onClick={() => void startDownload()}>
-            Download {selectedCount} selected issue{selectedCount === 1 ? '' : 's'}
-            {selectedArticles ? ` (${selectedArticles} articles)` : ''}
-          </button>
+          {inventory.length > 0 && (
+            <button className="btn-primary" type="button" onClick={() => void startDownload()}>
+              Download {selectedCount} selected issue{selectedCount === 1 ? '' : 's'}
+              {selectedArticles ? ` (${selectedArticles} articles)` : ''}
+            </button>
+          )}
         </div>
       )}
 
