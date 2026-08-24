@@ -18,6 +18,102 @@ def test_normalize_doi():
     assert normalize_doi("doi:10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
 
 
+def test_citing_record_from_crossref():
+    from app.services.citation_counts import citing_record_from_crossref
+
+    row = citing_record_from_crossref(
+        {
+            "DOI": "10.1007/s00500-022-06794-6",
+            "title": ["A citing article about heat islands"],
+            "author": [{"given": "Jane", "family": "Doe"}],
+            "container-title": ["Soft Computing"],
+            "published-print": {"date-parts": [[2022, 3]]},
+            "URL": "https://doi.org/10.1007/s00500-022-06794-6",
+        }
+    )
+    assert row["source"] == "crossref"
+    assert row["year"] == 2022
+    assert row["venue"] == "Soft Computing"
+    assert "Jane Doe" in row["authors"]
+    assert row["doi"] == "10.1007/s00500-022-06794-6"
+
+
+def test_merge_citing_works_includes_crossref_and_dedupes():
+    from app.services.citation_counts import _citing_record, merge_citing_works
+
+    merged = merge_citing_works(
+        [
+            _citing_record(
+                source="crossref",
+                title="Same paper",
+                doi="10.1/abc",
+                authors="CR Author",
+                year=2022,
+                venue="Soft Computing",
+            ),
+            _citing_record(source="crossref", title="Only Crossref", doi="10.cr/1", year=2023),
+        ],
+        [
+            _citing_record(source="openalex", title="Same paper", doi="10.1/abc", authors="OA Only"),
+            _citing_record(source="openalex", title="Only OpenAlex", doi="10.oa/1", year=2024),
+        ],
+    )
+    dois = [row["doi"] for row in merged]
+    assert dois[0] in {"10.cr/1", "10.1/abc"}
+    assert "10.cr/1" in dois
+    assert "10.oa/1" in dois
+    same = next(row for row in merged if row["doi"] == "10.1/abc")
+    assert "crossref" in same["source"]
+    assert "openalex" in same["source"]
+    assert same["venue"] == "Soft Computing"
+    assert same["authors"] == "CR Author"
+    assert merged[0]["source"].split(",")[0] == "crossref" or "crossref" in merged[0]["source"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_citing_works_keeps_crossref_if_openalex_fails(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import citation_counts as counts_mod
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("openalex down")
+
+    async def fake_crossref(_client, doi):
+        assert doi == "10.33411/ijist/20190101011"
+        return [
+            counts_mod._citing_record(
+                source="crossref",
+                title="Crossref citing article",
+                doi="10.1007/s00500-022-06794-6",
+                year=2022,
+                venue="Soft Computing",
+            )
+        ]
+
+    monkeypatch.setattr(counts_mod, "_fetch_openalex_citing_works", boom)
+    monkeypatch.setattr(counts_mod, "_fetch_crossref_citing_works", fake_crossref)
+
+    rows = await counts_mod.fetch_citing_works(
+        SimpleNamespace(doi="10.33411/ijist/20190101011", title="Urban Heat Island")
+    )
+    assert len(rows) == 1
+    assert rows[0]["source"] == "crossref"
+    assert rows[0]["doi"] == "10.1007/s00500-022-06794-6"
+
+
+def test_citing_dois_from_opencitations():
+    from app.services.citation_counts import _citing_dois_from_opencitations
+
+    dois = _citing_dois_from_opencitations(
+        [
+            {"citing": "10.1007/s00500-022-06794-6", "cited": "10.33411/ijist/20190101011"},
+            {"citing": "doi:10.1007/s00500-022-06794-6", "cited": "10.33411/ijist/20190101011"},
+        ]
+    )
+    assert dois == ["10.1007/s00500-022-06794-6"]
+
+
 def _pdf_from_text(text: str) -> bytes:
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
@@ -176,6 +272,15 @@ async def test_citation_sync_and_operator_patch(client: AsyncClient, monkeypatch
     async def fake_citing(article):
         return [
             {
+                "source": "crossref",
+                "title": "A Crossref paper that cites this work",
+                "authors": "C. Reviewer",
+                "year": 2023,
+                "venue": "Soft Computing",
+                "doi": "10.1007/cite",
+                "url": "https://doi.org/10.1007/cite",
+            },
+            {
                 "source": "openalex",
                 "title": "A later paper that cites this work",
                 "authors": "A. Reviewer, B. Editor",
@@ -183,7 +288,7 @@ async def test_citation_sync_and_operator_patch(client: AsyncClient, monkeypatch
                 "venue": "Example Journal",
                 "doi": "10.9999/cite",
                 "url": "https://doi.org/10.9999/cite",
-            }
+            },
         ]
 
     monkeypatch.setattr(counts_mod, "fetch_citing_works", fake_citing)
@@ -194,8 +299,10 @@ async def test_citation_sync_and_operator_patch(client: AsyncClient, monkeypatch
     assert body["crossref_citation_count"] == 14
     assert body["scholar_citation_count"] == 20
     assert body["doi"] == "10.1234/fake"
-    assert body["citing_works"][0]["authors"] == "A. Reviewer, B. Editor"
-    assert body["citing_works"][0]["doi"] == "10.9999/cite"
+    sources = {row["source"]: row for row in body["citing_works"]}
+    assert sources["crossref"]["doi"] == "10.1007/cite"
+    assert sources["openalex"]["authors"] == "A. Reviewer, B. Editor"
+    assert sources["openalex"]["doi"] == "10.9999/cite"
 
     patched = await client.patch(
         f"/api/v1/articles/{aid}",

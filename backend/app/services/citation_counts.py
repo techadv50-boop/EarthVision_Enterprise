@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime, timezone
+from itertools import chain
 from typing import Optional
 from urllib.parse import quote
 
@@ -17,6 +19,8 @@ from app.models.citation import Article
 CROSSREF = "https://api.crossref.org/works"
 OPENALEX = "https://api.openalex.org/works"
 SCHOLAR = "https://scholar.google.com/scholar"
+OPENCITATIONS_CITATIONS = "https://api.opencitations.net/index/v1/citations"
+SOURCE_RANK = {"crossref": 0, "openalex": 1, "scholar": 2}
 DOI_PREFIX_RE = re.compile(r"^(https?://)?(dx\.)?doi\.org/", re.I)
 CITED_BY_RE = re.compile(r"Cited by\s+(\d+)", re.I)
 SCHOLAR_CITES_RE = re.compile(
@@ -98,51 +102,214 @@ def _from_openalex_work(work: dict) -> dict:
     )
 
 
+def _crossref_authors(msg: dict) -> str:
+    names = []
+    for item in msg.get("author") or []:
+        given = (item.get("given") or "").strip()
+        family = (item.get("family") or "").strip()
+        name = " ".join(part for part in (given, family) if part) or (item.get("name") or "").strip()
+        if name:
+            names.append(name)
+        if len(names) >= 8:
+            break
+    return ", ".join(names)
+
+
+def _crossref_year(msg: dict) -> int | None:
+    for key in ("published-print", "published-online", "published", "issued", "created"):
+        parts = ((msg.get(key) or {}).get("date-parts") or [[None]])[0]
+        if parts and parts[0]:
+            try:
+                return int(parts[0])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def citing_record_from_crossref(msg: dict) -> dict:
+    """Build a citing-work row from a Crossref `/works` message."""
+    title = msg.get("title")
+    if isinstance(title, list):
+        title = title[0] if title else ""
+    venue = msg.get("container-title")
+    if isinstance(venue, list):
+        venue = venue[0] if venue else ""
+    doi = normalize_doi(msg.get("DOI"))
+    return _citing_record(
+        source="crossref",
+        title=(str(title or "").strip() or doi or "Untitled citing work"),
+        authors=_crossref_authors(msg),
+        year=_crossref_year(msg),
+        venue=str(venue or "").strip(),
+        doi=doi,
+        url=msg.get("URL"),
+    )
+
+
+def _source_parts(value: Optional[str]) -> list[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def merge_citing_works(*groups: list[dict]) -> list[dict]:
+    """Dedupe citing records by DOI/title and keep Crossref rows first."""
+    by_key: dict[str, dict] = {}
+    for row in chain.from_iterable(groups):
+        if not row:
+            continue
+        doi = normalize_doi(row.get("doi")) if row.get("doi") else None
+        title = (row.get("title") or "").strip() or doi or ""
+        if not title:
+            continue
+        merged = dict(row)
+        merged["title"] = title
+        if doi:
+            merged["doi"] = doi
+        key = (doi or title).lower()
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = merged
+            continue
+        sources: list[str] = []
+        for part in _source_parts(existing.get("source")) + _source_parts(merged.get("source")):
+            if part not in sources:
+                sources.append(part)
+        existing["source"] = ",".join(sources)
+        prefer_incoming = "crossref" in _source_parts(merged.get("source")) and "crossref" not in _source_parts(
+            existing.get("source")
+        )
+        for field in ("authors", "year", "venue", "url", "doi", "title"):
+            if prefer_incoming and merged.get(field):
+                existing[field] = merged[field]
+            elif not existing.get(field) and merged.get(field):
+                existing[field] = merged[field]
+    rows = list(by_key.values())
+
+    def _sort_key(item: dict) -> tuple:
+        sources = _source_parts(item.get("source"))
+        rank = min((SOURCE_RANK.get(source, 9) for source in sources), default=9)
+        year = item.get("year") or 0
+        try:
+            year_n = -int(year)
+        except (TypeError, ValueError):
+            year_n = 0
+        return (rank, year_n, (item.get("title") or "").lower())
+
+    rows.sort(key=_sort_key)
+    return rows
+
+
+def _citing_dois_from_opencitations(payload) -> list[str]:
+    rows = payload if isinstance(payload, list) else []
+    dois: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        citing = row.get("citing") or row.get("citing_doi") or ""
+        citing = re.sub(r"^doi:", "", str(citing), flags=re.I).strip()
+        doi = normalize_doi(citing)
+        if doi and doi.lower() not in seen:
+            seen.add(doi.lower())
+            dois.append(doi)
+    return dois
+
+
+async def _fetch_openalex_citing_works(client: httpx.AsyncClient, doi: Optional[str], title: str) -> list[dict]:
+    work = None
+    if doi:
+        resp = await client.get(f"{OPENALEX}/doi:{doi}")
+        if resp.status_code == 200:
+            work = resp.json()
+    if work is None and title:
+        resp = await client.get(OPENALEX, params={"search": title, "per-page": 5})
+        if resp.status_code == 200:
+            for item in resp.json().get("results") or []:
+                if _title_overlap(title, item.get("display_name") or item.get("title") or ""):
+                    work = item
+                    break
+    if not work:
+        return []
+    oid = str(work.get("id") or "").rsplit("/", 1)[-1]
+    if not oid:
+        return []
+    cited = await client.get(
+        OPENALEX,
+        params={"filter": f"cites:{oid}", "per-page": 50, "sort": "publication_year:desc"},
+    )
+    if cited.status_code != 200:
+        return []
+    return [_from_openalex_work(item) for item in cited.json().get("results") or []]
+
+
+async def _hydrate_crossref_citing_doi(client: httpx.AsyncClient, citing_doi: str) -> dict:
+    resp = await client.get(f"{CROSSREF}/{quote(citing_doi, safe=':/')}")
+    if resp.status_code == 200:
+        return citing_record_from_crossref(resp.json().get("message") or {})
+    return _citing_record(source="crossref", title=citing_doi, doi=citing_doi)
+
+
+async def _opencitations_citing_dois(client: httpx.AsyncClient, doi: str) -> list[str]:
+    encoded = quote(doi, safe="")
+    for url in (
+        f"{OPENCITATIONS_CITATIONS}/{encoded}",
+        f"https://opencitations.net/index/coci/api/v1/citations/{encoded}",
+        f"https://opencitations.net/index/api/v1/citations/{encoded}",
+    ):
+        try:
+            resp = await client.get(url)
+        except Exception:
+            continue
+        if resp.status_code != 200:
+            continue
+        try:
+            dois = _citing_dois_from_opencitations(resp.json())
+        except Exception:
+            continue
+        if dois:
+            return dois
+    return []
+
+
+async def _fetch_crossref_citing_works(client: httpx.AsyncClient, doi: str) -> list[dict]:
+    """Citing articles from the Crossref citation graph (OpenCitations COCI)."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for citing in await _opencitations_citing_dois(client, doi):
+        key = citing.lower()
+        if key not in seen:
+            seen.add(key)
+            found.append(citing)
+    if not found:
+        return []
+    sem = asyncio.Semaphore(5)
+
+    async def _one(citing_doi: str) -> dict:
+        async with sem:
+            try:
+                return await _hydrate_crossref_citing_doi(client, citing_doi)
+            except Exception:
+                return _citing_record(source="crossref", title=citing_doi, doi=citing_doi)
+
+    rows = await asyncio.gather(*[_one(citing_doi) for citing_doi in found[:50]])
+    return [row for row in rows if row]
+
+
 async def fetch_citing_works(article: Article) -> list[dict]:
-    """Return works that cite this article so the operator can open the original records."""
+    """Return works that cite this article (Crossref + OpenAlex) so the operator can open them."""
     doi = normalize_doi(article.doi)
     title = (article.title or "").strip()
-    headers = _openalex_headers()
-    works: list[dict] = []
-    seen: set[str] = set()
-
-    def _add(row: dict) -> None:
-        key = (row.get("doi") or row.get("url") or row.get("title") or "").lower()
-        if not key or key in seen or not row.get("title"):
-            return
-        seen.add(key)
-        works.append(row)
-
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), headers=headers, follow_redirects=True) as client:
-            work = None
-            if doi:
-                resp = await client.get(f"{OPENALEX}/doi:{doi}")
-                if resp.status_code == 200:
-                    work = resp.json()
-            if work is None and title:
-                resp = await client.get(
-                    OPENALEX,
-                    params={"search": title, "per-page": 5},
-                )
-                if resp.status_code == 200:
-                    for item in (resp.json().get("results") or []):
-                        if _title_overlap(title, item.get("display_name") or item.get("title") or ""):
-                            work = item
-                            break
-            if work:
-                oid = str(work.get("id") or "").rsplit("/", 1)[-1]
-                if oid:
-                    cited = await client.get(
-                        OPENALEX,
-                        params={"filter": f"cites:{oid}", "per-page": 50, "sort": "publication_year:desc"},
-                    )
-                    if cited.status_code == 200:
-                        for item in cited.json().get("results") or []:
-                            _add(_from_openalex_work(item))
-    except Exception:
-        return works
-    return works
+    openalex_rows: list[dict] = []
+    crossref_rows: list[dict] = []
+    headers = {**_crossref_headers(), **_openalex_headers()}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), headers=headers, follow_redirects=True) as client:
+        try:
+            openalex_rows = await _fetch_openalex_citing_works(client, doi, title)
+        except Exception:
+            openalex_rows = []
+        if doi:
+            try:
+                crossref_rows = await _fetch_crossref_citing_works(client, doi)
+            except Exception:
+                crossref_rows = []
+    return merge_citing_works(crossref_rows, openalex_rows)
 
 
 def _title_overlap(left: str, right: str) -> bool:
