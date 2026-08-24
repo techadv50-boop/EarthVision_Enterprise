@@ -18,6 +18,23 @@ def test_normalize_doi():
     assert normalize_doi("doi:10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
 
 
+def test_article_page_pdfs_ignore_related_links():
+    from app.services.crawler import _pdfs_for_article as pdfs_for_article
+
+    html = """
+    <html>
+      <meta name="citation_pdf_url" content="https://example.test/article/download/12/30">
+      <a href="https://example.test/article/view/99">Related</a>
+      <a href="https://example.test/article/view/99/1">PDF</a>
+      <a href="https://example.test/article/view/12/31">PDF</a>
+    </html>
+    """
+    pdfs = pdfs_for_article(html, "https://example.test/article/view/12", "12")
+    assert "https://example.test/article/download/12/30" in pdfs
+    assert any(item.endswith("/view/12/31") for item in pdfs)
+    assert not any("/view/99" in item for item in pdfs)
+
+
 def test_citing_record_from_crossref():
     from app.services.citation_counts import citing_record_from_crossref
 
@@ -349,6 +366,14 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
                 b'<a href="https://example.test/article/view/9/11">PDF</a>'
                 b'<a href="https://example.test/article/view/10">Second</a>'
                 b'<a href="https://example.test/article/view/10/12">PDF</a>'
+                b'<a href="https://example.test/article/view/12">Third, PDF only on article page</a>'
+                b"</html>"
+            ),
+            "https://example.test/article/view/12": (
+                b"<html>"
+                b'<meta name="citation_pdf_url" content="https://example.test/article/download/12/30">'
+                b'<a href="https://example.test/article/view/99">Related</a>'
+                b'<a href="https://example.test/article/view/99/1">PDF</a>'
                 b"</html>"
             ),
             "https://example.test/issue/view/2": (
@@ -385,9 +410,12 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
     assert body["status"] == "awaiting_selection", body
     assert body["issues_found"] == 2
     by_url = {row["url"]: row for row in body["inventory"]}
-    assert by_url["https://example.test/issue/view/1"]["article_count"] == 2
+    assert by_url["https://example.test/issue/view/1"]["article_count"] == 3
     assert by_url["https://example.test/issue/view/2"]["article_count"] == 1
-    assert body["articles_found"] == 3
+    assert body["articles_found"] == 4
+    pdfs = by_url["https://example.test/issue/view/1"]["pdf_urls"]
+    assert any(url.endswith("/download/12/30") or "/download/12/" in url for url in pdfs)
+    assert not any("/article/view/99" in url for url in pdfs)
     listing = await client.get("/api/v1/journals", headers=headers)
     crawled = next(row for row in listing.json() if row["id"] == jid)
     assert crawled["article_count"] == 0

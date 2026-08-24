@@ -6,7 +6,7 @@ import asyncio
 import re
 from collections import deque
 from datetime import datetime, timezone
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,6 +68,82 @@ def is_pdf_url(url: str, link_text: str = "") -> bool:
     if PDF_LINK_TEXT.match(link_text or ""):
         return True
     return False
+
+
+def _article_id(url: str) -> str | None:
+    match = ARTICLE_VIEW_HREF.search(urlparse(url).path or "")
+    return match.group(1) if match else None
+
+
+def _article_landing_url(url: str, article_id: str | None = None) -> str:
+    parsed = urlparse(_clean(url))
+    path = parsed.path or ""
+    match = ARTICLE_VIEW_HREF.search(path)
+    aid = article_id or (match.group(1) if match else None)
+    if not aid:
+        return _clean(url)
+    path = re.sub(r"/article/view/\d+(?:/\d+)?", f"/article/view/{aid}", path, count=1, flags=re.I)
+    return _clean(urlunparse(parsed._replace(path=path, query="", fragment="")))
+
+
+def _citation_pdf_urls(html: str, base: str) -> list[str]:
+    found: list[str] = []
+    patterns = (
+        re.compile(
+            r'<meta\b[^>]*\bname=["\']citation_pdf_url["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+            re.I,
+        ),
+        re.compile(
+            r'<meta\b[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bname=["\']citation_pdf_url["\']',
+            re.I,
+        ),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(html or ""):
+            found.append(_clean(urljoin(base, match.group(1))))
+    return found
+
+
+def _pdfs_for_article(html: str, page_url: str, article_id: str | None = None) -> list[str]:
+    """PDFs that belong to this article — ignore related-article links on the same page."""
+    pdfs = _citation_pdf_urls(html, page_url)
+    for href, text in extract_anchors(html, page_url):
+        path = urlparse(href).path or ""
+        view = ARTICLE_VIEW_HREF.search(path)
+        if article_id:
+            if view and view.group(1) != article_id:
+                continue
+            download = re.search(r"/article/download/(\d+)", path, re.I)
+            if download and download.group(1) != article_id:
+                continue
+        if is_pdf_url(href, text) or (view and view.group(2)):
+            pdfs.append(_clean(href))
+    return _unique(pdfs)
+
+
+def _pdf_covers_article(pdf_url: str, article_id: str) -> bool:
+    path = urlparse(pdf_url).path or ""
+    view = ARTICLE_VIEW_HREF.search(path)
+    if view and view.group(1) == article_id:
+        return True
+    return bool(re.search(rf"/article/download/{re.escape(article_id)}(?:/|$)", path, re.I))
+
+
+async def _pdfs_from_article_page(fetch, url: str, article_id: str, delay: float) -> list[str]:
+    if delay:
+        await asyncio.sleep(delay)
+    try:
+        status, body, ctype = await fetch(url)
+    except Exception:
+        return []
+    if status >= 400:
+        return []
+    if _is_pdf_payload(body, ctype):
+        return [_clean(url)]
+    if not _is_html_payload(body, ctype):
+        return []
+    html = body.decode("utf-8", errors="ignore")
+    return _pdfs_for_article(html, url, article_id)
 
 
 def extract_anchors(html: str, base: str) -> list[tuple[str, str]]:
@@ -207,7 +283,15 @@ async def run_download_job(
         chosen = [row for row in inventory if _clean(str(row.get("url") or "")) in selected]
         pdf_urls: list[str] = []
         for row in chosen:
-            pdf_urls.extend(row.get("pdf_urls") or [])
+            pdfs = list(row.get("pdf_urls") or [])
+            article_urls = list(row.get("article_urls") or [])
+            if len(pdfs) < max(int(row.get("article_count") or 0), len(article_urls)):
+                for art_url in article_urls:
+                    aid = _article_id(art_url)
+                    if not aid or any(_pdf_covers_article(url, aid) for url in pdfs):
+                        continue
+                    pdfs.extend(await _pdfs_from_article_page(fetch, art_url, aid, delay))
+            pdf_urls.extend(pdfs)
         pdf_urls = _unique(pdf_urls)
         job.status = "running"
         job.phase = "downloading"
@@ -328,18 +412,33 @@ async def _scan_issues(db: AsyncSession, job: CrawlJob, fetch, delay: float) -> 
             heading = _parse_vol_issue(html)
             if heading[0] and not row.get("volume"):
                 row["volume"], row["issue_number"], row["year"] = heading
-            article_ids: set[str] = set()
+            article_ids: list[str] = []
+            seen_ids: set[str] = set()
+            article_urls: dict[str, str] = {}
             pdfs: list[str] = []
             for href, text in extract_anchors(html, row["url"]):
                 if not _same_host(archive, href):
                     continue
                 match = ARTICLE_VIEW_HREF.search(href)
                 if match:
-                    article_ids.add(match.group(1))
+                    aid = match.group(1)
+                    if aid not in seen_ids:
+                        seen_ids.add(aid)
+                        article_ids.append(aid)
+                        article_urls[aid] = _article_landing_url(href, aid)
                     if match.group(2) or is_pdf_url(href, text):
                         pdfs.append(_clean(href))
                 elif is_pdf_url(href, text):
                     pdfs.append(_clean(href))
+            pdfs = _unique(pdfs)
+            for aid in article_ids:
+                if any(_pdf_covers_article(url, aid) for url in pdfs):
+                    continue
+                landing = article_urls.get(aid)
+                if not landing:
+                    continue
+                pdfs.extend(await _pdfs_from_article_page(fetch, landing, aid, delay))
+            row["article_urls"] = [article_urls[aid] for aid in article_ids]
             row["pdf_urls"] = _unique(pdfs)
             row["article_count"] = len(article_ids) or len(row["pdf_urls"])
             return row
@@ -389,10 +488,11 @@ async def _download_pdfs(
                 continue
             if not _is_pdf_payload(content, ctype) and _is_html_payload(content, ctype):
                 html = content.decode("utf-8", errors="ignore")
+                aid = _article_id(pdf_url)
                 nested = [
                     href
-                    for href, text in extract_anchors(html, pdf_url)
-                    if is_pdf_url(href, text) and _same_host(job.archive_url, href)
+                    for href in _pdfs_for_article(html, pdf_url, aid)
+                    if _same_host(job.archive_url, href)
                 ]
                 fetched = False
                 for nested_url in nested:

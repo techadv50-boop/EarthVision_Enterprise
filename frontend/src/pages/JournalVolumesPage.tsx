@@ -127,6 +127,7 @@ export default function JournalVolumesPage() {
       month?: string;
       title?: string;
       article_count: number;
+      on_file_count?: number;
       scholar_total: number;
       crossref_total: number;
       cited_count: number;
@@ -145,7 +146,8 @@ export default function JournalVolumesPage() {
         year: local?.year ?? row.year,
         month: local?.month,
         title: row.title,
-        article_count: Number(local?.article_count || row.article_count || 0),
+        article_count: Number(row.article_count || local?.article_count || 0),
+        on_file_count: local?.article_count || 0,
         scholar_total: local?.scholar_total || 0,
         crossref_total: local?.crossref_total || 0,
         cited_count: local?.cited_count || 0,
@@ -319,8 +321,9 @@ export default function JournalVolumesPage() {
         <div className="panel p-4 space-y-3">
           <h3 className="font-medium">2. Scan archive issues</h3>
           <p className="text-xs text-gray-400">
-            Lists every issue and how many articles it contains. PDFs are not downloaded until you
-            choose which issues to fetch. Citation counts come from the DOI (Crossref) and Google Scholar.
+            Lists every issue and how many articles it contains. Article pages are opened when the
+            PDF is not on the issue table of contents. PDFs are not downloaded until you choose which
+            issues to fetch. Citation counts come from the DOI (Crossref) and Google Scholar.
           </p>
           <input
             className="input-field"
@@ -423,7 +426,12 @@ export default function JournalVolumesPage() {
                         <div className="text-xs text-gray-500 truncate max-w-xl">{row.title}</div>
                       ) : null}
                     </td>
-                    <td className="py-2 pr-3 text-right font-medium">{Number(row.article_count || 0)}</td>
+                    <td className="py-2 pr-3 text-right font-medium">
+                      {Number(row.article_count || 0)}
+                      {row.on_file_count && row.on_file_count !== row.article_count ? (
+                        <div className="text-xs text-gray-500 font-normal">{row.on_file_count} on file</div>
+                      ) : null}
+                    </td>
                     <td className="py-2 pr-3 text-right">{row.scholar_total}</td>
                     <td className="py-2 pr-3 text-right">{row.crossref_total}</td>
                     <td className="py-2 pl-3 text-xs text-gray-400">
