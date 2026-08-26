@@ -2,7 +2,12 @@
 
 ## Best option: Standalone (no Python / no VS Code)
 
-Download the CI artifact named **WebCrawlerEnterprise-Standalone-Windows**, unzip it, then double-click:
+Download the CI artifact for your Windows version:
+
+- **Windows 7 SP1 / 8 / 10 / 11:** `WebCrawlerEnterprise-Standalone-Windows7`
+- **Windows 10 / 11 (with Playwright):** `WebCrawlerEnterprise-Standalone-Windows`
+
+Unzip it, then double-click:
 
 `Start WebCrawler Enterprise.bat`
 

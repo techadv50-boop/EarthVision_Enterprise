@@ -7,10 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import (
+from webcrawler.qtcompat import (
+    QAction,
     QCheckBox,
+    QCloseEvent,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -20,8 +20,10 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QStatusBar,
+    QTimer,
     QVBoxLayout,
     QWidget,
+    qt_exec,
 )
 
 from webcrawler import __app_name__, __version__
@@ -202,7 +204,7 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         self.settings.contact_scan_only = self.light_mode.isChecked()
         dialog = SettingsDialog(self.settings, self)
-        if dialog.exec():
+        if qt_exec(dialog):
             self.settings = dialog.result_settings()
             self.light_mode.setChecked(bool(self.settings.contact_scan_only))
             self.settings_manager.save(self.settings)
@@ -218,7 +220,7 @@ class MainWindow(QMainWindow):
             forced=False,
             require_current=True,
         )
-        if dialog.exec() and dialog.user:
+        if qt_exec(dialog) and dialog.user:
             self.user = dialog.user
             self.statusBar().showMessage("Password changed", 3000)
 

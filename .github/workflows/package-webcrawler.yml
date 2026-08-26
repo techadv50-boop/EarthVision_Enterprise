@@ -82,7 +82,7 @@ jobs:
           - Run Diagnose.bat
           - Open crash_log.txt
 
-          Windows 7 is NOT supported.
+          For Windows 7, download WebCrawlerEnterprise-Standalone-Windows7 instead.
           "@ | Set-Content -Path (Join-Path $stage "OPEN_ME.txt") -Encoding UTF8
 
           if (-not (Test-Path (Join-Path $stage "WebCrawlerEnterprise.exe"))) {
@@ -106,5 +106,86 @@ jobs:
         with:
           name: WebCrawlerEnterprise-Standalone-Windows
           path: webcrawler_enterprise/dist/WebCrawlerEnterprise-Standalone-Windows.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  windows7-standalone:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Python 3.8 is the last CPython line with practical Windows 7 support.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Install Win7 dependencies
+        working-directory: webcrawler_enterprise
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "pip<25" "setuptools<70" wheel
+          python -m pip install -r requirements-win7.txt
+          python -c "from PySide2 import QtCore; print('PySide2', QtCore.__version__)"
+
+      - name: Build Win7 GUI onedir package
+        working-directory: webcrawler_enterprise
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm webcrawler_enterprise_win7.spec
+
+      - name: Build console diagnose exe into same folder
+        working-directory: webcrawler_enterprise
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onedir --console --name WebCrawlerEnterprise_Console --distpath dist/console_build_win7 main.py
+          Copy-Item "dist/console_build_win7/WebCrawlerEnterprise_Console/WebCrawlerEnterprise_Console.exe" "dist/WebCrawlerEnterprise/WebCrawlerEnterprise_Console.exe" -Force
+
+      - name: Stage Win7 standalone package
+        working-directory: webcrawler_enterprise
+        shell: pwsh
+        run: |
+          $stage = "dist/WebCrawlerEnterprise-Standalone-Win7"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item -Recurse "dist/WebCrawlerEnterprise/*" $stage
+
+          Copy-Item "scripts/Start_WebCrawlerEnterprise.bat" (Join-Path $stage "Start WebCrawler Enterprise.bat")
+          Copy-Item "scripts/Diagnose.bat" (Join-Path $stage "Diagnose.bat")
+          Copy-Item "README_STANDALONE_WIN7.txt" (Join-Path $stage "README_START_HERE.txt")
+
+          @"
+          WebCrawler Enterprise - Standalone (Windows 7 SP1 / 8 / 10 / 11 64-bit)
+
+          1. Extract ALL files from this zip to a folder
+          2. Install VC++ x64 if needed: https://aka.ms/vs/16/release/vc_redist.x64.exe
+          3. Double-click: Start WebCrawler Enterprise.bat
+          4. Login: admin / admin
+
+          This Win7 build uses Qt5 and does not bundle Chromium.
+          PDF buttons / OAI / issue archives still discover and scan PDFs.
+          "@ | Set-Content -Path (Join-Path $stage "OPEN_ME.txt") -Encoding UTF8
+
+          if (-not (Test-Path (Join-Path $stage "WebCrawlerEnterprise.exe"))) {
+            throw "Missing WebCrawlerEnterprise.exe in staged package"
+          }
+          if (-not (Test-Path (Join-Path $stage "_internal"))) {
+            throw "Missing _internal folder in staged package"
+          }
+
+      - name: Zip Win7 standalone package
+        working-directory: webcrawler_enterprise
+        shell: pwsh
+        run: |
+          $zip = "dist/WebCrawlerEnterprise-Standalone-Windows7.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "dist/WebCrawlerEnterprise-Standalone-Win7\*" -DestinationPath $zip -Force
+          Get-Item $zip | Format-List FullName, Length
+
+      - name: Upload Win7 standalone Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebCrawlerEnterprise-Standalone-Windows7
+          path: webcrawler_enterprise/dist/WebCrawlerEnterprise-Standalone-Windows7.zip
           if-no-files-found: error
           retention-days: 30

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal
+from webcrawler.qtcompat import QObject, Signal
 
 from webcrawler.engine.orchestrator import CrawlEngine, ProgressState
 from webcrawler.settings.manager import AppSettings

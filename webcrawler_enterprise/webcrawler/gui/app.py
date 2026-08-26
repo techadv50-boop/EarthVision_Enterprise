@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
-
 from webcrawler import __app_name__, __version__
 from webcrawler.auth.manager import AuthManager
 from webcrawler.gui.login_dialog import LoginDialog
 from webcrawler.gui.main_window import MainWindow
 from webcrawler.launch import prepare_launch_session
+from webcrawler.qtcompat import QApplication, QDialog, QMessageBox, qt_exec
 
 
 def run_app(argv: list[str] | None = None) -> int:
@@ -39,9 +38,9 @@ def run_app(argv: list[str] | None = None) -> int:
         )
 
     login = LoginDialog(auth)
-    if login.exec() != QDialog.Accepted or login.user is None:
+    if qt_exec(login) != QDialog.Accepted or login.user is None:
         return 0
 
     window = MainWindow(auth=auth, user=login.user)
     window.show()
-    return app.exec()
+    return qt_exec(app)

@@ -32,13 +32,25 @@ def configure_runtime() -> Path:
     os.environ.setdefault("PYTHONUTF8", "1")
     # Helps some Qt plugin lookups in frozen builds
     if getattr(sys, "frozen", False):
-        os.environ.setdefault("QT_PLUGIN_PATH", str(base / "_internal" / "PySide6" / "plugins"))
         meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            plugin = Path(meipass) / "PySide6" / "plugins"
+        for qt_name in ("PySide2", "PySide6"):
+            plugin = base / "_internal" / qt_name / "plugins"
             if plugin.is_dir():
-                os.environ["QT_PLUGIN_PATH"] = str(plugin)
+                os.environ.setdefault("QT_PLUGIN_PATH", str(plugin))
+            if meipass:
+                meipass_plugin = Path(meipass) / qt_name / "plugins"
+                if meipass_plugin.is_dir():
+                    os.environ["QT_PLUGIN_PATH"] = str(meipass_plugin)
     return base
+
+
+def _qt_api() -> str:
+    try:
+        from webcrawler.qtcompat import QT_API
+
+        return QT_API
+    except Exception:
+        return "PySide6"
 
 
 def windows_is_unsupported() -> str | None:
@@ -47,16 +59,31 @@ def windows_is_unsupported() -> str | None:
         return None
     try:
         version = sys.getwindowsversion()
-        # Windows 7 = 6.1, Windows 8 = 6.2/6.3, Windows 10/11 = 10.0
-        if version.major < 10:
-            return (
-                "This standalone build requires Windows 10 or Windows 11 (64-bit).\n\n"
-                f"Detected Windows version: {version.major}.{version.minor}\n\n"
-                "Windows 7 / Windows 8 are not supported by Python 3.11+, "
-                "PySide6, and Chromium used in this app."
-            )
     except Exception:
         return None
+
+    # Windows 7 = 6.1, Windows 8 = 6.2/6.3, Windows 10/11 = 10.0
+    is_win7_or_newer = version.major > 6 or (
+        version.major == 6 and version.minor >= 1
+    )
+    if not is_win7_or_newer:
+        return (
+            "This application requires Windows 7 SP1 (64-bit) or newer.\n\n"
+            f"Detected Windows version: {version.major}.{version.minor}"
+        )
+
+    # PySide2 / Win7 build: allow Windows 7 and 8.
+    if _qt_api() == "PySide2":
+        return None
+
+    # PySide6 / modern build: Windows 10+
+    if version.major < 10:
+        return (
+            "This standalone build requires Windows 10 or Windows 11 (64-bit).\n\n"
+            f"Detected Windows version: {version.major}.{version.minor}\n\n"
+            "Please download the Windows 7 compatible package:\n"
+            "WebCrawlerEnterprise-Standalone-Windows7"
+        )
     return None
 
 
@@ -70,6 +97,7 @@ def write_crash_log(exc: BaseException) -> Path:
         f"Frozen: {getattr(sys, 'frozen', False)}",
         f"Python: {sys.version}",
         f"Platform: {sys.platform}",
+        f"Qt API: {_qt_api()}",
         "",
         "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
     ]
@@ -89,7 +117,7 @@ def show_fatal_error(message: str) -> None:
     except Exception:
         pass
     try:
-        from PySide6.QtWidgets import QApplication, QMessageBox
+        from webcrawler.qtcompat import QApplication, QMessageBox
 
         app = QApplication.instance() or QApplication(sys.argv)
         QMessageBox.critical(None, "WebCrawler Enterprise", message)

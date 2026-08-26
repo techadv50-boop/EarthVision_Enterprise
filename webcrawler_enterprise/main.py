@@ -40,9 +40,9 @@ if __name__ == "__main__":
                 "WebCrawler Enterprise failed to start.\n\n"
                 f"{type(exc).__name__}: {exc}\n\n"
                 f"Details were saved to:\n{log_path}\n\n"
-                "On Windows 10/11, also install Microsoft Visual C++ Redistributable:\n"
-                "https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n"
-                "Windows 7 is not supported."
+                "On Windows 7 SP1 / 10 / 11, install Microsoft Visual C++ Redistributable:\n"
+                "https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+                "(On Windows 7 also try: https://aka.ms/vs/16/release/vc_redist.x64.exe)"
             )
         except Exception:
             pass

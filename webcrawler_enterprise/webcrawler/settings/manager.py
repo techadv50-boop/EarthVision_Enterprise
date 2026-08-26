@@ -83,11 +83,19 @@ class AppSettings:
     # False = resume unfinished site instead of wiping progress (needed for long runs).
     fresh_site_crawl: bool = False
     # Playwright only for thin/failed pages; capped for stability.
+    # Win7/PySide2 builds ship without Playwright — HTTP crawl still works.
     use_playwright_fallback: bool = True
     max_playwright_fallback: int = 100
     request_pause_ms: int = 0
     max_download_queue: int = 1000
     max_download_bytes: int = 80 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        # Auto-disable Playwright when the package is not installed (Win7 build).
+        try:
+            import playwright  # noqa: F401
+        except Exception:
+            self.use_playwright_fallback = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -35,5 +35,6 @@ If it does not start on Windows 10
 
 Windows 7 users
 ---------------
-This app cannot run on Windows 7.
-Please use a Windows 10 or Windows 11 computer.
+Use the separate package:
+  WebCrawlerEnterprise-Standalone-Windows7
+(built with Python 3.8 + Qt5 for Windows 7 SP1 64-bit and newer).

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
+from webcrawler.qtcompat import (
+    Qt,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    qt_exec,
 )
 
 from webcrawler import __app_name__
@@ -190,7 +191,7 @@ class LoginDialog(QDialog):
             )
             # Prefill current password from what they just typed for convenience
             dialog.current_edit.setText(self.password_edit.text())
-            if dialog.exec() != QDialog.Accepted or not dialog.user:
+            if qt_exec(dialog) != QDialog.Accepted or not dialog.user:
                 return
             user = dialog.user
 
@@ -199,7 +200,7 @@ class LoginDialog(QDialog):
 
     def _master_reset(self) -> None:
         dialog = MasterResetDialog(self.auth, self)
-        if dialog.exec() == QDialog.Accepted:
+        if qt_exec(dialog) == QDialog.Accepted:
             self.username_edit.setText("admin")
             self.password_edit.clear()
             self.password_edit.setFocus()

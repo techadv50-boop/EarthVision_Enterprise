@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel
+from webcrawler.qtcompat import QFormLayout, QGroupBox, QLabel
 
 from webcrawler.engine.orchestrator import ProgressState
 
