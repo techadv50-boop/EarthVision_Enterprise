@@ -50,6 +50,8 @@ export const authApi = {
   register: (data: { email: string; username: string; password: string; full_name?: string }) =>
     api.post('/auth/register', data),
   me: () => api.get('/auth/me'),
+  resetPassword: (email: string, master_password: string, new_password: string) =>
+    api.post('/auth/reset-password', { email, master_password, new_password }),
 };
 
 export const geoApi = {
@@ -167,4 +169,57 @@ export const adminApi = {
 export const configApi = {
   health: () => axios.get('/api/health'),
   config: () => axios.get('/api/config'),
+};
+
+export const citationApi = {
+  journals: {
+    list: () => api.get('/journals'),
+    get: (id: number) => api.get(`/journals/${id}`),
+    create: (data: Record<string, unknown>) => api.post('/journals', data),
+    update: (id: number, data: Record<string, unknown>) => api.patch(`/journals/${id}`, data),
+    remove: (id: number) => api.delete(`/journals/${id}`),
+    volumes: (id: number) => api.get(`/journals/${id}/volumes`),
+    issues: (id: number, volume: number) => api.get(`/journals/${id}/volumes/${volume}/issues`),
+    articles: (id: number, volume: number, issue: number) =>
+      api.get(`/journals/${id}/volumes/${volume}/issues/${issue}/articles`),
+    uploadPapers: (id: number, files: File[]) => {
+      const form = new FormData();
+      files.forEach((f) => form.append('files', f));
+      return api.post(`/journals/${id}/papers`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    },
+    uploadText: (id: number, data: Record<string, unknown>) =>
+      api.post(`/journals/${id}/papers-text`, data),
+    crawl: (id: number, archive_url: string) => api.post(`/journals/${id}/crawl`, { archive_url }),
+    latestCrawl: (id: number) => api.get(`/journals/${id}/latest-crawl`),
+    allIssues: (id: number) => api.get(`/journals/${id}/issues`),
+    syncCitations: (id: number) => api.post(`/journals/${id}/sync-citations`),
+  },
+  crawlJob: (id: number) => api.get(`/crawl-jobs/${id}`),
+  cancelCrawl: (id: number) => api.post(`/crawl-jobs/${id}/cancel`),
+  downloadCrawl: (id: number, issue_urls: string[]) =>
+    api.post(`/crawl-jobs/${id}/download`, { issue_urls }),
+  patchArticle: (id: number, data: Record<string, unknown>) => api.patch(`/articles/${id}`, data),
+  syncArticle: (id: number) => api.post(`/articles/${id}/sync-citations`),
+  syncIssue: (id: number) => api.post(`/issues/${id}/sync-citations`),
+  manuscripts: {
+    list: () => api.get('/manuscripts'),
+    get: (id: number) => api.get(`/manuscripts/${id}`),
+    upload: (file: File) => {
+      const form = new FormData();
+      form.append('file', file);
+      return api.post('/manuscripts', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    },
+    suggest: (id: number) => api.post(`/manuscripts/${id}/suggest`),
+    export: (id: number) =>
+      api.get(`/manuscripts/${id}/export`, { responseType: 'blob' }),
+    remove: (id: number) => api.delete(`/manuscripts/${id}`),
+  },
+  patchSuggestion: (id: number, status: string) => api.patch(`/suggestions/${id}`, { status }),
+  searchArchive: (params: Record<string, string | number | undefined>) =>
+    api.get('/archive/search', { params }),
+  getArticle: (id: number) => api.get(`/articles/${id}`),
 };

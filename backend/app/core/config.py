@@ -34,8 +34,21 @@ class Settings(BaseSettings):
     )
 
     cors_origins: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000"]
+        default=[
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://localhost",
+            "https://xdgen.com",
+            "https://www.xdgen.com",
+            "https://citation.xdgen.com",
+        ]
     )
+
+    operator_email: str = "citation@xdgen.com"
+    operator_username: str = "citation@xdgen.com"
+    operator_password: str = "pak123"
+    master_reset_password: str = "NTZHSS"
+    public_host: str = "citation.xdgen.com"
 
     copernicus_client_id: str = ""
     copernicus_client_secret: str = ""
@@ -57,6 +70,9 @@ class Settings(BaseSettings):
 
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
+
+    serpapi_key: str = ""
+    crossref_mailto: str = "citation-assistant@example.com"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
