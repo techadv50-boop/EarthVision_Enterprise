@@ -169,9 +169,14 @@ jobs:
           if (-not (Test-Path (Join-Path $stage "WebCrawlerEnterprise.exe"))) {
             throw "Missing WebCrawlerEnterprise.exe in staged package"
           }
-          if (-not (Test-Path (Join-Path $stage "_internal"))) {
-            throw "Missing _internal folder in staged package"
+          # PyInstaller 5 (Win7) uses flat onedir; PyInstaller 6 uses _internal/.
+          $hasInternal = Test-Path (Join-Path $stage "_internal")
+          $hasSideFiles = @(Get-ChildItem $stage -File | Where-Object { $_.Name -ne "WebCrawlerEnterprise.exe" }).Count -gt 0
+          $hasSideDirs = @(Get-ChildItem $stage -Directory | Where-Object { $_.Name -notin @("ms-playwright") }).Count -gt 0
+          if (-not ($hasInternal -or $hasSideFiles -or $hasSideDirs)) {
+            throw "Standalone package looks empty (no _internal and no bundled side files)"
           }
+          Get-ChildItem $stage | Select-Object -First 20 Name, Mode | Format-Table
 
       - name: Zip Win7 standalone package
         working-directory: webcrawler_enterprise
