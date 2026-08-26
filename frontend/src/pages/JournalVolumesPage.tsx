@@ -176,7 +176,7 @@ export default function JournalVolumesPage() {
     return rows;
   }, [inventory, localIssues, localByKey]);
 
-  const load = async () => {
+  const load = async (): Promise<LocalIssue[]> => {
     const [{ data: j }, { data: vols }, issuesRes] = await Promise.all([
       citationApi.journals.get(id),
       citationApi.journals.volumes(id),
@@ -184,7 +184,8 @@ export default function JournalVolumesPage() {
     ]);
     setJournal(j);
     setVolumes(vols);
-    setLocalIssues(issuesRes.data || []);
+    const issues: LocalIssue[] = issuesRes.data || [];
+    setLocalIssues(issues);
     setArchiveUrl(j.archive_url || '');
     try {
       const { data: job } = await citationApi.journals.latestCrawl(id);
@@ -199,7 +200,7 @@ export default function JournalVolumesPage() {
     } catch {
       /* no prior scan */
     }
-    return issuesRes.data || [];
+    return issues;
   };
 
   const refreshCitations = async () => {
