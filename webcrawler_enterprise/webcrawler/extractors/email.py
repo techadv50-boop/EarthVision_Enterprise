@@ -157,7 +157,10 @@ def extract_emails_from_file(path: Path) -> set[str]:
 
 
 def _pdf_text(path: Path) -> str:
-    """Extract text from every page of a PDF (author emails can appear late)."""
+    """Extract text from every page of a PDF (author emails can appear late).
+
+    Corrupt or unreadable pages are skipped so one bad page does not abort the file.
+    """
     chunks: list[str] = []
     try:
         import fitz
@@ -165,7 +168,10 @@ def _pdf_text(path: Path) -> str:
         doc = fitz.open(path)
         try:
             for page in doc:
-                chunks.append(page.get_text() or "")
+                try:
+                    chunks.append(page.get_text() or "")
+                except Exception:
+                    continue
         finally:
             doc.close()
         if any(c.strip() for c in chunks):
@@ -178,7 +184,10 @@ def _pdf_text(path: Path) -> str:
 
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
-                chunks.append(page.extract_text() or "")
+                try:
+                    chunks.append(page.extract_text() or "")
+                except Exception:
+                    continue
     except Exception:
         return ""
     return "\n".join(chunks)
@@ -188,7 +197,25 @@ def _docx_text(path: Path) -> str:
     from docx import Document
 
     doc = Document(str(path))
-    return "\n".join(p.text for p in doc.paragraphs)
+    parts: list[str] = []
+    for paragraph in doc.paragraphs:
+        try:
+            parts.append(paragraph.text or "")
+        except Exception:
+            continue
+    # Tables often hold contact rows; skip broken cells.
+    try:
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    try:
+                        if cell.text:
+                            parts.append(cell.text)
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return "\n".join(parts)
 
 
 def _xlsx_text(path: Path) -> str:
@@ -196,10 +223,15 @@ def _xlsx_text(path: Path) -> str:
 
     wb = load_workbook(str(path), read_only=True, data_only=True)
     parts: list[str] = []
-    for sheet in wb.worksheets:
-        for row in sheet.iter_rows(max_row=500, values_only=True):
-            for cell in row:
-                if cell is not None:
-                    parts.append(str(cell))
-    wb.close()
+    try:
+        for sheet in wb.worksheets:
+            try:
+                for row in sheet.iter_rows(max_row=500, values_only=True):
+                    for cell in row:
+                        if cell is not None:
+                            parts.append(str(cell))
+            except Exception:
+                continue
+    finally:
+        wb.close()
     return "\n".join(parts)

@@ -50,8 +50,10 @@ OUTPUT_NAMES = {
     "phones.txt",
     "folder_scan_log.txt",
     "folder_scan_summary.txt",
+    "folder_scan_report.txt",
 }
 
+MAX_FILE_BYTES = 250 * 1024 * 1024
 
 ProgressCallback = Callable[[dict], None]
 LogCallback = Callable[[str], None]
@@ -60,10 +62,21 @@ ControlFlag = Callable[[], str]
 
 
 @dataclass
+class FailedFile:
+    """A file that could not be scanned (corrupt, unreadable, too large, etc.)."""
+
+    title: str
+    relative_path: str
+    reason: str
+
+
+@dataclass
 class FolderScanResult:
     folder: str
+    files_total: int = 0
     files_scanned: int = 0
     files_failed: int = 0
+    failed_files: list[FailedFile] = field(default_factory=list)
     emails: set[str] = field(default_factory=set)
     phones: set[str] = field(default_factory=set)
     ocr_used: int = 0
@@ -71,6 +84,7 @@ class FolderScanResult:
     error: str | None = None
     emails_path: str = ""
     phones_path: str = ""
+    report_path: str = ""
 
 
 class FolderScanner:
@@ -147,6 +161,7 @@ class FolderScanner:
         started = time.monotonic()
         try:
             files = self._list_files(root, recursive=recursive)
+            result.files_total = len(files)
             total = len(files)
             self._log(f"Local folder scan: {total} file(s) in {root}")
             self._emit(
@@ -165,19 +180,33 @@ class FolderScanner:
                     result.error = "Folder scan stopped by user"
                     self._log("Folder scan stopped by user")
                     break
+                title = _file_title(path, root)
                 self._emit(
                     status="Scanning folder",
                     current_website=str(root),
                     current_page=str(path),
-                    current_download=path.name,
+                    current_download=title,
                     pages_crawled=index,
-                    documents_downloaded=index,
+                    documents_downloaded=result.files_scanned,
                     websites_completed=0,
                     websites_remaining=max(total - index, 0),
                     emails_found=len(result.emails),
                     phone_numbers_found=len(result.phones),
                     elapsed_seconds=time.monotonic() - started,
                 )
+
+                # Too-large files: ignore content, record as not scanned.
+                try:
+                    size = path.stat().st_size
+                except OSError as exc:
+                    self._record_failure(result, path, root, f"cannot read file: {exc}")
+                    continue
+                if size > MAX_FILE_BYTES:
+                    self._record_failure(
+                        result, path, root, "file too large (>250MB) — skipped"
+                    )
+                    continue
+
                 try:
                     text, used_ocr = self._file_text(path, use_ocr=use_ocr)
                     if used_ocr:
@@ -191,23 +220,30 @@ class FolderScanner:
                     result.files_scanned += 1
                     if emails or phones:
                         self._log(
-                            f"Contacts in {path.name}: "
+                            f"Contacts in {title}: "
                             f"+{len(emails)} emails, +{len(phones)} phones"
                         )
                 except Exception as exc:
-                    result.files_failed += 1
-                    self._log(f"Failed reading {path.name}: {exc}")
+                    # Corrupt / unreadable document — ignore and continue.
+                    reason = _short_reason(exc)
+                    self._record_failure(result, path, root, reason)
+                    self._log(f"Skipped corrupt/unreadable file: {title} ({reason})")
 
-            emails_path, phones_path, summary_path = self._write_outputs(root, result)
+            emails_path, phones_path, summary_path, report_path = self._write_outputs(
+                root, result
+            )
             result.emails_path = str(emails_path)
             result.phones_path = str(phones_path)
+            result.report_path = str(report_path)
+
+            report_lines = _build_report_lines(result)
+            for line in report_lines:
+                self._log(line)
+
             self._log(
-                f"Folder scan finished ({result.status}): "
-                f"files={result.files_scanned}, failed={result.files_failed}, "
-                f"emails={len(result.emails)}, phones={len(result.phones)}, "
-                f"ocr_files={result.ocr_used}"
+                f"Saved: {emails_path.name}, {phones_path.name}, "
+                f"{summary_path.name}, {report_path.name}"
             )
-            self._log(f"Saved: {emails_path.name}, {phones_path.name}, {summary_path.name}")
             self._emit(
                 status=result.status,
                 current_website=str(root),
@@ -218,12 +254,20 @@ class FolderScanner:
                 emails_found=len(result.emails),
                 phone_numbers_found=len(result.phones),
                 elapsed_seconds=time.monotonic() - started,
-                message=f"Saved contacts into {root}",
+                message=(
+                    f"Scan report: {result.files_total} files, "
+                    f"{result.files_scanned} scanned, "
+                    f"{result.files_failed} could not be scanned → {report_path.name}"
+                ),
             )
         except Exception as exc:
             result.status = "Failed"
             result.error = str(exc)
             self._log(f"Folder scan failed: {exc}")
+            try:
+                self._write_outputs(root, result)
+            except Exception:
+                pass
         finally:
             with self._lock:
                 self._state = "idle"
@@ -233,22 +277,28 @@ class FolderScanner:
                 except Exception:
                     pass
 
+    def _record_failure(
+        self, result: FolderScanResult, path: Path, root: Path, reason: str
+    ) -> None:
+        title = _file_title(path, root)
+        rel = _relative_display(path, root)
+        result.files_failed += 1
+        result.failed_files.append(
+            FailedFile(title=title, relative_path=rel, reason=reason)
+        )
+
     def _list_files(self, root: Path, recursive: bool) -> list[Path]:
         files: list[Path] = []
         iterator = root.rglob("*") if recursive else root.glob("*")
         for path in iterator:
-            if not path.is_file():
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
                 continue
             if path.name.lower() in OUTPUT_NAMES:
                 continue
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
-                continue
-            # Skip huge files (>250 MB) to avoid memory blowups.
-            try:
-                if path.stat().st_size > 250 * 1024 * 1024:
-                    self._log(f"Skipping large file (>250MB): {path.name}")
-                    continue
-            except OSError:
                 continue
             files.append(path)
         files.sort(key=lambda p: str(p).lower())
@@ -266,6 +316,8 @@ class FolderScanner:
         elif suffix in {".html", ".htm", ".txt", ".csv", ".xml", ".rtf"}:
             text = path.read_text(encoding="utf-8", errors="ignore")
         elif suffix == ".pdf":
+            if not _pdf_can_open(path):
+                raise RuntimeError("corrupt or unreadable PDF")
             text = _pdf_text(path)
             if use_ocr and _looks_thin_text(text):
                 ocr_text = _pdf_ocr_text(path)
@@ -295,50 +347,137 @@ class FolderScanner:
 
     def _write_outputs(
         self, root: Path, result: FolderScanResult
-    ) -> tuple[Path, Path, Path]:
+    ) -> tuple[Path, Path, Path, Path]:
         emails_path = root / "emails.txt"
         phones_path = root / "phone_numbers.txt"
         summary_path = root / "folder_scan_summary.txt"
+        report_path = root / "folder_scan_report.txt"
         log_path = root / "folder_scan_log.txt"
 
         emails_sorted = sorted(result.emails)
         phones_sorted = sorted(result.phones)
-        emails_path.write_text("\n".join(emails_sorted) + ("\n" if emails_sorted else ""), encoding="utf-8")
-        phones_path.write_text("\n".join(phones_sorted) + ("\n" if phones_sorted else ""), encoding="utf-8")
+        emails_path.write_text(
+            "\n".join(emails_sorted) + ("\n" if emails_sorted else ""),
+            encoding="utf-8",
+        )
+        phones_path.write_text(
+            "\n".join(phones_sorted) + ("\n" if phones_sorted else ""),
+            encoding="utf-8",
+        )
+
+        report_body = "\n".join(_build_report_lines(result)) + "\n"
+        if result.failed_files:
+            report_body += "\nDetails (file → reason):\n"
+            for item in result.failed_files:
+                report_body += f"  - {item.relative_path} → {item.reason}\n"
+        report_path.write_text(report_body, encoding="utf-8")
 
         summary = [
             "WebCrawler Enterprise — Local Folder Scan",
             f"Time (UTC): {datetime.now(timezone.utc).isoformat()}",
             f"Folder: {result.folder}",
             f"Status: {result.status}",
-            f"Files scanned: {result.files_scanned}",
-            f"Files failed: {result.files_failed}",
+            f"Files in folder (supported): {result.files_total}",
+            f"Scanned successfully: {result.files_scanned}",
+            f"Could not be scanned: {result.files_failed}",
             f"OCR used on: {result.ocr_used} file(s)",
             f"Unique emails: {len(result.emails)}",
             f"Unique phones: {len(result.phones)}",
             "",
             f"emails.txt → {emails_path}",
             f"phone_numbers.txt → {phones_path}",
+            f"folder_scan_report.txt → {report_path}",
+            "",
         ]
+        summary.extend(_build_report_lines(result))
+        if result.failed_files:
+            summary.append("")
+            summary.append("Details (file → reason):")
+            for item in result.failed_files:
+                summary.append(f"  - {item.relative_path} → {item.reason}")
         if result.error:
             summary.append(f"Error: {result.error}")
         summary_path.write_text("\n".join(summary) + "\n", encoding="utf-8")
 
-        # Append a short stamp to the log file (do not wipe user notes).
         stamp = (
             f"\n[{datetime.now(timezone.utc).isoformat()}] "
-            f"scanned={result.files_scanned} emails={len(result.emails)} "
+            f"total={result.files_total} scanned={result.files_scanned} "
+            f"failed={result.files_failed} emails={len(result.emails)} "
             f"phones={len(result.phones)} status={result.status}\n"
         )
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(stamp)
 
-        return emails_path, phones_path, summary_path
+        return emails_path, phones_path, summary_path, report_path
+
+
+def _build_report_lines(result: FolderScanResult) -> list[str]:
+    lines = [
+        f"There were {result.files_total} files in the folder out of which "
+        f"{result.files_scanned} scanned successfully.",
+    ]
+    if result.files_failed <= 0:
+        lines.append("All supported files were scanned successfully.")
+        return lines
+
+    lines.append(
+        f"The following {result.files_failed} file(s) could not be scanned:"
+    )
+    for item in result.failed_files:
+        lines.append(f"  - {item.title}")
+    return lines
+
+
+def _file_title(path: Path, root: Path) -> str:
+    """Human-readable title for reports (filename; include parent if nested)."""
+    try:
+        rel = path.relative_to(root)
+        return str(rel) if len(rel.parts) > 1 else path.name
+    except ValueError:
+        return path.name
+
+
+def _relative_display(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return path.name
+
+
+def _short_reason(exc: BaseException) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    text = text.replace("\n", " ").strip()
+    if len(text) > 180:
+        text = text[:177] + "..."
+    return text
 
 
 def _looks_thin_text(text: str) -> bool:
     cleaned = " ".join((text or "").split())
     return len(cleaned) < 40
+
+
+def _pdf_can_open(path: Path) -> bool:
+    """Return True if at least one PDF backend can open the file."""
+    try:
+        import fitz
+
+        doc = fitz.open(path)
+        try:
+            _ = int(doc.page_count)
+        finally:
+            doc.close()
+        return True
+    except Exception:
+        pass
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(path) as pdf:
+            _ = len(pdf.pages)
+        return True
+    except Exception:
+        return False
 
 
 def _eml_text(path: Path) -> str:
@@ -357,13 +496,19 @@ def _eml_text(path: Path) -> str:
                     parts.append(part.get_content())
                 except Exception:
                     payload = part.get_payload(decode=True) or b""
-                    parts.append(payload.decode(part.get_content_charset() or "utf-8", errors="ignore"))
+                    parts.append(
+                        payload.decode(
+                            part.get_content_charset() or "utf-8", errors="ignore"
+                        )
+                    )
     else:
         try:
             parts.append(msg.get_content())
         except Exception:
             payload = msg.get_payload(decode=True) or b""
-            parts.append(payload.decode(msg.get_content_charset() or "utf-8", errors="ignore"))
+            parts.append(
+                payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+            )
     return "\n".join(str(p) for p in parts if p)
 
 
