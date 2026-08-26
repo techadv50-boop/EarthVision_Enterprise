@@ -102,7 +102,7 @@ export default function RasterPanel() {
           <input
             ref={tiffRef}
             type="file"
-            accept=".tif,.tiff,.geotiff"
+            accept=".tif,.tiff,.geotiff,.cog,.jp2,.j2k,.jpg,.jpeg,.png,.bmp,.webp,.gif,.img,.nc,.hdf,.h5,.asc,.bil,.vrt"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];

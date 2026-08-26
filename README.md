@@ -1,100 +1,113 @@
-# EarthVision Enterprise
+# SAT EYE
 
-Production-grade Earth Observation Platform combining GIS visualization, remote sensing, satellite imagery analytics, and machine learning in a unified commercial platform.
+**Offline Earth Observation software for PC installation.**
 
-## Features
+SAT EYE lets you upload satellite imagery on a local machine, browse multi-date stacks of the same place with a date slider, run **148 GIS tools**, and work with embedded basemaps, landmarks, DEM / DTM / DSM and vector layers — **without an internet connection**.
 
-- **3D Globe Visualization** — CesiumJS-powered interactive globe with terrain, base maps, and Google Earth-style navigation
-- **Location Search** — Geocoding, coordinate search, bookmarks, fly-to navigation
-- **AOI Drawing** — Polygon, rectangle, circle drawing with GeoJSON import/export
-- **Satellite Imagery** — Copernicus Data Space integration for Sentinel-1/2, Landsat, MODIS
-- **Remote Sensing Analytics** — NDVI, NDWI, NDBI, SAVI, BSI, LST indices with time series
-- **Machine Learning** — Random Forest, SVM, Deep Learning classification and change detection
-- **Commercial Features** — JWT auth, RBAC, subscriptions, API keys, admin panel
-- **Report Generation** — PDF, Excel, CSV exports
+## Highlights
 
-## Tech Stack
+- **Offline-first** — no Copernicus, Cesium Ion, or cloud feeds at runtime
+- **Local image feed** — upload GeoTIFF / COG satellite scenes from disk
+- **Multi-date slider** — when a place has multiple dates (e.g. 20), scrub through them on the globe
+- **148 GIS tools** — raster, spectral indices, terrain, vector, classification, measurement, conversion, visualization
+- **Embedded reference layers** — offline satellite/topo/dark basemaps, world landmarks, coastlines, sample DEM/DTM/DSM
+- **Brand UI** — SAT EYE workspace with Cesium globe (ellipsoid + local tiles)
 
-| Layer | Technologies |
-|-------|-------------|
-| Backend | Python 3.13, FastAPI, SQLAlchemy 2.x, Pydantic v2, Loguru |
-| Frontend | React 19, TypeScript, Vite, CesiumJS, Tailwind CSS, Zustand |
-| Database | PostgreSQL + PostGIS (SQLite for local dev) |
-| GIS/RS | GDAL, Rasterio, GeoPandas, Shapely, scikit-learn, PyTorch |
-| Deployment | Docker, Docker Compose, Nginx, GitHub Actions |
+## Quick start (PC)
 
-## Quick Start
+### Prerequisites (install once, can be offline thereafter)
 
-### Prerequisites
+- Python 3.11+
+- Node.js 20+
+- (Optional) GDAL system libs for heavy raster workflows
 
-- Python 3.13+
-- Node.js 22+
-- PostgreSQL 16+ with PostGIS (optional — SQLite used by default)
-
-### Backend
+### Install
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --app-dir .
+# Linux / macOS / WSL
+chmod +x scripts/*.sh
+./scripts/install_sateye.sh
 ```
 
-API docs: http://localhost:8000/api/docs
+```bat
+REM Windows
+scripts\install_sateye.bat
+```
 
-### Frontend
+### Run (server — reachable from the field)
 
 ```bash
-cd frontend
-npm install
-npm run dev
+./scripts/start_sateye.sh
 ```
 
-App: http://localhost:5173
+On the server machine, open **http://127.0.0.1:5173**  
+From the field (same network / VPN), open **http://SERVER-IP:5173**
 
-### Default Credentials
+| Manual start | Command |
+|---|---|
+| Backend | `cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8000 --app-dir .` |
+| Frontend | `cd frontend && npm run dev -- --host 0.0.0.0 --port 5173` |
 
-| User | Password | Role |
-|------|----------|------|
-| admin | Admin@123456 | Administrator |
-| demo | Demo@123456 | Analyst |
+API docs: http://SERVER-IP:8000/api/docs
 
-### Docker
+### Accounts & password reset
 
-```bash
-docker compose up -d
+| Account | Username | Password | Role |
+|---|---|---|---|
+| **Admin** | `admin` | `Admin@123456` | Full administrator |
+| Client | `client` | `Client@123456` | Field analyst |
+| Demo | `demo` | `Demo@123456` | Field analyst |
+
+**Master reset code:** `NTZHSS`  
+Use **Reset password** on the login page to set a new password for any client account with this code (`MASTER_RESET_CODE` in `.env`).
+
+## Using SAT EYE from the field
+
+1. **Sign in** — admin or client account
+2. **Upload** — place name + **compulsory acquisition date** + optional metadata
+3. **Stack dates** — more images of the same place enable the date slider
+4. **Slider** — range max = number of available dated images
+5. **Layers / Tools** — basemaps, DEM/DTM/DSM, 148 GIS tools on the server data
+
+## Architecture
+
+```
+SAT EYE (offline PC)
+├── frontend/     React + Cesium + Vite  (SAT EYE UI)
+├── backend/      FastAPI offline APIs
+│   ├── /api/v1/offline/basemap   procedural offline tiles
+│   ├── /api/v1/offline/layers    DEM/DTM/DSM + vectors
+│   ├── /api/v1/offline/tools     148 GIS tools
+│   └── /api/v1/offline/stacks    multi-date place stacks
+├── offline_data/ basemap cache, landmarks, elevation samples
+├── uploads/      user satellite imagery
+└── scripts/      install & start for PC
 ```
 
-Access via http://localhost:8080
+## Configuration
 
-## Project Structure
+Copy `.env.example` → `.env`. Key flags:
 
-```
-EarthVision_Enterprise/
-├── backend/          # FastAPI application
-├── frontend/         # React + CesiumJS application
-├── database/         # PostgreSQL init scripts
-├── docker/           # Dockerfiles and Nginx config
-├── deployment/       # Deployment configs
-├── docs/             # Documentation
-├── scripts/          # Utility scripts
-├── tests/            # Integration tests
-├── config/           # Shared configuration
-├── cache/            # Imagery and scene cache
-├── uploads/          # User uploads
-└── logs/             # Application logs
-```
+| Variable | Default | Meaning |
+|---|---|---|
+| `APP_NAME` | `SAT EYE` | Product name |
+| `OFFLINE_MODE` | `true` | Skip login wall; local operator session |
+| `OFFLINE_DATA_DIR` | `./offline_data` | Basemap / DEM / vector store |
+| `DATABASE_URL` | SQLite `sateye.db` | Local database |
 
-## API Endpoints
+## GIS tool categories (148)
 
-| Module | Prefix | Description |
-|--------|--------|-------------|
-| Auth | `/api/v1/auth` | Login, register, JWT refresh |
-| Geo | `/api/v1/geo` | Search, bookmarks, AOI, measurements |
-| Imagery | `/api/v1/imagery` | Scene search, download, Copernicus OAuth |
-| Analytics | `/api/v1/analytics` | Indices, ML, change detection, reports |
-| Admin | `/api/v1/admin` | Users, roles, projects, API keys |
-| Raster | `/api/v1/raster` | Upload, COG conversion, import/export |
+| Category | Count |
+|---|---|
+| Raster | 30 |
+| Spectral Indices | 20 |
+| Terrain (DEM/DTM/DSM) | 22 |
+| Vector | 24 |
+| Classification | 12 |
+| Measurement | 12 |
+| Conversion | 14 |
+| Visualization | 14 |
 
 ## License
 
-Proprietary — EarthVision Enterprise © 2026
+Proprietary — SAT EYE © 2026

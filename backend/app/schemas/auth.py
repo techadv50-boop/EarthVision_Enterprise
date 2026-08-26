@@ -46,3 +46,11 @@ class TokenRefresh(BaseModel):
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class PasswordResetMaster(BaseModel):
+    """Reset any client password using the SAT EYE master code (NTZHSS)."""
+
+    username: str = Field(min_length=1, max_length=100)
+    master_code: str = Field(min_length=1, max_length=64)
+    new_password: str = Field(min_length=8, max_length=128)

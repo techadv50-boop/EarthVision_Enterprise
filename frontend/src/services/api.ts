@@ -34,6 +34,16 @@ api.interceptors.response.use(
         } catch {
           localStorage.removeItem('access_token');
           localStorage.removeItem('refresh_token');
+          if (!window.location.pathname.startsWith('/login') &&
+              !window.location.pathname.startsWith('/reset-password') &&
+              !window.location.pathname.startsWith('/register')) {
+            window.location.href = '/login';
+          }
+        }
+      } else if (!refreshToken) {
+        if (!window.location.pathname.startsWith('/login') &&
+            !window.location.pathname.startsWith('/reset-password') &&
+            !window.location.pathname.startsWith('/register')) {
           window.location.href = '/login';
         }
       }
@@ -50,6 +60,8 @@ export const authApi = {
   register: (data: { email: string; username: string; password: string; full_name?: string }) =>
     api.post('/auth/register', data),
   me: () => api.get('/auth/me'),
+  resetPassword: (data: { username: string; master_code: string; new_password: string }) =>
+    api.post('/auth/reset-password', data),
 };
 
 export const geoApi = {
@@ -167,4 +179,71 @@ export const adminApi = {
 export const configApi = {
   health: () => axios.get('/api/health'),
   config: () => axios.get('/api/config'),
+};
+
+export const offlineApi = {
+  status: () => api.get('/offline/status'),
+  seed: () => api.post('/offline/seed'),
+  layers: () => api.get('/offline/layers'),
+  layerGeojson: (layerId: string) => api.get(`/offline/layers/${encodeURIComponent(layerId)}/geojson`),
+  uploadElevation: (file: File, subtype = 'DEM') => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('subtype', subtype);
+    return api.post('/offline/layers/upload-elevation', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  uploadVector: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post('/offline/layers/upload-vector', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  tools: (params?: { category?: string; q?: string }) =>
+    api.get('/offline/tools', { params }),
+  toolCategories: () => api.get('/offline/tools/categories'),
+  runTool: (tool_id: string, params: Record<string, unknown> = {}) =>
+    api.post('/offline/tools/run', { tool_id, params }),
+  stacks: () => api.get('/offline/stacks'),
+  getStack: (id: string) => api.get(`/offline/stacks/${encodeURIComponent(id)}`),
+  createStack: (data: Record<string, unknown>) => api.post('/offline/stacks', data),
+  addImageToStack: (id: string, data: Record<string, unknown>) =>
+    api.post(`/offline/stacks/${encodeURIComponent(id)}/images`, data),
+  formats: () => api.get('/offline/formats'),
+  vectorFormats: () => api.get('/offline/formats/vector'),
+  uploadToStack: (file: File, fields: {
+    place_name: string;
+    acquisition_date: string;
+    acquisition_time?: string;
+    longitude?: number;
+    latitude?: number;
+    altitude_m?: number;
+    cloud_cover?: number;
+    sensor?: string;
+    platform?: string;
+    resolution_m?: number;
+    notes?: string;
+    label?: string;
+  }) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('place_name', fields.place_name);
+    form.append('acquisition_date', fields.acquisition_date);
+    if (fields.acquisition_time) form.append('acquisition_time', fields.acquisition_time);
+    if (fields.longitude != null) form.append('longitude', String(fields.longitude));
+    if (fields.latitude != null) form.append('latitude', String(fields.latitude));
+    if (fields.altitude_m != null) form.append('altitude_m', String(fields.altitude_m));
+    if (fields.cloud_cover != null) form.append('cloud_cover', String(fields.cloud_cover));
+    if (fields.sensor) form.append('sensor', fields.sensor);
+    if (fields.platform) form.append('platform', fields.platform);
+    if (fields.resolution_m != null) form.append('resolution_m', String(fields.resolution_m));
+    if (fields.notes) form.append('notes', fields.notes);
+    if (fields.label) form.append('label', fields.label);
+    return api.post('/offline/stacks/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  seedDemoStack: () => api.post('/offline/stacks/seed-demo'),
 };

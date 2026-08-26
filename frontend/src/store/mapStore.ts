@@ -169,15 +169,9 @@ export const useMapStore = create<MapState>((set, get) => ({
     if (!viewer) return;
 
     if (layerId === 'terrain') {
+      // Offline PC mode: ellipsoid only (no Cesium Ion world terrain)
       viewer.scene.globe.depthTestAgainstTerrain = next;
-      if (next) {
-        viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
-        void Cesium.createWorldTerrainAsync().then((provider) => {
-          if (get().layerVisibility.terrain) viewer.terrainProvider = provider;
-        });
-      } else {
-        viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
-      }
+      viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
     }
 
     if (layerId === 'imagery') {

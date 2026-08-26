@@ -11,6 +11,7 @@ from app.database.session import get_db
 from app.models.user import User
 from app.schemas.auth import (
     PasswordChange,
+    PasswordResetMaster,
     TokenRefresh,
     TokenResponse,
     UserCreate,
@@ -116,3 +117,30 @@ async def change_password(
     current_user.hashed_password = get_password_hash(body.new_password)
     await db.flush()
     return {"message": "Password updated successfully"}
+
+
+@router.post("/reset-password")
+async def reset_password_with_master_code(
+    body: PasswordResetMaster,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Reset any client account password using the master code (default: NTZHSS).
+
+    Intended for field/server deployments when a client forgets their password.
+    Does not require being logged in.
+    """
+    service = AuthService(db)
+    try:
+        user = await service.reset_password_with_master_code(
+            username=body.username,
+            master_code=body.master_code,
+            new_password=body.new_password,
+        )
+        await db.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "message": "Password reset successfully",
+        "username": user.username,
+    }

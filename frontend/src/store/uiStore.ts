@@ -1,19 +1,23 @@
 import { create } from 'zustand';
 
+export type PanelId =
+  | 'layers'
+  | 'search'
+  | 'imagery'
+  | 'upload'
+  | 'analytics'
+  | 'bookmarks'
+  | 'aoi'
+  | 'raster'
+  | 'tools'
+  | 'admin'
+  | null;
+
 interface UIState {
   sidebarOpen: boolean;
-  activePanel:
-    | 'layers'
-    | 'search'
-    | 'imagery'
-    | 'analytics'
-    | 'bookmarks'
-    | 'aoi'
-    | 'raster'
-    | 'admin'
-    | null;
+  activePanel: PanelId;
   toggleSidebar: () => void;
-  setActivePanel: (panel: UIState['activePanel']) => void;
+  setActivePanel: (panel: PanelId) => void;
   isLoading: boolean;
   setLoading: (loading: boolean) => void;
   notification: { message: string; type: 'success' | 'error' | 'info' } | null;
