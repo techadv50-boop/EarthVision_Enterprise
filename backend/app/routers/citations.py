@@ -47,8 +47,10 @@ from app.services.citation_counts import sync_article_citations
 from app.services.crawler import run_crawl_job, run_download_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
 from app.services.matcher import house_citation_for, suggest_for_manuscript
-from app.services.manuscript_export import assign_citations, build_amended_docx
-from app.services.manuscript_text import extract_manuscript_text, suffix_for
+from app.services.citation_parser import split_paragraphs
+from app.services.manuscript_export import assign_citations
+from app.services.manuscript_review_docx import build_review_docx
+from app.services.manuscript_text import extract_docx_paragraphs, extract_manuscript_text, suffix_for
 
 router = APIRouter(tags=["Citation Assistant"])
 
@@ -636,12 +638,21 @@ async def upload_manuscript(
             status_code=400,
             detail="Old .doc files are not supported. Save the manuscript as .docx or PDF.",
         )
-    text = extract_manuscript_text(data, filename)
+    paragraphs: list[str] = []
+    if lower.endswith(".docx") or (data[:2] == b"PK" and data[:4] != b"%PDF"):
+        paragraphs = extract_docx_paragraphs(data)
+    text = "\n\n".join(paragraphs) if paragraphs else extract_manuscript_text(data, filename)
+    if not text.strip():
+        text = extract_manuscript_text(data, filename)
     if not text.strip():
         raise HTTPException(
             status_code=400,
             detail="Could not read text from that file. Upload a Word (.docx) or PDF manuscript.",
         )
+    if not paragraphs:
+        paragraphs = split_paragraphs(text, min_len=40) or [
+            p.strip() for p in text.split("\n\n") if len(p.strip()) > 40
+        ]
     from app.core.config import get_settings
     from pathlib import Path
     from uuid import uuid4
@@ -658,7 +669,15 @@ async def upload_manuscript(
     )
     db.add(manuscript)
     await db.flush()
-    return {"id": manuscript.id, "title": manuscript.title, "status": manuscript.status}
+    for i, para in enumerate(paragraphs):
+        db.add(ManuscriptParagraph(manuscript_id=manuscript.id, index=i, text=para))
+    await db.flush()
+    return {
+        "id": manuscript.id,
+        "title": manuscript.title,
+        "status": manuscript.status,
+        "paragraph_count": len(paragraphs),
+    }
 
 
 @router.post("/manuscripts/{manuscript_id}/suggest")
@@ -812,13 +831,19 @@ async def export_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
     from pathlib import Path
 
     detail = await get_manuscript(manuscript_id, db, _user)
-    data = build_amended_docx(
+    original = None
+    stored = await db.get(Manuscript, manuscript_id)
+    if stored and stored.pdf_path:
+        path = Path(stored.pdf_path)
+        if path.exists() and path.suffix.lower() == ".docx":
+            original = path.read_bytes()
+    data = build_review_docx(
         title=detail.title or "Manuscript",
         paragraphs=[p.model_dump() for p in detail.paragraphs],
-        references=[r.model_dump() for r in detail.references],
+        original_docx=original,
     )
     stem = Path(detail.title or "manuscript").stem or "manuscript"
-    filename = f"{stem}-cited.docx"
+    filename = f"{stem}-suggestions.docx"
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

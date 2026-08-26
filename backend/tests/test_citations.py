@@ -312,24 +312,19 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
         for s in p["suggestions"]
     )
     assert "Water" in blob or "Drinking" in blob
-    first_sug = next(
-        s for p in detail["paragraphs"] for s in p["suggestions"]
-    )
-    acc = await client.patch(
-        f"/api/v1/suggestions/{first_sug['id']}",
-        headers=headers,
-        json={"status": "accepted"},
-    )
-    assert acc.status_code == 200, acc.text
-    cited = (await client.get(f"/api/v1/manuscripts/{mid}", headers=headers)).json()
-    assert cited["references"]
-    assert any("[" in (p.get("display_text") or "") for p in cited["paragraphs"])
+    assert any(p["suggestions"] for p in detail["paragraphs"])
     exported = await client.get(f"/api/v1/manuscripts/{mid}/export", headers=headers)
     assert exported.status_code == 200, exported.text
     assert exported.content[:2] == b"PK"
-    xml = zipfile.ZipFile(io.BytesIO(exported.content)).read("word/document.xml").decode()
-    assert "References" in xml
-    assert "[1]" in xml
+    zipped = zipfile.ZipFile(io.BytesIO(exported.content))
+    document = zipped.read("word/document.xml").decode()
+    comments = zipped.read("word/comments.xml").decode()
+    endnotes = zipped.read("word/endnotes.xml").decode()
+    assert "endnoteReference" in document
+    assert "ins" in document
+    assert "Why this was suggested" in comments
+    assert "Accept" in comments and "Reject" in comments
+    assert "Why this was suggested" in endnotes
     listing = await client.get("/api/v1/manuscripts", headers=headers)
     assert any(row["id"] == mid for row in listing.json())
     deleted = await client.delete(f"/api/v1/manuscripts/{mid}", headers=headers)

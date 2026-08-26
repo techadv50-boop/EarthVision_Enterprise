@@ -29,23 +29,32 @@ def extract_manuscript_text(data: bytes, filename: str = "") -> str:
     return ""
 
 
-def extract_docx_text(data: bytes) -> str:
+def paragraph_text(para) -> str:
+    pieces = [node.text or "" for node in para.findall(".//w:t", W_NS)]
+    return re.sub(r"\s+", " ", "".join(pieces)).strip()
+
+
+def extract_docx_paragraphs(data: bytes) -> list[str]:
+    """Return each non-empty Word paragraph, in document order."""
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             xml = archive.read("word/document.xml")
     except Exception:
-        return ""
+        return []
     try:
         root = etree.fromstring(xml)
     except Exception:
-        return ""
+        return []
     paragraphs: list[str] = []
     for para in root.findall(".//w:p", W_NS):
-        pieces = [node.text or "" for node in para.findall(".//w:t", W_NS)]
-        line = re.sub(r"\s+", " ", "".join(pieces)).strip()
+        line = paragraph_text(para)
         if line:
             paragraphs.append(line)
-    return "\n\n".join(paragraphs)
+    return paragraphs
+
+
+def extract_docx_text(data: bytes) -> str:
+    return "\n\n".join(extract_docx_paragraphs(data))
 
 
 def _decode_text(data: bytes) -> str:

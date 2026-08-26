@@ -1,6 +1,4 @@
-import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { citationApi } from '@/services/api';
 
 interface Ms {
@@ -11,10 +9,20 @@ interface Ms {
   paragraph_count: number;
 }
 
+function downloadBlob(data: Blob, filename: string) {
+  const blob = data instanceof Blob ? data : new Blob([data]);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function ManuscriptsPage() {
-  const navigate = useNavigate();
   const [items, setItems] = useState<Ms[]>([]);
   const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const load = async () => {
     const { data } = await citationApi.manuscripts.list();
@@ -25,15 +33,29 @@ export default function ManuscriptsPage() {
     void load();
   }, []);
 
+  const downloadReview = async (id: number, title?: string) => {
+    const { data } = await citationApi.manuscripts.export(id);
+    const stem = (title || 'manuscript').replace(/\.[^.]+$/, '');
+    downloadBlob(data, `${stem}-suggestions.docx`);
+  };
+
   const upload = async (file: File) => {
-    setMsg(`Opening ${file.name}…`);
+    setBusy(true);
+    setMsg(`Reading ${file.name} paragraph by paragraph…`);
     try {
       const { data } = await citationApi.manuscripts.upload(file);
       setMsg('Matching each paragraph against the journal archive…');
       await citationApi.manuscripts.suggest(data.id);
-      navigate(`/manuscripts/${data.id}`);
+      setMsg('Building a Word file with Accept / Reject suggestions…');
+      await downloadReview(data.id, data.title || file.name);
+      await load();
+      setMsg(
+        'Downloaded. Open it in Word → Review. Accept keeps the citation and its reference; Reject removes both. Each comment explains why it was suggested.',
+      );
     } catch {
       setMsg('Could not read that file. Upload a Word (.docx) or PDF manuscript.');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -47,13 +69,16 @@ export default function ManuscriptsPage() {
   return (
     <div>
       <h2 className="text-2xl font-semibold mb-2">New manuscript</h2>
-      <p className="text-gray-400 mb-4">
-        Upload a Word document (.docx) or PDF. It opens as a document in the centre of the page, with
-        a citation suggestion and reason under each paragraph. Accept the ones you want; export writes
-        those references into a new Word file.
+      <p className="text-gray-400 mb-4 max-w-3xl">
+        Upload a Word document. The system reads it paragraph by paragraph, adds one house-citation
+        suggestion to each matching paragraph, and returns a Word file you can download. Open that
+        file in Microsoft Word and use <span className="text-gray-200">Review → Accept or Reject</span>.
+        Each comment explains why the citation was suggested. The matching reference is the endnote
+        attached to that citation — rejecting the citation also rejects its reference.
       </p>
       <input
         type="file"
+        disabled={busy}
         accept=".docx,.pdf,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/plain"
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -65,19 +90,29 @@ export default function ManuscriptsPage() {
       <div className="mt-6 space-y-2">
         {items.map((m) => (
           <div key={m.id} className="panel p-4 flex items-start justify-between gap-3">
-            <Link to={`/manuscripts/${m.id}`} className="block min-w-0 hover:text-earth-400">
+            <div className="min-w-0">
               <p className="font-medium truncate">{m.title || `Manuscript ${m.id}`}</p>
               <p className="text-sm text-gray-400">
                 {m.status} · {m.paragraph_count} paragraphs · {m.suggestion_count} suggestions
               </p>
-            </Link>
-            <button
-              className="btn-secondary text-sm shrink-0"
-              type="button"
-              onClick={() => void remove(m.id, m.title)}
-            >
-              Remove
-            </button>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button
+                className="btn-primary text-sm"
+                type="button"
+                disabled={busy}
+                onClick={() => void downloadReview(m.id, m.title).then(() => setMsg('Word file downloaded.'))}
+              >
+                Download Word file
+              </button>
+              <button
+                className="btn-secondary text-sm"
+                type="button"
+                onClick={() => void remove(m.id, m.title)}
+              >
+                Remove
+              </button>
+            </div>
           </div>
         ))}
       </div>

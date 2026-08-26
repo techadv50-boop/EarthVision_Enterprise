@@ -68,7 +68,7 @@ async def suggest_for_manuscript(
     db: AsyncSession,
     manuscript: Manuscript,
     *,
-    per_paragraph: int = 5,
+    per_paragraph: int = 1,
     min_score: float = 0.12,
 ) -> list[CitationSuggestion]:
     text = manuscript.full_text or ""
@@ -118,6 +118,8 @@ async def suggest_for_manuscript(
         return created
 
     for para in paragraphs:
+        if len((para.text or "").strip()) < 40:
+            continue
         query_vec = embed_text(para.text)
         best: dict[int, tuple[float, ArticleChunk]] = {}
         for chunk in chunks:
