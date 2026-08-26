@@ -66,6 +66,36 @@ abort_before_docker() {
   exit 1
 }
 
+# After checkout/merge has (or may have) mutated overlay files: restore first, then abort.
+abort_after_overlay_mutation() {
+  local reason="$1"
+  printf '[deploy-sateye] ERROR: %s\n' "$reason" >&2
+
+  if ! restore_server_overlays; then
+    printf '[deploy-sateye] ERROR: overlay restore after failure also failed; copies remain in PRESERVE_DIR=%s\n' "$PRESERVE_DIR" >&2
+    if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+      return 1
+    fi
+    exit 1
+  fi
+
+  local env_after
+  env_after="$(sha256_file .env)"
+  if [[ "$env_after" != "$ENV_SHA" ]]; then
+    printf '[deploy-sateye] ERROR: .env checksum changed during failed deploy\n' >&2
+    if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+      return 1
+    fi
+    exit 1
+  fi
+
+  printf '[deploy-sateye] ERROR: Deployment aborted before Docker restart; preserved overlays were restored.\n' >&2
+  if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+    return 1
+  fi
+  exit 1
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -292,14 +322,19 @@ update_source_ff_only() {
 
   # Clear allowlisted overlay modifications so ff-only merge can proceed.
   # Does NOT use reset --hard. Does NOT touch .env (untracked/gitignored).
+  # If checkout/merge fails after mutating overlays, restore immediately.
   log "merge started"
-  git checkout HEAD -- docker-compose.yml backend/requirements.txt \
-    || abort_before_docker "git checkout of overlay files failed"
-  git merge --ff-only "$REMOTE/$DEPLOY_BRANCH" \
-    || abort_before_docker "git merge --ff-only failed"
+  if ! git checkout HEAD -- docker-compose.yml backend/requirements.txt; then
+    abort_after_overlay_mutation "git checkout of overlay files failed"
+    return 1
+  fi
+  if ! git merge --ff-only "$REMOTE/$DEPLOY_BRANCH"; then
+    abort_after_overlay_mutation "git merge --ff-only failed"
+    return 1
+  fi
   log "merge completed"
 
-  restore_server_overlays
+  restore_server_overlays || return 1
 
   after="$(git rev-parse HEAD)"
   env_after="$(sha256_file .env)"

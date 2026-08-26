@@ -215,6 +215,25 @@ test_checksum_mismatch_blocks_restore() {
   return "$rc"
 }
 
+setup_overlay_app() {
+  APP_TMP="$(mktemp -d)"
+  PRESERVE_TMP="$(mktemp -d)/preserve"
+  mkdir -p "$APP_TMP/backend"
+  (
+    cd "$APP_TMP"
+    git init -q -b main
+    git config user.email t@t
+    git config user.name t
+    echo 'compose-git' >docker-compose.yml
+    echo 'reqs-git' >backend/requirements.txt
+    echo secret >.env
+    git add docker-compose.yml backend/requirements.txt
+    git commit -qm base
+    echo 'compose-live' >docker-compose.yml
+    echo 'reqs-live' >backend/requirements.txt
+  )
+}
+
 test_invariant_blocks_without_preservation() {
   expect_fail_subshell bash -c "
     set -euo pipefail
@@ -223,6 +242,158 @@ test_invariant_blocks_without_preservation() {
     preservation_ok=0
     require_preservation_ok
   "
+}
+
+test_merge_failure_restores_overlays() {
+  setup_overlay_app
+  local docker_log="$APP_TMP/docker-calls.log"
+  : >"$docker_log"
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    source '$SCRIPT'
+    cd '$APP_TMP'
+    APP_DIR='$APP_TMP'
+    PRESERVE_DIR='$PRESERVE_TMP'
+    ENV_SHA=\$(sha256_file .env)
+    preserve_server_overlays
+    require_preservation_ok
+    # Real checkout mutates overlays to git versions; then merge fails.
+    git checkout HEAD -- docker-compose.yml backend/requirements.txt
+    docker() { echo docker \"\$*\" >>'$docker_log'; return 0; }
+    abort_after_overlay_mutation 'git merge --ff-only failed'
+  "
+  local rc=$?
+  grep -qx 'compose-live' "$APP_TMP/docker-compose.yml"
+  grep -qx 'reqs-live' "$APP_TMP/backend/requirements.txt"
+  [[ ! -s "$docker_log" ]]
+  rm -rf "$APP_TMP" "$(dirname "$PRESERVE_TMP")"
+  return "$rc"
+}
+
+test_checkout_failure_restores_overlays() {
+  setup_overlay_app
+  local docker_log="$APP_TMP/docker-calls.log"
+  : >"$docker_log"
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    source '$SCRIPT'
+    cd '$APP_TMP'
+    APP_DIR='$APP_TMP'
+    PRESERVE_DIR='$PRESERVE_TMP'
+    ENV_SHA=\$(sha256_file .env)
+    preserve_server_overlays
+    require_preservation_ok
+    git() {
+      if [[ \"\$1\" == checkout ]]; then
+        echo 'compose-partial' >docker-compose.yml
+        return 1
+      fi
+      command git \"\$@\"
+    }
+    docker() { echo docker \"\$*\" >>'$docker_log'; return 0; }
+    if ! git checkout HEAD -- docker-compose.yml backend/requirements.txt; then
+      abort_after_overlay_mutation 'git checkout of overlay files failed'
+    fi
+  "
+  local rc=$?
+  grep -qx 'compose-live' "$APP_TMP/docker-compose.yml"
+  grep -qx 'reqs-live' "$APP_TMP/backend/requirements.txt"
+  [[ ! -s "$docker_log" ]]
+  rm -rf "$APP_TMP" "$(dirname "$PRESERVE_TMP")"
+  return "$rc"
+}
+
+test_successful_merge_restores_overlays() {
+  APP_TMP="$(mktemp -d)"
+  PRESERVE_TMP="$(mktemp -d)/preserve"
+  mkdir -p "$APP_TMP/backend"
+  (
+    cd "$APP_TMP"
+    git init -q -b main
+    git config user.email t@t
+    git config user.name t
+    echo 'compose-git' >docker-compose.yml
+    echo 'reqs-git' >backend/requirements.txt
+    echo secret >.env
+    git add docker-compose.yml backend/requirements.txt
+    git commit -qm base
+    echo 'compose-remote' >docker-compose.yml
+    echo 'reqs-remote' >backend/requirements.txt
+    git add docker-compose.yml backend/requirements.txt
+    git commit -qm ahead
+    REMOTE_SHA=$(git rev-parse HEAD)
+    git reset --hard HEAD~1
+    echo 'compose-live' >docker-compose.yml
+    echo 'reqs-live' >backend/requirements.txt
+    git update-ref refs/remotes/origin/cursor/scene-download-eye-5d6d "$REMOTE_SHA"
+  )
+  (
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    # shellcheck disable=SC1091
+    source "$SCRIPT"
+    cd "$APP_TMP"
+    APP_DIR="$APP_TMP"
+    PRESERVE_DIR="$PRESERVE_TMP"
+    REMOTE=origin
+    DEPLOY_BRANCH=cursor/scene-download-eye-5d6d
+    git() {
+      if [[ "$1" == fetch ]]; then
+        return 0
+      fi
+      command git "$@"
+    }
+    ENV_SHA=$(sha256_file .env)
+    preserve_server_overlays
+    require_preservation_ok
+    git checkout HEAD -- docker-compose.yml backend/requirements.txt
+    git merge --ff-only "$REMOTE/$DEPLOY_BRANCH"
+    restore_server_overlays
+    grep -qx 'compose-live' docker-compose.yml
+    grep -qx 'reqs-live' backend/requirements.txt
+    [[ "$(sha256_file .env)" == "$ENV_SHA" ]]
+    [[ "$(sha256_file docker-compose.yml)" == "$COMPOSITE_SHA" ]]
+    [[ "$(sha256_file backend/requirements.txt)" == "$REQUIREMENTS_SHA" ]]
+  )
+  local rc=$?
+  rm -rf "$APP_TMP" "$(dirname "$PRESERVE_TMP")"
+  return "$rc"
+}
+
+test_preservation_failure_prevents_checkout_merge() {
+  local app preserve marker
+  app="$(mktemp -d)"
+  preserve="$(mktemp -d)/preserve"
+  marker="$app/mutated"
+  mkdir -p "$app/backend"
+  echo 'compose-live' >"$app/docker-compose.yml"
+  # missing requirements -> preserve fails
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    source '$SCRIPT'
+    cd '$app'
+    APP_DIR='$app'
+    PRESERVE_DIR='$preserve'
+    preservation_ok=0
+    preserve_server_overlays
+    require_preservation_ok
+    git checkout HEAD -- docker-compose.yml backend/requirements.txt
+    echo mutated >'$marker'
+    git merge --ff-only origin/cursor/scene-download-eye-5d6d
+  "
+  local rc=$?
+  [[ ! -f "$marker" ]]
+  grep -qx 'compose-live' "$app/docker-compose.yml"
+  rm -rf "$app" "$(dirname "$preserve")"
+  return "$rc"
+}
+
+test_no_docker_after_merge_failure() {
+  # Covered by docker_log emptiness in merge/checkout failure tests.
+  test_merge_failure_restores_overlays
 }
 
 echo "== deploy_sateye_live unit tests =="
@@ -234,6 +405,11 @@ assert_ok "checksum mismatch blocks restore" test_checksum_mismatch_blocks_resto
 assert_ok "pre-merge invariant requires preservation_ok=1" test_invariant_blocks_without_preservation
 assert_ok "allowlisted dirty paths only" test_dirty_allowlisted_and_spaces
 assert_ok "unexpected dirty path + path with spaces" test_unexpected_dirty_path
+assert_ok "merge failure restores both overlays" test_merge_failure_restores_overlays
+assert_ok "checkout failure restores overlays" test_checkout_failure_restores_overlays
+assert_ok "successful merge still restores overlays" test_successful_merge_restores_overlays
+assert_ok "preservation failure prevents checkout/merge" test_preservation_failure_prevents_checkout_merge
+assert_ok "no Docker commands after merge failure" test_no_docker_after_merge_failure
 
 echo "PASSED=$PASS FAILED=$FAIL"
 [[ "$FAIL" -eq 0 ]]
