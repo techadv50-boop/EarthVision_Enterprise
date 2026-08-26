@@ -328,8 +328,8 @@ def _title_overlap(left: str, right: str) -> bool:
 async def fetch_crossref(article: Article) -> tuple[int, Optional[str], Optional[str]]:
     """Cited-by count from an exact Crossref DOI lookup only.
 
-    Never searches by title/bibliography and never falls back to OpenAlex
-    or previously stored citation counts.
+    Never searches by title or bibliography, and never reuses
+    previously stored citation counts when the lookup fails.
     """
     requested_doi = normalize_doi(article.doi)
     if not requested_doi:
