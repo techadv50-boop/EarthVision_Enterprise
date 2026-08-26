@@ -139,17 +139,24 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton("Start")
         self.pause_btn = QPushButton("Pause")
         self.resume_btn = QPushButton("Resume")
+        self.next_site_btn = QPushButton("Next Site")
         self.stop_btn = QPushButton("Stop")
         self.clear_btn = QPushButton("Clear URLs")
+        self.next_site_btn.setToolTip(
+            "Skip the current website (progress is saved) and jump to the next URL "
+            "in the queue. Use Resume later to finish the skipped site."
+        )
         self.start_btn.clicked.connect(self._start)
         self.pause_btn.clicked.connect(self._pause)
         self.resume_btn.clicked.connect(self._resume)
+        self.next_site_btn.clicked.connect(self._next_site)
         self.stop_btn.clicked.connect(self._stop)
         self.clear_btn.clicked.connect(self.urls_edit.clear)
         for btn in (
             self.start_btn,
             self.pause_btn,
             self.resume_btn,
+            self.next_site_btn,
             self.stop_btn,
             self.clear_btn,
         ):
@@ -343,6 +350,18 @@ class MainWindow(QMainWindow):
         self.worker.stop()
         self.statusBar().showMessage("Stopping…")
 
+    def _next_site(self) -> None:
+        if not self.worker.is_busy():
+            return
+        self.worker.skip_site()
+        self._append_log(
+            "Next Site: saving progress on the current website, then jumping to the next URL…"
+        )
+        self.statusBar().showMessage("Skipping to next site…")
+        # Re-enable Pause after a skip that may have unpaused the crawler.
+        self.pause_btn.setEnabled(True)
+        self.resume_btn.setEnabled(False)
+
     def _on_progress(self, state) -> None:
         self.progress_panel.update_state(state)
         self.statusBar().showMessage(state.status)
@@ -373,6 +392,7 @@ class MainWindow(QMainWindow):
         self.pause_btn.setEnabled(running)
         # Resume stays available when idle so power-loss recovery is one click.
         self.resume_btn.setEnabled(not running)
+        self.next_site_btn.setEnabled(running)
         self.stop_btn.setEnabled(running)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802

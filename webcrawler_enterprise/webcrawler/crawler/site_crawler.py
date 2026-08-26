@@ -400,9 +400,10 @@ class SiteCrawler:
             while True:
                 try:
                     state = self._wait_if_paused()
-                    if state == "stopped":
+                    if self._is_site_abort(state):
                         result.status = "Cancelled"
-                        self.logger.warning("Crawl stopped by user")
+                        result.error = self._abort_result_error(state)
+                        self.logger.warning(result.error)
                         break
 
                     if self.duplicates.visited_count >= self.settings.max_pages_per_site:
@@ -443,7 +444,7 @@ class SiteCrawler:
                         < self.settings.max_pages_per_site
                     ):
                         state = self.control_state()
-                        if state != "running":
+                        if self._is_site_abort(state):
                             break
                         # Never stall page discovery because downloads are busy —
                         # journal sites need issue/article HTML crawl to find PDFs.
@@ -500,7 +501,7 @@ class SiteCrawler:
             extra_passes = 0
             while (
                 self._has_queued_pages()
-                and self.control_state() != "stopped"
+                and not self._is_site_abort()
                 and extra_passes < 500
                 and self.duplicates.visited_count < self.settings.max_pages_per_site
             ):
@@ -509,7 +510,7 @@ class SiteCrawler:
                     f"Deep crawl pass {extra_passes}: "
                     f"{self._queue_size()} URL(s) left after document scans"
                 )
-                while self._has_queued_pages() and self.control_state() != "stopped":
+                while self._has_queued_pages() and not self._is_site_abort():
                     if self.duplicates.visited_count >= self.settings.max_pages_per_site:
                         break
                     item = self._pop_page()
@@ -534,7 +535,7 @@ class SiteCrawler:
 
         # Cap Playwright fallback so it cannot stall a site for many hours.
         if self.settings.use_playwright_fallback and self._playwright_queue:
-            if self.control_state() != "stopped":
+            if not self._is_site_abort():
                 max_pw = max(0, self.settings.max_playwright_fallback)
                 overflow = len(self._playwright_queue) - max_pw
                 if overflow > 0:
@@ -837,7 +838,7 @@ class SiteCrawler:
             return
         # Backpressure: avoid unbounded download future growth on large sites
         while self._pending_download_count() >= self.settings.max_download_queue:
-            if self.control_state() == "stopped":
+            if self._is_site_abort():
                 return
             time.sleep(0.05)
         self._emit_progress(current_download=url)
@@ -862,7 +863,7 @@ class SiteCrawler:
     def _throttle_downloads(self) -> None:
         # Keep memory/socket usage bounded during multi-hour runs.
         while self._pending_download_count() > self.settings.max_download_queue:
-            if self.control_state() == "stopped":
+            if self._is_site_abort():
                 return
             time.sleep(0.1)
 
@@ -963,8 +964,10 @@ class SiteCrawler:
             page = context.new_page()
             try:
                 while self._playwright_queue:
-                    if self._wait_if_paused() == "stopped":
+                    state = self._wait_if_paused()
+                    if self._is_site_abort(state):
                         result.status = "Cancelled"
+                        result.error = self._abort_result_error(state)
                         break
                     if self.duplicates.visited_count >= self.settings.max_pages_per_site:
                         break
@@ -1049,6 +1052,17 @@ class SiteCrawler:
             time.sleep(0.2)
             state = self.control_state()
         return state
+
+    def _is_site_abort(self, state: str | None = None) -> bool:
+        """True when user Stopped the crawl or Skip-to-next-site."""
+        s = self.control_state() if state is None else state
+        return s in {"stopped", "skip_site"}
+
+    def _abort_result_error(self, state: str | None = None) -> str:
+        s = self.control_state() if state is None else state
+        if s == "skip_site":
+            return "Skipped to next site — click Resume later to continue"
+        return "Crawl stopped by user"
 
     def _pop_page(self) -> tuple[str, int] | None:
         """Pop deepest/highest-priority URL first. Frontier stays until finished."""
@@ -1277,12 +1291,14 @@ class SiteCrawler:
         waited = 0
         while not is_online(self.item.url):
             state = self.control_state()
-            if state == "stopped":
-                self.logger.warning("Stopped while offline — click Resume when back online")
+            if self._is_site_abort(state):
+                self.logger.warning(
+                    f"{self._abort_result_error(state)} while offline"
+                )
                 return False
             while self.control_state() == "paused":
                 time.sleep(0.2)
-                if self.control_state() == "stopped":
+                if self._is_site_abort():
                     return False
             time.sleep(5)
             waited += 5

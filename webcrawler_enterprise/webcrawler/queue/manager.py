@@ -231,12 +231,23 @@ class QueueManager:
                 items.append(self._row_to_item(row))
         return items
 
-    def next_pending(self) -> QueueItem | None:
-        row = self.db.fetchone(
-            "SELECT * FROM queue_items WHERE status = ? ORDER BY id ASC LIMIT 1",
+    def next_pending(self, exclude_ids: set[int] | None = None) -> QueueItem | None:
+        """Return next Pending site, optionally skipping deferred/skipped ids."""
+        exclude = exclude_ids or set()
+        if not exclude:
+            row = self.db.fetchone(
+                "SELECT * FROM queue_items WHERE status = ? ORDER BY id ASC LIMIT 1",
+                (QueueStatus.PENDING.value,),
+            )
+            return self._row_to_item(row) if row else None
+        rows = self.db.fetchall(
+            "SELECT * FROM queue_items WHERE status = ? ORDER BY id ASC",
             (QueueStatus.PENDING.value,),
         )
-        return self._row_to_item(row) if row else None
+        for row in rows:
+            if int(row["id"]) not in exclude:
+                return self._row_to_item(row)
+        return None
 
     def mark_running(self, item_id: int) -> None:
         now = utcnow()

@@ -54,5 +54,8 @@ class CrawlWorker(QObject):
     def stop(self) -> None:
         self.engine.stop()
 
+    def skip_site(self) -> None:
+        self.engine.skip_site()
+
     def is_busy(self) -> bool:
         return self.engine.is_busy()

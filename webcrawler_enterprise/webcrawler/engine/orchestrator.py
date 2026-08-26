@@ -67,6 +67,9 @@ class CrawlEngine:
         self._start_monotonic = 0.0
         self._site_durations: list[float] = []
         self._resume_mode = False
+        # Sites the user skipped this run (still Pending for later Resume).
+        self._deferred_site_ids: set[int] = set()
+        self._skip_site = False
 
     @property
     def progress(self) -> ProgressState:
@@ -74,6 +77,8 @@ class CrawlEngine:
 
     def control_state(self) -> str:
         with self._state_lock:
+            if self._skip_site:
+                return "skip_site"
             return self._state
 
     def start(self, urls_text: str, output_folder: str, settings: AppSettings | None = None) -> None:
@@ -92,6 +97,8 @@ class CrawlEngine:
 
         # Start = only the URLs in the box, from scratch (do not resume old sites).
         self._resume_mode = False
+        self._deferred_site_ids = set()
+        self._skip_site = False
         items = self.queue.start_new_batch(urls, str(output.resolve()))
 
         with self._state_lock:
@@ -112,6 +119,8 @@ class CrawlEngine:
         if settings is not None:
             self.settings = settings
         self._resume_mode = True
+        self._deferred_site_ids = set()
+        self._skip_site = False
         self.queue.prepare_resume()
         counts = self.queue.counts()
         if counts.get(QueueStatus.PENDING.value, 0) == 0:
@@ -142,12 +151,32 @@ class CrawlEngine:
 
     def stop(self) -> None:
         with self._state_lock:
+            self._skip_site = False
             self._state = "stopped"
             self._progress.status = "Stopping"
             self._emit()
 
+    def skip_site(self) -> None:
+        """Abort the current website only; keep progress and continue the queue."""
+        with self._state_lock:
+            if self._state not in {"running", "paused"}:
+                return
+            self._skip_site = True
+            # Unpause so the crawler can exit the current site promptly.
+            if self._state == "paused":
+                self._state = "running"
+            self._progress.status = "Skipping site"
+            self._progress.message = "Saving progress, then jumping to the next website…"
+            self._emit()
+
     def is_busy(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def _clear_skip_flag(self) -> bool:
+        with self._state_lock:
+            was = self._skip_site
+            self._skip_site = False
+            return was
 
     def _pending_and_running_count(self) -> int:
         counts = self.queue.counts()
@@ -167,10 +196,12 @@ class CrawlEngine:
                         if self.control_state() == "stopped":
                             self.queue.cancel_remaining()
                             break
+                        if self.control_state() == "skip_site":
+                            break
                     if self.control_state() == "stopped":
                         break
 
-                    item = self.queue.next_pending()
+                    item = self.queue.next_pending(exclude_ids=self._deferred_site_ids)
                     if item is None:
                         break
 
@@ -238,15 +269,35 @@ class CrawlEngine:
 
                     try:
                         if result.status == "Completed":
+                            self._clear_skip_flag()
                             self.queue.mark_completed(item.id)
                         elif result.status == "Cancelled":
-                            # Keep Pending so power-loss / offline / Stop can Resume mid-site.
+                            skipped = self._clear_skip_flag()
+                            if skipped or "skip" in (result.error or "").lower():
+                                # Keep progress; do not crawl this site again until Resume.
+                                self._deferred_site_ids.add(item.id)
+                                self.queue.mark_pending(
+                                    item.id,
+                                    result.error
+                                    or "Skipped to next site — click Resume later to continue",
+                                )
+                                logger.warning(
+                                    f"Skipped {item.url} — progress saved; jumping to next site"
+                                )
+                                self._progress.message = (
+                                    f"Skipped {item.domain}; moving to next website"
+                                )
+                                self._progress.status = "Running"
+                                self._emit()
+                                continue
+                            # Full Stop — keep Pending so Resume can continue mid-site.
                             self.queue.mark_pending(
                                 item.id,
                                 result.error or "Interrupted — click Resume to continue",
                             )
                             break
                         else:
+                            self._clear_skip_flag()
                             # Do not lose mid-site progress; Resume retries this site later.
                             self.queue.mark_failed(
                                 item.id,
@@ -280,11 +331,18 @@ class CrawlEngine:
         finally:
             with self._state_lock:
                 self._state = "idle"
+                self._skip_site = False
             self._progress.status = "Idle"
             self._progress.current_website = ""
             self._progress.current_page = ""
             self._progress.current_download = ""
-            self._progress.message = "All queued websites processed"
+            if self._deferred_site_ids:
+                self._progress.message = (
+                    "Queue finished for this run. Skipped site(s) remain "
+                    "available under Resume."
+                )
+            else:
+                self._progress.message = "All queued websites processed"
             self._emit()
             if self.on_finished:
                 try:
