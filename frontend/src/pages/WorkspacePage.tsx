@@ -968,7 +968,7 @@ export function WorkspacePage() {
       const result = await classificationService.classify({
         scene_id: focusScene.id,
         bbox: [...bounds],
-        size: 1792,
+        size: 896,
         n_classes: nClasses,
         class_styles: opts?.class_styles,
       });
@@ -1024,7 +1024,7 @@ export function WorkspacePage() {
         scene_id: focusScene.id,
         collection: focusScene.collection,
         bbox: [...bounds],
-        size: 1280,
+        size: 896,
         ...stretchParams,
       });
       setCompositeResult(result);
@@ -1079,7 +1079,7 @@ export function WorkspacePage() {
       const result = await compositeService.stretch({
         scene_id: focusScene.id,
         bbox: [...bounds],
-        size: 1280,
+        size: 896,
         ...params,
       });
       setStretchResult(result);

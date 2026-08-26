@@ -9,7 +9,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from collections import defaultdict
+from typing import Any, Sequence
 from urllib.parse import quote
 
 import httpx
@@ -34,7 +35,66 @@ GDAL_ENV = {
     "GDAL_HTTP_MULTIPLEX": "YES",
     "GDAL_HTTP_MAX_RETRY": "3",
     "GDAL_HTTP_TIMEOUT": "60",
+    # Speed: reuse HTTP ranges + modest decode cache for interactive previews
+    "GDAL_CACHEMAX": "256",
+    "GDAL_NUM_THREADS": "2",
+    "CPL_VSIL_CURL_CACHE_SIZE": "200000000",
+    "VSI_CACHE": "TRUE",
+    "VSI_CACHE_SIZE": "100000000",
 }
+
+# Interactive analysis grid — tools share this ceiling unless the client asks higher
+INTERACTIVE_PREVIEW_MAX = 1024
+
+# Canonical analysis keys (order used when loading the full set)
+ANALYSIS_BAND_ORDER: tuple[str, ...] = (
+    "coastal",
+    "blue",
+    "green",
+    "red",
+    "rededge1",
+    "rededge2",
+    "rededge3",
+    "nir",
+    "nir08",
+    "nir09",
+    "swir",
+    "swir16",
+    "swir2",
+    "swir22",
+    "thermal",
+    "qa_pixel",
+    "scl",
+    "vv",
+    "vh",
+)
+
+# Requested logical name → STAC / alias keys that satisfy it
+BAND_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "swir": ("swir", "swir16"),
+    "swir2": ("swir2", "swir22"),
+    "nir": ("nir", "nir08"),
+    "thermal": ("thermal", "lwir11"),
+    "blue": ("blue",),
+    "green": ("green",),
+    "red": ("red",),
+    "coastal": ("coastal",),
+    "rededge1": ("rededge1",),
+    "rededge2": ("rededge2",),
+    "rededge3": ("rededge3",),
+    "nir08": ("nir08", "nir"),
+    "nir09": ("nir09",),
+    "swir16": ("swir16", "swir"),
+    "swir22": ("swir22", "swir2"),
+    "qa_pixel": ("qa_pixel",),
+    "scl": ("scl",),
+    "vv": ("vv",),
+    "vh": ("vh",),
+    "lwir11": ("lwir11", "thermal"),
+}
+
+# Fast PNG for map overlays (optimize=True is very slow on large RGBA)
+FAST_PNG_KWARGS: dict[str, Any] = {"optimize": False, "compress_level": 3}
 
 # Registry schema version — bump to invalidate slow Landsat self-tile layers
 LAYER_VERSION = 5
@@ -875,7 +935,7 @@ class SceneImageryService:
 
         img = Image.new("RGBA", (self.TILE_SIZE, self.TILE_SIZE), (0, 0, 0, 0))
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        img.save(buf, format="PNG", **FAST_PNG_KWARGS)
         return buf.getvalue()
 
     def _footprint_mask(
@@ -884,11 +944,33 @@ class SceneImageryService:
         """Boolean mask (True=inside footprint) for the tile grid."""
         if not footprint:
             return None
+        size = self.TILE_SIZE
+        try:
+            from affine import Affine
+            from rasterio.features import geometry_mask
+
+            transform = Affine(
+                (lon_max - lon_min) / size,
+                0.0,
+                lon_min,
+                0.0,
+                (lat_min - lat_max) / size,
+                lat_max,
+            )
+            outside = geometry_mask(
+                [footprint],
+                out_shape=(size, size),
+                transform=transform,
+                all_touched=True,
+                invert=False,
+            )
+            return ~outside
+        except Exception:  # noqa: BLE001
+            pass
         try:
             geom = shape(footprint)
         except Exception:  # noqa: BLE001
             return None
-        size = self.TILE_SIZE
         xs = np.linspace(lon_min, lon_max, size, endpoint=False) + (lon_max - lon_min) / (2 * size)
         ys = np.linspace(lat_max, lat_min, size, endpoint=False) + (lat_min - lat_max) / (2 * size)
         # Coarser mask then upsample for speed
@@ -920,7 +1002,8 @@ class SceneImageryService:
                 )
                 window = from_bounds(left, bottom, right, top, transform=src.transform)
                 oversampling = float(window.width) < self.TILE_SIZE or float(window.height) < self.TILE_SIZE
-                resampling = Resampling.nearest if oversampling else Resampling.cubic
+                # Bilinear is far cheaper than cubic for interactive map tiles
+                resampling = Resampling.nearest if oversampling else Resampling.bilinear
                 count = min(3, src.count)
                 data = src.read(
                     indexes=list(range(1, count + 1)),
@@ -1067,7 +1150,7 @@ class SceneImageryService:
         rgba = np.dstack([rgb_u8[0], rgb_u8[1], rgb_u8[2], alpha])
         img = Image.fromarray(rgba, mode="RGBA")
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        img.save(buf, format="PNG", **FAST_PNG_KWARGS)
         return buf.getvalue()
 
     def render_tile(self, scene_id: str, z: int, x: int, y: int) -> bytes:
@@ -1199,6 +1282,8 @@ class SceneImageryService:
         categorical: bool = False,
         boa_scale: float | None = None,
         boa_offset: float | None = None,
+        client: httpx.Client | None = None,
+        high_quality: bool = False,
     ) -> np.ndarray:
         """Sample a COG band into an analysis grid covering [west,south,east,north]."""
         import rasterio
@@ -1208,12 +1293,16 @@ class SceneImageryService:
 
         url = self._s3_to_https(href)
         if sign == "planetary_computer":
-            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-                url = self._sign_pc(url, client)
+            url = self._sign_pc(url, client)
 
         west, south, east, north = (float(v) for v in bounds)
         height, width = out_shape or (size, size)
-        env = GDAL_ENV if sign != "planetary_computer" else {}
+        env = GDAL_ENV if sign != "planetary_computer" else {
+            "GDAL_CACHEMAX": GDAL_ENV["GDAL_CACHEMAX"],
+            "GDAL_NUM_THREADS": GDAL_ENV["GDAL_NUM_THREADS"],
+            "VSI_CACHE": "TRUE",
+            "VSI_CACHE_SIZE": GDAL_ENV["VSI_CACHE_SIZE"],
+        }
         src_nodata: float | None = None
         with rasterio.Env(**env):
             with rasterio.open(url) as src:
@@ -1221,12 +1310,15 @@ class SceneImageryService:
                     "EPSG:4326", src.crs, west, south, east, north
                 )
                 window = from_bounds(left, bottom, right, top, transform=src.transform)
-                # Categorical (SCL/QA): always nearest. Else cubic when reducing.
+                # Categorical (SCL/QA): always nearest. Else bilinear for interactive
+                # previews (cubic is much slower and rarely visible at ≤1024).
                 oversampling = float(window.width) < width or float(window.height) < height
                 if categorical or oversampling:
                     resampling = Resampling.nearest
-                else:
+                elif high_quality:
                     resampling = Resampling.cubic
+                else:
+                    resampling = Resampling.bilinear
                 try:
                     src_nodata = float(src.nodata) if src.nodata is not None else None
                 except Exception:  # noqa: BLE001
@@ -1238,7 +1330,7 @@ class SceneImageryService:
                     resampling=resampling,
                     boundless=True,
                     fill_value=0,
-                ).astype(np.float64)
+                ).astype(np.float32)
 
         # Mask true nodata before reflectance scaling; keep dark-but-valid pixels.
         nodata_mask = data == 0
@@ -1340,7 +1432,7 @@ class SceneImageryService:
                                 or float(window.height) < target_h
                             )
                             resampling = (
-                                Resampling.nearest if oversampling else Resampling.cubic
+                                Resampling.nearest if oversampling else Resampling.bilinear
                             )
                             arr = src.read(
                                 1,
@@ -1349,7 +1441,7 @@ class SceneImageryService:
                                 resampling=resampling,
                                 boundless=True,
                                 fill_value=0,
-                            ).astype(np.float64)
+                            ).astype(np.float32)
                             planes.append(arr)
                 stacked = np.stack(planes, axis=0)
                 stacked = np.clip(stacked * 0.0000275 - 0.2, 0, 1)
@@ -1370,7 +1462,7 @@ class SceneImageryService:
                             or float(window.height) < target_h
                         )
                         resampling = (
-                            Resampling.nearest if oversampling else Resampling.cubic
+                            Resampling.nearest if oversampling else Resampling.bilinear
                         )
                         count = min(3, src.count)
                         data = src.read(
@@ -1380,7 +1472,7 @@ class SceneImageryService:
                             resampling=resampling,
                             boundless=True,
                             fill_value=0,
-                        ).astype(np.float64)
+                        ).astype(np.float32)
                         if count == 1:
                             data = np.repeat(data, 3, axis=0)
                         stacked = data
@@ -1395,13 +1487,68 @@ class SceneImageryService:
             logger.warning("Visual RGB read failed for {}: {}", scene_id, exc)
             return None
 
+    @staticmethod
+    def resolve_requested_band_keys(
+        analysis: dict[str, Any],
+        band_names: Sequence[str] | None,
+        *,
+        include_masks: bool = True,
+        is_landsat: bool = False,
+        is_s2: bool = False,
+    ) -> list[str]:
+        """Pick analysis keys to fetch; expand aliases and optionally QA/SCL masks."""
+        if not analysis:
+            return []
+        if band_names is None:
+            names = [n for n in ANALYSIS_BAND_ORDER if n in analysis]
+        else:
+            names: list[str] = []
+            seen: set[str] = set()
+            for req in band_names:
+                aliases = BAND_NAME_ALIASES.get(req, (req,))
+                for alt in aliases:
+                    if alt in analysis and alt not in seen:
+                        names.append(alt)
+                        seen.add(alt)
+                        break
+            # Prefer product keys when both alias forms exist in analysis
+            for product, alias in (("swir16", "swir"), ("swir22", "swir2"), ("nir08", "nir")):
+                if product in analysis and alias in analysis and alias in seen and product not in seen:
+                    names.append(product)
+                    seen.add(product)
+
+        if include_masks:
+            if is_landsat and "qa_pixel" in analysis and "qa_pixel" not in names:
+                names.append("qa_pixel")
+            if is_s2 and "scl" in analysis and "scl" not in names:
+                names.append("scl")
+        return names
+
+    @staticmethod
+    def group_band_keys_by_href(
+        analysis: dict[str, Any], names: Sequence[str]
+    ) -> list[tuple[str, list[str]]]:
+        """Collapse alias keys that share one COG href into a single fetch."""
+        by_href: dict[str, list[str]] = defaultdict(list)
+        for name in names:
+            href = analysis.get(name)
+            if not href:
+                continue
+            by_href[str(href)].append(name)
+        return [(href, keys) for href, keys in by_href.items()]
+
     def load_analysis_bands(
         self,
         scene_id: str,
         size: int = 1024,
         bounds: list[float] | None = None,
+        band_names: Sequence[str] | None = None,
     ) -> tuple[dict[str, np.ndarray], list[float], dict[str, Any] | None, dict[str, Any]]:
-        """Load optical analysis bands for a prepared scene (optional AOI bounds)."""
+        """Load optical analysis bands for a prepared scene (optional AOI bounds).
+
+        Pass ``band_names`` (e.g. NDVI → red,nir) to avoid fetching unused COGs.
+        Identical href aliases are fetched once and shared. Band reads run in parallel.
+        """
         layer = self.get_layer(scene_id)
         if not layer:
             raise NotFoundError(
@@ -1424,51 +1571,41 @@ class SceneImageryService:
         scale = "landsat_c2_sr" if is_landsat else "sentinel2_l2a"
         boa_scale = layer.get("boa_scale")
         boa_offset = layer.get("boa_offset")
+        # Cap interactive grids; callers can still request lower sizes
+        size = max(64, min(int(size), 2048))
         out_shape = self.analysis_grid_shape(bounds, max_edge=size)
 
+        wanted = self.resolve_requested_band_keys(
+            analysis,
+            band_names,
+            include_masks=True,
+            is_landsat=is_landsat,
+            is_s2=is_s2,
+        )
+        href_groups = self.group_band_keys_by_href(analysis, wanted)
+
         bands: dict[str, np.ndarray] = {}
-        for name in (
-            "coastal",
-            "blue",
-            "green",
-            "red",
-            "rededge1",
-            "rededge2",
-            "rededge3",
-            "nir",
-            "nir08",
-            "nir09",
-            "swir",
-            "swir16",
-            "swir2",
-            "swir22",
-            "thermal",
-            "qa_pixel",
-            "scl",
-            "vv",
-            "vh",
-        ):
-            href = analysis.get(name)
-            if not href:
-                continue
+        if not href_groups:
+            return bands, bounds, layer.get("footprint"), layer
+
+        def _scale_for(name: str) -> tuple[str | None, bool]:
+            if name in {"vv", "vh"}:
+                return None, False
+            if name == "thermal" and is_landsat:
+                return "landsat_c2_st", False
+            if name == "thermal":
+                return None, False
+            if name in {"qa_pixel", "scl"}:
+                return None, True
+            return scale, False
+
+        def _fetch_group(
+            href: str, names: list[str], client: httpx.Client | None
+        ) -> tuple[list[str], np.ndarray | None, str | None]:
+            primary = names[0]
+            band_scale, categorical = _scale_for(primary)
             try:
-                if name in {"vv", "vh"}:
-                    band_scale = None
-                    categorical = False
-                elif name == "thermal" and is_landsat:
-                    # ST_B10 → °C (USGS C2 L2 surface temperature)
-                    band_scale = "landsat_c2_st"
-                    categorical = False
-                elif name == "thermal":
-                    band_scale = None
-                    categorical = False
-                elif name in {"qa_pixel", "scl"}:
-                    band_scale = None
-                    categorical = True
-                else:
-                    band_scale = scale
-                    categorical = False
-                bands[name] = self.read_band_grid(
+                arr = self.read_band_grid(
                     href,
                     bounds,
                     size,
@@ -1478,11 +1615,43 @@ class SceneImageryService:
                     categorical=categorical,
                     boa_scale=float(boa_scale) if boa_scale is not None else None,
                     boa_offset=float(boa_offset) if boa_offset is not None else None,
+                    client=client,
+                    high_quality=False,
                 )
+                return names, arr, None
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to load analysis band {} for {}: {}", name, scene_id, exc)
+                return names, None, str(exc)
 
-        # Alias STAC common-name duplicates only (same physical band)
+        owns_client = sign == "planetary_computer"
+        client: httpx.Client | None = None
+        if owns_client:
+            client = httpx.Client(timeout=60.0, follow_redirects=True)
+        try:
+            workers = min(8, max(1, len(href_groups)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(_fetch_group, href, names, client)
+                    for href, names in href_groups
+                ]
+                for fut in futures:
+                    names, arr, err = fut.result()
+                    if err:
+                        logger.warning(
+                            "Failed to load analysis band(s) {} for {}: {}",
+                            ",".join(names),
+                            scene_id,
+                            err,
+                        )
+                        continue
+                    if arr is None:
+                        continue
+                    for name in names:
+                        bands[name] = arr
+        finally:
+            if client is not None:
+                client.close()
+
+        # Alias STAC common-name duplicates only (same physical band / array)
         if "swir" not in bands and "swir16" in bands:
             bands["swir"] = bands["swir16"]
         if "swir2" not in bands and "swir22" in bands:
@@ -1501,7 +1670,7 @@ class SceneImageryService:
                         continue
                     if arr.shape != invalid.shape:
                         continue
-                    masked = arr.astype(np.float64, copy=True)
+                    masked = arr.astype(np.float32, copy=True)
                     masked[invalid] = np.nan
                     bands[key] = masked
             except Exception as exc:  # noqa: BLE001
@@ -1518,7 +1687,7 @@ class SceneImageryService:
                         continue
                     if arr.shape != invalid.shape:
                         continue
-                    masked = arr.astype(np.float64, copy=True)
+                    masked = arr.astype(np.float32, copy=True)
                     masked[invalid] = np.nan
                     bands[key] = masked
             except Exception as exc:  # noqa: BLE001

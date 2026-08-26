@@ -235,7 +235,7 @@ class TerrainService:
         rgba[..., 2] = (b * 255).astype(np.uint8)
         rgba[..., 3] = np.where(valid, alpha, 0).astype(np.uint8)
         buf = io.BytesIO()
-        Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=True)
+        Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=False, compress_level=3)
         return buf.getvalue()
 
     def _product_dem(
@@ -262,7 +262,9 @@ class TerrainService:
                 from app.services.scene_imagery_service import SceneImageryService
 
                 bands, _b, _fp, _layer = SceneImageryService().load_analysis_bands(
-                    scene_id, size=dem.shape[0]
+                    scene_id,
+                    size=dem.shape[0],
+                    band_names=("red", "green", "blue"),
                 )
                 if bands and bands.get("red") is not None:
                     r = np.asarray(bands["red"], dtype=np.float32)
@@ -280,7 +282,9 @@ class TerrainService:
                         draped[..., i] = (lit * 255).astype(np.uint8)
                     draped[..., 3] = 255
                     buf = io.BytesIO()
-                    Image.fromarray(draped, mode="RGBA").save(buf, format="PNG", optimize=True)
+                    Image.fromarray(draped, mode="RGBA").save(
+                        buf, format="PNG", optimize=False, compress_level=3
+                    )
                     drape_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("DEM drape texture failed for {}: {}", scene_id, exc)

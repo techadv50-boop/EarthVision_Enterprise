@@ -277,8 +277,11 @@ class CompositeService:
 
         # True/false color: build from surface-reflectance bands with EO stretch.
         # Extent follows the scene layer bounds passed by the client (original image).
-        size = max(request.size, 1280)
-        bands, bounds = self._load_bands(request.scene_id, request.bbox, size)
+        # Use client size as-is (no 1280 floor) — interactive map overlays stay fast.
+        size = max(64, min(int(request.size or 896), 2048))
+        bands, bounds = self._load_bands(
+            request.scene_id, request.bbox, size, band_names=keys
+        )
         r = self._pick(bands, keys[0], required=True)
         g = self._pick(bands, keys[1], required=True)
         b = self._pick(bands, keys[2], required=True)
@@ -350,8 +353,12 @@ class CompositeService:
             blocked = unsupported_image_processing_reason(family)
             if blocked:
                 raise ValidationError(blocked)
+        size = max(64, min(int(request.size or 896), 2048))
         bands, bounds = self._load_bands(
-            request.scene_id, request.bbox, max(request.size, 1280)
+            request.scene_id,
+            request.bbox,
+            size,
+            band_names=("red", "green", "blue"),
         )
         r = self._pick(bands, "red")
         g = self._pick(bands, "green")
@@ -495,7 +502,11 @@ class CompositeService:
         return np.clip(out, 0, 1)
 
     def _load_bands(
-        self, scene_id: str | None, bbox: list[float] | None, size: int
+        self,
+        scene_id: str | None,
+        bbox: list[float] | None,
+        size: int,
+        band_names: tuple[str, ...] | list[str] | None = None,
     ) -> tuple[dict[str, np.ndarray], list[float]]:
         bounds = bbox if bbox and len(bbox) == 4 else [74.15, 31.35, 74.55, 31.7]
         if scene_id:
@@ -504,7 +515,10 @@ class CompositeService:
 
                 imagery = SceneImageryService()
                 bands, bounds, _fp, _layer = imagery.load_analysis_bands(
-                    scene_id, size=size, bounds=bbox
+                    scene_id,
+                    size=size,
+                    bounds=bbox,
+                    band_names=band_names,
                 )
                 if bands:
                     return bands, bounds
@@ -651,13 +665,9 @@ class CompositeService:
         alpha = np.where(valid_mask, 255, 0).astype(np.uint8)
         rgba = np.dstack([u8, alpha])
         img = Image.fromarray(rgba, mode="RGBA")
-        # Light sharpen only — heavy unsharp made composites look crunchy/blocky
-        try:
-            img = img.filter(ImageFilter.UnsharpMask(radius=0.8, percent=80, threshold=3))
-        except Exception:  # noqa: BLE001
-            pass
+        # Skip unsharp on interactive overlays — large RGBA + optimize was a major lag
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        img.save(buf, format="PNG", optimize=False, compress_level=3)
         return buf.getvalue()
 
     def _rgb_histogram(self, rgb: np.ndarray) -> dict[str, Any]:
