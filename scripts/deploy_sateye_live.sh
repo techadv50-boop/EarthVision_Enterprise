@@ -9,9 +9,12 @@
 # Preserves:
 #   - /opt/earthvision/.env  (never overwritten from Git)
 #   - server-specific docker-compose.yml and backend/requirements.txt
-#     (copied to /opt/earthvision-deploy-preserve — OUTSIDE the Git tree)
+#     (copied to /home/zh/earthvision-deploy-preserve — OUTSIDE the Git tree)
 #   - PostgreSQL Docker volume (pgdata)
 #   - uploads / cache / imagery / logs bind mounts
+#
+# Preservation is FAIL-CLOSED: git checkout / git merge never run unless
+# preservation_ok=1 after verified copies + checksums.
 #
 # Never uses: git reset --hard, docker compose down -v, or secret printing.
 # Never stores .env in the preserve directory.
@@ -20,8 +23,8 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/earthvision}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-cursor/scene-download-eye-5d6d}"
 REMOTE="${REMOTE:-origin}"
-# Must stay outside APP_DIR so it never dirties the live Git working tree.
-PRESERVE_DIR="${PRESERVE_DIR:-/opt/earthvision-deploy-preserve}"
+# Must stay outside APP_DIR and be writable by the runner user (zh).
+PRESERVE_DIR="${PRESERVE_DIR:-/home/zh/earthvision-deploy-preserve}"
 HEALTH_URLS=(
   "${HEALTH_URL_LOCAL:-http://127.0.0.1/health}"
   "${HEALTH_URL_BACKEND:-http://127.0.0.1:8000/health}"
@@ -29,12 +32,6 @@ HEALTH_URLS=(
 PUBLIC_HEALTH_URL="${HEALTH_URL_PUBLIC:-https://sateye.xdgen.com/health}"
 
 # Exact dirty-tree allowlist only (no directory wildcards).
-# Server overlays restored across FF merge:
-#   docker-compose.yml, backend/requirements.txt
-# Known live-server artifacts that must not abort deploy and must not be deleted:
-#   cache/.gitkeep, logs/.gitkeep, uploads/.gitkeep,
-#   backups/earthvision_before_cursor_migration.sql,
-#   docker-compose.cursor.original.yml
 ALLOWLISTED_PATHS=(
   "docker-compose.yml"
   "backend/requirements.txt"
@@ -45,8 +42,59 @@ ALLOWLISTED_PATHS=(
   "docker-compose.cursor.original.yml"
 )
 
+# Set to 1 only after verified preservation of both overlay files.
+preservation_ok=0
+COMPOSITE_SHA=""
+REQUIREMENTS_SHA=""
+ENV_SHA=""
+
 log() { printf '[deploy-sateye] %s\n' "$*"; }
-die() { printf '[deploy-sateye] ERROR: %s\n' "$*" >&2; exit 1; }
+die() {
+  printf '[deploy-sateye] ERROR: %s\n' "$*" >&2
+  if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+    return 1
+  fi
+  exit 1
+}
+
+abort_before_docker() {
+  printf '[deploy-sateye] ERROR: %s\n' "$*" >&2
+  printf '[deploy-sateye] ERROR: Deployment aborted before Docker restart; preserved overlays remain available.\n' >&2
+  if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+    return 1
+  fi
+  exit 1
+}
+
+# After checkout/merge has (or may have) mutated overlay files: restore first, then abort.
+abort_after_overlay_mutation() {
+  local reason="$1"
+  printf '[deploy-sateye] ERROR: %s\n' "$reason" >&2
+
+  if ! restore_server_overlays; then
+    printf '[deploy-sateye] ERROR: overlay restore after failure also failed; copies remain in PRESERVE_DIR=%s\n' "$PRESERVE_DIR" >&2
+    if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+      return 1
+    fi
+    exit 1
+  fi
+
+  local env_after
+  env_after="$(sha256_file .env)"
+  if [[ "$env_after" != "$ENV_SHA" ]]; then
+    printf '[deploy-sateye] ERROR: .env checksum changed during failed deploy\n' >&2
+    if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+      return 1
+    fi
+    exit 1
+  fi
+
+  printf '[deploy-sateye] ERROR: Deployment aborted before Docker restart; preserved overlays were restored.\n' >&2
+  if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+    return 1
+  fi
+  exit 1
+}
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
@@ -140,6 +188,7 @@ preflight() {
 
   log "preflight ok"
   log "directory=$APP_DIR"
+  log "PRESERVE_DIR=$PRESERVE_DIR"
   log "branch=$branch"
   log "commit=$(git rev-parse HEAD)"
   log "short=$(git rev-parse --short HEAD)"
@@ -156,33 +205,103 @@ ensure_preserve_dir() {
       die "PRESERVE_DIR must be outside the Git repo ($APP_DIR); got: $PRESERVE_DIR"
       ;;
   esac
-  mkdir -p "$PRESERVE_DIR"
-  chmod 700 "$PRESERVE_DIR"
+
+  mkdir -p "$PRESERVE_DIR" || die "cannot create PRESERVE_DIR=$PRESERVE_DIR"
+  chmod 700 "$PRESERVE_DIR" || die "cannot chmod PRESERVE_DIR=$PRESERVE_DIR"
+
+  local probe="$PRESERVE_DIR/.write-test.$$"
+  if ! ( : >"$probe" ) 2>/dev/null; then
+    die "PRESERVE_DIR is not writable: $PRESERVE_DIR"
+  fi
+  rm -f "$probe"
+
   # Never place secrets here.
   [[ ! -e "$PRESERVE_DIR/.env" ]] || die "refusing to keep .env inside preserve dir $PRESERVE_DIR"
 }
 
+# FAIL-CLOSED preservation. Sets preservation_ok=1 only on full success.
+# Must complete before any git checkout / git merge.
 preserve_server_overlays() {
+  preservation_ok=0
+  COMPOSITE_SHA=""
+  REQUIREMENTS_SHA=""
+
+  log "PRESERVE_DIR=$PRESERVE_DIR"
   ensure_preserve_dir
+
+  [[ -f docker-compose.yml ]] || die "live docker-compose.yml missing; cannot preserve"
+  [[ -f backend/requirements.txt ]] || die "live backend/requirements.txt missing; cannot preserve"
+
+  COMPOSITE_SHA="$(sha256_file docker-compose.yml)"
+  REQUIREMENTS_SHA="$(sha256_file backend/requirements.txt)"
+
   # Overlays only — never copy .env into PRESERVE_DIR.
-  cp -a docker-compose.yml "$PRESERVE_DIR/docker-compose.yml"
-  cp -a backend/requirements.txt "$PRESERVE_DIR/backend-requirements.txt"
+  cp -a docker-compose.yml "$PRESERVE_DIR/docker-compose.yml" \
+    || die "failed to copy docker-compose.yml into PRESERVE_DIR"
+  cp -a backend/requirements.txt "$PRESERVE_DIR/backend-requirements.txt" \
+    || die "failed to copy backend/requirements.txt into PRESERVE_DIR"
+
   chmod 600 "$PRESERVE_DIR/docker-compose.yml" "$PRESERVE_DIR/backend-requirements.txt" || true
-  log "saved server overlays to $PRESERVE_DIR (retained on failure for recovery)"
+
+  [[ -f "$PRESERVE_DIR/docker-compose.yml" ]] \
+    || die "preserved docker-compose.yml missing after copy"
+  [[ -f "$PRESERVE_DIR/backend-requirements.txt" ]] \
+    || die "preserved backend/requirements.txt missing after copy"
+
+  local p_compose p_reqs
+  p_compose="$(sha256_file "$PRESERVE_DIR/docker-compose.yml")"
+  p_reqs="$(sha256_file "$PRESERVE_DIR/backend-requirements.txt")"
+
+  [[ "$p_compose" == "$COMPOSITE_SHA" ]] \
+    || die "preserved docker-compose.yml checksum mismatch"
+  [[ "$p_reqs" == "$REQUIREMENTS_SHA" ]] \
+    || die "preserved backend/requirements.txt checksum mismatch"
+
+  preservation_ok=1
+  log "preservation succeeded"
+  log "preservation checksums compose=$COMPOSITE_SHA requirements=$REQUIREMENTS_SHA"
+}
+
+require_preservation_ok() {
+  [[ "${preservation_ok}" == "1" ]] \
+    || die "pre-merge invariant failed: preservation_ok!=1 (refusing git checkout/merge)"
 }
 
 restore_server_overlays() {
-  [[ -f "$PRESERVE_DIR/docker-compose.yml" ]] || die "missing preserved docker-compose.yml"
-  [[ -f "$PRESERVE_DIR/backend-requirements.txt" ]] || die "missing preserved backend/requirements.txt"
-  cp -a "$PRESERVE_DIR/docker-compose.yml" docker-compose.yml
-  cp -a "$PRESERVE_DIR/backend-requirements.txt" backend/requirements.txt
-  log "restored server overlays (compose + requirements)"
+  [[ -f "$PRESERVE_DIR/docker-compose.yml" ]] \
+    || abort_before_docker "missing preserved docker-compose.yml"
+  [[ -f "$PRESERVE_DIR/backend-requirements.txt" ]] \
+    || abort_before_docker "missing preserved backend/requirements.txt"
+
+  cp -a "$PRESERVE_DIR/docker-compose.yml" docker-compose.yml \
+    || abort_before_docker "failed to restore docker-compose.yml"
+  cp -a "$PRESERVE_DIR/backend-requirements.txt" backend/requirements.txt \
+    || abort_before_docker "failed to restore backend/requirements.txt"
+
+  log "overlays restored"
+
+  local live_compose live_reqs
+  live_compose="$(sha256_file docker-compose.yml)"
+  live_reqs="$(sha256_file backend/requirements.txt)"
+
+  [[ "$live_compose" == "$COMPOSITE_SHA" ]] \
+    || abort_before_docker "restored docker-compose.yml checksum mismatch (expected $COMPOSITE_SHA got $live_compose)"
+  [[ "$live_reqs" == "$REQUIREMENTS_SHA" ]] \
+    || abort_before_docker "restored backend/requirements.txt checksum mismatch (expected $REQUIREMENTS_SHA got $live_reqs)"
+
+  # Preserve copies must still exist for recovery.
+  [[ -f "$PRESERVE_DIR/docker-compose.yml" ]] \
+    || abort_before_docker "preserve copy of docker-compose.yml disappeared"
+  [[ -f "$PRESERVE_DIR/backend-requirements.txt" ]] \
+    || abort_before_docker "preserve copy of backend/requirements.txt disappeared"
+
+  log "overlay checksums verified compose=$live_compose requirements=$live_reqs"
 }
 
 update_source_ff_only() {
-  local before after remote_sha env_before env_after
+  local before after remote_sha env_after
 
-  env_before="$(sha256_file .env)"
+  ENV_SHA="$(sha256_file .env)"
   before="$(git rev-parse HEAD)"
 
   log "fetching $REMOTE $DEPLOY_BRANCH"
@@ -194,25 +313,34 @@ update_source_ff_only() {
 
   if [[ "$before" == "$remote_sha" ]]; then
     log "Already up to date"
-    # Still ensure overlays are the live server copies if they were dirty.
     return 2
   fi
 
+  # FAIL-CLOSED: must succeed before any checkout/merge mutates the tree.
   preserve_server_overlays
+  require_preservation_ok
 
-  # Clear allowlisted local modifications so ff-only merge can proceed.
+  # Clear allowlisted overlay modifications so ff-only merge can proceed.
   # Does NOT use reset --hard. Does NOT touch .env (untracked/gitignored).
-  git checkout HEAD -- docker-compose.yml backend/requirements.txt
+  # If checkout/merge fails after mutating overlays, restore immediately.
+  log "merge started"
+  if ! git checkout HEAD -- docker-compose.yml backend/requirements.txt; then
+    abort_after_overlay_mutation "git checkout of overlay files failed"
+    return 1
+  fi
+  if ! git merge --ff-only "$REMOTE/$DEPLOY_BRANCH"; then
+    abort_after_overlay_mutation "git merge --ff-only failed"
+    return 1
+  fi
+  log "merge completed"
 
-  log "merging $REMOTE/$DEPLOY_BRANCH (ff-only)"
-  git merge --ff-only "$REMOTE/$DEPLOY_BRANCH"
-
-  restore_server_overlays
+  restore_server_overlays || return 1
 
   after="$(git rev-parse HEAD)"
   env_after="$(sha256_file .env)"
-  [[ "$env_after" == "$env_before" ]] || die ".env checksum changed during deploy — aborting for safety"
-  [[ -f .env ]] || die ".env missing after merge"
+  [[ "$env_after" == "$ENV_SHA" ]] \
+    || abort_before_docker ".env checksum changed during deploy"
+  [[ -f .env ]] || abort_before_docker ".env missing after merge"
 
   log "updated $before -> $after"
   log ".env unchanged ($(env_fingerprint .env))"
@@ -268,7 +396,7 @@ main() {
     exit 0
   fi
   if [[ "$update_rc" -ne 0 ]]; then
-    die "source update failed (rc=$update_rc); database and uploads were not wiped"
+    abort_before_docker "source update failed (rc=$update_rc); database and uploads were not wiped"
   fi
 
   rebuild_and_restart
@@ -276,4 +404,7 @@ main() {
   log "deployment complete commit=$(git rev-parse --short HEAD)"
 }
 
-main "$@"
+# Allow unit tests to source this file without running main.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
