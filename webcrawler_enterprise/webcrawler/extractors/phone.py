@@ -143,7 +143,11 @@ def extract_phones_from_file(
     suffix = path.suffix.lower()
     text = ""
     try:
-        if suffix in {".html", ".htm", ".txt", ".csv", ".xml"}:
+        if suffix == ".eml":
+            from webcrawler.scanner.folder_scanner import _eml_text
+
+            text = _eml_text(path)
+        elif suffix in {".html", ".htm", ".txt", ".csv", ".xml"}:
             text = path.read_text(encoding="utf-8", errors="ignore")
         elif suffix == ".pdf":
             text = _pdf_text(path)

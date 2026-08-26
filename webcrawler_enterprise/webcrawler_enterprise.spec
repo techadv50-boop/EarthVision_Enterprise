@@ -24,6 +24,10 @@ hiddenimports = [
     "shiboken6",
     "webcrawler",
     "webcrawler.runtime",
+    "webcrawler.scanner",
+    "webcrawler.scanner.folder_scanner",
+    "PIL",
+    "pytesseract",
 ]
 
 for pkg in ("PySide6", "shiboken6", "playwright", "tldextract", "phonenumbers", "certifi"):

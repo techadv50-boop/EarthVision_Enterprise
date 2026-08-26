@@ -9,4 +9,7 @@ python-docx>=1.1.0
 openpyxl>=3.1.0
 phonenumbers>=8.13.0
 tldextract>=5.1.0
+Pillow>=10.0.0
+# Optional OCR helper (also needs the Tesseract OCR application installed on Windows)
+pytesseract>=0.3.10
 pytest>=8.2.0

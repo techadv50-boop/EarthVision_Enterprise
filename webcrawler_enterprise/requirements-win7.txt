@@ -11,4 +11,6 @@ python-docx==1.1.2
 openpyxl==3.1.5
 phonenumbers==8.13.50
 tldextract==5.1.2
+Pillow==10.4.0
+pytesseract==0.3.10
 pyinstaller==5.13.2

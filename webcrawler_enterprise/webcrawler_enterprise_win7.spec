@@ -23,6 +23,10 @@ hiddenimports = [
     "webcrawler",
     "webcrawler.runtime",
     "webcrawler.qtcompat",
+    "webcrawler.scanner",
+    "webcrawler.scanner.folder_scanner",
+    "PIL",
+    "pytesseract",
 ]
 
 for pkg in ("PySide2", "shiboken2", "tldextract", "phonenumbers", "certifi"):

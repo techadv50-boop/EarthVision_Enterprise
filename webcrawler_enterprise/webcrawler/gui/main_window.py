@@ -135,8 +135,35 @@ class MainWindow(QMainWindow):
         )
         left.addWidget(self.light_mode)
 
+        left.addWidget(QLabel("Local folder scan (PDF / Word / HTML / .eml / images)"))
+        local_row = QHBoxLayout()
+        self.local_folder_edit = QLineEdit()
+        self.local_folder_edit.setPlaceholderText(
+            "Browse a folder of PDFs, DOCX, HTML, email files…"
+        )
+        local_row.addWidget(self.local_folder_edit, stretch=1)
+        self.browse_local_btn = QPushButton("Browse Folder")
+        self.browse_local_btn.clicked.connect(self._browse_local_folder)
+        local_row.addWidget(self.browse_local_btn)
+        left.addLayout(local_row)
+
+        local_opts = QHBoxLayout()
+        self.local_recursive = QCheckBox("Include subfolders")
+        self.local_recursive.setChecked(True)
+        self.local_ocr = QCheckBox("OCR scanned PDFs / images (needs Tesseract if installed)")
+        self.local_ocr.setChecked(True)
+        self.local_ocr.setToolTip(
+            "Tries OCR when a PDF/image has little selectable text. "
+            "Install Tesseract OCR on Windows for best results; digital PDFs/DOCX/HTML/.eml "
+            "still work without it."
+        )
+        local_opts.addWidget(self.local_recursive)
+        local_opts.addWidget(self.local_ocr)
+        left.addLayout(local_opts)
+
         btn_row = QHBoxLayout()
         self.start_btn = QPushButton("Start")
+        self.scan_folder_btn = QPushButton("Scan Folder")
         self.pause_btn = QPushButton("Pause")
         self.resume_btn = QPushButton("Resume")
         self.next_site_btn = QPushButton("Next Site")
@@ -146,7 +173,12 @@ class MainWindow(QMainWindow):
             "Skip the current website (progress is saved) and jump to the next URL "
             "in the queue. Use Resume later to finish the skipped site."
         )
+        self.scan_folder_btn.setToolTip(
+            "Scan every PDF/DOCX/HTML/.eml/image in the local folder for emails & phones, "
+            "then save emails.txt and phone_numbers.txt inside that same folder."
+        )
         self.start_btn.clicked.connect(self._start)
+        self.scan_folder_btn.clicked.connect(self._scan_folder)
         self.pause_btn.clicked.connect(self._pause)
         self.resume_btn.clicked.connect(self._resume)
         self.next_site_btn.clicked.connect(self._next_site)
@@ -154,6 +186,7 @@ class MainWindow(QMainWindow):
         self.clear_btn.clicked.connect(self.urls_edit.clear)
         for btn in (
             self.start_btn,
+            self.scan_folder_btn,
             self.pause_btn,
             self.resume_btn,
             self.next_site_btn,
@@ -195,6 +228,49 @@ class MainWindow(QMainWindow):
         if path:
             self.output_edit.setText(path)
             self._persist_inputs()
+
+    def _browse_local_folder(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self, "Select folder with PDF / Word / HTML / email files"
+        )
+        if path:
+            self.local_folder_edit.setText(path)
+
+    def _scan_folder(self) -> None:
+        folder = self.local_folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(
+                self,
+                "Local folder",
+                "Browse and select a folder that contains PDF, DOCX, HTML, or .eml files.",
+            )
+            return
+        if not Path(folder).is_dir():
+            QMessageBox.warning(self, "Local folder", f"Folder not found:\n{folder}")
+            return
+        if self.worker.is_busy():
+            QMessageBox.information(
+                self, "Busy", "Stop the current job before scanning a folder."
+            )
+            return
+        self.log_view.clear()
+        self._append_log(
+            f"Scanning local folder for emails & phones:\n{folder}\n"
+            f"Subfolders={'yes' if self.local_recursive.isChecked() else 'no'}, "
+            f"OCR={'yes' if self.local_ocr.isChecked() else 'no'}\n"
+            "Results will be saved as emails.txt and phone_numbers.txt in that folder."
+        )
+        self._set_running_ui(True)
+        # Pause/Next Site only apply to website crawls.
+        self.pause_btn.setEnabled(False)
+        self.next_site_btn.setEnabled(False)
+        self.resume_btn.setEnabled(False)
+        self.worker.start_folder_scan(
+            folder,
+            recursive=self.local_recursive.isChecked(),
+            use_ocr=self.local_ocr.isChecked(),
+            default_region="US",
+        )
 
     def _open_output(self) -> None:
         path = self.output_edit.text().strip()
@@ -384,11 +460,16 @@ class MainWindow(QMainWindow):
 
     def _set_running_ui(self, running: bool) -> None:
         self.start_btn.setEnabled(not running)
+        self.scan_folder_btn.setEnabled(not running)
         self.clear_btn.setEnabled(not running)
         self.urls_edit.setReadOnly(running)
         self.output_edit.setReadOnly(running)
+        self.local_folder_edit.setReadOnly(running)
         self.browse_btn.setEnabled(not running)
+        self.browse_local_btn.setEnabled(not running)
         self.light_mode.setEnabled(not running)
+        self.local_recursive.setEnabled(not running)
+        self.local_ocr.setEnabled(not running)
         self.pause_btn.setEnabled(running)
         # Resume stays available when idle so power-loss recovery is one click.
         self.resume_btn.setEnabled(not running)
