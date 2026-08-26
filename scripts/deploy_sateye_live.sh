@@ -75,8 +75,10 @@ is_allowlisted_path() {
   return 1
 }
 
-# Parse git status --porcelain -z correctly for modified/deleted/untracked/renames
-# and paths containing spaces. Unknown paths abort deploy (nothing is discarded).
+# Parse git status --porcelain -z -uall correctly for modified/deleted/untracked
+# (including files inside untracked dirs), renames, and paths containing spaces.
+# Unknown paths abort deploy (nothing is discarded). Directory wildcards are NOT
+# allowed — only exact paths in ALLOWLISTED_PATHS.
 assert_only_allowlisted_dirty() {
   local unexpected=()
   local entry status path other
@@ -105,7 +107,7 @@ assert_only_allowlisted_dirty() {
         fi
       fi
     fi
-  done < <(git status --porcelain -z)
+  done < <(git status --porcelain -z -uall)
 
   if [[ "$has_dirty" -eq 0 ]]; then
     return 0
@@ -143,7 +145,7 @@ preflight() {
   log "short=$(git rev-parse --short HEAD)"
   log ".env $(env_fingerprint .env)"
   log "working tree:"
-  git status --porcelain || true
+  git status --porcelain -uall || true
   log "docker compose services:"
   docker compose ps || docker-compose ps || die "docker compose ps failed"
 }
