@@ -70,13 +70,14 @@ export default function ManuscriptsPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">New manuscript</h2>
       <p className="text-gray-400 mb-4 max-w-3xl">
-        Upload a Word document. The system reads it paragraph by paragraph, matches each
-        substantive paragraph against articles already stored in Citation Assistant (up to
-        three strong matches), and returns a Word file. Open that file in Microsoft Word and
-        use <span className="text-gray-200">Review → Accept or Reject</span>. Each comment
-        explains why the citation was suggested. The matching reference is the shared endnote
-        for that archive article — accepting keeps citation and reference; rejecting the last
-        citation to that article also drops its reference.
+        Upload a Word document. The system reads it paragraph by paragraph and matches
+        substantive paragraphs against articles already stored in Citation Assistant. It
+        keeps at most ten of the strongest matches for the whole manuscript, and at most
+        one match per paragraph — not every paragraph gets a citation. Open that file in
+        Microsoft Word and use <span className="text-gray-200">Review → Accept or Reject</span>.
+        Each comment explains why the citation was suggested. The matching reference is the
+        shared endnote for that archive article — accepting keeps citation and reference;
+        rejecting the last citation to that article also drops its reference.
       </p>
       <input
         type="file"

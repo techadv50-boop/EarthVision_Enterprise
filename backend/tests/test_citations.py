@@ -330,7 +330,7 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
     assert first.get("volume") is not None
     assert first.get("article_title")
     for p in detail["paragraphs"]:
-        assert len(p["suggestions"]) <= 3
+        assert len(p["suggestions"]) <= 1
         for s in p["suggestions"]:
             stored = await client.get(f"/api/v1/articles/{s['article_id']}", headers=headers)
             assert stored.status_code == 200
