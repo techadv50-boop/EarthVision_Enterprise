@@ -9,16 +9,19 @@
 # Preserves:
 #   - /opt/earthvision/.env  (never overwritten from Git)
 #   - server-specific docker-compose.yml and backend/requirements.txt
+#     (copied to /opt/earthvision-deploy-preserve — OUTSIDE the Git tree)
 #   - PostgreSQL Docker volume (pgdata)
 #   - uploads / cache / imagery / logs bind mounts
 #
 # Never uses: git reset --hard, docker compose down -v, or secret printing.
+# Never stores .env in the preserve directory.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/earthvision}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-cursor/scene-download-eye-5d6d}"
 REMOTE="${REMOTE:-origin}"
-PRESERVE_DIR="${APP_DIR}/.deploy-preserve"
+# Must stay outside APP_DIR so it never dirties the live Git working tree.
+PRESERVE_DIR="${PRESERVE_DIR:-/opt/earthvision-deploy-preserve}"
 HEALTH_URLS=(
   "${HEALTH_URL_LOCAL:-http://127.0.0.1/health}"
   "${HEALTH_URL_BACKEND:-http://127.0.0.1:8000/health}"
@@ -99,11 +102,25 @@ assert_only_allowlisted_dirty() {
   log "dirty paths are allowlisted only — will preserve them"
 }
 
-preserve_server_overlays() {
+ensure_preserve_dir() {
+  case "$PRESERVE_DIR" in
+    "$APP_DIR"|"$APP_DIR"/*)
+      die "PRESERVE_DIR must be outside the Git repo ($APP_DIR); got: $PRESERVE_DIR"
+      ;;
+  esac
   mkdir -p "$PRESERVE_DIR"
+  chmod 700 "$PRESERVE_DIR"
+  # Never place secrets here.
+  [[ ! -e "$PRESERVE_DIR/.env" ]] || die "refusing to keep .env inside preserve dir $PRESERVE_DIR"
+}
+
+preserve_server_overlays() {
+  ensure_preserve_dir
+  # Overlays only — never copy .env into PRESERVE_DIR.
   cp -a docker-compose.yml "$PRESERVE_DIR/docker-compose.yml"
   cp -a backend/requirements.txt "$PRESERVE_DIR/backend-requirements.txt"
-  log "saved server overlays to $PRESERVE_DIR"
+  chmod 600 "$PRESERVE_DIR/docker-compose.yml" "$PRESERVE_DIR/backend-requirements.txt" || true
+  log "saved server overlays to $PRESERVE_DIR (retained on failure for recovery)"
 }
 
 restore_server_overlays() {
