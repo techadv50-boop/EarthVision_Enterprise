@@ -1,0 +1,79 @@
+name: Deploy SATEYE
+
+# Manual-only live deploy for online SAT EYE (Eye In Sky) at sateye.xdgen.com.
+# Does NOT run on push or pull_request.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type deploy to run the live /opt/earthvision update"
+        required: true
+        default: ""
+        type: string
+
+concurrency:
+  group: deploy-sateye
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to sateye.xdgen.com
+    runs-on: [self-hosted, Linux, X64, sateye-live]
+    steps:
+      - name: Confirm intentional live deploy
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.confirm }}" != "deploy" ]; then
+            echo "Refusing to run. Set input confirm=deploy to proceed."
+            exit 1
+          fi
+
+      - name: Show runner context (no secrets)
+        run: |
+          set -euo pipefail
+          echo "runner=$(hostname)"
+          echo "user=$(whoami)"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "target_branch=cursor/scene-download-eye-5d6d"
+          echo "app_dir=/opt/earthvision"
+          docker --version
+          docker compose version
+
+      # Checkout workflow source into a side directory. Never write into
+      # /opt/earthvision from this step (keeps live dirty-tree allowlist clean).
+      - name: Checkout workflow scripts (side directory)
+        uses: actions/checkout@v4
+        with:
+          path: workflow-src
+          fetch-depth: 1
+
+      - name: Deploy live SAT EYE
+        env:
+          APP_DIR: /opt/earthvision
+          DEPLOY_BRANCH: cursor/scene-download-eye-5d6d
+          REMOTE: origin
+          HEALTH_URL_LOCAL: http://127.0.0.1/health
+          HEALTH_URL_BACKEND: http://127.0.0.1:8000/health
+          HEALTH_URL_PUBLIC: https://sateye.xdgen.com/health
+        run: |
+          set -euo pipefail
+          test -f workflow-src/scripts/deploy_sateye_live.sh
+          test -f /opt/earthvision/.env
+          chmod +x workflow-src/scripts/deploy_sateye_live.sh
+          # Run from the Actions workspace — do NOT copy into /opt/earthvision.
+          workflow-src/scripts/deploy_sateye_live.sh
+
+      - name: Post-deploy summary (no secrets)
+        if: always()
+        run: |
+          set -euo pipefail
+          cd /opt/earthvision
+          echo "branch=$(git branch --show-current || true)"
+          echo "commit=$(git rev-parse HEAD || true)"
+          echo "short=$(git rev-parse --short HEAD || true)"
+          if [ -f .env ]; then
+            echo ".env=present size=$(wc -c < .env | tr -d ' ') sha256=$(sha256sum .env | awk '{print $1}')"
+          else
+            echo ".env=MISSING"
+          fi
+          docker compose ps || true
