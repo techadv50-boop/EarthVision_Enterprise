@@ -41,8 +41,8 @@ def _norm(text: str) -> str:
 
 
 def suggestions_for_review(paragraphs: Iterable[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
-    """Up to 3 non-rejected suggestions per paragraph, strongest first."""
-    picked: dict[int, list[dict[str, Any]]] = {}
+    """At most one non-rejected suggestion per paragraph; top 10 by score, paragraph order."""
+    best: dict[int, dict[str, Any]] = {}
     for para in paragraphs:
         index = int(para.get("index") or 0)
         candidates = [
@@ -53,8 +53,11 @@ def suggestions_for_review(paragraphs: Iterable[dict[str, Any]]) -> dict[int, li
         if not candidates:
             continue
         candidates.sort(key=lambda s: float(s.get("score") or 0), reverse=True)
-        picked[index] = candidates[:3]
-    return picked
+        best[index] = candidates[0]
+    ranked = sorted(best.items(), key=lambda item: (-float(item[1].get("score") or 0), item[0]))
+    top = ranked[:10]
+    top.sort(key=lambda item: item[0])
+    return {index: [sug] for index, sug in top}
 
 
 def assign_shared_numbers(by_index: dict[int, list[dict[str, Any]]]) -> dict[int, int]:

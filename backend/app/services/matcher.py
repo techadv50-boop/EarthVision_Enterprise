@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from typing import Any, Sequence
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +20,121 @@ from app.models.citation import (
 )
 from app.services.citation_parser import format_house_citation, parse_ijist_header, split_paragraphs
 from app.services.embeddings import cosine, embed_text, overlap_terms
+
+MAX_SUGGESTIONS_PER_MANUSCRIPT = 10
+MAX_SUGGESTIONS_PER_PARAGRAPH = 1
+MIN_SUGGESTION_SCORE = 0.16
+WEAK_SCORE_MARGIN = 0.08
+
+_HEADING_RE = re.compile(
+    r"^(abstract|introduction|related work|literature review|materials and methods|"
+    r"methodology|methods|results and discussion|results|discussion|conclusion|"
+    r"conclusions|acknowledg(e)?ments?|references|bibliography|works cited|"
+    r"literature cited|appendix( [a-z0-9]+)?)\s*$",
+    re.I,
+)
+_NUMBERED_HEADING_RE = re.compile(
+    r"^(\d+(?:\.\d+){0,3}|[IVXLCM]+)[\.\)]\s+(.*)$",
+    re.I,
+)
+_REFERENCES_HEADING_RE = re.compile(
+    r"^(references|bibliography|works cited|literature cited)\s*$",
+    re.I,
+)
+_BIBLIO_LINE_RE = re.compile(
+    r"^(\[\d+\]|\d+\.)\s+[A-Z].+",
+)
+_AUTHOR_AFFIL_RE = re.compile(
+    r"(corresponding author|correspondence:|\borcid\b|\b[\w.-]+@[\w.-]+\.[a-z]{2,}\b)",
+    re.I,
+)
+_AFFIL_LINE_RE = re.compile(
+    r"^\d+\s*(Department|Faculty|School|College|University|Institute)\b",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class RankedCandidate:
+    paragraph_index: int
+    paragraph_id: int
+    article_id: int
+    score: float
+    chunk_text: str
+    article: Any
+    chunk: Any
+
+
+def is_references_heading(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    return bool(compact and _REFERENCES_HEADING_RE.match(compact))
+
+
+def is_substantive_paragraph(text: str, *, index: int = 0, in_references: bool = False) -> bool:
+    """Skip titles, headings, author lines, bibliography, and short boilerplate."""
+    if in_references:
+        return False
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if len(compact) < 40:
+        return False
+    if is_references_heading(compact) or _HEADING_RE.match(compact):
+        return False
+    if _AUTHOR_AFFIL_RE.search(compact) and len(compact) < 220:
+        return False
+    if _AFFIL_LINE_RE.match(compact):
+        return False
+    if _BIBLIO_LINE_RE.match(compact) and len(compact) < 400:
+        return False
+    numbered = _NUMBERED_HEADING_RE.match(compact)
+    if numbered:
+        rest = (numbered.group(2) or "").strip()
+        if len(rest) <= 80 and len(rest.split()) <= 12 and not re.search(r"[.!?]$", rest):
+            return False
+    words = compact.split()
+    if len(words) <= 12 and not re.search(r"[.!?]", compact):
+        caps = sum(1 for word in words if word[:1].isupper())
+        if caps >= max(2, int(0.7 * len(words))):
+            return False
+    if index == 0 and not re.search(r"[.!?]", compact) and len(words) <= 20:
+        caps = sum(1 for word in words if word[:1].isupper())
+        if caps >= max(3, int(0.55 * len(words))):
+            return False
+    return True
+
+
+def passes_relevance_gate(
+    score: float,
+    terms: Sequence[str],
+    *,
+    min_score: float = MIN_SUGGESTION_SCORE,
+) -> bool:
+    if score < min_score:
+        return False
+    if score < min_score + WEAK_SCORE_MARGIN and not terms:
+        return False
+    return True
+
+
+def one_per_paragraph(matches: Sequence[RankedCandidate]) -> list[RankedCandidate]:
+    """Keep the highest-scoring article for each paragraph."""
+    best: dict[int, RankedCandidate] = {}
+    for match in matches:
+        prev = best.get(match.paragraph_id)
+        if prev is None or match.score > prev.score:
+            best[match.paragraph_id] = match
+    return list(best.values())
+
+
+def select_manuscript_matches(
+    matches: Sequence[RankedCandidate],
+    *,
+    limit: int = MAX_SUGGESTIONS_PER_MANUSCRIPT,
+) -> list[RankedCandidate]:
+    """Pick the strongest manuscript-wide matches, then restore paragraph order."""
+    unique = one_per_paragraph(matches)
+    ranked = sorted(unique, key=lambda item: (-item.score, item.paragraph_index))
+    top = ranked[: max(0, int(limit))]
+    return sorted(top, key=lambda item: item.paragraph_index)
 
 
 def _author_names(article: Article) -> list[str]:
@@ -117,8 +236,9 @@ async def suggest_for_manuscript(
     db: AsyncSession,
     manuscript: Manuscript,
     *,
-    per_paragraph: int = 3,
-    min_score: float = 0.16,
+    per_paragraph: int = MAX_SUGGESTIONS_PER_PARAGRAPH,
+    max_suggestions: int = MAX_SUGGESTIONS_PER_MANUSCRIPT,
+    min_score: float = MIN_SUGGESTION_SCORE,
 ) -> list[CitationSuggestion]:
     text = manuscript.full_text or ""
     loaded = await db.execute(
@@ -166,8 +286,14 @@ async def suggest_for_manuscript(
         await db.flush()
         return created
 
+    per_paragraph = max(1, int(per_paragraph or MAX_SUGGESTIONS_PER_PARAGRAPH))
+    raw_matches: list[RankedCandidate] = []
+    in_references = False
     for para in paragraphs:
-        if len((para.text or "").strip()) < 40:
+        if is_references_heading(para.text or ""):
+            in_references = True
+            continue
+        if not is_substantive_paragraph(para.text or "", index=para.index, in_references=in_references):
             continue
         query_vec = embed_text(para.text)
         best: dict[int, tuple[float, ArticleChunk]] = {}
@@ -179,29 +305,43 @@ async def suggest_for_manuscript(
             prev = best.get(chunk.article_id)
             if prev is None or score > prev[0]:
                 best[chunk.article_id] = (score, chunk)
-        ranked = sorted(best.values(), key=lambda t: t[0], reverse=True)
-        kept = 0
+        ranked = sorted(best.values(), key=lambda item: item[0], reverse=True)
+        kept_for_para = 0
         for score, chunk in ranked:
-            if score < min_score:
-                continue
             article = chunk.article
             terms = overlap_terms(para.text, _archive_blob(article, chunk.text), limit=4)
-            if score < min_score + 0.08 and not terms:
+            if not passes_relevance_gate(score, terms, min_score=min_score):
                 continue
-            sug = CitationSuggestion(
-                manuscript_id=manuscript.id,
-                paragraph_id=para.id,
-                article_id=article.id,
-                score=round(float(score), 4),
-                reason=_reason(para.text, article, chunk.text, score),
-                house_citation=house_citation_for(article),
-                status="pending",
+            raw_matches.append(
+                RankedCandidate(
+                    paragraph_index=para.index,
+                    paragraph_id=para.id,
+                    article_id=article.id,
+                    score=round(float(score), 4),
+                    chunk_text=chunk.text or "",
+                    article=article,
+                    chunk=chunk,
+                )
             )
-            db.add(sug)
-            created.append(sug)
-            kept += 1
-            if kept >= per_paragraph:
+            kept_for_para += 1
+            if kept_for_para >= per_paragraph:
                 break
+
+    para_by_id = {para.id: para for para in paragraphs}
+    for match in select_manuscript_matches(raw_matches, limit=max_suggestions):
+        article = match.article
+        para = para_by_id[match.paragraph_id]
+        sug = CitationSuggestion(
+            manuscript_id=manuscript.id,
+            paragraph_id=match.paragraph_id,
+            article_id=match.article_id,
+            score=match.score,
+            reason=_reason(para.text, article, match.chunk_text, match.score),
+            house_citation=house_citation_for(article),
+            status="pending",
+        )
+        db.add(sug)
+        created.append(sug)
     manuscript.status = "suggested"
     await db.flush()
     return created
