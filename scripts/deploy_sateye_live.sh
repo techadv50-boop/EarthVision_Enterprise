@@ -28,7 +28,22 @@ HEALTH_URLS=(
 )
 PUBLIC_HEALTH_URL="${HEALTH_URL_PUBLIC:-https://sateye.xdgen.com/health}"
 
-ALLOWLIST_REGEX='^(docker-compose\.yml|backend/requirements\.txt)$'
+# Exact dirty-tree allowlist only (no directory wildcards).
+# Server overlays restored across FF merge:
+#   docker-compose.yml, backend/requirements.txt
+# Known live-server artifacts that must not abort deploy and must not be deleted:
+#   cache/.gitkeep, logs/.gitkeep, uploads/.gitkeep,
+#   backups/earthvision_before_cursor_migration.sql,
+#   docker-compose.cursor.original.yml
+ALLOWLISTED_PATHS=(
+  "docker-compose.yml"
+  "backend/requirements.txt"
+  "cache/.gitkeep"
+  "logs/.gitkeep"
+  "uploads/.gitkeep"
+  "backups/earthvision_before_cursor_migration.sql"
+  "docker-compose.cursor.original.yml"
+)
 
 log() { printf '[deploy-sateye] %s\n' "$*"; }
 die() { printf '[deploy-sateye] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -47,6 +62,60 @@ env_fingerprint() {
   local size
   size="$(wc -c <"$f" | tr -d ' ')"
   printf 'present size=%s sha256=%s' "$size" "$(sha256_file "$f")"
+}
+
+is_allowlisted_path() {
+  local candidate="$1"
+  local allowed
+  for allowed in "${ALLOWLISTED_PATHS[@]}"; do
+    if [[ "$candidate" == "$allowed" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Parse git status --porcelain -z correctly for modified/deleted/untracked/renames
+# and paths containing spaces. Unknown paths abort deploy (nothing is discarded).
+assert_only_allowlisted_dirty() {
+  local unexpected=()
+  local entry status path other
+  local has_dirty=0
+
+  while IFS= read -r -d '' entry; do
+    [[ -z "$entry" ]] && continue
+    has_dirty=1
+    # Record format: "XY <path>" (XY = two status chars, then space, then path).
+    if [[ "${#entry}" -lt 4 ]]; then
+      unexpected+=("<malformed-status:${entry}>")
+      continue
+    fi
+    status="${entry:0:2}"
+    path="${entry:3}"
+
+    if ! is_allowlisted_path "$path"; then
+      unexpected+=("$path")
+    fi
+
+    # Rename (R) / copy (C): -z emits a second NUL-terminated path field.
+    if [[ "${status:0:1}" == "R" || "${status:0:1}" == "C" || "${status:1:1}" == "R" || "${status:1:1}" == "C" ]]; then
+      if IFS= read -r -d '' other; then
+        if [[ -n "$other" ]] && ! is_allowlisted_path "$other"; then
+          unexpected+=("$other")
+        fi
+      fi
+    fi
+  done < <(git status --porcelain -z)
+
+  if [[ "$has_dirty" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "${#unexpected[@]}" -gt 0 ]]; then
+    printf '%s\n' "${unexpected[@]}" >&2
+    die "unexpected dirty paths (aborting; will not discard). Allowlist: ${ALLOWLISTED_PATHS[*]}"
+  fi
+  log "dirty paths are allowlisted only — will not discard them"
 }
 
 preflight() {
@@ -77,29 +146,6 @@ preflight() {
   git status --porcelain || true
   log "docker compose services:"
   docker compose ps || docker-compose ps || die "docker compose ps failed"
-}
-
-assert_only_allowlisted_dirty() {
-  local dirty unexpected
-  dirty="$(git status --porcelain)"
-  if [[ -z "$dirty" ]]; then
-    return 0
-  fi
-
-  unexpected="$(
-    printf '%s\n' "$dirty" | awk '{print $NF}' | while read -r path; do
-      [[ -z "$path" ]] && continue
-      if ! [[ "$path" =~ $ALLOWLIST_REGEX ]]; then
-        printf '%s\n' "$path"
-      fi
-    done
-  )"
-
-  if [[ -n "$unexpected" ]]; then
-    printf '%s\n' "$unexpected" >&2
-    die "unexpected dirty paths (aborting; will not discard). Allowlist: docker-compose.yml, backend/requirements.txt"
-  fi
-  log "dirty paths are allowlisted only — will preserve them"
 }
 
 ensure_preserve_dir() {
