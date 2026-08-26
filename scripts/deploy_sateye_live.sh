@@ -49,11 +49,20 @@ REQUIREMENTS_SHA=""
 ENV_SHA=""
 
 log() { printf '[deploy-sateye] %s\n' "$*"; }
-die() { printf '[deploy-sateye] ERROR: %s\n' "$*" >&2; exit 1; }
+die() {
+  printf '[deploy-sateye] ERROR: %s\n' "$*" >&2
+  if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+    return 1
+  fi
+  exit 1
+}
 
 abort_before_docker() {
   printf '[deploy-sateye] ERROR: %s\n' "$*" >&2
   printf '[deploy-sateye] ERROR: Deployment aborted before Docker restart; preserved overlays remain available.\n' >&2
+  if [[ "${DEPLOY_SATEYE_TEST_MODE:-0}" == "1" ]]; then
+    return 1
+  fi
   exit 1
 }
 

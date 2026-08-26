@@ -7,17 +7,6 @@ SCRIPT="$ROOT/scripts/deploy_sateye_live.sh"
 PASS=0
 FAIL=0
 
-assert_eq() {
-  local name="$1" got="$2" want="$3"
-  if [[ "$got" == "$want" ]]; then
-    echo "PASS: $name"
-    PASS=$((PASS + 1))
-  else
-    echo "FAIL: $name (got=[$got] want=[$want])" >&2
-    FAIL=$((FAIL + 1))
-  fi
-}
-
 assert_ok() {
   local name="$1"
   shift
@@ -29,26 +18,15 @@ assert_ok() {
     sed 's/^/  stderr: /' /tmp/deploy-test-err.$$ >&2 || true
     FAIL=$((FAIL + 1))
   fi
+  rm -f /tmp/deploy-test-out.$$ /tmp/deploy-test-err.$$
 }
 
-assert_fail() {
-  local name="$1"
-  shift
-  if "$@" >/tmp/deploy-test-out.$$ 2>/tmp/deploy-test-err.$$; then
-    echo "FAIL: $name (expected failure)" >&2
-    FAIL=$((FAIL + 1))
-  else
-    echo "PASS: $name"
-    PASS=$((PASS + 1))
-  fi
-}
-
-# --- dirty-path / spaces tests (inline parser using sourced helpers) ---
 # shellcheck source=scripts/deploy_sateye_live.sh
+export DEPLOY_SATEYE_TEST_MODE=1
 source "$SCRIPT"
 
 test_dirty_allowlisted_and_spaces() {
-  local tmp unexpected=() entry status path
+  local tmp unexpected=() entry path
   tmp="$(mktemp -d)"
   (
     cd "$tmp"
@@ -110,7 +88,14 @@ test_unexpected_dirty_path() {
   return "$rc"
 }
 
-# --- preservation fail-closed tests ---
+expect_fail_subshell() {
+  # Returns 0 if the subshell fails (expected), 1 if it succeeds unexpectedly.
+  if "$@"; then
+    return 1
+  fi
+  return 0
+}
+
 test_preserve_success() {
   local app preserve
   app="$(mktemp -d)"
@@ -146,18 +131,17 @@ test_preserve_dir_not_writable() {
   mkdir -p "$app/backend"
   echo 'compose-live' >"$app/docker-compose.yml"
   echo 'reqs-live' >"$app/backend/requirements.txt"
-  (
-    cd "$app"
-    APP_DIR="$app"
-    PRESERVE_DIR="$preserve"
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    # shellcheck disable=SC1091
+    source '$SCRIPT'
+    cd '$app'
+    APP_DIR='$app'
+    PRESERVE_DIR='$preserve'
     preservation_ok=0
-    set +e
     preserve_server_overlays
-    rc=$?
-    set -e
-    [[ "$rc" -ne 0 ]]
-    [[ "$preservation_ok" == "0" ]]
-  )
+  "
   local rc=$?
   chmod 755 "$parent" 2>/dev/null || true
   rm -rf "$app" "$(dirname "$parent")"
@@ -169,20 +153,17 @@ test_preserve_copy_failure() {
   app="$(mktemp -d)"
   preserve="$(mktemp -d)/preserve"
   mkdir -p "$app/backend"
-  # Missing requirements file => preserve must fail before checkout/merge.
   echo 'compose-live' >"$app/docker-compose.yml"
-  (
-    cd "$app"
-    APP_DIR="$app"
-    PRESERVE_DIR="$preserve"
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    source '$SCRIPT'
+    cd '$app'
+    APP_DIR='$app'
+    PRESERVE_DIR='$preserve'
     preservation_ok=0
-    set +e
     preserve_server_overlays
-    rc=$?
-    set -e
-    [[ "$rc" -ne 0 ]]
-    [[ "$preservation_ok" == "0" ]]
-  )
+  "
   local rc=$?
   rm -rf "$app" "$(dirname "$preserve")"
   return "$rc"
@@ -192,22 +173,20 @@ test_missing_preserved_file_blocks_restore() {
   local app preserve
   app="$(mktemp -d)"
   preserve="$(mktemp -d)/preserve"
-  mkdir -p "$app/backend" "$preserve"
+  mkdir -p "$app/backend"
   echo 'compose-live' >"$app/docker-compose.yml"
   echo 'reqs-live' >"$app/backend/requirements.txt"
-  (
-    cd "$app"
-    APP_DIR="$app"
-    PRESERVE_DIR="$preserve"
-    preservation_ok=0
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    source '$SCRIPT'
+    cd '$app'
+    APP_DIR='$app'
+    PRESERVE_DIR='$preserve'
     preserve_server_overlays
-    rm -f "$PRESERVE_DIR/backend-requirements.txt"
-    set +e
+    rm -f \"\$PRESERVE_DIR/backend-requirements.txt\"
     restore_server_overlays
-    rc=$?
-    set -e
-    [[ "$rc" -ne 0 ]]
-  )
+  "
   local rc=$?
   rm -rf "$app" "$(dirname "$preserve")"
   return "$rc"
@@ -217,36 +196,33 @@ test_checksum_mismatch_blocks_restore() {
   local app preserve
   app="$(mktemp -d)"
   preserve="$(mktemp -d)/preserve"
-  mkdir -p "$app/backend" "$preserve"
+  mkdir -p "$app/backend"
   echo 'compose-live' >"$app/docker-compose.yml"
   echo 'reqs-live' >"$app/backend/requirements.txt"
-  (
-    cd "$app"
-    APP_DIR="$app"
-    PRESERVE_DIR="$preserve"
-    preservation_ok=0
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    source '$SCRIPT'
+    cd '$app'
+    APP_DIR='$app'
+    PRESERVE_DIR='$preserve'
     preserve_server_overlays
-    echo tampered >"$PRESERVE_DIR/docker-compose.yml"
-    set +e
+    echo tampered >\"\$PRESERVE_DIR/docker-compose.yml\"
     restore_server_overlays
-    rc=$?
-    set -e
-    [[ "$rc" -ne 0 ]]
-  )
+  "
   local rc=$?
   rm -rf "$app" "$(dirname "$preserve")"
   return "$rc"
 }
 
 test_invariant_blocks_without_preservation() {
-  (
+  expect_fail_subshell bash -c "
+    set -euo pipefail
+    export DEPLOY_SATEYE_TEST_MODE=1
+    source '$SCRIPT'
     preservation_ok=0
-    set +e
     require_preservation_ok
-    rc=$?
-    set -e
-    [[ "$rc" -ne 0 ]]
-  )
+  "
 }
 
 echo "== deploy_sateye_live unit tests =="
