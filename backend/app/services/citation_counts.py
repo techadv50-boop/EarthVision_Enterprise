@@ -325,56 +325,26 @@ def _title_overlap(left: str, right: str) -> bool:
     return len(aw & bw) / max(1, min(len(aw), len(bw))) >= 0.55
 
 
-def _from_crossref_message(msg: dict, article: Article) -> tuple[int, Optional[str], Optional[str]]:
-    doi = msg.get("DOI") or article.doi
-    return (
-        int(msg.get("is-referenced-by-count") or 0),
-        doi,
-        msg.get("URL") or (f"https://doi.org/{doi}" if doi else None),
-    )
-
-
 async def fetch_crossref(article: Article) -> tuple[int, Optional[str], Optional[str]]:
+    """Cited-by count from an exact Crossref DOI lookup only.
+
+    Never searches by title or bibliography, and never reuses
+    previously stored citation counts when the lookup fails.
+    """
+    requested_doi = normalize_doi(article.doi)
+    if not requested_doi:
+        return 0, None, None
     timeout = httpx.Timeout(20.0)
-    doi = normalize_doi(article.doi)
     async with httpx.AsyncClient(timeout=timeout, headers=_crossref_headers(), follow_redirects=True) as client:
-        if doi:
-            resp = await client.get(f"{CROSSREF}/{quote(doi, safe=':/')}")
-            if resp.status_code == 200:
-                return _from_crossref_message(resp.json().get("message") or {}, article)
-            try:
-                oa = await client.get(f"{OPENALEX}/https://doi.org/{doi}")
-                if oa.status_code == 200:
-                    body = oa.json()
-                    count = int(body.get("cited_by_count") or 0)
-                    return count, doi, body.get("id") or f"https://doi.org/{doi}"
-            except Exception:
-                pass
-        query = " ".join(
-            p
-            for p in (
-                article.title,
-                " ".join(a for a in (article.authors or []) if isinstance(a, str))[:120],
-            )
-            if p
-        )
-        if not query.strip():
-            return article.crossref_citation_count or 0, article.doi, article.crossref_work_url
-        resp = await client.get(
-            CROSSREF,
-            params={"query.bibliographic": query, "rows": 5},
-        )
+        resp = await client.get(f"{CROSSREF}/{quote(requested_doi, safe=':/')}")
         if resp.status_code != 200:
-            return article.crossref_citation_count or 0, article.doi, article.crossref_work_url
-        items = (resp.json().get("message") or {}).get("items") or []
-        want = article.title or ""
-        for msg in items:
-            got = ((msg.get("title") or [""])[0]) if isinstance(msg.get("title"), list) else str(msg.get("title") or "")
-            if _title_overlap(want, got) or not want:
-                return _from_crossref_message(msg, article)
-        if items and not want:
-            return _from_crossref_message(items[0], article)
-    return article.crossref_citation_count or 0, article.doi, article.crossref_work_url
+            return 0, None, None
+        msg = resp.json().get("message") or {}
+        returned_doi = normalize_doi(msg.get("DOI"))
+        if not returned_doi or returned_doi.lower() != requested_doi.lower():
+            return 0, None, None
+        work_url = msg.get("URL") or f"https://doi.org/{returned_doi}"
+        return int(msg.get("is-referenced-by-count") or 0), returned_doi, work_url
 
 
 async def _scholar_html(title: str, doi: Optional[str]) -> tuple[int, Optional[str], str]:
