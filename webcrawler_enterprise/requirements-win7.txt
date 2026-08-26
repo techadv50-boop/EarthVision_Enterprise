@@ -10,5 +10,5 @@ pymupdf==1.24.10
 python-docx==1.1.2
 openpyxl==3.1.5
 phonenumbers==8.13.50
-tldextract==5.1.3
+tldextract==5.1.2
 pyinstaller==5.13.2
