@@ -52,9 +52,11 @@ export default function ManuscriptReviewPage() {
         {counts.paragraphs} paragraphs · {counts.suggestions} suggestions
       </p>
       <p className="text-gray-300 mb-6">
-        Download the Word file and review it in Microsoft Word. Each suggested citation is a tracked
-        change with a comment explaining why it was suggested. The matching reference is the endnote
-        on that citation. Accept keeps both; Reject removes both.
+        Download the Word file and review it in Microsoft Word. Each suggested citation is a
+        tracked change with a comment explaining why it was suggested, including journal,
+        volume, issue, pages, and DOI when stored. The matching reference is a shared endnote
+        for that archive article. Accept keeps both; Reject removes this citation. If you reject
+        every citation to the same article, reject that endnote so the reference is not left behind.
       </p>
       <button className="btn-primary" type="button" disabled={busy} onClick={() => void downloadWord()}>
         Download Word file

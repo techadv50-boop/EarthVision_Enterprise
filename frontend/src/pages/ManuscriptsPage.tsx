@@ -70,11 +70,13 @@ export default function ManuscriptsPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">New manuscript</h2>
       <p className="text-gray-400 mb-4 max-w-3xl">
-        Upload a Word document. The system reads it paragraph by paragraph, adds one house-citation
-        suggestion to each matching paragraph, and returns a Word file you can download. Open that
-        file in Microsoft Word and use <span className="text-gray-200">Review → Accept or Reject</span>.
-        Each comment explains why the citation was suggested. The matching reference is the endnote
-        attached to that citation — rejecting the citation also rejects its reference.
+        Upload a Word document. The system reads it paragraph by paragraph, matches each
+        substantive paragraph against articles already stored in Citation Assistant (up to
+        three strong matches), and returns a Word file. Open that file in Microsoft Word and
+        use <span className="text-gray-200">Review → Accept or Reject</span>. Each comment
+        explains why the citation was suggested. The matching reference is the shared endnote
+        for that archive article — accepting keeps citation and reference; rejecting the last
+        citation to that article also drops its reference.
       </p>
       <input
         type="file"

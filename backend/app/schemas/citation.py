@@ -191,6 +191,14 @@ class SuggestionOut(BaseModel):
     house_citation: Optional[str] = None
     status: str
     citation_number: Optional[int] = None
+    journal: Optional[str] = None
+    volume: Optional[int] = None
+    issue_number: Optional[int] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    article_title: Optional[str] = None
+    authors: Any = None
+    doi: Optional[str] = None
     article: Optional[ArticleOut] = None
 
 

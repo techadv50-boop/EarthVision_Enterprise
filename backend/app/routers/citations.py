@@ -100,6 +100,30 @@ async def _journal_or_404(db: AsyncSession, journal_id: int) -> Journal:
     return journal
 
 
+def _suggestion_payload(sug: CitationSuggestion) -> dict:
+    art = sug.article
+    issue = art.issue if art else None
+    journal = issue.journal if issue else None
+    return {
+        "id": sug.id,
+        "paragraph_id": sug.paragraph_id,
+        "article_id": sug.article_id,
+        "score": sug.score,
+        "reason": sug.reason,
+        "house_citation": sug.house_citation,
+        "status": sug.status,
+        "journal": journal.name if journal else None,
+        "volume": issue.volume if issue else None,
+        "issue_number": issue.issue_number if issue else None,
+        "page_start": art.page_start if art else None,
+        "page_end": art.page_end if art else None,
+        "article_title": art.title if art else None,
+        "authors": (art.authors or []) if art else [],
+        "doi": art.doi if art else None,
+        "article": _article_out(art).model_dump() if art else None,
+    }
+
+
 def _is_cited(article: Article) -> bool:
     return (article.scholar_citation_count or 0) > 0 or (article.crossref_citation_count or 0) > 0
 
@@ -771,18 +795,7 @@ async def get_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
     for para in sorted(manuscript.paragraphs, key=lambda p: p.index):
         suggestions = []
         for sug in para.suggestions:
-            suggestions.append(
-                {
-                    "id": sug.id,
-                    "paragraph_id": sug.paragraph_id,
-                    "article_id": sug.article_id,
-                    "score": sug.score,
-                    "reason": sug.reason,
-                    "house_citation": sug.house_citation,
-                    "status": sug.status,
-                    "article": _article_out(sug.article).model_dump() if sug.article else None,
-                }
-            )
+            suggestions.append(_suggestion_payload(sug))
         paragraphs.append({"id": para.id, "index": para.index, "text": para.text, "suggestions": suggestions})
     cited_paras, references = assign_citations(paragraphs)
     return ManuscriptDetail(
@@ -814,16 +827,7 @@ async def patch_suggestion(suggestion_id: int, body: SuggestionPatch, db: Db, _u
         raise HTTPException(status_code=404, detail="Suggestion not found")
     sug.status = body.status
     await db.flush()
-    return SuggestionOut(
-        id=sug.id,
-        paragraph_id=sug.paragraph_id,
-        article_id=sug.article_id,
-        score=sug.score,
-        reason=sug.reason,
-        house_citation=sug.house_citation,
-        status=sug.status,
-        article=_article_out(sug.article) if sug.article else None,
-    )
+    return SuggestionOut(**_suggestion_payload(sug))
 
 
 @router.get("/manuscripts/{manuscript_id}/export")

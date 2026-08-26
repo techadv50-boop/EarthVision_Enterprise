@@ -261,10 +261,17 @@ async def test_journal_ingest_coverage_and_match(client: AsyncClient):
 
 
 def _docx_from_text(text: str) -> bytes:
+    return _docx_from_paragraphs(text)
+
+
+def _docx_from_paragraphs(*texts: str) -> bytes:
+    body = "".join(
+        f"<w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p>" for text in texts
+    )
     document = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        f"<w:body><w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p></w:body></w:document>"
+        f"<w:body>{body}</w:body></w:document>"
     )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as archive:
@@ -281,11 +288,13 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
         json={"name": "Word Suggestion Journal", "abbreviation": "WSJ"},
     )
     jid = created.json()["id"]
-    await client.post(
+    paper = await client.post(
         f"/api/v1/journals/{jid}/papers-text",
         headers=headers,
         json={"filename": "water.txt", "text": GALLEY_WATER},
     )
+    assert paper.status_code == 200, paper.text
+    archive_id = paper.json()["article"]["id"]
     docx = _docx_from_text(
         "This manuscript reviews drinking water contamination, Water Quality Index (WQI) "
         "and SPI modelling for groundwater in rural Sindh and Khairpur."
@@ -312,7 +321,20 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
         for s in p["suggestions"]
     )
     assert "Water" in blob or "Drinking" in blob
-    assert any(p["suggestions"] for p in detail["paragraphs"])
+    first = next(s for p in detail["paragraphs"] for s in p["suggestions"])
+    assert first["article_id"]
+    assert first["reason"]
+    assert "related to your paragraph" not in first["reason"].lower()
+    assert "directly supports" in first["reason"] or "semantically aligned" in first["reason"] or "discusses" in first["reason"]
+    assert first.get("journal")
+    assert first.get("volume") is not None
+    assert first.get("article_title")
+    for p in detail["paragraphs"]:
+        assert len(p["suggestions"]) <= 3
+        for s in p["suggestions"]:
+            stored = await client.get(f"/api/v1/articles/{s['article_id']}", headers=headers)
+            assert stored.status_code == 200
+            assert stored.json()["id"] == s["article_id"]
     exported = await client.get(f"/api/v1/manuscripts/{mid}/export", headers=headers)
     assert exported.status_code == 200, exported.text
     assert exported.content[:2] == b"PK"
@@ -322,15 +344,89 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
     endnotes = zipped.read("word/endnotes.xml").decode()
     assert "endnoteReference" in document
     assert "ins" in document
+    assert "drinking water contamination" in document.lower()
     assert "Why this was suggested" in comments
+    assert "Suggestion S-" in comments
     assert "Accept" in comments and "Reject" in comments
-    assert "Why this was suggested" in endnotes
+    assert "Shared archive reference" in endnotes
     listing = await client.get("/api/v1/manuscripts", headers=headers)
     assert any(row["id"] == mid for row in listing.json())
     deleted = await client.delete(f"/api/v1/manuscripts/{mid}", headers=headers)
     assert deleted.status_code == 204, deleted.text
     listing = await client.get("/api/v1/manuscripts", headers=headers)
     assert all(row["id"] != mid for row in listing.json())
+
+
+@pytest.mark.asyncio
+async def test_word_review_shares_one_reference_for_same_article(client: AsyncClient):
+    from lxml import etree
+
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Shared Reference Journal", "abbreviation": "SRJ"},
+    )
+    jid = created.json()["id"]
+    paper = await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={"filename": "water.txt", "text": GALLEY_WATER},
+    )
+    archive_id = paper.json()["article"]["id"]
+    docx = _docx_from_paragraphs(
+        "This manuscript reviews drinking water contamination and Water Quality Index (WQI) in rural Sindh.",
+        "SPI modelling for groundwater contamination in Khairpur also depends on drinking water quality.",
+    )
+    up = await client.post(
+        "/api/v1/manuscripts",
+        headers=headers,
+        files={
+            "file": (
+                "shared.docx",
+                docx,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    mid = up.json()["id"]
+    await client.post(f"/api/v1/manuscripts/{mid}/suggest", headers=headers)
+    detail = (await client.get(f"/api/v1/manuscripts/{mid}", headers=headers)).json()
+    sugs = [s for p in detail["paragraphs"] for s in p["suggestions"]]
+    assert len(sugs) >= 2
+    for s in sugs:
+        stored = await client.get(f"/api/v1/articles/{s['article_id']}", headers=headers)
+        assert stored.status_code == 200
+    exported = await client.get(f"/api/v1/manuscripts/{mid}/export", headers=headers)
+    assert exported.status_code == 200
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    zipped = zipfile.ZipFile(io.BytesIO(exported.content))
+    doc = etree.fromstring(zipped.read("word/document.xml"))
+    notes = etree.fromstring(zipped.read("word/endnotes.xml"))
+    refs = [node.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id") for node in doc.findall(".//w:endnoteReference", ns)]
+    content_notes = [
+        node
+        for node in notes.findall("w:endnote", ns)
+        if node.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id") not in {"-1", "0"}
+        and node.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type") is None
+    ]
+    unique_articles = {s["article_id"] for s in sugs}
+    assert len(content_notes) == len(unique_articles)
+    assert len(set(refs)) == len(content_notes)
+    assert len(refs) >= 2
+    if len(sugs) > len(unique_articles):
+        assert len(refs) > len(content_notes)
+    for sug in sugs:
+        acc = await client.patch(
+            f"/api/v1/suggestions/{sug['id']}",
+            headers=headers,
+            json={"status": "rejected"},
+        )
+        assert acc.status_code == 200
+    exported2 = await client.get(f"/api/v1/manuscripts/{mid}/export", headers=headers)
+    doc2 = etree.fromstring(zipfile.ZipFile(io.BytesIO(exported2.content)).read("word/document.xml"))
+    assert doc2.findall(".//w:endnoteReference", ns) == []
+    assert "drinking water contamination" in etree.tostring(doc2).decode().lower()
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,15 @@
-"""Build a Word file the operator can Accept/Reject in Microsoft Word.
+"""Build a Word review file the operator can Accept/Reject in Microsoft Word.
 
-Each suggested citation is a tracked insertion of an endnote. The endnote *is*
-the matching reference, so Rejecting the citation also drops that reference.
-A comment on the same paragraph explains why it was suggested.
+The original DOCX is annotated in place when possible. Each suggestion is a
+tracked endnote citation plus a comment with the reason. The endnote *is* the
+matching reference. The same archive article is one shared endnote, even if
+several paragraphs cite it.
 """
 
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
@@ -15,7 +17,7 @@ from xml.sax.saxutils import escape
 
 from lxml import etree
 
-from app.services.manuscript_text import extract_docx_paragraphs, paragraph_text
+from app.services.manuscript_text import paragraph_text
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 CT = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -34,9 +36,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def best_suggestion_by_index(paragraphs: Iterable[dict[str, Any]]) -> dict[int, dict[str, Any]]:
-    """One surviving suggestion per paragraph (highest score, not rejected)."""
-    picked: dict[int, dict[str, Any]] = {}
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def suggestions_for_review(paragraphs: Iterable[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """Up to 3 non-rejected suggestions per paragraph, strongest first."""
+    picked: dict[int, list[dict[str, Any]]] = {}
     for para in paragraphs:
         index = int(para.get("index") or 0)
         candidates = [
@@ -47,8 +53,21 @@ def best_suggestion_by_index(paragraphs: Iterable[dict[str, Any]]) -> dict[int, 
         if not candidates:
             continue
         candidates.sort(key=lambda s: float(s.get("score") or 0), reverse=True)
-        picked[index] = candidates[0]
+        picked[index] = candidates[:3]
     return picked
+
+
+def assign_shared_numbers(by_index: dict[int, list[dict[str, Any]]]) -> dict[int, int]:
+    """Map article_id → shared reference number in reading order."""
+    numbers: dict[int, int] = {}
+    for index in sorted(by_index):
+        for sug in by_index[index]:
+            article_id = int(sug.get("article_id") or 0)
+            if article_id and article_id not in numbers:
+                numbers[article_id] = len(numbers) + 1
+            if article_id:
+                sug["citation_number"] = numbers[article_id]
+    return numbers
 
 
 def build_review_docx(
@@ -57,19 +76,36 @@ def build_review_docx(
     paragraphs: list[dict[str, Any]],
     original_docx: Optional[bytes] = None,
 ) -> bytes:
-    picks = best_suggestion_by_index(paragraphs)
     stored_texts = [(para.get("text") or "").strip() for para in paragraphs]
     if original_docx and original_docx[:2] == b"PK":
         try:
-            live = extract_docx_paragraphs(original_docx)
-            if live and len(live) == len(stored_texts):
-                return annotate_docx(original_docx, picks)
+            return annotate_docx(original_docx, paragraphs)
         except Exception:
             pass
-    return annotate_docx(_docx_from_paragraphs(title, stored_texts), picks)
+    return annotate_docx(_docx_from_paragraphs(title, stored_texts), paragraphs)
 
 
-def annotate_docx(data: bytes, suggestions_by_index: dict[int, dict[str, Any]]) -> bytes:
+def _map_stored_to_word(doc: etree._Element, stored_texts: list[str]) -> dict[int, etree._Element]:
+    targets = [p for p in doc.findall(f".//{w('p')}") if paragraph_text(p)]
+    mapping: dict[int, etree._Element] = {}
+    if len(targets) == len(stored_texts) and stored_texts:
+        return {i: targets[i] for i in range(len(targets))}
+    used: set[int] = set()
+    for i, text in enumerate(stored_texts):
+        key = _norm(text)
+        if not key:
+            continue
+        for j, para in enumerate(targets):
+            if j in used:
+                continue
+            if _norm(paragraph_text(para)) == key:
+                mapping[i] = para
+                used.add(j)
+                break
+    return mapping
+
+
+def annotate_docx(data: bytes, paragraphs: list[dict[str, Any]]) -> bytes:
     files = _read_zip(data)
     if "word/document.xml" not in files:
         raise ValueError("Not a Word document")
@@ -81,29 +117,42 @@ def annotate_docx(data: bytes, suggestions_by_index: dict[int, dict[str, Any]]) 
     settings_root = _parse_or_create(files.get("word/settings.xml"), "settings")
     _enable_track_revisions(settings_root)
 
+    by_index = suggestions_for_review(paragraphs)
+    assign_shared_numbers(by_index)
+    stored_texts = [(para.get("text") or "").strip() for para in paragraphs]
+    mapping = _map_stored_to_word(doc, stored_texts)
+    if by_index and not mapping:
+        raise ValueError("Could not map manuscript paragraphs onto the Word file")
+
     comment_id = _max_id(comments_root, "comment") + 1
-    endnote_id = max(1, _max_id(endnotes_root, "endnote") + 1)
+    next_endnote_id = max(1, _max_id(endnotes_root, "endnote") + 1)
     rev_id = _max_revision_id(doc) + 1
     stamp = _now()
+    article_endnotes: dict[int, int] = {}
 
-    targets = [p for p in doc.findall(f".//{w('p')}") if paragraph_text(p)]
-    for index, para in enumerate(targets):
-        sug = suggestions_by_index.get(index)
-        if not sug:
+    for index in sorted(by_index):
+        para = mapping.get(index)
+        if para is None:
             continue
-        reason = (sug.get("reason") or "").strip() or "This paragraph matches an article in the journal archive."
-        citation = (sug.get("house_citation") or "").strip() or (sug.get("reason") or "").strip()
-        title = ""
-        article = sug.get("article") or {}
-        if isinstance(article, dict):
-            title = (article.get("title") or "").strip()
-
-        _append_comment(comments_root, comment_id, stamp, title=title, reason=reason, citation=citation)
-        _append_endnote(endnotes_root, endnote_id, stamp, reason=reason, citation=citation)
-        _mark_paragraph(para, comment_id=comment_id, endnote_id=endnote_id, rev_id=rev_id, stamp=stamp)
-        comment_id += 1
-        endnote_id += 1
-        rev_id += 2
+        marks: list[tuple[int, int, int]] = []
+        for sug in by_index[index]:
+            article_id = int(sug.get("article_id") or 0)
+            if article_id not in article_endnotes:
+                eid = next_endnote_id
+                next_endnote_id += 1
+                article_endnotes[article_id] = eid
+                _append_endnote(
+                    endnotes_root,
+                    eid,
+                    citation=(sug.get("house_citation") or "").strip(),
+                    number=int(sug.get("citation_number") or len(article_endnotes)),
+                )
+            eid = article_endnotes[article_id]
+            _append_comment(comments_root, comment_id, stamp, sug=sug)
+            marks.append((comment_id, eid, rev_id))
+            comment_id += 1
+            rev_id += 2
+        _mark_paragraph(para, marks=marks, stamp=stamp)
 
     files["word/document.xml"] = _dumps(doc)
     files["word/comments.xml"] = _dumps(comments_root)
@@ -126,55 +175,120 @@ def annotate_docx(data: bytes, suggestions_by_index: dict[int, dict[str, Any]]) 
     return _write_zip(files)
 
 
-def _mark_paragraph(para: etree._Element, *, comment_id: int, endnote_id: int, rev_id: int, stamp: str) -> None:
-    start = etree.Element(w("commentRangeStart"))
-    start.set(w("id"), str(comment_id))
+def _mark_paragraph(
+    para: etree._Element,
+    *,
+    marks: list[tuple[int, int, int]],
+    stamp: str,
+) -> None:
+    if not marks:
+        return
     insert_at = 0
     ppr = para.find(w("pPr"))
     if ppr is not None:
         insert_at = list(para).index(ppr) + 1
-    para.insert(insert_at, start)
+    for comment_id, _endnote_id, _rev_id in marks:
+        start = etree.Element(w("commentRangeStart"))
+        start.set(w("id"), str(comment_id))
+        para.insert(insert_at, start)
+        insert_at += 1
+    for comment_id, endnote_id, rev_id in reversed(marks):
+        end = etree.SubElement(para, w("commentRangeEnd"))
+        end.set(w("id"), str(comment_id))
+        ins = etree.SubElement(para, w("ins"))
+        ins.set(w("id"), str(rev_id))
+        ins.set(w("author"), AUTHOR)
+        ins.set(w("date"), stamp)
+        run = etree.SubElement(ins, w("r"))
+        rpr = etree.SubElement(run, w("rPr"))
+        style = etree.SubElement(rpr, w("rStyle"))
+        style.set(w("val"), "EndnoteReference")
+        ref = etree.SubElement(run, w("endnoteReference"))
+        ref.set(w("id"), str(endnote_id))
+        mark = etree.SubElement(para, w("r"))
+        mpr = etree.SubElement(mark, w("rPr"))
+        mstyle = etree.SubElement(mpr, w("rStyle"))
+        mstyle.set(w("val"), "CommentReference")
+        cref = etree.SubElement(mark, w("commentReference"))
+        cref.set(w("id"), str(comment_id))
 
-    end = etree.SubElement(para, w("commentRangeEnd"))
-    end.set(w("id"), str(comment_id))
 
-    ins = etree.SubElement(para, w("ins"))
-    ins.set(w("id"), str(rev_id))
-    ins.set(w("author"), AUTHOR)
-    ins.set(w("date"), stamp)
-    run = etree.SubElement(ins, w("r"))
-    rpr = etree.SubElement(run, w("rPr"))
-    style = etree.SubElement(rpr, w("rStyle"))
-    style.set(w("val"), "EndnoteReference")
-    ref = etree.SubElement(run, w("endnoteReference"))
-    ref.set(w("id"), str(endnote_id))
+def _article_fields(sug: dict[str, Any]) -> dict[str, Any]:
+    article = sug.get("article") if isinstance(sug.get("article"), dict) else {}
+    authors = sug.get("authors")
+    if authors is None:
+        authors = article.get("authors") or []
+    if isinstance(authors, list):
+        names = []
+        for item in authors:
+            if isinstance(item, str):
+                names.append(item)
+            elif isinstance(item, dict):
+                names.append(str(item.get("name") or item))
+        author_text = ", ".join(names)
+    else:
+        author_text = str(authors or "")
+    pages = sug.get("page_start") or article.get("page_start")
+    page_end = sug.get("page_end") or article.get("page_end")
+    page_text = str(pages) if pages is not None else ""
+    if page_end:
+        page_text = f"{pages}-{page_end}"
+    return {
+        "title": (sug.get("article_title") or article.get("title") or "").strip(),
+        "authors": author_text,
+        "journal": (sug.get("journal") or "").strip(),
+        "volume": sug.get("volume") if sug.get("volume") is not None else article.get("volume"),
+        "issue": sug.get("issue_number") if sug.get("issue_number") is not None else article.get("issue_number"),
+        "pages": page_text,
+        "doi": (sug.get("doi") or article.get("doi") or "") or "",
+    }
 
-    mark = etree.SubElement(para, w("r"))
-    mpr = etree.SubElement(mark, w("rPr"))
-    mstyle = etree.SubElement(mpr, w("rStyle"))
-    mstyle.set(w("val"), "CommentReference")
-    cref = etree.SubElement(mark, w("commentReference"))
-    cref.set(w("id"), str(comment_id))
 
-
-def _append_comment(root: etree._Element, cid: int, stamp: str, *, title: str, reason: str, citation: str) -> None:
+def _append_comment(root: etree._Element, cid: int, stamp: str, *, sug: dict[str, Any]) -> None:
     comment = etree.SubElement(root, w("comment"))
     comment.set(w("id"), str(cid))
     comment.set(w("author"), AUTHOR)
     comment.set(w("date"), stamp)
     comment.set(w("initials"), INITIALS)
-    heading = f"Suggested citation: {title}" if title else "Suggested citation"
+    fields = _article_fields(sug)
+    sid = sug.get("id")
+    number = sug.get("citation_number") or ""
+    heading = f"Suggestion S-{sid}" if sid is not None else "Suggested citation"
+    if fields["title"]:
+        heading += f": {fields['title']}"
+    reason = (sug.get("reason") or "").strip() or (
+        "This paragraph matches an article already stored in the Citation Assistant archive."
+    )
+    citation = (sug.get("house_citation") or "").strip()
     _add_text_paragraph(comment, heading, bold=True)
     _add_text_paragraph(comment, f"Why this was suggested: {reason}")
-    _add_text_paragraph(comment, f"Reference (endnote): {citation}")
+    meta = []
+    if fields["authors"]:
+        meta.append(f"Authors: {fields['authors']}")
+    loc_bits = [fields["journal"]] if fields["journal"] else []
+    if fields["volume"] is not None:
+        loc_bits.append(f"Vol. {fields['volume']}")
+    if fields["issue"] is not None:
+        loc_bits.append(f"Issue {fields['issue']}")
+    if fields["pages"]:
+        loc_bits.append(f"pp {fields['pages']}")
+    if loc_bits:
+        meta.append(" · ".join(str(b) for b in loc_bits if b))
+    if fields["doi"]:
+        meta.append(f"DOI: {fields['doi']}")
+    if meta:
+        _add_text_paragraph(comment, " | ".join(meta))
+    _add_text_paragraph(comment, f"Reference [{number}]: {citation}".strip())
     _add_text_paragraph(
         comment,
-        "In Word open the Review tab. Accept keeps this citation and its matching reference. "
-        "Reject removes both.",
+        "In Word open the Review tab. Accept keeps this in-text citation and Reference "
+        f"[{number}]. Reject removes this citation. If you reject every citation numbered "
+        f"[{number}], also reject that endnote so the reference is not left behind. "
+        "The same archive article is never listed twice.",
     )
 
 
-def _append_endnote(root: etree._Element, eid: int, stamp: str, *, reason: str, citation: str) -> None:
+def _append_endnote(root: etree._Element, eid: int, *, citation: str, number: int) -> None:
     note = etree.SubElement(root, w("endnote"))
     note.set(w("id"), str(eid))
     p = etree.SubElement(note, w("p"))
@@ -186,8 +300,13 @@ def _append_endnote(root: etree._Element, eid: int, stamp: str, *, reason: str, 
     mstyle = etree.SubElement(mpr, w("rStyle"))
     mstyle.set(w("val"), "EndnoteReference")
     etree.SubElement(marker, w("endnoteRef"))
-    _run_text(p, f" {citation}  Why this was suggested: {reason}  "
-             f"(Accept keeps this reference with the in-text citation; Reject drops both.)")
+    _run_text(
+        p,
+        f" [{number}] {citation}  "
+        f"(Shared archive reference. Accept keeps this reference with every matching "
+        f"in-text citation [{number}]; reject those citations and this endnote together "
+        f"so the reference is not orphaned.)",
+    )
 
 
 def _add_text_paragraph(parent: etree._Element, text: str, *, bold: bool = False) -> None:
