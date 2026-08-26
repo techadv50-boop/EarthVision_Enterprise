@@ -2,6 +2,10 @@
 # SAT EYE — safe manual live deploy for /opt/earthvision (online Eye In Sky).
 # Intended to run on the self-hosted runner host (sateye-live).
 #
+# Execute this script from the Actions/runner workspace (or any path outside
+# APP_DIR). Do NOT copy it into /opt/earthvision before preflight — that would
+# dirty the live checkout and fail the allowlist check.
+#
 # Preserves:
 #   - /opt/earthvision/.env  (never overwritten from Git)
 #   - server-specific docker-compose.yml and backend/requirements.txt

@@ -39,24 +39,13 @@ jobs:
           docker --version
           docker compose version
 
-      # Checkout the workflow source branch into a side directory ONLY to obtain
-      # scripts/deploy_sateye_live.sh. Never replaces /opt/earthvision.
+      # Checkout workflow source into a side directory. Never write into
+      # /opt/earthvision from this step (keeps live dirty-tree allowlist clean).
       - name: Checkout workflow scripts (side directory)
         uses: actions/checkout@v4
         with:
           path: workflow-src
           fetch-depth: 1
-
-      - name: Install deploy script onto live tree
-        run: |
-          set -euo pipefail
-          test -f workflow-src/scripts/deploy_sateye_live.sh
-          mkdir -p /opt/earthvision/scripts
-          cp workflow-src/scripts/deploy_sateye_live.sh /opt/earthvision/scripts/deploy_sateye_live.sh
-          chmod +x /opt/earthvision/scripts/deploy_sateye_live.sh
-          # Do not touch /opt/earthvision/.env
-          test -f /opt/earthvision/.env
-          echo "deploy script installed; .env still present"
 
       - name: Deploy live SAT EYE
         env:
@@ -68,7 +57,11 @@ jobs:
           HEALTH_URL_PUBLIC: https://sateye.xdgen.com/health
         run: |
           set -euo pipefail
-          /opt/earthvision/scripts/deploy_sateye_live.sh
+          test -f workflow-src/scripts/deploy_sateye_live.sh
+          test -f /opt/earthvision/.env
+          chmod +x workflow-src/scripts/deploy_sateye_live.sh
+          # Run from the Actions workspace — do NOT copy into /opt/earthvision.
+          workflow-src/scripts/deploy_sateye_live.sh
 
       - name: Post-deploy summary (no secrets)
         if: always()
