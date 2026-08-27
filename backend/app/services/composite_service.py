@@ -277,8 +277,8 @@ class CompositeService:
 
         # True/false color: build from surface-reflectance bands with EO stretch.
         # Extent follows the scene layer bounds passed by the client (original image).
-        # Use client size as-is (no 1280 floor) — interactive map overlays stay fast.
-        size = max(64, min(int(request.size or 896), 2048))
+        # Use client size as-is — interactive map overlays stay fast on slow links.
+        size = max(64, min(int(request.size or 512), 640))
         bands, bounds = self._load_bands(
             request.scene_id, request.bbox, size, band_names=keys
         )
@@ -353,7 +353,7 @@ class CompositeService:
             blocked = unsupported_image_processing_reason(family)
             if blocked:
                 raise ValidationError(blocked)
-        size = max(64, min(int(request.size or 896), 2048))
+        size = max(64, min(int(request.size or 512), 640))
         bands, bounds = self._load_bands(
             request.scene_id,
             request.bbox,
@@ -670,16 +670,10 @@ class CompositeService:
         return np.clip(out, 0, 1)
 
     def _rgb_to_png(self, rgb: np.ndarray, valid_mask: np.ndarray | None = None) -> bytes:
-        u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-        if valid_mask is None:
-            valid_mask = np.any(u8 > 2, axis=2)
-        alpha = np.where(valid_mask, 255, 0).astype(np.uint8)
-        rgba = np.dstack([u8, alpha])
-        img = Image.fromarray(rgba, mode="RGBA")
-        # Skip unsharp on interactive overlays — large RGBA + optimize was a major lag
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=False, compress_level=3)
-        return buf.getvalue()
+        from app.services.overlay_encode import encode_rgb_mask_overlay
+
+        data, _mime = encode_rgb_mask_overlay(rgb, valid_mask, quality=70)
+        return data
 
     def _rgb_histogram(self, rgb: np.ndarray) -> dict[str, Any]:
         u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)

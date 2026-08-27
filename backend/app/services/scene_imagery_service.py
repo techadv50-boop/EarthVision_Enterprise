@@ -7,6 +7,7 @@ import math
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from collections import defaultdict
@@ -34,7 +35,7 @@ GDAL_ENV = {
     "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
     "GDAL_HTTP_MULTIPLEX": "YES",
     "GDAL_HTTP_MAX_RETRY": "3",
-    "GDAL_HTTP_TIMEOUT": "60",
+    "GDAL_HTTP_TIMEOUT": "25",
     # Speed: reuse HTTP ranges + modest decode cache for interactive previews.
     # rasterio ≥1.5 requires GDAL_CACHEMAX as int (string "256" → TypeError and
     # silently breaks every Env(**GDAL_ENV) COG read → synthetic neon overlays).
@@ -46,7 +47,7 @@ GDAL_ENV = {
 }
 
 # Interactive analysis grid — tools share this ceiling unless the client asks higher
-INTERACTIVE_PREVIEW_MAX = 1024
+INTERACTIVE_PREVIEW_MAX = 640
 
 # Canonical analysis keys (order used when loading the full set)
 ANALYSIS_BAND_ORDER: tuple[str, ...] = (
@@ -96,7 +97,15 @@ BAND_NAME_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 # Fast PNG for map overlays (optimize=True is very slow on large RGBA)
-FAST_PNG_KWARGS: dict[str, Any] = {"optimize": False, "compress_level": 3}
+FAST_PNG_KWARGS: dict[str, Any] = {"optimize": False, "compress_level": 6}
+
+# Short COG HTTP budget — fail fast on slow links instead of hanging until CF 524
+COG_HTTP_TIMEOUT = httpx.Timeout(5.0, read=22.0, write=10.0, pool=5.0)
+
+# In-process analysis band cache: key → (expiry_epoch, bands_dict)
+_ANALYSIS_BAND_CACHE: dict[str, tuple[float, dict[str, np.ndarray]]] = {}
+_ANALYSIS_BAND_CACHE_TTL_S = 180.0
+_ANALYSIS_BAND_CACHE_MAX = 24
 
 # Registry schema version — bump to invalidate slow Landsat self-tile layers
 LAYER_VERSION = 5
@@ -1573,8 +1582,8 @@ class SceneImageryService:
         scale = "landsat_c2_sr" if is_landsat else "sentinel2_l2a"
         boa_scale = layer.get("boa_scale")
         boa_offset = layer.get("boa_offset")
-        # Cap interactive grids; callers can still request lower sizes
-        size = max(64, min(int(size), 2048))
+        # Cap interactive grids (slow links / Cloudflare); stay ≤ INTERACTIVE_PREVIEW_MAX
+        size = max(64, min(int(size), INTERACTIVE_PREVIEW_MAX))
         out_shape = self.analysis_grid_shape(bounds, max_edge=size)
 
         wanted = self.resolve_requested_band_keys(
@@ -1584,6 +1593,16 @@ class SceneImageryService:
             is_landsat=is_landsat,
             is_s2=is_s2,
         )
+        cache_key = (
+            f"{scene_id}|{layer.get('stac_id')}|{size}|"
+            f"{','.join(f'{b:.5f}' for b in bounds)}|"
+            f"{','.join(wanted)}"
+        )
+        now = time.time()
+        cached = _ANALYSIS_BAND_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            return dict(cached[1]), bounds, layer.get("footprint"), layer
+
         href_groups = self.group_band_keys_by_href(analysis, wanted)
 
         bands: dict[str, np.ndarray] = {}
@@ -1627,16 +1646,22 @@ class SceneImageryService:
         owns_client = sign == "planetary_computer"
         client: httpx.Client | None = None
         if owns_client:
-            client = httpx.Client(timeout=60.0, follow_redirects=True)
+            client = httpx.Client(timeout=COG_HTTP_TIMEOUT, follow_redirects=True)
         try:
-            workers = min(8, max(1, len(href_groups)))
+            workers = min(6, max(1, len(href_groups)))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
                     pool.submit(_fetch_group, href, names, client)
                     for href, names in href_groups
                 ]
                 for fut in futures:
-                    names, arr, err = fut.result()
+                    try:
+                        names, arr, err = fut.result(timeout=40)
+                    except FuturesTimeoutError as exc:
+                        raise ExternalServiceError(
+                            "Satellite band download timed out — zoom in or retry "
+                            "(smaller preview for slow links)."
+                        ) from exc
                     if err:
                         logger.warning(
                             "Failed to load analysis band(s) {} for {}: {}",
@@ -1694,6 +1719,18 @@ class SceneImageryService:
                     bands[key] = masked
             except Exception as exc:  # noqa: BLE001
                 logger.warning("SCL mask failed for {}: {}", scene_id, exc)
+
+        if bands:
+            expired = [k for k, (exp, _) in _ANALYSIS_BAND_CACHE.items() if exp <= now]
+            for k in expired:
+                _ANALYSIS_BAND_CACHE.pop(k, None)
+            if len(_ANALYSIS_BAND_CACHE) >= _ANALYSIS_BAND_CACHE_MAX:
+                oldest = sorted(_ANALYSIS_BAND_CACHE.items(), key=lambda kv: kv[1][0])[
+                    : max(1, _ANALYSIS_BAND_CACHE_MAX // 4)
+                ]
+                for k, _ in oldest:
+                    _ANALYSIS_BAND_CACHE.pop(k, None)
+            _ANALYSIS_BAND_CACHE[cache_key] = (now + _ANALYSIS_BAND_CACHE_TTL_S, dict(bands))
 
         return bands, bounds, layer.get("footprint"), layer
 

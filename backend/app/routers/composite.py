@@ -41,18 +41,28 @@ async def list_index_thematic(
 async def render_composite(
     data: CompositeRequest, user: CurrentUser
 ) -> CompositeResponse:
-    from app.core.concurrency import run_sync
+    from app.core.concurrency import run_sync_timeout
 
-    return await run_sync(CompositeService().render_composite, data)
+    return await run_sync_timeout(
+        CompositeService().render_composite,
+        data,
+        timeout_s=55.0,
+        label="Composite",
+    )
 
 
 @router.post("/stretch", response_model=StretchResponse)
 async def histogram_stretch(
     data: StretchRequest, user: CurrentUser
 ) -> StretchResponse:
-    from app.core.concurrency import run_sync
+    from app.core.concurrency import run_sync_timeout
 
-    return await run_sync(CompositeService().stretch_scene, data)
+    return await run_sync_timeout(
+        CompositeService().stretch_scene,
+        data,
+        timeout_s=55.0,
+        label="Histogram stretch",
+    )
 
 
 @router.get("/export/composite.png")
@@ -134,7 +144,7 @@ async def export_stretch_png(
             bbox=[west, south, east, north],
             p_low=p_low,
             p_high=p_high,
-            size=1024,
+            size=640,
             gamma=1.05,
             contrast=1.1,
         )
@@ -167,7 +177,7 @@ async def export_stretch_geotiff(
             bbox=[west, south, east, north],
             p_low=p_low,
             p_high=p_high,
-            size=1024,
+            size=640,
             gamma=1.05,
             contrast=1.1,
         )

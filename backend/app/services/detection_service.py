@@ -1064,11 +1064,10 @@ class DetectionService:
         rgba[..., 1] = (g * 255).astype(np.uint8)
         rgba[..., 2] = (b * 255).astype(np.uint8)
         rgba[..., 3] = alpha
-        buf = io.BytesIO()
-        Image.fromarray(rgba, mode="RGBA").save(
-            buf, format="PNG", optimize=False, compress_level=3
-        )
-        return buf.getvalue()
+        from app.services.overlay_encode import encode_rgba_overlay
+
+        data, _mime = encode_rgba_overlay(rgba, prefer="webp", quality=70)
+        return data
 
     def _legend(self, label: str, algorithm: str) -> LegendInfo:
         stops = [

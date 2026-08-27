@@ -161,3 +161,54 @@ def test_index_band_sets(index, expected):
     from app.services.analytics_service import AnalyticsService
 
     assert AnalyticsService.INDEX_REQUIRED_BANDS[index] == expected
+
+
+def test_overlay_encode_prefers_webp_and_is_smaller_than_png():
+    from app.services.overlay_encode import encode_rgba_overlay, encode_categorical_overlay
+
+    rgba = np.zeros((128, 128, 4), dtype=np.uint8)
+    rgba[..., 0] = 40
+    rgba[..., 1] = 120
+    rgba[..., 2] = 80
+    rgba[..., 3] = 255
+    # Add mild noise so compressors have work to do
+    rgba[..., 1] = (rgba[..., 1] + np.arange(128, dtype=np.uint8)[None, :]) % 200
+
+    webp, mime = encode_rgba_overlay(rgba, prefer="webp", quality=70)
+    png, png_mime = encode_rgba_overlay(rgba, prefer="png")
+    assert mime == "image/webp"
+    assert png_mime == "image/png"
+    assert webp[:4] == b"RIFF"
+    assert len(webp) < len(png)
+
+    cat, cat_mime = encode_categorical_overlay(rgba)
+    assert cat_mime in {"image/webp", "image/png"}
+    assert len(cat) > 32
+
+
+def test_interactive_preview_cap_and_band_cache_limits():
+    from app.services.scene_imagery_service import (
+        INTERACTIVE_PREVIEW_MAX,
+        _ANALYSIS_BAND_CACHE_MAX,
+        GDAL_ENV,
+    )
+
+    assert INTERACTIVE_PREVIEW_MAX <= 640
+    assert _ANALYSIS_BAND_CACHE_MAX >= 8
+    assert int(GDAL_ENV["GDAL_HTTP_TIMEOUT"]) <= 30
+
+
+def test_run_sync_timeout_raises_gateway_timeout():
+    import asyncio
+
+    from app.core.concurrency import run_sync_timeout
+    from app.core.exceptions import GatewayTimeoutError
+
+    def slow() -> None:
+        time.sleep(2.0)
+
+    async def _run() -> None:
+        await run_sync_timeout(slow, timeout_s=0.2, label="Unit test")
+
+    with pytest.raises(GatewayTimeoutError, match="Unit test timed out"):
+        asyncio.run(_run())

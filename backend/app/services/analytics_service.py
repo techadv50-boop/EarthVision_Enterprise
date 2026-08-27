@@ -474,11 +474,10 @@ class AnalyticsService:
         rgba[..., 1] = (np.clip(g, 0, 1) * 255).astype(np.uint8)
         rgba[..., 2] = (np.clip(b, 0, 1) * 255).astype(np.uint8)
         rgba[..., 3] = np.where(valid, alpha, 0).astype(np.uint8)
-        img = Image.fromarray(rgba, mode="RGBA")
-        # Fast PNG for map overlays (optimize + unsharp dominate latency at ≥1k²)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=False, compress_level=3)
-        return buf.getvalue()
+        from app.services.overlay_encode import encode_rgba_overlay
+
+        data, _mime = encode_rgba_overlay(rgba, prefer="webp", quality=70)
+        return data
 
     def _footprint_mask_grid(
         self, footprint: dict[str, Any] | None, bounds: list[float], shape: tuple[int, int]
@@ -697,7 +696,7 @@ class AnalyticsService:
     def compute_index(self, request: IndexComputeRequest) -> IndexComputeResponse:
         index = request.index
         meta = INDEX_META[index]
-        size = int(getattr(request, "size", 1024) or 1024)
+        size = max(64, min(int(getattr(request, "size", 512) or 512), 640))
         footprint = request.aoi if request.aoi and request.aoi.get("type") == "Polygon" else None
         bounds = self._resolve_bounds(request.bbox, request.aoi)
         real_bands: dict[str, np.ndarray] = {}
@@ -839,7 +838,7 @@ class AnalyticsService:
         )
 
     def change_detection(self, request: IndexChangeRequest) -> IndexChangeResponse:
-        size = 896
+        size = 512
         before = self._compute_array(request.index, request.before_scene_id, request.L, size=size)
         after = self._compute_array(request.index, request.after_scene_id, request.L, size=size)
         h = min(before.shape[0], after.shape[0])

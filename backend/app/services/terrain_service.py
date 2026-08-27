@@ -234,9 +234,10 @@ class TerrainService:
         rgba[..., 1] = (g * 255).astype(np.uint8)
         rgba[..., 2] = (b * 255).astype(np.uint8)
         rgba[..., 3] = np.where(valid, alpha, 0).astype(np.uint8)
-        buf = io.BytesIO()
-        Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=False, compress_level=3)
-        return buf.getvalue()
+        from app.services.overlay_encode import encode_rgba_overlay
+
+        data, _mime = encode_rgba_overlay(rgba, prefer="webp", quality=70)
+        return data
 
     def _product_dem(
         self,
@@ -281,11 +282,12 @@ class TerrainService:
                         lit = norm * (0.78 + 0.22 * hs_n)
                         draped[..., i] = (lit * 255).astype(np.uint8)
                     draped[..., 3] = 255
-                    buf = io.BytesIO()
-                    Image.fromarray(draped, mode="RGBA").save(
-                        buf, format="PNG", optimize=False, compress_level=3
+                    from app.services.overlay_encode import encode_rgba_overlay
+
+                    draped_bytes, _mime = encode_rgba_overlay(
+                        draped, prefer="webp", quality=70
                     )
-                    drape_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                    drape_b64 = base64.b64encode(draped_bytes).decode("ascii")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("DEM drape texture failed for {}: {}", scene_id, exc)
 

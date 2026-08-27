@@ -1,4 +1,5 @@
 import { api } from './api';
+import { INTERACTIVE_PREVIEW_SIZE, toOverlayDataUrl } from '../utils/overlayDataUrl';
 import type { LegendInfo } from './analyticsService';
 
 export interface ClassAreaStat {
@@ -96,7 +97,7 @@ function hexToRgb(hex: string): [number, number, number] {
 
 export const classificationService = {
   toDataUrl(b64: string): string {
-    return `data:image/png;base64,${b64}`;
+    return toOverlayDataUrl(b64);
   },
 
   async classify(payload: {
@@ -110,7 +111,7 @@ export const classificationService = {
     const { data } = await api.post<ClassificationResult>('/analytics/classify', {
       scene_id: payload.scene_id,
       bbox: payload.bbox,
-      size: payload.size ?? 1792,
+      size: payload.size ?? INTERACTIVE_PREVIEW_SIZE,
       n_classes: n,
       class_styles: payload.class_styles ?? stylesForCount(n),
     });
