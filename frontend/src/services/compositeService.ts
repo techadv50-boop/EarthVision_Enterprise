@@ -125,8 +125,8 @@ export const compositeService = {
       size: INTERACTIVE_PREVIEW_SIZE,
       p_low: 2,
       p_high: 98,
-      gamma: 1.2,
-      brightness: 1.05,
+      gamma: 1.35,
+      brightness: 1.0,
       contrast: 1.05,
       ...payload,
     });

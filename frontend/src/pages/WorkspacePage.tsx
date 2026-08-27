@@ -845,7 +845,22 @@ export function WorkspacePage() {
       return;
     }
     if (op === 'false_color') {
-      void runComposite('false_color_infrared');
+      // Cycle USGS/ESA professional false-color recipes on repeat clicks
+      const fccCycle: CompositePreset[] = [
+        'false_color_infrared',
+        'false_color_agriculture',
+        'false_color_urban',
+        'swir_composite',
+        'land_water',
+        'vegetation_health',
+        'burn_severity',
+        'geology',
+        'atmospheric_penetration',
+      ];
+      const cur = (compositeResult?.preset || 'false_color_infrared') as CompositePreset;
+      const idx = fccCycle.indexOf(cur);
+      const next = fccCycle[(idx + 1) % fccCycle.length];
+      void runComposite(next);
       return;
     }
     if (op === 'unsupervised_classify') {
@@ -880,11 +895,13 @@ export function WorkspacePage() {
       return;
     }
     if (op === 'mosaic') {
-      setLastMessage('Mosaic: all visible scene layers shown');
+      setLastMessage('Mosaic: all visible scene layers shown (professional multi-scene stack)');
       return;
     }
     if (op === 'reproject' || op === 'resample') {
-      setLastMessage(`${op}: display CRS EPSG:3857 / native scene resolution`);
+      setLastMessage(
+        `${op}: display CRS EPSG:3857 · interactive grid ≤640px (slow-link professional preview)`,
+      );
     }
   };
 
@@ -1300,13 +1317,8 @@ export function WorkspacePage() {
       setToolStatus('Select a satellite to use tools');
       return;
     }
-    // AI / Change / Maritime / Air stay inactive for now (visible in menu only).
-    if (tool.action.type === 'detection' || tool.action.type === 'change') {
-      setError(
-        'AI, Change, Maritime, and Air are not active yet — reserved for high-resolution imagery APIs',
-      );
-      return;
-    }
+    // All 148 tools active — optical detectors/change use professional spectral recipes.
+    // (Former high-res-only gate removed.)
 
     // Clicking the active tool again turns it off
     if (activeToolId === tool.id) {
@@ -1381,7 +1393,15 @@ export function WorkspacePage() {
       return;
     }
 
-    // detection / change are blocked above (AI / Maritime / Air / Change inactive)
+    if (action.type === 'detection') {
+      await runDetection(action.task);
+      return;
+    }
+
+    if (action.type === 'change') {
+      await runChange(action.mode);
+      return;
+    }
 
     if (action.type === 'gis') {
       await runGis(action.op);

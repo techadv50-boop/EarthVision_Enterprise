@@ -34,6 +34,8 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDVI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        # QGIS / ArcGIS Pro practice: vegetated scenes display ~0…0.8
+        "viz_range": (0.0, 0.8),
         "cmap": "rdylgn",
         "ref": "Rouse et al. 1974 / Tucker 1979",
     },
@@ -42,6 +44,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDWI (McFeeters)",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.2, 0.5),
         "cmap": "blues",
         "ref": "McFeeters 1996",
     },
@@ -50,6 +53,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDBI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.25, 0.45),
         "cmap": "ylorbr",
         "ref": "Zha, Gao & Ni 2003",
     },
@@ -58,6 +62,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "SAVI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (0.0, 0.8),
         "cmap": "rdylgn",
         "ref": "Huete 1988",
     },
@@ -66,6 +71,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "BSI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.2, 0.5),
         "cmap": "soil",
         "ref": "Rikimaru et al. / bare-soil index",
     },
@@ -74,6 +80,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "LST",
         "unit": "°C",
         "range": (-40.0, 80.0),
+        "viz_range": (-10.0, 55.0),
         "cmap": "thermal",
         "ref": "USGS Landsat Collection 2 Level-2 Surface Temperature",
     },
@@ -82,6 +89,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "EVI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (0.0, 0.8),
         "cmap": "rdylgn",
         "ref": "Huete et al. 2002 / MODIS EVI",
     },
@@ -90,6 +98,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDMI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.4, 0.5),
         "cmap": "brbg",
         "ref": "Gao 1996 / moisture index",
     },
@@ -98,6 +107,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NBR",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.5, 0.8),
         "cmap": "rdbu",
         "ref": "Key & Benson / burn ratio",
     },
@@ -347,28 +357,32 @@ class AnalyticsService:
         p_low: float = 2.0,
         p_high: float = 98.0,
         mask: np.ndarray | None = None,
+        viz_min: float | None = None,
+        viz_max: float | None = None,
     ) -> tuple[float, float]:
-        """Robust display vmin/vmax from data percentiles, soft-clipped to meta range."""
+        """Professional display window: prefer viz_range, refine with percentiles."""
+        # Start from industry viz window (e.g. NDVI 0…0.8) when provided
+        win_lo = float(viz_min) if viz_min is not None else float(fixed_min)
+        win_hi = float(viz_max) if viz_max is not None else float(fixed_max)
         valid = array[np.isfinite(array)]
         if mask is not None:
             valid = array[np.isfinite(array) & mask]
         if valid.size == 0:
-            return float(fixed_min), float(fixed_max)
+            return win_lo, win_hi
         lo = float(np.percentile(valid, p_low))
         hi = float(np.percentile(valid, p_high))
-        # Keep within physical meta range but never force full [-1, 1] (washes out NDVI).
-        lo = max(float(fixed_min), lo)
-        hi = min(float(fixed_max), hi)
+        # Soft-clip into professional viz window (never force full ±1)
+        lo = max(win_lo, min(lo, win_hi - 1e-3))
+        hi = min(win_hi, max(hi, win_lo + 1e-3))
         if hi <= lo:
-            mid = 0.5 * (float(fixed_min) + float(fixed_max))
-            span = max(0.05, 0.05 * (float(fixed_max) - float(fixed_min)))
+            mid = 0.5 * (win_lo + win_hi)
+            span = max(0.05, 0.08 * (win_hi - win_lo))
             lo, hi = mid - span, mid + span
-        # Ensure a useful contrast span for visualization
-        if (hi - lo) < 0.05 * max(1e-6, float(fixed_max) - float(fixed_min)):
+        if (hi - lo) < 0.06 * max(1e-6, win_hi - win_lo):
             mid = 0.5 * (lo + hi)
-            pad = 0.05 * max(1e-6, float(fixed_max) - float(fixed_min))
+            pad = 0.06 * max(1e-6, win_hi - win_lo)
             lo, hi = mid - pad, mid + pad
-        return lo, hi
+        return float(lo), float(hi)
 
     def _colormap_rgb(self, name: str, t: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Map normalized t∈[0,1] to RGB channels."""
@@ -796,10 +810,19 @@ class AnalyticsService:
             )
 
         fixed_min, fixed_max = meta["range"]
+        viz = meta.get("viz_range")
+        viz_min, viz_max = (viz[0], viz[1]) if viz else (None, None)
         fp_mask = self._footprint_mask_grid(footprint, bounds, result.shape)
-        # Data-driven display stretch (was fixed -1..1 → washed-out NDVI/NDWI/etc.)
+        # Professional display stretch (QGIS/ArcGIS viz windows + percentiles)
         vmin, vmax = self._display_range(
-            result, fixed_min, fixed_max, p_low=2.0, p_high=98.0, mask=fp_mask
+            result,
+            fixed_min,
+            fixed_max,
+            p_low=2.0,
+            p_high=98.0,
+            mask=fp_mask,
+            viz_min=viz_min,
+            viz_max=viz_max,
         )
 
         cmap = request.colormap or meta["cmap"]

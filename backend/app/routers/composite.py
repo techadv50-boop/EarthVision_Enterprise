@@ -28,6 +28,14 @@ async def list_composites(
     return CompositeService().list_presets(collection=collection)
 
 
+@router.get("/tool-standards")
+async def tool_standards(user: CurrentUser) -> dict:
+    """Professional EO standards used by the 148 toolbox tools."""
+    from app.services.tool_standards import catalog_tool_standards
+
+    return catalog_tool_standards()
+
+
 @router.get("/index-thematic")
 async def list_index_thematic(
     user: CurrentUser,

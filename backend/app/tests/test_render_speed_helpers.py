@@ -212,3 +212,72 @@ def test_run_sync_timeout_raises_gateway_timeout():
 
     with pytest.raises(GatewayTimeoutError, match="Unit test timed out"):
         asyncio.run(_run())
+
+
+def test_true_color_l2a_optimized_produces_natural_rgb():
+    """Sentinel Hub L2A Optimized path: finite RGB in [0,1], no neon extremes."""
+    from app.services.professional_viz import true_color_l2a_optimized
+
+    h = w = 64
+    # Typical land BOA reflectance
+    r = np.full((h, w), 0.08, dtype=np.float64)
+    g = np.full((h, w), 0.10, dtype=np.float64)
+    b = np.full((h, w), 0.06, dtype=np.float64)
+    g[20:40, 20:40] = 0.14
+    r[20:40, 20:40] = 0.05
+    rgb = true_color_l2a_optimized(r, g, b)
+    assert rgb.shape == (h, w, 3)
+    assert float(np.nanmin(rgb)) >= 0.0
+    assert float(np.nanmax(rgb)) <= 1.0
+    mid = float(np.nanmean(rgb))
+    assert 0.05 < mid < 0.95
+
+
+def test_false_color_professional_and_index_viz_ranges():
+    from app.services.professional_viz import (
+        INDEX_VIZ_RANGE,
+        false_color_professional,
+    )
+    from app.services.analytics_service import INDEX_META
+
+    rng = np.random.default_rng(0)
+    r = rng.uniform(0.05, 0.4, size=(48, 48))
+    g = rng.uniform(0.05, 0.4, size=(48, 48))
+    b = rng.uniform(0.05, 0.4, size=(48, 48))
+    rgb = false_color_professional(r, g, b)
+    assert rgb.shape == (48, 48, 3)
+    assert 0.0 <= float(rgb.min()) <= float(rgb.max()) <= 1.0
+
+    assert INDEX_META["NDVI"]["viz_range"] == INDEX_VIZ_RANGE["NDVI"]
+    assert INDEX_META["NDVI"]["viz_range"] == (0.0, 0.8)
+
+
+def test_all_148_toolbox_tools_have_action_types():
+    """Frontend catalog must stay at 148 tools with runnable actions."""
+    from pathlib import Path
+    import re
+
+    catalog = (
+        Path(__file__).resolve().parents[3]
+        / "frontend"
+        / "src"
+        / "toolbox"
+        / "catalog.ts"
+    )
+    text = catalog.read_text(encoding="utf-8")
+    tool_ids = re.findall(r"\{\s*id:\s*'([^']+)',\s*label:", text)
+    assert len(tool_ids) == 148, f"expected 148 tools, got {len(tool_ids)}"
+    assert "true_color" in tool_ids
+    # High-res lock list must be empty so AI/Change/Maritime/Aviation run
+    assert re.search(
+        r"HIGH_RES_ONLY_TOOLBOXES:\s*ToolboxId\[\]\s*=\s*\[\s*\]", text
+    )
+
+
+def test_tool_standards_catalog_covers_image_and_composites():
+    from app.services.tool_standards import catalog_tool_standards
+
+    cat = catalog_tool_standards()
+    assert "true_color" in cat["image_tools"]
+    assert "l2a_optimized" in cat["image_tools"]["true_color"]["method"]
+    assert cat["reliability"]["request_timeout_s"] == 55

@@ -13,15 +13,11 @@ export type ToolboxId =
   | 'measure';
 
 /**
- * Domain toolboxes that appear in the menu but stay inactive for now.
- * Will unlock later with high-resolution imagery APIs.
+ * Previously reserved for high-res APIs. Optical EO detectors / change now run
+ * on Sentinel-2 / Landsat with professional spectral recipes — keep empty so
+ * all 148 tools stay active.
  */
-export const HIGH_RES_ONLY_TOOLBOXES: ToolboxId[] = [
-  'ai',
-  'change',
-  'maritime',
-  'aviation',
-];
+export const HIGH_RES_ONLY_TOOLBOXES: ToolboxId[] = [];
 
 /** @deprecated Use HIGH_RES_ONLY_TOOLBOXES */
 export const EO_HIDDEN_TOOLBOXES = HIGH_RES_ONLY_TOOLBOXES;

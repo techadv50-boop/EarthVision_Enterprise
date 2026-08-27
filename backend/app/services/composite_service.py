@@ -288,29 +288,27 @@ class CompositeService:
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
 
         if preset_id == "true_color":
-            rgb = self._true_color_stretch(
+            # Sentinel Hub L2A Optimized natural color (professional standard)
+            from app.services.professional_viz import true_color_l2a_optimized
+
+            rgb = true_color_l2a_optimized(
                 r, g, b,
-                p_low=request.p_low,
-                p_high=request.p_high,
-                gamma=1.45,
                 brightness=request.brightness,
                 contrast=request.contrast,
             )
-            stretch_label = "true_color_eo"
+            stretch_label = "l2a_optimized"
         else:
-            stretch_mode = (
-                "channel_land" if request.stretch == "percentile" else request.stretch
-            )
-            rgb = self._stack_stretch(
+            from app.services.professional_viz import false_color_professional
+
+            rgb = false_color_professional(
                 r, g, b,
-                mode=stretch_mode,
                 p_low=request.p_low,
                 p_high=request.p_high,
-                gamma=request.gamma,
+                gamma=request.gamma if request.gamma else 1.35,
                 brightness=request.brightness,
                 contrast=request.contrast,
             )
-            stretch_label = stretch_mode
+            stretch_label = "fcc_professional"
 
         hist = self._rgb_histogram(rgb)
         png = self._rgb_to_png(rgb, valid_mask=valid_mask)
@@ -326,9 +324,9 @@ class CompositeService:
             legend=self._rgb_legend(label, formula),
             message=(
                 f"{label} · {family_label(family) if family else 'scene'} · "
-                f"{stretch_label} p{request.p_low}-{request.p_high}%"
+                f"{stretch_label} · professional EO standard"
             ),
-            stretch=f"{stretch_label} p{request.p_low}-{request.p_high} γ={request.gamma}",
+            stretch=f"{stretch_label} p{request.p_low}-{request.p_high}",
         )
 
     def _resolve_family(self, scene_id: str | None, collection: str | None) -> str | None:
@@ -365,18 +363,18 @@ class CompositeService:
         b = self._pick(bands, "blue")
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
         if request.source == "true_color":
-            rgb = self._true_color_stretch(
+            from app.services.professional_viz import true_color_l2a_optimized
+
+            rgb = true_color_l2a_optimized(
                 r, g, b,
-                p_low=request.p_low,
-                p_high=request.p_high,
-                gamma=max(request.gamma, 1.6),
                 brightness=request.brightness,
                 contrast=request.contrast,
             )
         else:
-            rgb = self._stack_stretch(
+            from app.services.professional_viz import false_color_professional
+
+            rgb = false_color_professional(
                 r, g, b,
-                mode="joint_land",
                 p_low=request.p_low,
                 p_high=request.p_high,
                 gamma=request.gamma,
