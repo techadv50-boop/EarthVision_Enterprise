@@ -572,10 +572,18 @@ class AnalyticsService:
                         size=size,
                         require_real=True,
                     )
+                raise ValidationError(
+                    "No optical bands available for this scene — "
+                    "turn the eye on first, then retry the index."
+                )
             except ValidationError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Real-band index fallback for {}: {}", scene_id, exc)
+                logger.warning("Real-band index load failed for {}: {}", scene_id, exc)
+                raise ValidationError(
+                    "Failed to load satellite bands for this index — "
+                    "turn the eye off/on and retry."
+                ) from exc
         bands = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
         return self._index_from_bands(index, bands, L=L, scene_id=scene_id, size=size)
 
@@ -705,39 +713,51 @@ class AnalyticsService:
 
             imagery = SceneImageryService()
             layer = imagery.get_layer(request.scene_id)
-            if layer:
-                bounds = [float(x) for x in layer["bounds"]]
-                footprint = layer.get("footprint") or footprint
-                layer_meta = layer
-                family = normalize_satellite_family(
-                    str(layer.get("collection") or "")
+            if not layer:
+                raise ValidationError(
+                    "Scene imagery is not on the map yet — turn the eye on first, then run indices"
                 )
-                if family != "UNKNOWN" and not index_applicable(index, family):
-                    if index == "LST":
-                        raise ValidationError(
-                            f"LST requires Landsat-8/9 thermal (TIRS); "
-                            f"not applicable to {family_label(family)}."
-                        )
+            bounds = [float(x) for x in layer["bounds"]]
+            footprint = layer.get("footprint") or footprint
+            layer_meta = layer
+            family = normalize_satellite_family(
+                str(layer.get("collection") or "")
+            )
+            if family != "UNKNOWN" and not index_applicable(index, family):
+                if index == "LST":
                     raise ValidationError(
-                        f"{index} is not applicable to {family_label(family)}. "
-                        "Use Sentinel-2, Landsat-7/8/9, or MODIS optical scenes."
+                        f"LST requires Landsat-8/9 thermal (TIRS); "
+                        f"not applicable to {family_label(family)}."
                     )
-                if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
-                    raise ValidationError(
-                        "Sentinel-1 SAR does not support optical indices. "
-                        "Use Sentinel-2 or Landsat."
-                    )
-                try:
-                    needed = self.INDEX_REQUIRED_BANDS.get(index, ())
-                    real_bands, bounds, footprint, layer_meta = imagery.load_analysis_bands(
-                        request.scene_id,
-                        size=size,
-                        band_names=needed or None,
-                    )
-                except ValidationError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Index band load failed, using synthetic: {}", exc)
+                raise ValidationError(
+                    f"{index} is not applicable to {family_label(family)}. "
+                    "Use Sentinel-2, Landsat-7/8/9, or MODIS optical scenes."
+                )
+            if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
+                raise ValidationError(
+                    "Sentinel-1 SAR does not support optical indices. "
+                    "Use Sentinel-2 or Landsat."
+                )
+            try:
+                needed = self.INDEX_REQUIRED_BANDS.get(index, ())
+                real_bands, bounds, footprint, layer_meta = imagery.load_analysis_bands(
+                    request.scene_id,
+                    size=size,
+                    band_names=needed or None,
+                )
+            except ValidationError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Index band load failed: {}", exc)
+                raise ValidationError(
+                    "Failed to load satellite bands for this index — "
+                    "turn the eye off/on and retry."
+                ) from exc
+            if not real_bands:
+                raise ValidationError(
+                    "No optical bands available for this scene — "
+                    "turn the eye on first, then retry the index."
+                )
 
         if real_bands:
             result = self._index_from_bands(

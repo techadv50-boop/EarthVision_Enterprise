@@ -35,8 +35,10 @@ GDAL_ENV = {
     "GDAL_HTTP_MULTIPLEX": "YES",
     "GDAL_HTTP_MAX_RETRY": "3",
     "GDAL_HTTP_TIMEOUT": "60",
-    # Speed: reuse HTTP ranges + modest decode cache for interactive previews
-    "GDAL_CACHEMAX": "256",
+    # Speed: reuse HTTP ranges + modest decode cache for interactive previews.
+    # rasterio ≥1.5 requires GDAL_CACHEMAX as int (string "256" → TypeError and
+    # silently breaks every Env(**GDAL_ENV) COG read → synthetic neon overlays).
+    "GDAL_CACHEMAX": 256,
     "GDAL_NUM_THREADS": "2",
     "CPL_VSIL_CURL_CACHE_SIZE": "200000000",
     "VSI_CACHE": "TRUE",

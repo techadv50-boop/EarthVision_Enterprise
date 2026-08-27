@@ -510,23 +510,34 @@ class CompositeService:
     ) -> tuple[dict[str, np.ndarray], list[float]]:
         bounds = bbox if bbox and len(bbox) == 4 else [74.15, 31.35, 74.55, 31.7]
         if scene_id:
-            try:
-                from app.services.scene_imagery_service import SceneImageryService
+            from app.services.scene_imagery_service import SceneImageryService
 
-                imagery = SceneImageryService()
+            imagery = SceneImageryService()
+            try:
                 bands, bounds, _fp, _layer = imagery.load_analysis_bands(
                     scene_id,
                     size=size,
                     bounds=bbox,
                     band_names=band_names,
                 )
-                if bands:
-                    return bands, bounds
+            except ValidationError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Composite band load failed: {}", exc)
+                raise ValidationError(
+                    "Failed to load satellite bands for this scene — "
+                    "turn the eye off/on and retry True Color."
+                ) from exc
+            if not bands:
+                raise ValidationError(
+                    "No optical bands available for this scene — "
+                    "turn the eye on first, then retry the composite."
+                )
+            return bands, bounds
 
         from app.services.analytics_service import AnalyticsService
 
+        # Synthetic only for demos without a prepared scene — never mask COG failures.
         synth = AnalyticsService()._synthetic_bands(
             size=size, seed=hash(scene_id or "comp") % (2**31)
         )
