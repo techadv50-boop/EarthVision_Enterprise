@@ -570,7 +570,9 @@ class DetectionService:
             from app.services.scene_imagery_service import SceneImageryService
 
             bands, _bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
-                scene_id, size=256
+                scene_id,
+                size=256,
+                band_names=("red", "green", "blue", "nir", "swir", "swir2"),
             )
             return bands or None
         except Exception as exc:  # noqa: BLE001
@@ -1063,7 +1065,9 @@ class DetectionService:
         rgba[..., 2] = (b * 255).astype(np.uint8)
         rgba[..., 3] = alpha
         buf = io.BytesIO()
-        Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=True)
+        Image.fromarray(rgba, mode="RGBA").save(
+            buf, format="PNG", optimize=False, compress_level=3
+        )
         return buf.getvalue()
 
     def _legend(self, label: str, algorithm: str) -> LegendInfo:
