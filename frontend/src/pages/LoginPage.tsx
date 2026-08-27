@@ -24,7 +24,7 @@ export function LoginPage() {
   return (
     <div className="flex min-h-full items-center justify-center bg-[var(--bg)] p-4">
       <form onSubmit={onSubmit} className="ev-card w-full max-w-sm p-6">
-        <h1 className="font-display text-xl font-semibold">SAT EYE</h1>
+        <h1 className="font-display text-xl font-semibold">SAT EYE Pakistan</h1>
         <p className="mb-5 text-sm text-[var(--muted)]">Eye In Sky — sign in to explore satellite imagery</p>
 
         <label className="mb-1 block text-xs font-medium text-[var(--muted)]">Email</label>
