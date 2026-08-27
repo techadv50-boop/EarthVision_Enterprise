@@ -24,7 +24,9 @@ async def classify_unsupervised(
     data: ClassificationRequest, user: CurrentUser
 ) -> ClassificationResponse:
     """Ensemble unsupervised classification (3–8 classes, user colors)."""
-    return ClassificationService().classify(data)
+    from app.core.concurrency import run_sync
+
+    return await run_sync(ClassificationService().classify, data)
 
 
 @router.post("/classify/recolor", response_model=RecolorResponse)
@@ -32,7 +34,9 @@ async def recolor_classification(
     data: RecolorRequest, user: CurrentUser
 ) -> RecolorResponse:
     """Apply new colors to an existing class map without re-running classification."""
-    return ClassificationService().recolor(data)
+    from app.core.concurrency import run_sync
+
+    return await run_sync(ClassificationService().recolor, data)
 
 
 @router.post("/export/classify.png")

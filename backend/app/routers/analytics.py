@@ -72,32 +72,40 @@ class GeoTiffExportRequest(BaseModel):
 async def compute_index(
     data: IndexComputeRequest, user: CurrentUser
 ) -> IndexComputeResponse:
+    from app.core.concurrency import run_sync
+
     service = AnalyticsService()
-    return service.compute_index(data)
+    return await run_sync(service.compute_index, data)
 
 
 @router.post("/change", response_model=IndexChangeResponse)
 async def index_change_detection(
     data: IndexChangeRequest, user: CurrentUser
 ) -> IndexChangeResponse:
+    from app.core.concurrency import run_sync
+
     service = AnalyticsService()
-    return service.change_detection(data)
+    return await run_sync(service.change_detection, data)
 
 
 @router.post("/timeseries", response_model=TimeSeriesResponse)
 async def time_series(
     data: TimeSeriesRequest, user: CurrentUser
 ) -> TimeSeriesResponse:
+    from app.core.concurrency import run_sync
+
     service = AnalyticsService()
-    return service.time_series(data)
+    return await run_sync(service.time_series, data)
 
 
 @router.post("/pixel", response_model=PixelInspectResponse)
 async def inspect_pixel(
     data: PixelInspectRequest, user: CurrentUser
 ) -> PixelInspectResponse:
+    from app.core.concurrency import run_sync
+
     service = AnalyticsService()
-    return service.inspect_pixel(data)
+    return await run_sync(service.inspect_pixel, data)
 
 
 @router.get("/indices")

@@ -31,7 +31,7 @@ services:
       SECRET_KEY: earthvision-compose-secret-change-me-32chars!
       CORS_ORIGINS: '["http://localhost","http://localhost:5173","http://localhost:80"]'
       ADMIN_EMAIL: admin@earthvision.io
-      ADMIN_PASSWORD: EarthVision@Admin2024!
+      ADMIN_PASSWORD: Alihussain
       IMAGERY_CACHE_DIR: /data/cache
       IMAGERY_DIR: /data/imagery
       UPLOADS_DIR: /data/uploads

@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 from loguru import logger
-from PIL import Image, ImageFilter
+from PIL import Image
 
 from app.core.config import get_settings
 from app.core.exceptions import ValidationError
@@ -475,13 +475,9 @@ class AnalyticsService:
         rgba[..., 2] = (np.clip(b, 0, 1) * 255).astype(np.uint8)
         rgba[..., 3] = np.where(valid, alpha, 0).astype(np.uint8)
         img = Image.fromarray(rgba, mode="RGBA")
-        # Mild unsharp mask restores edge clarity lost in downsampling
-        try:
-            img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=2))
-        except Exception:  # noqa: BLE001
-            pass
+        # Fast PNG for map overlays (optimize + unsharp dominate latency at ≥1k²)
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        img.save(buf, format="PNG", optimize=False, compress_level=3)
         return buf.getvalue()
 
     def _footprint_mask_grid(
@@ -563,7 +559,10 @@ class AnalyticsService:
                 from app.services.scene_imagery_service import SceneImageryService
 
                 imagery = SceneImageryService()
-                real, _bounds, _fp, _layer = imagery.load_analysis_bands(scene_id, size=size)
+                needed = self.INDEX_REQUIRED_BANDS.get(index, ())
+                real, _bounds, _fp, _layer = imagery.load_analysis_bands(
+                    scene_id, size=size, band_names=needed or None
+                )
                 if real:
                     return self._index_from_bands(
                         index,
@@ -645,7 +644,7 @@ class AnalyticsService:
                 work = np.where(finite, arr, fill).astype(np.float32)
                 img = Image.fromarray(work, mode="F")
                 resized = np.array(
-                    img.resize((target_w, target_h), Image.Resampling.LANCZOS),
+                    img.resize((target_w, target_h), Image.Resampling.BILINEAR),
                     dtype=float,
                 )
                 mask_img = Image.fromarray((finite.astype(np.uint8) * 255), mode="L")
@@ -729,8 +728,11 @@ class AnalyticsService:
                         "Use Sentinel-2 or Landsat."
                     )
                 try:
+                    needed = self.INDEX_REQUIRED_BANDS.get(index, ())
                     real_bands, bounds, footprint, layer_meta = imagery.load_analysis_bands(
-                        request.scene_id, size=size
+                        request.scene_id,
+                        size=size,
+                        band_names=needed or None,
                     )
                 except ValidationError:
                     raise
@@ -817,7 +819,7 @@ class AnalyticsService:
         )
 
     def change_detection(self, request: IndexChangeRequest) -> IndexChangeResponse:
-        size = 1024
+        size = 896
         before = self._compute_array(request.index, request.before_scene_id, request.L, size=size)
         after = self._compute_array(request.index, request.after_scene_id, request.L, size=size)
         h = min(before.shape[0], after.shape[0])
@@ -1051,7 +1053,7 @@ class AnalyticsService:
                 img = self._natural_rgb_fallback(scene_id, size)
 
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        img.save(buf, format="PNG", optimize=False, compress_level=3)
         png = buf.getvalue()
         out = self.settings.imagery_dir / "overlays"
         out.mkdir(parents=True, exist_ok=True)

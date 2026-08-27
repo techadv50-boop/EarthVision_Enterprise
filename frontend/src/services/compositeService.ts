@@ -121,7 +121,7 @@ export const compositeService = {
   }): Promise<CompositeResult> {
     const { data } = await api.post<CompositeResult>('/analytics/composite', {
       stretch: 'percentile',
-      size: 1024,
+      size: 896,
       p_low: 2,
       p_high: 98,
       gamma: 1.2,
@@ -143,7 +143,7 @@ export const compositeService = {
     contrast?: number;
   }): Promise<StretchResult> {
     const { data } = await api.post<StretchResult>('/analytics/stretch', {
-      size: 1024,
+      size: 896,
       ...payload,
     });
     return data;

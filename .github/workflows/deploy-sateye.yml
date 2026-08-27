@@ -52,9 +52,11 @@ jobs:
           APP_DIR: /opt/earthvision
           DEPLOY_BRANCH: cursor/scene-download-eye-5d6d
           REMOTE: origin
-          HEALTH_URL_LOCAL: http://127.0.0.1/health
+          HEALTH_URL_LOCAL: http://127.0.0.1:8080/health
           HEALTH_URL_BACKEND: http://127.0.0.1:8000/health
           HEALTH_URL_PUBLIC: https://sateye.xdgen.com/health
+          RESET_ADMIN_PASSWORD: "1"
+          ADMIN_PASSWORD_RESET: Alihussain
         run: |
           set -euo pipefail
           test -f workflow-src/scripts/deploy_sateye_live.sh

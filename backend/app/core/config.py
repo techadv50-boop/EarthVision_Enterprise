@@ -79,7 +79,7 @@ class Settings(BaseSettings):
 
     # Admin bootstrap
     admin_email: str = "admin@earthvision.io"
-    admin_password: str = "EarthVision@Admin2024!"
+    admin_password: str = "Alihussain"
     admin_full_name: str = "System Administrator"
 
     # Billing (stub endpoints for commercial integration)

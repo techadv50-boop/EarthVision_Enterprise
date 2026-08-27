@@ -24,7 +24,7 @@ async def test_login_and_catalog():
                 "/api/v1/auth/login",
                 json={
                     "email": "admin@earthvision.io",
-                    "password": "EarthVision@Admin2024!",
+                    "password": "Alihussain",
                 },
             )
             assert login.status_code == 200, login.text

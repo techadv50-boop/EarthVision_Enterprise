@@ -85,7 +85,7 @@ class ClassificationService:
         n_classes = int(np.clip(int(request.n_classes), 3, 8))
         active_meta = self._resolve_active_meta(n_classes, request.class_styles)
 
-        size = max(int(request.size), 1536)
+        size = max(64, min(int(request.size or 896), 1536))
         bands, bounds, footprint = self._load_bands(
             request.scene_id, request.bbox, size
         )
@@ -304,8 +304,12 @@ class ClassificationService:
         from app.services.scene_imagery_service import SceneImageryService
 
         imagery = SceneImageryService()
+        # Classification needs VIS+NIR+SWIR; skip coastal/rededge/thermal COGs
         bands, bounds, footprint, _layer = imagery.load_analysis_bands(
-            scene_id, size=size, bounds=bbox
+            scene_id,
+            size=size,
+            bounds=bbox,
+            band_names=("blue", "green", "red", "nir", "swir", "swir2"),
         )
         if not bands:
             raise ValidationError("No optical bands available for classification")
@@ -319,6 +323,32 @@ class ClassificationService:
     ) -> np.ndarray:
         if not footprint or footprint.get("type") != "Polygon":
             return valid
+        h, w = valid.shape
+        west, south, east, north = (float(v) for v in bounds)
+        if east <= west or north <= south or h < 2 or w < 2:
+            return valid
+        try:
+            from affine import Affine
+            from rasterio.features import geometry_mask
+
+            transform = Affine(
+                (east - west) / w,
+                0.0,
+                west,
+                0.0,
+                (south - north) / h,
+                north,
+            )
+            outside = geometry_mask(
+                [footprint],
+                out_shape=(h, w),
+                transform=transform,
+                all_touched=True,
+                invert=False,
+            )
+            return valid & ~outside
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from shapely.geometry import Point, shape
         except ImportError:
@@ -326,11 +356,6 @@ class ClassificationService:
         try:
             geom = shape(footprint)
         except Exception:  # noqa: BLE001
-            return valid
-
-        h, w = valid.shape
-        west, south, east, north = (float(v) for v in bounds)
-        if east <= west or north <= south or h < 2 or w < 2:
             return valid
 
         step = 4 if min(h, w) >= 128 else 2
@@ -1636,7 +1661,7 @@ class ClassificationService:
         img = Image.fromarray(rgba, mode="RGBA")
         buf = io.BytesIO()
         # compress_level only; no resampling — keep pixel-crisp class boundaries
-        img.save(buf, format="PNG", compress_level=6, optimize=False)
+        img.save(buf, format="PNG", compress_level=3, optimize=False)
         return buf.getvalue()
 
     def _class_map_labels_png(
@@ -1647,7 +1672,7 @@ class ClassificationService:
         labels[~valid] = NODATA
         img = Image.fromarray(labels, mode="L")
         buf = io.BytesIO()
-        img.save(buf, format="PNG", compress_level=6, optimize=False)
+        img.save(buf, format="PNG", compress_level=3, optimize=False)
         return buf.getvalue()
 
     def _legend(

@@ -359,6 +359,68 @@ rebuild_and_restart() {
   docker compose ps
 }
 
+restart_backend_only() {
+  log "restarting backend container (recovery for hung / 502 origin)"
+  docker compose up -d --force-recreate --no-deps backend
+  # Give uvicorn a moment to bind before health checks
+  sleep 5
+  log "compose status after backend recreate:"
+  docker compose ps
+}
+
+# Update ADMIN_PASSWORD in live .env without printing the value.
+# Default password reset target: Alihussain (override with ADMIN_PASSWORD_RESET).
+# Set RESET_ADMIN_PASSWORD=0 to skip.
+ADMIN_PASSWORD_SYNCED=0
+sync_admin_password_env() {
+  local new_pw="${ADMIN_PASSWORD_RESET:-Alihussain}"
+  local do_sync="${RESET_ADMIN_PASSWORD:-1}"
+  ADMIN_PASSWORD_SYNCED=0
+  if [[ "$do_sync" != "1" ]]; then
+    log "skipping ADMIN_PASSWORD sync (RESET_ADMIN_PASSWORD!=1)"
+    return 0
+  fi
+  [[ -f .env ]] || die "missing .env for admin password sync"
+  local before after
+  before="$(sha256_file .env)"
+  if grep -qE '^ADMIN_PASSWORD=' .env; then
+    awk -v pw="$new_pw" '
+      BEGIN { done=0 }
+      /^ADMIN_PASSWORD=/ {
+        print "ADMIN_PASSWORD=" pw
+        done=1
+        next
+      }
+      { print }
+      END {
+        if (!done) print "ADMIN_PASSWORD=" pw
+      }
+    ' .env > .env.tmp_admin
+    mv .env.tmp_admin .env
+    chmod 600 .env || true
+  else
+    printf '\nADMIN_PASSWORD=%s\n' "$new_pw" >> .env
+    chmod 600 .env || true
+  fi
+  after="$(sha256_file .env)"
+  if [[ "$before" != "$after" ]]; then
+    ADMIN_PASSWORD_SYNCED=1
+    log "ADMIN_PASSWORD synced in .env (value not printed; checksum changed)"
+  else
+    log "ADMIN_PASSWORD already at requested value in .env"
+  fi
+}
+
+local_health_ok() {
+  local url
+  for url in "${HEALTH_URLS[@]}"; do
+    if curl -fsS --max-time 15 "$url" >/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 healthcheck() {
   local url ok=0
   log "running health checks"
@@ -384,15 +446,32 @@ main() {
   preflight
   assert_only_allowlisted_dirty
 
+  # Ops password reset (default on): keep live ADMIN_PASSWORD in sync before restart
+  sync_admin_password_env
+
   set +e
   update_source_ff_only
   update_rc=$?
   set -e
 
   if [[ "$update_rc" -eq 2 ]]; then
-    log "Already up to date — skipping rebuild"
+    log "Already up to date"
+    if local_health_ok && [[ "$ADMIN_PASSWORD_SYNCED" -eq 0 ]] && [[ "${FORCE_REBUILD:-0}" != "1" ]]; then
+      log "local health OK and password unchanged — skipping rebuild"
+      healthcheck
+      log "done (no changes)"
+      exit 0
+    fi
+    if ! local_health_ok; then
+      log "local health FAILED — forcing full app rebuild/restart (Cloudflare 502 recovery)"
+    elif [[ "$ADMIN_PASSWORD_SYNCED" -eq 1 ]]; then
+      log "ADMIN_PASSWORD changed — rebuilding so bootstrap applies the new hash"
+    else
+      log "FORCE_REBUILD=1 — rebuilding"
+    fi
+    rebuild_and_restart
     healthcheck
-    log "done (no changes)"
+    log "done (recovery) commit=$(git rev-parse --short HEAD)"
     exit 0
   fi
   if [[ "$update_rc" -ne 0 ]]; then
