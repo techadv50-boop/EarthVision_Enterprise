@@ -41,14 +41,18 @@ async def list_index_thematic(
 async def render_composite(
     data: CompositeRequest, user: CurrentUser
 ) -> CompositeResponse:
-    return CompositeService().render_composite(data)
+    from app.core.concurrency import run_sync
+
+    return await run_sync(CompositeService().render_composite, data)
 
 
 @router.post("/stretch", response_model=StretchResponse)
 async def histogram_stretch(
     data: StretchRequest, user: CurrentUser
 ) -> StretchResponse:
-    return CompositeService().stretch_scene(data)
+    from app.core.concurrency import run_sync
+
+    return await run_sync(CompositeService().stretch_scene, data)
 
 
 @router.get("/export/composite.png")
