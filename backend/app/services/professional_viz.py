@@ -1,13 +1,14 @@
 """Professional EO visualization — industry-standard stretch / tone-map recipes.
 
-References (True Color):
-  - Sentinel Hub «Sentinel-2 L2A True Color Optimized»
-    https://custom-scripts.sentinel-hub.com/custom-scripts/sentinel-2/l2a_optimized/
-    Highlight compression + γ=1.8 + sat=1.2 + sRGB encoding.
-  - ESA EOPF / Copernicus: percentile (2–98) + gamma for TCI education materials.
-  - USGS / QGIS practice for NDVI display: clip viz to ~0…0.8 with RdYlGn.
+True Color references (in priority order used by SAT EYE):
+  1. ESA Sentinel-2 L2A official TCI / visual asset (display-balanced RGB)
+  2. Sentinel Hub «Highlight Optimized Natural Color» for L2A:
+     https://custom-scripts.sentinel-hub.com/custom-scripts/sentinel-2/highlight_optimized_natural_color/
+     rgb = cbrt(0.6 * ρ)  — natural look, no burnt highlights
+  3. Soft land-percentile fallback for odd sensors
 
-These helpers operate on surface/BOA reflectance grids (≈0–1).
+Avoid the older «L2A Optimized» evalscript here: with BOA ρ≈0–1 it oversaturates
+vegetation (neon green) and blows urban highlights on Pakistan scenes.
 """
 
 from __future__ import annotations
@@ -16,20 +17,16 @@ from typing import Any
 
 import numpy as np
 
-# Sentinel Hub L2A Optimized constants
-L2A_MAX_R = 3.0
-L2A_MID_R = 0.13
-L2A_SAT = 1.2
-L2A_GAMMA = 1.8
-L2A_G_OFF = 0.01
+# Highlight Optimized Natural Color (Sentinel Hub / Marko Repše) — L2A
+HIGHLIGHT_GAIN = 0.6
 
-# Professional false-color / thematic stretch defaults
+# Soft false-color / thematic stretch defaults
 FCC_P_LOW = 2.0
 FCC_P_HIGH = 98.0
-FCC_GAMMA = 1.35
-FCC_SAT = 1.15
+FCC_GAMMA = 1.25
+FCC_SAT = 1.08
 
-# Index visualization ranges used by ArcGIS Pro / QGIS practice (not physical ±1)
+# Index visualization ranges (QGIS / ArcGIS Pro practice)
 INDEX_VIZ_RANGE: dict[str, tuple[float, float]] = {
     "NDVI": (0.0, 0.8),
     "SAVI": (0.0, 0.8),
@@ -42,11 +39,10 @@ INDEX_VIZ_RANGE: dict[str, tuple[float, float]] = {
     "LST": (-10.0, 55.0),
 }
 
-# USGS / ESA classic false-color band recipes (internal keys)
 PROFESSIONAL_COMPOSITE_NOTES: dict[str, str] = {
     "true_color": (
-        "S2 B04-B03-B02 / L8 B4-B3-B2 · Sentinel Hub L2A Optimized "
-        "(highlight compress + γ1.8 + sRGB)"
+        "S2 B04-B03-B02 / L8 B4-B3-B2 · prefer ESA TCI; else "
+        "Highlight Optimized Natural Color cbrt(0.6·ρ)"
     ),
     "false_color_infrared": (
         "Classic FCC: NIR-Red-Green (S2 B08-B04-B03 / L8 B5-B4-B3) — vegetation red"
@@ -67,46 +63,54 @@ def _clip01(x: np.ndarray | float) -> np.ndarray | float:
 
 
 def ensure_reflectance(stacked: np.ndarray) -> np.ndarray:
-    """DN→ρ heuristic: values ≫1 treated as ×10000 scaled BOA."""
-    out = stacked.astype(np.float64, copy=False)
+    """DN→ρ: scale when values look like ×10000 BOA (robust to dark windows)."""
+    out = stacked.astype(np.float64, copy=True)
     finite = np.isfinite(out)
-    if finite.any() and float(np.nanmax(out)) > 1.5:
+    if not finite.any():
+        return out
+    sample = out[finite]
+    # Prefer p99 so a few bright clouds don't matter; also catch full DN grids
+    p99 = float(np.percentile(sample, 99))
+    mx = float(np.nanmax(sample))
+    if p99 > 1.5 or mx > 1.5:
         out = out / 10000.0
     return np.clip(out, 0.0, 1.0)
 
 
-def _l2a_adj(a: np.ndarray, tx: float = L2A_MID_R, ty: float = 1.0, max_c: float = L2A_MAX_R) -> np.ndarray:
-    """Contrast enhance + highlight compress (Sentinel Hub L2A Optimized)."""
-    ar = _clip01(a / max_c)
-    num = ar * (ar * (tx / max_c + ty - 1.0) - ty)
-    den = ar * (2.0 * tx / max_c - 1.0) - tx / max_c
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out = np.where(np.abs(den) < 1e-12, 0.0, num / den)
-    return _clip01(out)
+def true_color_highlight_optimized(
+    r: np.ndarray,
+    g: np.ndarray,
+    b: np.ndarray,
+    *,
+    brightness: float = 1.0,
+    contrast: float = 1.0,
+    gain: float = HIGHLIGHT_GAIN,
+) -> np.ndarray:
+    """Natural-color RGB from L2A BOA reflectance (Highlight Optimized).
+
+    ``cbrt(gain * ρ)`` compresses bright clouds/roofs without neon vegetation.
+    Returns float RGB in [0,1].
+    """
+    stacked = ensure_reflectance(np.stack([r, g, b], axis=-1))
+    finite = np.all(np.isfinite(stacked), axis=2)
+    # Match Sentinel Hub L2A script exactly (no extra saturation boost)
+    lin = np.clip(gain * stacked, 0.0, None)
+    out = np.cbrt(lin)
+    out = np.clip(out, 0.0, 1.0)
+
+    c = float(contrast) if contrast else 1.0
+    bv = float(brightness) if brightness else 1.0
+    # Only apply tiny user tweaks — keep defaults neutral
+    if abs(c - 1.0) > 1e-3:
+        out = (out - 0.5) * max(0.9, min(c, 1.15)) + 0.5
+    if abs(bv - 1.0) > 1e-3:
+        out = out * max(0.9, min(bv, 1.1))
+    out = np.clip(out, 0.0, 1.0)
+    out[~finite] = 0.0
+    return out
 
 
-def _l2a_adj_gamma(b: np.ndarray, gamma: float = L2A_GAMMA) -> np.ndarray:
-    g_off = L2A_G_OFF
-    g_off_pow = g_off**gamma
-    g_off_range = (1.0 + g_off) ** gamma - g_off_pow
-    return ((np.power(b + g_off, gamma) - g_off_pow) / g_off_range).astype(np.float64)
-
-
-def _srgb_encode(c: np.ndarray) -> np.ndarray:
-    """Linear → sRGB transfer (IEC 61966-2-1)."""
-    c = np.clip(c, 0.0, 1.0)
-    return np.where(c <= 0.0031308, 12.92 * c, 1.055 * np.power(c, 1.0 / 2.4) - 0.055)
-
-
-def _sat_enhance(r: np.ndarray, g: np.ndarray, b: np.ndarray, sat: float = L2A_SAT) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    avg = (r + g + b) / 3.0 * (1.0 - sat)
-    return (
-        _clip01(avg + r * sat),
-        _clip01(avg + g * sat),
-        _clip01(avg + b * sat),
-    )
-
-
+# Back-compat alias used by older call sites / tests
 def true_color_l2a_optimized(
     r: np.ndarray,
     g: np.ndarray,
@@ -114,28 +118,34 @@ def true_color_l2a_optimized(
     *,
     brightness: float = 1.0,
     contrast: float = 1.0,
-    sat: float = L2A_SAT,
-    gamma: float = L2A_GAMMA,
+    sat: float = 1.0,
+    gamma: float = 1.0,
 ) -> np.ndarray:
-    """Professional natural-color RGB from BOA reflectance (Sentinel Hub L2A Optimized).
+    """Deprecated name — routes to Highlight Optimized (natural, non-neon)."""
+    del sat, gamma
+    return true_color_highlight_optimized(
+        r, g, b, brightness=brightness, contrast=contrast
+    )
 
-    Returns float RGB in [0,1] ready for overlay encode.
-    """
-    stacked = ensure_reflectance(np.stack([r, g, b], axis=-1))
-    finite = np.all(np.isfinite(stacked), axis=2)
 
-    rr = _l2a_adj_gamma(_l2a_adj(stacked[..., 0]), gamma=gamma)
-    gg = _l2a_adj_gamma(_l2a_adj(stacked[..., 1]), gamma=gamma)
-    bb = _l2a_adj_gamma(_l2a_adj(stacked[..., 2]), gamma=gamma)
-    rr, gg, bb = _sat_enhance(rr, gg, bb, sat=sat)
-
-    out = np.stack([_srgb_encode(rr), _srgb_encode(gg), _srgb_encode(bb)], axis=-1)
+def prepare_tci_display(
+    rgb: np.ndarray,
+    *,
+    brightness: float = 1.0,
+    contrast: float = 1.0,
+) -> np.ndarray:
+    """ESA/USGS visual TCI is already display-balanced — keep it nearly as-is."""
+    out = rgb.astype(np.float64, copy=True)
+    if np.nanmax(out) > 1.5:
+        out = out / 255.0
+    out = np.clip(out, 0.0, 1.0)
+    finite = np.all(np.isfinite(out), axis=2)
     c = float(contrast) if contrast else 1.0
     bv = float(brightness) if brightness else 1.0
     if abs(c - 1.0) > 1e-3:
-        out = (out - 0.5) * max(0.85, min(c, 1.25)) + 0.5
+        out = (out - 0.5) * max(0.9, min(c, 1.1)) + 0.5
     if abs(bv - 1.0) > 1e-3:
-        out = out * max(0.85, min(bv, 1.2))
+        out = out * max(0.9, min(bv, 1.1))
     out = np.clip(out, 0.0, 1.0)
     out[~finite] = 0.0
     return out
@@ -153,7 +163,7 @@ def false_color_professional(
     contrast: float = 1.05,
     sat: float = FCC_SAT,
 ) -> np.ndarray:
-    """Per-channel land-masked percentile stretch + mild gamma + sRGB (FCC / thematic)."""
+    """Per-channel land-masked percentile stretch + mild gamma (FCC / thematic)."""
     stacked = ensure_reflectance(np.stack([r, g, b], axis=-1))
     finite = np.all(np.isfinite(stacked), axis=2)
     bright = np.nanmean(stacked, axis=2)
@@ -179,34 +189,30 @@ def false_color_professional(
         if hi <= lo:
             hi = lo + 1e-6
         stretched = np.clip((ch - lo) / (hi - lo), 0.0, 1.0)
-        # Display gamma (brighten midtones) then sRGB
-        gpow = 1.0 / max(1.05, min(float(gamma), 2.2))
-        lin = np.power(stretched, gpow)
-        out[..., i] = _srgb_encode(lin)
+        gpow = 1.0 / max(1.05, min(float(gamma), 2.0))
+        out[..., i] = np.power(stretched, gpow)
         out[~finite, i] = 0.0
 
     mean = out.mean(axis=2, keepdims=True)
     out = np.clip(mean + (out - mean) * sat, 0.0, 1.0)
-    out = (out - 0.5) * max(0.85, min(float(contrast), 1.3)) + 0.5
-    out = out * max(0.85, min(float(brightness), 1.2))
+    out = (out - 0.5) * max(0.9, min(float(contrast), 1.2)) + 0.5
+    out = out * max(0.9, min(float(brightness), 1.15))
     return np.clip(out, 0.0, 1.0)
 
 
 def index_viz_range(index: str, physical: tuple[float, float]) -> tuple[float, float]:
-    """Prefer professional display window; fall back to physical meta range."""
     return INDEX_VIZ_RANGE.get(index.upper(), physical)
 
 
 def tool_standard_summary() -> dict[str, Any]:
-    """Compact registry of professional standards used by SAT EYE tool families."""
     return {
         "true_color": PROFESSIONAL_COMPOSITE_NOTES["true_color"],
         "composites": PROFESSIONAL_COMPOSITE_NOTES,
         "indices_viz_range": {k: list(v) for k, v in INDEX_VIZ_RANGE.items()},
         "references": [
-            "Sentinel Hub L2A True Color Optimized",
+            "ESA Sentinel-2 L2A TCI visual product",
+            "Sentinel Hub Highlight Optimized Natural Color (cbrt 0.6·ρ)",
             "USGS Landsat band combinations (FCC NIR-R-G)",
             "QGIS/ArcGIS NDVI display 0–0.8 RdYlGn",
-            "McFeeters 1996 NDWI · Huete 1988 SAVI · Key & Benson NBR",
         ],
     }

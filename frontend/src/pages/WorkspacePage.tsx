@@ -841,6 +841,9 @@ export function WorkspacePage() {
 
   const applyProcessFilter = (op: string) => {
     if (op === 'true_color') {
+      // Never leave CSS brightness/contrast on the map — it neon-blows True Color
+      setProcessFilter({ brightness: 1, contrast: 1, gamma: 1 });
+      setStretchParams((s) => ({ ...s, brightness: 1.0, contrast: 1.0, gamma: 1.2 }));
       void runComposite('true_color');
       return;
     }
@@ -1036,13 +1039,17 @@ export function WorkspacePage() {
       );
       // Always process over the same geographic extent as the original scene layer.
       const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      const stretch =
+        preset === 'true_color'
+          ? { p_low: 2, p_high: 98, gamma: 1.0, brightness: 1.0, contrast: 1.0 }
+          : stretchParams;
       const result = await compositeService.render({
         preset,
         scene_id: focusScene.id,
         collection: focusScene.collection,
         bbox: [...bounds],
         size: 512,
-        ...stretchParams,
+        ...stretch,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
@@ -1470,9 +1477,12 @@ export function WorkspacePage() {
   const legend: LegendInfo | null =
     lastLegend || changeResult?.legend || indexResult?.legend || null;
 
-  const filterStyle = {
-    filter: `brightness(${processFilter.brightness}) contrast(${processFilter.contrast})`,
-  };
+  const filterStyle =
+    processFilter.brightness !== 1 || processFilter.contrast !== 1
+      ? {
+          filter: `brightness(${processFilter.brightness}) contrast(${processFilter.contrast})`,
+        }
+      : undefined;
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)]">

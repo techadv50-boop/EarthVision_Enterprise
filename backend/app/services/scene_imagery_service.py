@@ -1368,11 +1368,15 @@ class SceneImageryService:
             data = celsius
         elif reflectance_scale == "sentinel2_l2a":
             # ESA L2A BOA: ρ = DN × scale + offset (PB≥04.00 → 0.0001, −0.1)
+            # Use p99 so a mostly-dark window still triggers DN→ρ scaling.
             finite = data[np.isfinite(data) & ~nodata_mask]
-            if finite.size and float(np.nanmax(finite)) > 1.5:
-                sc = SENTINEL2_L2A_SCALE if boa_scale is None else float(boa_scale)
-                off = SENTINEL2_L2A_OFFSET if boa_offset is None else float(boa_offset)
-                data = data * sc + off
+            if finite.size:
+                p99 = float(np.percentile(finite, 99))
+                mx = float(np.nanmax(finite))
+                if p99 > 1.5 or mx > 1.5:
+                    sc = SENTINEL2_L2A_SCALE if boa_scale is None else float(boa_scale)
+                    off = SENTINEL2_L2A_OFFSET if boa_offset is None else float(boa_offset)
+                    data = data * sc + off
             data[nodata_mask | (data < 0)] = np.nan
             data = np.clip(data, 0, 1)
             data[nodata_mask | ~np.isfinite(data)] = np.nan

@@ -215,8 +215,8 @@ def test_run_sync_timeout_raises_gateway_timeout():
 
 
 def test_true_color_l2a_optimized_produces_natural_rgb():
-    """Sentinel Hub L2A Optimized path: finite RGB in [0,1], no neon extremes."""
-    from app.services.professional_viz import true_color_l2a_optimized
+    """Highlight Optimized path: finite RGB in [0,1], muted natural greens (not neon)."""
+    from app.services.professional_viz import true_color_highlight_optimized
 
     h = w = 64
     # Typical land BOA reflectance
@@ -225,12 +225,27 @@ def test_true_color_l2a_optimized_produces_natural_rgb():
     b = np.full((h, w), 0.06, dtype=np.float64)
     g[20:40, 20:40] = 0.14
     r[20:40, 20:40] = 0.05
-    rgb = true_color_l2a_optimized(r, g, b)
+    rgb = true_color_highlight_optimized(r, g, b)
     assert rgb.shape == (h, w, 3)
     assert float(np.nanmin(rgb)) >= 0.0
     assert float(np.nanmax(rgb)) <= 1.0
     mid = float(np.nanmean(rgb))
     assert 0.05 < mid < 0.95
+    # Vegetation patch must not be neon-saturated (G channel not >> R,B after tone-map)
+    veg = rgb[20:40, 20:40]
+    assert float(veg[..., 1].mean()) < 0.85
+
+
+def test_true_color_handles_dn_scaled_boa():
+    """DN×10000 grids must scale before tone-map (else everything clips white)."""
+    from app.services.professional_viz import true_color_highlight_optimized
+
+    r = np.full((32, 32), 800.0)   # ρ≈0.08 after /10000
+    g = np.full((32, 32), 1000.0)
+    b = np.full((32, 32), 600.0)
+    rgb = true_color_highlight_optimized(r, g, b)
+    assert float(rgb.mean()) < 0.9
+    assert float(rgb.mean()) > 0.15
 
 
 def test_false_color_professional_and_index_viz_ranges():
@@ -268,7 +283,6 @@ def test_all_148_toolbox_tools_have_action_types():
     tool_ids = re.findall(r"\{\s*id:\s*'([^']+)',\s*label:", text)
     assert len(tool_ids) == 148, f"expected 148 tools, got {len(tool_ids)}"
     assert "true_color" in tool_ids
-    # High-res lock list must be empty so AI/Change/Maritime/Aviation run
     assert re.search(
         r"HIGH_RES_ONLY_TOOLBOXES:\s*ToolboxId\[\]\s*=\s*\[\s*\]", text
     )
@@ -279,5 +293,5 @@ def test_tool_standards_catalog_covers_image_and_composites():
 
     cat = catalog_tool_standards()
     assert "true_color" in cat["image_tools"]
-    assert "l2a_optimized" in cat["image_tools"]["true_color"]["method"]
+    assert "highlight_optimized" in cat["image_tools"]["true_color"]["method"]
     assert cat["reliability"]["request_timeout_s"] == 55

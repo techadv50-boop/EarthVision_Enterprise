@@ -279,6 +279,38 @@ class CompositeService:
         # Extent follows the scene layer bounds passed by the client (original image).
         # Use client size as-is — interactive map overlays stay fast on slow links.
         size = max(64, min(int(request.size or 512), 640))
+
+        if preset_id == "true_color" and request.scene_id:
+            # Prefer ESA/USGS official visual TCI — already natural-color balanced.
+            visual = self._load_visual_rgb(request.scene_id, request.bbox, size)
+            if visual is not None:
+                from app.services.professional_viz import prepare_tci_display
+
+                rgb_raw, bounds, valid_mask = visual
+                rgb = prepare_tci_display(
+                    rgb_raw,
+                    brightness=request.brightness if abs(request.brightness - 1.0) > 0.02 else 1.0,
+                    contrast=request.contrast if abs(request.contrast - 1.0) > 0.02 else 1.0,
+                )
+                hist = self._rgb_histogram(rgb)
+                png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=85)
+                return CompositeResponse(
+                    preset=preset_id,
+                    label=label,
+                    bands=display,
+                    band_keys=band_keys,
+                    formula=formula,
+                    bounds=bounds,
+                    overlay_base64=base64.b64encode(png).decode("ascii"),
+                    histogram=hist,
+                    legend=self._rgb_legend(label, formula),
+                    message=(
+                        f"{label} · {family_label(family) if family else 'scene'} · "
+                        f"esa_tci · official natural color"
+                    ),
+                    stretch="esa_tci",
+                )
+
         bands, bounds = self._load_bands(
             request.scene_id, request.bbox, size, band_names=keys
         )
@@ -288,15 +320,15 @@ class CompositeService:
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
 
         if preset_id == "true_color":
-            # Sentinel Hub L2A Optimized natural color (professional standard)
-            from app.services.professional_viz import true_color_l2a_optimized
+            # Highlight Optimized Natural Color (Sentinel Hub) — no neon blowouts
+            from app.services.professional_viz import true_color_highlight_optimized
 
-            rgb = true_color_l2a_optimized(
+            rgb = true_color_highlight_optimized(
                 r, g, b,
-                brightness=request.brightness,
-                contrast=request.contrast,
+                brightness=1.0,
+                contrast=1.0,
             )
-            stretch_label = "l2a_optimized"
+            stretch_label = "highlight_optimized"
         else:
             from app.services.professional_viz import false_color_professional
 
@@ -304,14 +336,16 @@ class CompositeService:
                 r, g, b,
                 p_low=request.p_low,
                 p_high=request.p_high,
-                gamma=request.gamma if request.gamma else 1.35,
+                gamma=request.gamma if request.gamma else 1.25,
                 brightness=request.brightness,
                 contrast=request.contrast,
             )
             stretch_label = "fcc_professional"
 
         hist = self._rgb_histogram(rgb)
-        png = self._rgb_to_png(rgb, valid_mask=valid_mask)
+        png = self._rgb_to_png(
+            rgb, valid_mask=valid_mask, quality=85 if preset_id == "true_color" else 70
+        )
         return CompositeResponse(
             preset=preset_id,
             label=label,
@@ -363,9 +397,9 @@ class CompositeService:
         b = self._pick(bands, "blue")
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
         if request.source == "true_color":
-            from app.services.professional_viz import true_color_l2a_optimized
+            from app.services.professional_viz import true_color_highlight_optimized
 
-            rgb = true_color_l2a_optimized(
+            rgb = true_color_highlight_optimized(
                 r, g, b,
                 brightness=request.brightness,
                 contrast=request.contrast,
@@ -384,7 +418,7 @@ class CompositeService:
         hist = self._rgb_histogram(rgb)
         raw_hist = self._channel_histograms(r, g, b)
         hist["raw"] = raw_hist
-        png = self._rgb_to_png(rgb, valid_mask=valid_mask)
+        png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=85)
         return StretchResponse(
             bounds=bounds,
             overlay_base64=base64.b64encode(png).decode("ascii"),
@@ -667,10 +701,16 @@ class CompositeService:
         out = out * brightness
         return np.clip(out, 0, 1)
 
-    def _rgb_to_png(self, rgb: np.ndarray, valid_mask: np.ndarray | None = None) -> bytes:
+    def _rgb_to_png(
+        self,
+        rgb: np.ndarray,
+        valid_mask: np.ndarray | None = None,
+        *,
+        quality: int = 70,
+    ) -> bytes:
         from app.services.overlay_encode import encode_rgb_mask_overlay
 
-        data, _mime = encode_rgb_mask_overlay(rgb, valid_mask, quality=70)
+        data, _mime = encode_rgb_mask_overlay(rgb, valid_mask, quality=int(quality))
         return data
 
     def _rgb_histogram(self, rgb: np.ndarray) -> dict[str, Any]:

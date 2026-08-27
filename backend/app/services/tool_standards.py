@@ -14,7 +14,7 @@ from app.services.professional_viz import (
 IMAGE_TOOL_STANDARDS: dict[str, dict[str, str]] = {
     "true_color": {
         "standard": PROFESSIONAL_COMPOSITE_NOTES["true_color"],
-        "method": "l2a_optimized",
+        "method": "esa_tci_or_highlight_optimized",
         "bands": "red,green,blue",
     },
     "false_color": {
