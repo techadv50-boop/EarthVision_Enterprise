@@ -26,8 +26,8 @@ REMOTE="${REMOTE:-origin}"
 # Must stay outside APP_DIR and be writable by the runner user (zh).
 PRESERVE_DIR="${PRESERVE_DIR:-/home/zh/earthvision-deploy-preserve}"
 HEALTH_URLS=(
-  "${HEALTH_URL_LOCAL:-http://127.0.0.1/health}"
   "${HEALTH_URL_BACKEND:-http://127.0.0.1:8000/health}"
+  "${HEALTH_URL_LOCAL:-http://127.0.0.1:8080/health}"
 )
 PUBLIC_HEALTH_URL="${HEALTH_URL_PUBLIC:-https://sateye.xdgen.com/health}"
 
@@ -414,7 +414,7 @@ sync_admin_password_env() {
 local_health_ok() {
   local url
   for url in "${HEALTH_URLS[@]}"; do
-    if curl -fsS --max-time 15 "$url" >/dev/null; then
+    if curl -fsS --max-time 15 "$url" >/dev/null 2>/dev/null; then
       return 0
     fi
   done
@@ -422,18 +422,28 @@ local_health_ok() {
 }
 
 healthcheck() {
-  local url ok=0
-  log "running health checks"
-  for url in "${HEALTH_URLS[@]}"; do
-    if curl -fsS --max-time 30 "$url" >/dev/null; then
-      log "health OK: $url"
-      ok=1
+  # Backend often needs a few seconds after recreate (uvicorn + DB init).
+  # Master workflow historically probed :80 (nothing useful) — keep trying
+  # all HEALTH_URLS with retries so a brief Connection reset is not fatal.
+  local attempt max_attempts=18 url ok=0
+  log "running health checks (up to ${max_attempts} attempts, 5s apart)"
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    ok=0
+    for url in "${HEALTH_URLS[@]}"; do
+      if curl -fsS --max-time 10 "$url" >/dev/null 2>/dev/null; then
+        log "health OK (attempt ${attempt}): $url"
+        ok=1
+        break
+      else
+        log "health miss (attempt ${attempt}): $url"
+      fi
+    done
+    if [[ "$ok" -eq 1 ]]; then
       break
-    else
-      log "health miss: $url"
     fi
+    sleep 5
   done
-  [[ "$ok" -eq 1 ]] || die "local health checks failed"
+  [[ "$ok" -eq 1 ]] || die "local health checks failed after ${max_attempts} attempts"
 
   if curl -fsS --max-time 30 "$PUBLIC_HEALTH_URL" >/dev/null; then
     log "public health OK: $PUBLIC_HEALTH_URL"
