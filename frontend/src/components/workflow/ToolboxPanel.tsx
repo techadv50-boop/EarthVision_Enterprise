@@ -333,7 +333,7 @@ export function ToolboxPanel({
           {['ai', 'maritime', 'aviation'].includes(activeBox.id) && (
             <p className="mt-1 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10px] text-[var(--muted)]">
               {activeBox.id === 'ai'
-                ? 'Optical NIR ship detection (Landsat / Sentinel-2). Water & cloud ignored; metal/smoke cues → map overlay + shapefile (points & polygons).'
+                ? 'Optical NIR / VIS ship detection on the current map view (Landsat / Sentinel-2). Open-sea objects use reflectance contrast vs water; SCL cloud sheets ignored for compact bright decks. Auto-downloads point + polygon shapefile.'
                 : 'Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its formula. Detections show legend, scale bar, north arrow, and grid on the map.'}
             </p>
           )}
