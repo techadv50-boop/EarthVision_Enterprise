@@ -753,7 +753,7 @@ export function WorkspacePage() {
         bbox: [...analysisBbox],
         scene_id: focusScene?.id,
         aoi: aoiGeoJson?.geometry ?? null,
-        confidence_min: opticalShip ? 0.45 : 0.45,
+        confidence_min: opticalShip ? 0.22 : 0.35,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(
@@ -779,20 +779,28 @@ export function WorkspacePage() {
         label: task.replaceAll('_', ' '),
         visible: true,
       });
-      if (opticalShip && result.shapefile_ready && result.geojson?.features?.length) {
-        try {
-          await detectionService.downloadShapefile(
-            result.geojson,
-            `ship_detection_${(focusScene?.id || 'scene').slice(0, 40)}`,
-          );
+      if (opticalShip && result.shapefile_ready) {
+        const nFeat = result.geojson?.features?.length ?? 0;
+        if (nFeat > 0) {
+          try {
+            await detectionService.downloadShapefile(
+              result.geojson,
+              `ship_detection_${(focusScene?.id || 'scene').slice(0, 40)}`,
+            );
+            setLastMessage(
+              (result.message || 'Ship Detection complete') +
+                ' · shapefile (points + polygons) downloaded',
+            );
+          } catch {
+            setLastMessage(
+              (result.message || 'Ship Detection complete') +
+                ' · map vectors ready (shapefile download failed — retry export)',
+            );
+          }
+        } else {
           setLastMessage(
-            (result.message || 'Ship Detection complete') +
-              ' · shapefile (points + polygons) downloaded',
-          );
-        } catch {
-          setLastMessage(
-            (result.message || 'Ship Detection complete') +
-              ' · map vectors ready (shapefile download failed — retry export)',
+            (result.message || 'No ships found') +
+              ' · try a coastal / harbor scene with the eye on (no shapefile when empty)',
           );
         }
       }

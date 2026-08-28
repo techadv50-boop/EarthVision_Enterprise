@@ -267,8 +267,8 @@ def test_false_color_professional_and_index_viz_ranges():
     assert INDEX_META["NDVI"]["viz_range"] == (0.0, 0.8)
 
 
-def test_all_148_toolbox_tools_have_action_types():
-    """Frontend catalog must stay at 148 tools with runnable actions."""
+def test_toolbox_catalog_ai_is_ship_only():
+    """AI Detection permanently exposes Ship Detection only (other AI tools hidden)."""
     from pathlib import Path
     import re
 
@@ -281,11 +281,22 @@ def test_all_148_toolbox_tools_have_action_types():
     )
     text = catalog.read_text(encoding="utf-8")
     tool_ids = re.findall(r"\{\s*id:\s*'([^']+)',\s*label:", text)
-    assert len(tool_ids) == 148, f"expected 148 tools, got {len(tool_ids)}"
+    assert len(tool_ids) == 127, f"expected 127 tools, got {len(tool_ids)}"
     assert "true_color" in tool_ids
+    assert "ship_detection" in tool_ids
+    assert "building_detection" not in tool_ids
+    assert "aircraft_detection" not in tool_ids
     assert re.search(
         r"HIGH_RES_ONLY_TOOLBOXES:\s*ToolboxId\[\]\s*=\s*\[\s*\]", text
     )
+    # AI category tools array must contain only ship_detection
+    ai_block = re.search(
+        r"id:\s*'ai'[\s\S]*?tools:\s*\[([\s\S]*?)\],\s*\},",
+        text,
+    )
+    assert ai_block, "AI toolbox block not found"
+    ai_ids = re.findall(r"id:\s*'([^']+)'", ai_block.group(1))
+    assert ai_ids == ["ship_detection"], ai_ids
 
 
 def test_tool_standards_catalog_covers_image_and_composites():

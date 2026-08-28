@@ -97,7 +97,7 @@ BAND_NAME_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 # Fast PNG for map overlays (optimize=True is very slow on large RGBA)
-FAST_PNG_KWARGS: dict[str, Any] = {"optimize": False, "compress_level": 6}
+FAST_PNG_KWARGS: dict[str, Any] = {"optimize": False, "compress_level": 1}
 
 # Short COG HTTP budget — fail fast on slow links instead of hanging until CF 524
 COG_HTTP_TIMEOUT = httpx.Timeout(5.0, read=22.0, write=10.0, pool=5.0)
@@ -392,6 +392,79 @@ class SceneImageryService:
             if owns:
                 client.close()
 
+    def _s2_pc_xyz_tiles(
+        self,
+        *,
+        bbox: list[float],
+        sensing_time: str | None,
+        client: httpx.Client | None = None,
+    ) -> str | None:
+        """Match a Planetary Computer S2 L2A item and return hosted XYZ tiles.
+
+        Element84 Earth Search COGs are great for analysis, but local COG→PNG
+        tiles make zoom feel sluggish. PC Data API visual tiles stay sharp.
+        """
+        owns = client is None
+        if owns:
+            client = httpx.Client(timeout=45.0, follow_redirects=True)
+        assert client is not None
+        try:
+            best_id: str | None = None
+            best_score = -1e9
+            best_visual = False
+            for start, end in self._datetime_windows(sensing_time):
+                features = self._stac_search(
+                    client,
+                    PC_STAC_URL,
+                    ["sentinel-2-l2a"],
+                    bbox,
+                    start,
+                    end,
+                    query={"eo:cloud_cover": {"lt": 95}},
+                    limit=8,
+                )
+                for feat in features:
+                    cov = self._coverage(bbox, feat.get("bbox") or [])
+                    if cov < 0.1:
+                        continue
+                    assets = feat.get("assets") or {}
+                    has_visual = bool((assets.get("visual") or {}).get("href"))
+                    has_rgb = all(
+                        (assets.get(k) or {}).get("href") for k in ("B04", "B03", "B02")
+                    )
+                    if not has_visual and not has_rgb:
+                        continue
+                    cloud = float((feat.get("properties") or {}).get("eo:cloud_cover") or 50)
+                    score = cov * 10.0 - cloud / 25.0
+                    if score > best_score:
+                        best_score = score
+                        best_id = str(feat.get("id") or "")
+                        best_visual = has_visual
+                if best_id:
+                    break
+            if not best_id:
+                return None
+            if best_visual:
+                return self._pc_xyz_template(
+                    collection="sentinel-2-l2a",
+                    item_id=best_id,
+                    assets=["visual"],
+                    client=client,
+                )
+            return self._pc_xyz_template(
+                collection="sentinel-2-l2a",
+                item_id=best_id,
+                assets=["B04", "B03", "B02"],
+                color_formula="gamma RGB 2.2, saturation 1.2, sigmoidal RGB 15 0.35",
+                client=client,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("S2 PC XYZ resolve failed: {}", exc)
+            return None
+        finally:
+            if owns:
+                client.close()
+
     def _datetime_windows(self, sensing_time: str | None) -> list[tuple[str, str]]:
         dt = self._parse_sensing_time(sensing_time)
         windows: list[tuple[str, str]] = []
@@ -515,6 +588,13 @@ class SceneImageryService:
                     analysis_bands["nir"] = analysis_bands["nir08"]
                 # BOA scale/offset from STAC (PB ≥ 04.00 → offset −0.1)
                 boa_scale, boa_offset = self._s2_boa_scale_offset(assets, props)
+                # Hosted XYZ tiles (Planetary Computer) — zoom stays sharp without
+                # waiting on our local COG proxy for every {z}/{x}/{y}.
+                external_tile = self._s2_pc_xyz_tiles(
+                    bbox=[float(x) for x in (feat.get("bbox") or bbox)],
+                    sensing_time=props.get("datetime"),
+                    client=client,
+                )
                 return {
                     "stac_id": feat.get("id"),
                     "cog_url": assets["visual"]["href"],
@@ -532,6 +612,7 @@ class SceneImageryService:
                     "processing_baseline": props.get("s2:processing_baseline"),
                     "bands": {"R": "B04.tif", "G": "B03.tif", "B": "B02.tif"},
                     "label": "Sentinel-2 L2A true-color (TCI)",
+                    "external_tile_url": external_tile,
                 }
         raise NotFoundError(f"No Sentinel-2 TCI found ({last_error})")
 

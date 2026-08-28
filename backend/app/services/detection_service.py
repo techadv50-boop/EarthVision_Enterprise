@@ -556,17 +556,20 @@ class DetectionService:
                 )
             bands = self._try_load_bands(
                 request.scene_id,
-                size=512,
+                size=768,
                 band_names=("red", "green", "blue", "nir", "swir", "scl"),
             )
             if not bands or "nir" not in bands:
                 raise ValidationError(
                     "Could not load the NIR band for this scene — turn the eye off/on and retry."
                 )
+            # Live default was 0.45 which dropped real NIR CFAR ships (~0.25–0.35).
+            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.22)
+            conf_min = max(0.08, min(conf_min, 0.9))
             result = detect_ships_optical_nir(
                 bands,
                 bounds,
-                confidence_min=request.confidence_min,
+                confidence_min=conf_min,
                 collection=collection,
             )
             overlay_b64 = None

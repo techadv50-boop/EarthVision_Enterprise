@@ -50,6 +50,29 @@ def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
     assert out["overlay"].shape == (h, w, 4)
 
 
+def test_nir_ship_detect_default_confidence_keeps_metal():
+    """Live bug: confidence_min=0.45 dropped CFAR~1.4 ships (mapped ~0.30)."""
+    from app.services.optical_ship_detection import detect_ships_optical_nir
+
+    h = w = 64
+    nir = np.full((h, w), 0.02, dtype=np.float64)
+    green = np.full((h, w), 0.12, dtype=np.float64)
+    blue = np.full((h, w), 0.06, dtype=np.float64)
+    red = np.full((h, w), 0.04, dtype=np.float64)
+    nir[30:34, 40:48] = 0.28
+    green[30:34, 40:48] = 0.06
+    red[30:34, 40:48] = 0.08
+    blue[30:34, 40:48] = 0.05
+
+    out = detect_ships_optical_nir(
+        {"nir": nir, "green": green, "blue": blue, "red": red},
+        [74.0, 31.0, 74.5, 31.4],
+        confidence_min=0.22,
+        collection="SENTINEL-2",
+    )
+    assert out["count"] >= 1
+
+
 def test_ship_detect_requires_nir():
     from app.core.exceptions import ValidationError
     from app.services.optical_ship_detection import detect_ships_optical_nir

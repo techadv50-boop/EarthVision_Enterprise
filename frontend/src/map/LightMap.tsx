@@ -872,9 +872,10 @@ export function LightMap({
                 maxZoom={20}
                 pane="evStackPane"
                 zIndex={zIndex}
-                updateWhenZooming={false}
-                updateWhenIdle
-                keepBuffer={2}
+                // Fetch tiles during zoom so clear imagery sharpens sooner
+                updateWhenZooming
+                updateWhenIdle={false}
+                keepBuffer={6}
                 eventHandlers={tagHandlers}
               />
             ) : overlay.url ? (

@@ -238,7 +238,7 @@ def detect_ships_optical_nir(
 
     # Prefer water-adjacent neighborhoods (docked / at-sea); allow pier edges
     water_frac = _box_filter(water.astype(np.float64), size=11)
-    ship_mask &= water_frac >= 0.10
+    ship_mask &= water_frac >= 0.06
 
     if int(ship_mask.sum()) > MAX_FEATURES * 40:
         thr = float(np.nanpercentile(cfar[ship_mask], 70))
@@ -246,10 +246,10 @@ def detect_ships_optical_nir(
 
     if int(ship_mask.sum()) == 0:
         # Fallback: brightest near-water metal NIR peaks
-        cand = metal & near_water & np.isfinite(cfar) & (water_frac >= 0.2)
+        cand = metal & near_water & np.isfinite(cfar) & (water_frac >= 0.12)
         if int(cand.sum()) > 0:
-            thr = float(np.nanpercentile(cfar[cand], 92))
-            ship_mask = cand & (cfar >= max(thr, 1.0))
+            thr = float(np.nanpercentile(cfar[cand], 90))
+            ship_mask = cand & (cfar >= max(thr, 0.85))
 
     # Drop tiny speckles (need a few coherent pixels ≈ small boat footprint)
     labeled_pre, n_pre = _label_components(ship_mask)
@@ -270,8 +270,8 @@ def detect_ships_optical_nir(
         if ys.size < MIN_COMPONENT_PIXELS:
             continue
         conf = float(np.nanmean(cfar[ys, xs]))
-        # Map CFAR → confidence (CFAR≈1.8 → ~0.45 with default threshold)
-        conf01 = float(np.clip((conf - 0.5) / 3.0, 0.05, 0.99))
+        # Map CFAR → confidence (CFAR≈1.2 → ~0.40; CFAR≈1.8 → ~0.64)
+        conf01 = float(np.clip((conf - 0.2) / 2.5, 0.08, 0.99))
         if conf01 < confidence_min:
             continue
         row_c = float(ys.mean())
