@@ -68,7 +68,7 @@ class ClassificationRequest(BaseModel):
     bbox: list[float] | None = Field(
         default=None, description="[west, south, east, north]"
     )
-    size: int = Field(default=1536, ge=128, le=2048)
+    size: int = Field(default=512, ge=64, le=640)
     # 3–8 semantic classes (collapsed from the full 8-class taxonomy)
     n_classes: int = Field(default=6, ge=3, le=8)
     # Optional user color/label overrides keyed by class name

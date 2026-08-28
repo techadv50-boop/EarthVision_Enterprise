@@ -453,21 +453,43 @@ export function ToolboxPanel({
               const taskId =
                 tool.action.type === 'detection' ? tool.action.task : undefined;
               const algo = taskId ? algoByTask[taskId] : undefined;
-              const tip = active
-                ? `${tool.label} (click again to turn off)`
-                : algo || tool.hint || tool.label;
+              const needsOpticalScene = Boolean(tool.opticalOnly);
+              const opticalReady =
+                !needsOpticalScene ||
+                (hasScene &&
+                  (() => {
+                    const c = (sceneCollection || '').toUpperCase().replace(/_/g, '-');
+                    return (
+                      c.includes('SENTINEL-2') ||
+                      c.startsWith('S2') ||
+                      c.includes('LANDSAT') ||
+                      c.startsWith('L8') ||
+                      c.startsWith('L9') ||
+                      c.startsWith('L7')
+                    );
+                  })());
+              const toolOff =
+                loading ||
+                !actionsEnabled ||
+                (tool.needsScene && !hasScene) ||
+                (needsOpticalScene && !opticalReady);
+              const tip = !actionsEnabled
+                ? 'Select a satellite first'
+                : categoryLocked
+                  ? `${tool.label} — inactive`
+                  : tool.needsScene && !hasScene
+                    ? `${tool.label} — turn an eye on a scene first`
+                    : needsOpticalScene && !opticalReady
+                      ? `${tool.label} — Landsat / Sentinel-2 optical only`
+                      : active
+                        ? `${tool.label} (click again to turn off)`
+                        : algo || tool.hint || tool.label;
               return (
                 <button
                   key={tool.id}
                   type="button"
-                  title={
-                    categoryLocked
-                      ? `${tool.label} — inactive (high-res imagery later)`
-                      : !toolsEnabled
-                        ? 'Select a satellite first'
-                        : tip
-                  }
-                  disabled={loading || !actionsEnabled}
+                  title={tip}
+                  disabled={toolOff}
                   onClick={() => onTool(tool)}
                   className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${
                     active
@@ -485,7 +507,15 @@ export function ToolboxPanel({
                     {active ? '✓' : ''}
                   </span>
                   <span className="flex-1">{tool.label}</span>
-                  {tool.needsScene && (
+                  {tool.opticalOnly ? (
+                    <span
+                      className={`rounded px-1 py-0.5 text-[9px] uppercase ${
+                        active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'
+                      }`}
+                    >
+                      S2/L8
+                    </span>
+                  ) : tool.needsScene ? (
                     <span
                       className={`rounded px-1 py-0.5 text-[9px] uppercase ${
                         active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'
@@ -493,7 +523,7 @@ export function ToolboxPanel({
                     >
                       EO
                     </span>
-                  )}
+                  ) : null}
                 </button>
               );
             })}

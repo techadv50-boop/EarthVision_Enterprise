@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { LegendInfo } from './analyticsService';
+import { toOverlayDataUrl } from '../utils/overlayDataUrl';
 
 export interface DetectionResult {
   task: string;
@@ -10,10 +11,21 @@ export interface DetectionResult {
   legend?: LegendInfo | null;
   message: string;
   formula?: string;
+  shapefile_ready?: boolean;
+  geometry_types?: string[];
 }
 
 function toDataUrl(b64: string): string {
-  return `data:image/png;base64,${b64}`;
+  return toOverlayDataUrl(b64);
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(href);
 }
 
 export const detectionService = {
@@ -47,7 +59,22 @@ export const detectionService = {
     aoi?: GeoJSON.Geometry | null;
     confidence_min?: number;
   }): Promise<DetectionResult> {
-    const { data } = await api.post<DetectionResult>('/detection/run', payload);
+    const { data } = await api.post<DetectionResult>('/detection/run', {
+      confidence_min: 0.45,
+      ...payload,
+    });
     return data;
+  },
+
+  async downloadShapefile(
+    geojson: GeoJSON.FeatureCollection,
+    filename = 'ship_detection',
+  ) {
+    const response = await api.post(
+      '/gis/export/shapefile',
+      { features: geojson, filename },
+      { responseType: 'blob', timeout: 120000 },
+    );
+    downloadBlob(response.data as Blob, `${filename}.zip`);
   },
 };

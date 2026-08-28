@@ -56,10 +56,10 @@ class IndexComputeRequest(BaseModel):
         default=None, description="Optional color ramp override (default = index thematic ramp)"
     )
     size: int = Field(
-        default=1024,
+        default=512,
         ge=64,
-        le=2048,
-        description="Analysis grid edge length (pixels) for sharper overlays",
+        le=640,
+        description="Interactive preview edge (px); capped for slow links",
     )
 
 

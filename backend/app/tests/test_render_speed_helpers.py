@@ -161,3 +161,137 @@ def test_index_band_sets(index, expected):
     from app.services.analytics_service import AnalyticsService
 
     assert AnalyticsService.INDEX_REQUIRED_BANDS[index] == expected
+
+
+def test_overlay_encode_prefers_webp_and_is_smaller_than_png():
+    from app.services.overlay_encode import encode_rgba_overlay, encode_categorical_overlay
+
+    rgba = np.zeros((128, 128, 4), dtype=np.uint8)
+    rgba[..., 0] = 40
+    rgba[..., 1] = 120
+    rgba[..., 2] = 80
+    rgba[..., 3] = 255
+    # Add mild noise so compressors have work to do
+    rgba[..., 1] = (rgba[..., 1] + np.arange(128, dtype=np.uint8)[None, :]) % 200
+
+    webp, mime = encode_rgba_overlay(rgba, prefer="webp", quality=70)
+    png, png_mime = encode_rgba_overlay(rgba, prefer="png")
+    assert mime == "image/webp"
+    assert png_mime == "image/png"
+    assert webp[:4] == b"RIFF"
+    assert len(webp) < len(png)
+
+    cat, cat_mime = encode_categorical_overlay(rgba)
+    assert cat_mime in {"image/webp", "image/png"}
+    assert len(cat) > 32
+
+
+def test_interactive_preview_cap_and_band_cache_limits():
+    from app.services.scene_imagery_service import (
+        INTERACTIVE_PREVIEW_MAX,
+        _ANALYSIS_BAND_CACHE_MAX,
+        GDAL_ENV,
+    )
+
+    assert INTERACTIVE_PREVIEW_MAX <= 640
+    assert _ANALYSIS_BAND_CACHE_MAX >= 8
+    assert int(GDAL_ENV["GDAL_HTTP_TIMEOUT"]) <= 30
+
+
+def test_run_sync_timeout_raises_gateway_timeout():
+    import asyncio
+
+    from app.core.concurrency import run_sync_timeout
+    from app.core.exceptions import GatewayTimeoutError
+
+    def slow() -> None:
+        time.sleep(2.0)
+
+    async def _run() -> None:
+        await run_sync_timeout(slow, timeout_s=0.2, label="Unit test")
+
+    with pytest.raises(GatewayTimeoutError, match="Unit test timed out"):
+        asyncio.run(_run())
+
+
+def test_true_color_l2a_optimized_produces_natural_rgb():
+    """Highlight Optimized path: finite RGB in [0,1], muted natural greens (not neon)."""
+    from app.services.professional_viz import true_color_highlight_optimized
+
+    h = w = 64
+    # Typical land BOA reflectance
+    r = np.full((h, w), 0.08, dtype=np.float64)
+    g = np.full((h, w), 0.10, dtype=np.float64)
+    b = np.full((h, w), 0.06, dtype=np.float64)
+    g[20:40, 20:40] = 0.14
+    r[20:40, 20:40] = 0.05
+    rgb = true_color_highlight_optimized(r, g, b)
+    assert rgb.shape == (h, w, 3)
+    assert float(np.nanmin(rgb)) >= 0.0
+    assert float(np.nanmax(rgb)) <= 1.0
+    mid = float(np.nanmean(rgb))
+    assert 0.05 < mid < 0.95
+    # Vegetation patch must not be neon-saturated (G channel not >> R,B after tone-map)
+    veg = rgb[20:40, 20:40]
+    assert float(veg[..., 1].mean()) < 0.85
+
+
+def test_true_color_handles_dn_scaled_boa():
+    """DN×10000 grids must scale before tone-map (else everything clips white)."""
+    from app.services.professional_viz import true_color_highlight_optimized
+
+    r = np.full((32, 32), 800.0)   # ρ≈0.08 after /10000
+    g = np.full((32, 32), 1000.0)
+    b = np.full((32, 32), 600.0)
+    rgb = true_color_highlight_optimized(r, g, b)
+    assert float(rgb.mean()) < 0.9
+    assert float(rgb.mean()) > 0.15
+
+
+def test_false_color_professional_and_index_viz_ranges():
+    from app.services.professional_viz import (
+        INDEX_VIZ_RANGE,
+        false_color_professional,
+    )
+    from app.services.analytics_service import INDEX_META
+
+    rng = np.random.default_rng(0)
+    r = rng.uniform(0.05, 0.4, size=(48, 48))
+    g = rng.uniform(0.05, 0.4, size=(48, 48))
+    b = rng.uniform(0.05, 0.4, size=(48, 48))
+    rgb = false_color_professional(r, g, b)
+    assert rgb.shape == (48, 48, 3)
+    assert 0.0 <= float(rgb.min()) <= float(rgb.max()) <= 1.0
+
+    assert INDEX_META["NDVI"]["viz_range"] == INDEX_VIZ_RANGE["NDVI"]
+    assert INDEX_META["NDVI"]["viz_range"] == (0.0, 0.8)
+
+
+def test_all_148_toolbox_tools_have_action_types():
+    """Frontend catalog must stay at 148 tools with runnable actions."""
+    from pathlib import Path
+    import re
+
+    catalog = (
+        Path(__file__).resolve().parents[3]
+        / "frontend"
+        / "src"
+        / "toolbox"
+        / "catalog.ts"
+    )
+    text = catalog.read_text(encoding="utf-8")
+    tool_ids = re.findall(r"\{\s*id:\s*'([^']+)',\s*label:", text)
+    assert len(tool_ids) == 148, f"expected 148 tools, got {len(tool_ids)}"
+    assert "true_color" in tool_ids
+    assert re.search(
+        r"HIGH_RES_ONLY_TOOLBOXES:\s*ToolboxId\[\]\s*=\s*\[\s*\]", text
+    )
+
+
+def test_tool_standards_catalog_covers_image_and_composites():
+    from app.services.tool_standards import catalog_tool_standards
+
+    cat = catalog_tool_standards()
+    assert "true_color" in cat["image_tools"]
+    assert "highlight_optimized" in cat["image_tools"]["true_color"]["method"]
+    assert cat["reliability"]["request_timeout_s"] == 55

@@ -20,9 +20,11 @@ async def list_detection_tasks(user: CurrentUser) -> list[dict]:
 async def run_detection(
     data: DetectionRunRequest, user: CurrentUser
 ) -> DetectionRunResponse:
-    from app.core.concurrency import run_sync
+    from app.core.concurrency import run_sync_timeout
 
-    return await run_sync(DetectionService().run, data)
+    return await run_sync_timeout(
+        DetectionService().run, data, timeout_s=55.0, label="Detection"
+    )
 
 
 @router.get("/meta")

@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { LegendInfo } from './analyticsService';
+import { INTERACTIVE_PREVIEW_SIZE, toOverlayDataUrl } from '../utils/overlayDataUrl';
 
 export type CompositePreset =
   | 'true_color'
@@ -76,7 +77,7 @@ export interface StretchResult {
 }
 
 function toDataUrl(b64: string): string {
-  return `data:image/png;base64,${b64}`;
+  return toOverlayDataUrl(b64);
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -121,11 +122,11 @@ export const compositeService = {
   }): Promise<CompositeResult> {
     const { data } = await api.post<CompositeResult>('/analytics/composite', {
       stretch: 'percentile',
-      size: 896,
+      size: INTERACTIVE_PREVIEW_SIZE,
       p_low: 2,
       p_high: 98,
-      gamma: 1.2,
-      brightness: 1.05,
+      gamma: 1.35,
+      brightness: 1.0,
       contrast: 1.05,
       ...payload,
     });
@@ -143,7 +144,7 @@ export const compositeService = {
     contrast?: number;
   }): Promise<StretchResult> {
     const { data } = await api.post<StretchResult>('/analytics/stretch', {
-      size: 896,
+      size: INTERACTIVE_PREVIEW_SIZE,
       ...payload,
     });
     return data;

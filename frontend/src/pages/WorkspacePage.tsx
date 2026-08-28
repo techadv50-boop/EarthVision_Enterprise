@@ -83,6 +83,34 @@ function opticalProcessingBlockReason(collection?: string | null): string | null
   return null;
 }
 
+/** Ship Detection: Landsat / Sentinel-2 optical only. */
+function opticalShipBlockReason(
+  hasScene: boolean,
+  collection?: string | null,
+): string | null {
+  if (!hasScene) {
+    return 'Ship Detection stays off until you select a Landsat or Sentinel-2 image (turn the eye on).';
+  }
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  if (!c) {
+    return 'Ship Detection requires a Landsat or Sentinel-2 optical scene.';
+  }
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) {
+    return 'Ship Detection (optical) does not support Sentinel-1 SAR. Use Sentinel-2 or Landsat.';
+  }
+  const ok =
+    c.includes('SENTINEL-2') ||
+    c.startsWith('S2') ||
+    c.includes('LANDSAT') ||
+    c.startsWith('L8') ||
+    c.startsWith('L9') ||
+    c.startsWith('L7');
+  if (!ok) {
+    return 'Ship Detection works only with Landsat and Sentinel-2 optical imagery.';
+  }
+  return null;
+}
+
 function aoiBbox(
   aoi: GeoJSON.Feature | null,
   fallback: [number, number, number, number],
@@ -697,8 +725,27 @@ export function WorkspacePage() {
   };
 
   const runDetection = async (task: string) => {
+    const opticalShip =
+      task === 'ship_detection' || task === 'ship_detection_optical';
+    if (opticalShip) {
+      const blocked = opticalShipBlockReason(
+        Boolean(focusScene),
+        focusScene?.collection ?? catalogFilters.satelliteId,
+      );
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
+    } else if (!focusScene && !analysisBbox) {
+      setError('Show a satellite scene first');
+      return;
+    }
     setToolLoading(true);
-    setToolStatus(`Detection: ${task.replaceAll('_', ' ')}…`);
+    setToolStatus(
+      opticalShip
+        ? 'Ship Detection · NIR band · ignoring water & cloud…'
+        : `Detection: ${task.replaceAll('_', ' ')}…`,
+    );
     setError(null);
     try {
       const result = await detectionService.run({
@@ -706,7 +753,7 @@ export function WorkspacePage() {
         bbox: [...analysisBbox],
         scene_id: focusScene?.id,
         aoi: aoiGeoJson?.geometry ?? null,
-        confidence_min: 0.45,
+        confidence_min: opticalShip ? 0.45 : 0.45,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(
@@ -714,7 +761,6 @@ export function WorkspacePage() {
           ? `${result.message} · ${result.formula}`
           : result.message,
       );
-      // Force map cartography chrome whenever objects are detected
       useWorkflowStore.getState().setMapChrome({
         compass: true,
         scaleBar: true,
@@ -733,6 +779,23 @@ export function WorkspacePage() {
         label: task.replaceAll('_', ' '),
         visible: true,
       });
+      if (opticalShip && result.shapefile_ready && result.geojson?.features?.length) {
+        try {
+          await detectionService.downloadShapefile(
+            result.geojson,
+            `ship_detection_${(focusScene?.id || 'scene').slice(0, 40)}`,
+          );
+          setLastMessage(
+            (result.message || 'Ship Detection complete') +
+              ' · shapefile (points + polygons) downloaded',
+          );
+        } catch {
+          setLastMessage(
+            (result.message || 'Ship Detection complete') +
+              ' · map vectors ready (shapefile download failed — retry export)',
+          );
+        }
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -841,11 +904,29 @@ export function WorkspacePage() {
 
   const applyProcessFilter = (op: string) => {
     if (op === 'true_color') {
+      // Never leave CSS brightness/contrast on the map — it neon-blows True Color
+      setProcessFilter({ brightness: 1, contrast: 1, gamma: 1 });
+      setStretchParams((s) => ({ ...s, brightness: 1.0, contrast: 1.0, gamma: 1.2 }));
       void runComposite('true_color');
       return;
     }
     if (op === 'false_color') {
-      void runComposite('false_color_infrared');
+      // Cycle USGS/ESA professional false-color recipes on repeat clicks
+      const fccCycle: CompositePreset[] = [
+        'false_color_infrared',
+        'false_color_agriculture',
+        'false_color_urban',
+        'swir_composite',
+        'land_water',
+        'vegetation_health',
+        'burn_severity',
+        'geology',
+        'atmospheric_penetration',
+      ];
+      const cur = (compositeResult?.preset || 'false_color_infrared') as CompositePreset;
+      const idx = fccCycle.indexOf(cur);
+      const next = fccCycle[(idx + 1) % fccCycle.length];
+      void runComposite(next);
       return;
     }
     if (op === 'unsupervised_classify') {
@@ -880,11 +961,13 @@ export function WorkspacePage() {
       return;
     }
     if (op === 'mosaic') {
-      setLastMessage('Mosaic: all visible scene layers shown');
+      setLastMessage('Mosaic: all visible scene layers shown (professional multi-scene stack)');
       return;
     }
     if (op === 'reproject' || op === 'resample') {
-      setLastMessage(`${op}: display CRS EPSG:3857 / native scene resolution`);
+      setLastMessage(
+        `${op}: display CRS EPSG:3857 · interactive grid ≤640px (slow-link professional preview)`,
+      );
     }
   };
 
@@ -968,7 +1051,7 @@ export function WorkspacePage() {
       const result = await classificationService.classify({
         scene_id: focusScene.id,
         bbox: [...bounds],
-        size: 896,
+        size: 512,
         n_classes: nClasses,
         class_styles: opts?.class_styles,
       });
@@ -1019,13 +1102,17 @@ export function WorkspacePage() {
       );
       // Always process over the same geographic extent as the original scene layer.
       const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      const stretch =
+        preset === 'true_color'
+          ? { p_low: 2, p_high: 98, gamma: 1.0, brightness: 1.0, contrast: 1.0 }
+          : stretchParams;
       const result = await compositeService.render({
         preset,
         scene_id: focusScene.id,
         collection: focusScene.collection,
         bbox: [...bounds],
-        size: 896,
-        ...stretchParams,
+        size: 512,
+        ...stretch,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
@@ -1079,7 +1166,7 @@ export function WorkspacePage() {
       const result = await compositeService.stretch({
         scene_id: focusScene.id,
         bbox: [...bounds],
-        size: 896,
+        size: 512,
         ...params,
       });
       setStretchResult(result);
@@ -1300,13 +1387,8 @@ export function WorkspacePage() {
       setToolStatus('Select a satellite to use tools');
       return;
     }
-    // AI / Change / Maritime / Air stay inactive for now (visible in menu only).
-    if (tool.action.type === 'detection' || tool.action.type === 'change') {
-      setError(
-        'AI, Change, Maritime, and Air are not active yet — reserved for high-resolution imagery APIs',
-      );
-      return;
-    }
+    // All 148 tools active — optical detectors/change use professional spectral recipes.
+    // (Former high-res-only gate removed.)
 
     // Clicking the active tool again turns it off
     if (activeToolId === tool.id) {
@@ -1381,7 +1463,15 @@ export function WorkspacePage() {
       return;
     }
 
-    // detection / change are blocked above (AI / Maritime / Air / Change inactive)
+    if (action.type === 'detection') {
+      await runDetection(action.task);
+      return;
+    }
+
+    if (action.type === 'change') {
+      await runChange(action.mode);
+      return;
+    }
 
     if (action.type === 'gis') {
       await runGis(action.op);
@@ -1450,9 +1540,12 @@ export function WorkspacePage() {
   const legend: LegendInfo | null =
     lastLegend || changeResult?.legend || indexResult?.legend || null;
 
-  const filterStyle = {
-    filter: `brightness(${processFilter.brightness}) contrast(${processFilter.contrast})`,
-  };
+  const filterStyle =
+    processFilter.brightness !== 1 || processFilter.contrast !== 1
+      ? {
+          filter: `brightness(${processFilter.brightness}) contrast(${processFilter.contrast})`,
+        }
+      : undefined;
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)]">

@@ -72,40 +72,48 @@ class GeoTiffExportRequest(BaseModel):
 async def compute_index(
     data: IndexComputeRequest, user: CurrentUser
 ) -> IndexComputeResponse:
-    from app.core.concurrency import run_sync
+    from app.core.concurrency import run_sync_timeout
 
     service = AnalyticsService()
-    return await run_sync(service.compute_index, data)
+    return await run_sync_timeout(
+        service.compute_index, data, timeout_s=55.0, label="Spectral index"
+    )
 
 
 @router.post("/change", response_model=IndexChangeResponse)
 async def index_change_detection(
     data: IndexChangeRequest, user: CurrentUser
 ) -> IndexChangeResponse:
-    from app.core.concurrency import run_sync
+    from app.core.concurrency import run_sync_timeout
 
     service = AnalyticsService()
-    return await run_sync(service.change_detection, data)
+    return await run_sync_timeout(
+        service.change_detection, data, timeout_s=55.0, label="Change detection"
+    )
 
 
 @router.post("/timeseries", response_model=TimeSeriesResponse)
 async def time_series(
     data: TimeSeriesRequest, user: CurrentUser
 ) -> TimeSeriesResponse:
-    from app.core.concurrency import run_sync
+    from app.core.concurrency import run_sync_timeout
 
     service = AnalyticsService()
-    return await run_sync(service.time_series, data)
+    return await run_sync_timeout(
+        service.time_series, data, timeout_s=55.0, label="Time series"
+    )
 
 
 @router.post("/pixel", response_model=PixelInspectResponse)
 async def inspect_pixel(
     data: PixelInspectRequest, user: CurrentUser
 ) -> PixelInspectResponse:
-    from app.core.concurrency import run_sync
+    from app.core.concurrency import run_sync_timeout
 
     service = AnalyticsService()
-    return await run_sync(service.inspect_pixel, data)
+    return await run_sync_timeout(
+        service.inspect_pixel, data, timeout_s=30.0, label="Pixel inspect"
+    )
 
 
 @router.get("/indices")

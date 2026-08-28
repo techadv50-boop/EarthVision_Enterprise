@@ -85,7 +85,7 @@ class ClassificationService:
         n_classes = int(np.clip(int(request.n_classes), 3, 8))
         active_meta = self._resolve_active_meta(n_classes, request.class_styles)
 
-        size = max(64, min(int(request.size or 896), 1536))
+        size = max(64, min(int(request.size or 512), 640))
         bands, bounds, footprint = self._load_bands(
             request.scene_id, request.bbox, size
         )
@@ -1658,11 +1658,11 @@ class ClassificationService:
             rgba[mask, 2] = b
             rgba[mask, 3] = 255  # 100% opaque class fill
         # Outside footprint stays transparent (alpha 0) for tilted scenes.
-        img = Image.fromarray(rgba, mode="RGBA")
-        buf = io.BytesIO()
-        # compress_level only; no resampling — keep pixel-crisp class boundaries
-        img.save(buf, format="PNG", compress_level=3, optimize=False)
-        return buf.getvalue()
+        # Lossless WebP keeps class edges crisp and shrinks the JSON payload.
+        from app.services.overlay_encode import encode_categorical_overlay
+
+        data, _mime = encode_categorical_overlay(rgba)
+        return data
 
     def _class_map_labels_png(
         self, class_map: np.ndarray, valid: np.ndarray
@@ -1672,7 +1672,7 @@ class ClassificationService:
         labels[~valid] = NODATA
         img = Image.fromarray(labels, mode="L")
         buf = io.BytesIO()
-        img.save(buf, format="PNG", compress_level=3, optimize=False)
+        img.save(buf, format="PNG", compress_level=6, optimize=False)
         return buf.getvalue()
 
     def _legend(
