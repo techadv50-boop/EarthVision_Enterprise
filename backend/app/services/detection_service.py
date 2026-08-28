@@ -573,7 +573,7 @@ class DetectionService:
                     "Could not load the NIR band for this scene — turn the eye off/on and retry."
                 )
             bands, band_bounds = bands_pack
-            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.18)
+            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.12)
             conf_min = max(0.08, min(conf_min, 0.9))
             result = detect_ships_optical_nir(
                 bands,

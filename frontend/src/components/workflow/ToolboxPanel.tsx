@@ -69,6 +69,22 @@ interface Props {
   lastBufferArea?: number | null;
   lastLegend?: LegendInfo | null;
   lastMessage?: string | null;
+  /** Numbered ship contacts from the last Ship Detection run. */
+  shipContacts?: Array<{
+    id: number;
+    lon: number;
+    lat: number;
+    confidence: number;
+    label: string;
+  }>;
+  activeContactId?: number | null;
+  onLocateContact?: (contact: {
+    id: number;
+    lon: number;
+    lat: number;
+    confidence: number;
+    label: string;
+  }) => void;
   mapChrome?: Record<string, boolean> | null;
   /** null/undefined = all toolboxes; otherwise filter to these ids */
   allowedTools?: string[] | null;
@@ -146,6 +162,9 @@ export function ToolboxPanel({
   lastBufferArea,
   lastLegend,
   lastMessage,
+  shipContacts = [],
+  activeContactId = null,
+  onLocateContact,
   mapChrome,
   allowedTools = null,
   toolsEnabled = false,
@@ -558,10 +577,54 @@ export function ToolboxPanel({
         )}
       </div>
 
-      {(lastMessage || lastLegend) && (
+      {(lastMessage || lastLegend || shipContacts.length > 0) && (
         <div className="shrink-0 space-y-1 border-t border-[var(--line)] px-3 py-2">
           {lastMessage && (
             <div className="text-[11px] text-[var(--muted)]">{lastMessage}</div>
+          )}
+          {shipContacts.length > 0 && (
+            <div className="rounded border border-[var(--line)] bg-[var(--bg)] p-2">
+              <div className="mb-1 flex items-center justify-between">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                  Ship contacts ({shipContacts.length})
+                </div>
+                <div className="text-[9px] text-[var(--muted)]">Click Locate to fly map</div>
+              </div>
+              <div className="max-h-44 space-y-1 overflow-y-auto">
+                {shipContacts.map((c) => {
+                  const active = activeContactId === c.id;
+                  return (
+                    <div
+                      key={c.id}
+                      className={`flex items-center gap-2 rounded border px-2 py-1.5 text-[11px] ${
+                        active
+                          ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                          : 'border-[var(--line)] bg-white'
+                      }`}
+                    >
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#ff0000] text-[10px] font-bold text-white">
+                        {c.id}
+                      </span>
+                      <div className="min-w-0 flex-1 font-mono text-[10px] leading-tight">
+                        <div className="truncate font-sans text-[11px] font-medium text-[var(--ink)]">
+                          {c.label}
+                        </div>
+                        <div className="text-[var(--muted)]">
+                          {c.lat.toFixed(5)}°, {c.lon.toFixed(5)}° · conf {c.confidence.toFixed(2)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded border border-[var(--accent)] bg-white px-2 py-1 text-[10px] font-semibold text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+                        onClick={() => onLocateContact?.(c)}
+                      >
+                        Locate
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
           {lastLegend && (
             <div>

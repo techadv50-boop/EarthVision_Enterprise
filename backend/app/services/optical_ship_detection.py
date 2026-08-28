@@ -30,11 +30,11 @@ OPTICAL_SHIP_TASKS = frozenset(
 )
 
 # Open-sea / deck reflectance window (BOA ρ) — above dark water, below ice/cloud glare
-OBJ_REFLECT_LO = 0.05
+OBJ_REFLECT_LO = 0.035
 OBJ_REFLECT_HI = 0.85
-NIR_METAL_LO = 0.08
+NIR_METAL_LO = 0.06
 NIR_METAL_HI = 0.80
-CFAR_K = 1.6
+CFAR_K = 1.25
 MIN_COMPONENT_PIXELS = 2
 MAX_FEATURES = 250
 MAX_OBJECT_PIXELS = 12_000
@@ -238,13 +238,13 @@ def _vis_brightness(
     blue: np.ndarray | None,
     nir: np.ndarray,
 ) -> np.ndarray:
-    """VIS+NIR brightness used as open-sea object reflectance cue."""
+    """Peak VIS+NIR reflectance — catches bright decks/wakes better than mean."""
     layers = [nir.astype(np.float64)]
     for band in (red, green, blue):
         if band is not None:
             layers.append(band.astype(np.float64))
     stacked = np.stack(layers, axis=0)
-    return np.nanmean(stacked, axis=0)
+    return np.nanmax(stacked, axis=0)
 
 
 def detect_ships_optical_nir(
@@ -314,10 +314,9 @@ def detect_ships_optical_nir(
 
     water_frac = _box_filter(water.astype(np.float64), size=15)
     near_water = _dilate(water, iters=6)
-    sea_dom = water_frac >= 0.35  # open sea / harbor basins
+    sea_dom = water_frac >= 0.22  # open sea / harbor basins (softer for more recall)
 
     # --- Open-sea objects: reflectance above water, CFAR peak, sea context ---
-    # Includes bright decks that NDWI still tags as water — use CFAR on brightness.
     open_sea = (
         finite
         & ~cloud
@@ -325,6 +324,19 @@ def detect_ships_optical_nir(
         & (bright >= OBJ_REFLECT_LO)
         & (bright <= OBJ_REFLECT_HI)
         & (cfar >= CFAR_K)
+    )
+    # Soft CFAR secondary cue (wake / smaller boats)
+    water_p92 = (
+        float(np.nanpercentile(bright[water_bg], 92)) if int(water_bg.sum()) > 32 else OBJ_REFLECT_LO
+    )
+    open_sea_soft = (
+        finite
+        & ~cloud
+        & sea_dom
+        & (bright >= OBJ_REFLECT_LO)
+        & (bright <= OBJ_REFLECT_HI)
+        & (cfar >= (CFAR_K * 0.7))
+        & (bright >= water_p92)
     )
     # Decks that fall out of water class but sit in the sea
     non_water_obj = (
@@ -334,7 +346,7 @@ def detect_ships_optical_nir(
         & near_water
         & (bright >= OBJ_REFLECT_LO)
         & (bright <= OBJ_REFLECT_HI)
-        & (cfar >= (CFAR_K * 0.55))
+        & (cfar >= (CFAR_K * 0.45))
     )
     if red is not None:
         ndvi = _safe_div(nir_f - red.astype(np.float64), nir_f + red.astype(np.float64))
@@ -348,23 +360,23 @@ def detect_ships_optical_nir(
         & near_water
         & (nir_f >= NIR_METAL_LO)
         & (nir_f <= NIR_METAL_HI)
-        & (cfar_nir >= (CFAR_K * 0.5))
+        & (cfar_nir >= (CFAR_K * 0.4))
     )
 
-    ship_mask = open_sea | non_water_obj | metal
+    ship_mask = open_sea | open_sea_soft | non_water_obj | metal
     if aoi_mask is not None:
         ship_mask &= aoi_mask
 
     if int(ship_mask.sum()) > MAX_FEATURES * 80:
-        thr = float(np.nanpercentile(cfar[ship_mask], 65))
+        thr = float(np.nanpercentile(cfar[ship_mask], 55))
         ship_mask &= cfar >= thr
 
     if int(ship_mask.sum()) == 0:
         # Soft fallback: top brightness CFAR peaks in open water
-        cand = finite & ~cloud & sea_dom & np.isfinite(cfar) & (bright >= 0.04)
+        cand = finite & ~cloud & sea_dom & np.isfinite(cfar) & (bright >= 0.03)
         if int(cand.sum()) > 0:
-            thr = float(np.nanpercentile(cfar[cand], 97))
-            ship_mask = cand & (cfar >= max(thr, 1.2))
+            thr = float(np.nanpercentile(cfar[cand], 93))
+            ship_mask = cand & (cfar >= max(thr, 0.95))
 
     # Size filter — drop speckles and huge cloud/land blobs
     labeled_pre, n_pre = _label_components(ship_mask)
@@ -388,13 +400,14 @@ def detect_ships_optical_nir(
     west, south, east, north = (float(v) for v in bounds)
     h, w = nir_f.shape
     features: list[dict[str, Any]] = []
+    contact_n = 0
 
     for lab in range(1, nlab + 1):
         ys, xs = np.where(labeled == lab)
         if ys.size < MIN_COMPONENT_PIXELS:
             continue
         conf = float(np.nanmean(cfar[ys, xs]))
-        conf01 = float(np.clip((conf - 0.3) / 3.2, 0.1, 0.99))
+        conf01 = float(np.clip((conf - 0.15) / 3.0, 0.08, 0.99))
         if conf01 < confidence_min:
             continue
         row_c = float(ys.mean())
@@ -424,9 +437,11 @@ def detect_ships_optical_nir(
         mean_nir = float(np.nanmean(nir_f[ys, xs]))
         mean_b = float(np.nanmean(bright[ys, xs]))
         cue = "open_sea_reflectance" if float(np.nanmean(water_frac[ys, xs])) >= 0.5 else "metal_nir"
+        contact_n += 1
         props = {
             "class": "ship",
-            "label": "Ship",
+            "label": f"Ship {contact_n}",
+            "contact_id": contact_n,
             "confidence": round(conf01, 3),
             "nir_mean": round(mean_nir, 4),
             "brightness": round(mean_b, 4),
@@ -434,6 +449,8 @@ def detect_ships_optical_nir(
             "pixels": int(ys.size),
             "cue": cue,
             "band": "VIS+NIR",
+            "lon": round(lon, 6),
+            "lat": round(lat, 6),
         }
         features.append(
             {
@@ -475,21 +492,19 @@ def _ship_overlay_rgba(
     water: np.ndarray,
     cloud: np.ndarray,
 ) -> np.ndarray:
-    """Transparent overlay: thin red outline only so the ship stays visible."""
-    del water, cloud, bright  # imagery underneath stays visible
+    """Transparent overlay: red outline only so the ship hull stays visible."""
+    del water, cloud, bright
     h, w = ship_mask.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     if not ship_mask.any():
         return rgba
-    # Very light red wash on ship pixels (object still readable)
-    rgba[ship_mask, 0] = 255
-    rgba[ship_mask, 1] = 40
-    rgba[ship_mask, 2] = 40
-    rgba[ship_mask, 3] = 70
-    # Crisp red ring around the object
+    # Outline ring only (no fill wash that covers the contact)
     outline = _dilate(ship_mask, iters=1) & ~ship_mask
+    # If blob is 1px, still show a tiny ring
+    if not outline.any():
+        outline = _dilate(ship_mask, iters=2) & ~ship_mask
     rgba[outline, 0] = 255
     rgba[outline, 1] = 0
     rgba[outline, 2] = 0
-    rgba[outline, 3] = 230
+    rgba[outline, 3] = 240
     return rgba
