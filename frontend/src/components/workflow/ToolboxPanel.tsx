@@ -355,7 +355,7 @@ export function ToolboxPanel({
           {['ai', 'maritime', 'aviation'].includes(activeBox.id) && (
             <p className="mt-1 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10px] text-[var(--muted)]">
               {activeBox.id === 'ai'
-                ? 'AI tools stay inactive except Ship Detection. Activate with Landsat/Sentinel-2 eye ON, then draw a Rect/Poly AOI around the water body — ships are marked in red on the image (no shapefile download).'
+                ? 'AI tools stay inactive except Ship Detection. Activate with Landsat/Sentinel-2 eye ON, then draw a Rect/Poly AOI around the water body — pixels above the water NIR range (hulls + wakes) are marked in red on the image (no shapefile download).'
                 : 'Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its formula. Detections show legend, scale bar, north arrow, and grid on the map.'}
             </p>
           )}

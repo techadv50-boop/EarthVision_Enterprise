@@ -776,7 +776,7 @@ export function WorkspacePage() {
     setToolLoading(true);
     setToolStatus(
       opticalShip
-        ? 'Ship Detection · water-body AOI · open-sea reflectance vs water…'
+        ? 'Ship Detection · water-body AOI · highlight above water NIR range + wakes…'
         : `Detection: ${task.replaceAll('_', ' ')}…`,
     );
     setError(null);
