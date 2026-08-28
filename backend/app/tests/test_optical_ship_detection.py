@@ -136,9 +136,50 @@ def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
     bounds = [74.0, 31.0, 74.5, 31.4]
     out = detect_ships_optical_nir(bands, bounds, confidence_min=0.15, collection="SENTINEL-2")
     assert out["count"] >= 1
-    assert "reflectance" in out["formula"].lower() or "NIR" in out["formula"] or "CFAR" in out["formula"]
+    formula = out["formula"].lower()
+    assert "water" in formula and ("nir" in formula or "wake" in formula)
     assert out["overlay"] is not None
     assert out["overlay"].shape == (h, w, 4)
+
+
+def test_two_open_sea_hulls_with_wakes_are_both_found():
+    """Bright hulls + wakes above dark open-sea water must both become contacts."""
+    from app.services.optical_ship_detection import detect_ships_optical_nir
+
+    h = w = 96
+    nir = np.full((h, w), 0.035, dtype=np.float64)
+    green = np.full((h, w), 0.04, dtype=np.float64)
+    blue = np.full((h, w), 0.045, dtype=np.float64)
+    red = np.full((h, w), 0.03, dtype=np.float64)
+    # Ship A hull + elongated wake
+    nir[30:34, 20:28] = 0.32
+    red[30:34, 20:28] = 0.28
+    green[30:34, 20:28] = 0.26
+    blue[30:34, 20:28] = 0.24
+    nir[31:33, 28:48] = 0.09
+    red[31:33, 28:48] = 0.06
+    green[31:33, 28:48] = 0.055
+    # Ship B hull + wake
+    nir[55:59, 50:58] = 0.30
+    red[55:59, 50:58] = 0.25
+    green[55:59, 50:58] = 0.22
+    blue[55:59, 50:58] = 0.20
+    nir[56:58, 58:78] = 0.085
+    red[56:58, 58:78] = 0.055
+
+    out = detect_ships_optical_nir(
+        {"nir": nir, "green": green, "blue": blue, "red": red},
+        [52.8, 26.8, 52.9, 26.9],
+        confidence_min=0.10,
+        collection="SENTINEL-2",
+    )
+    assert out["count"] >= 2, out["message"]
+    cents = [
+        f
+        for f in out["geojson"]["features"]
+        if f["properties"].get("geom_role") == "centroid"
+    ]
+    assert len(cents) >= 2
 
 
 def test_nir_ship_detect_default_confidence_keeps_metal():

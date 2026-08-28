@@ -144,8 +144,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "ai",
         "algorithm": (
-            "Optical NIR ship detect — ignore water(NDWI)+cloud(SCL); "
-            "metal deck & chimney-smoke CFAR peaks → point+polygon shapefile"
+            "Open-sea water NIR/VIS range — highlight pixels above water "
+            "reflectance (+ wake streaks) → red on-image contacts"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
@@ -156,8 +156,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "maritime",
         "algorithm": (
-            "Optical NIR ship detect — ignore water(NDWI)+cloud(SCL); "
-            "metal deck & chimney-smoke CFAR peaks → point+polygon shapefile"
+            "Open-sea water NIR/VIS range — highlight pixels above water "
+            "reflectance (+ wake streaks) → red on-image contacts"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
@@ -573,8 +573,8 @@ class DetectionService:
                     "Could not load the NIR band for this scene — turn the eye off/on and retry."
                 )
             bands, band_bounds = bands_pack
-            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.12)
-            conf_min = max(0.08, min(conf_min, 0.9))
+            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.10)
+            conf_min = max(0.06, min(conf_min, 0.9))
             result = detect_ships_optical_nir(
                 bands,
                 band_bounds,
