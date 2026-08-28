@@ -163,7 +163,22 @@ export function WorkspacePage() {
   const [bufferLoading, setBufferLoading] = useState(false);
   const [lastBufferDistance, setLastBufferDistance] = useState<number | null>(null);
   const [lastBufferArea, setLastBufferArea] = useState<number | null>(null);
-  const [mapCommand, setMapCommand] = useState<{ id: number; type: string } | null>(null);
+  const [mapCommand, setMapCommand] = useState<{
+    id: number;
+    type: string;
+    lat?: number;
+    lon?: number;
+    zoom?: number;
+  } | null>(null);
+  const [shipContacts, setShipContacts] = useState<
+    Array<{ id: number; lon: number; lat: number; confidence: number; label: string }>
+  >([]);
+  const [activeContactId, setActiveContactId] = useState<number | null>(null);
+  const [focusContact, setFocusContact] = useState<{
+    id: number;
+    lat: number;
+    lon: number;
+  } | null>(null);
   const [compositeResult, setCompositeResult] = useState<CompositeResult | null>(null);
   const [classificationResult, setClassificationResult] =
     useState<ClassificationResult | null>(null);
@@ -798,7 +813,7 @@ export function WorkspacePage() {
         bbox: opticalShip ? [...shipBbox] : [...analysisBbox],
         scene_id: focusScene?.id,
         aoi: opticalShip ? shipAoi : aoiGeoJson?.geometry ?? null,
-        confidence_min: opticalShip ? 0.18 : 0.35,
+        confidence_min: opticalShip ? 0.12 : 0.35,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(
@@ -825,10 +840,38 @@ export function WorkspacePage() {
         visible: true,
       });
       if (opticalShip) {
-        const n = result.count ?? 0;
+        const contacts = (result.geojson?.features || [])
+          .filter(
+            (f) =>
+              f.geometry?.type === 'Point' &&
+              (f.properties as { geom_role?: string } | null)?.geom_role === 'centroid',
+          )
+          .map((f, i) => {
+            const props = (f.properties || {}) as {
+              contact_id?: number;
+              confidence?: number;
+              label?: string;
+              lon?: number;
+              lat?: number;
+            };
+            const coords = (f.geometry as GeoJSON.Point).coordinates;
+            const id = Number(props.contact_id ?? i + 1);
+            return {
+              id,
+              lon: Number(props.lon ?? coords[0]),
+              lat: Number(props.lat ?? coords[1]),
+              confidence: Number(props.confidence ?? 0),
+              label: String(props.label ?? `Ship ${id}`),
+            };
+          })
+          .sort((a, b) => a.id - b.id);
+        setShipContacts(contacts);
+        setActiveContactId(null);
+        setFocusContact(null);
+        const n = contacts.length;
         setLastMessage(
           n > 0
-            ? `${result.message || `${n} ship(s) found`} · marked in red on the image`
+            ? `${n} ship contact(s) · use the list below to Locate each one`
             : (result.message || 'No ships found inside the water AOI') +
                 ' · draw a tighter AOI over open water and retry',
         );
@@ -1723,6 +1766,7 @@ export function WorkspacePage() {
             showGrid={mapChrome.grid !== false}
             mapChrome={mapChrome}
             mapCommand={mapCommand}
+            focusContact={focusContact}
             onPlaceClick={onPlaceClick}
             onAoiComplete={(feature) => {
               setAoiGeoJson(feature);
@@ -1810,6 +1854,22 @@ export function WorkspacePage() {
               lastBufferArea={lastBufferArea}
               lastLegend={lastLegend}
               lastMessage={lastMessage}
+              shipContacts={shipContacts}
+              activeContactId={activeContactId}
+              onLocateContact={(c) => {
+                setActiveContactId(c.id);
+                setFocusContact({ id: c.id, lat: c.lat, lon: c.lon });
+                setMapCommand({
+                  id: Date.now(),
+                  type: 'fly-to',
+                  lat: c.lat,
+                  lon: c.lon,
+                  zoom: 16,
+                });
+                setLastMessage(
+                  `Locating ${c.label} · ${c.lat.toFixed(5)}°, ${c.lon.toFixed(5)}°`,
+                );
+              }}
               mapChrome={mapChrome}
               allowedTools={allowedTools}
               toolsEnabled={satelliteActive}

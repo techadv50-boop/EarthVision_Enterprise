@@ -56,7 +56,15 @@ interface Props {
     rotate?: boolean;
     terrainRelief?: boolean;
   };
-  mapCommand?: { id: number; type: string } | null;
+  mapCommand?: {
+    id: number;
+    type: string;
+    lat?: number;
+    lon?: number;
+    zoom?: number;
+  } | null;
+  /** Highlighted ship contact after Locate (lat, lon, id). */
+  focusContact?: { id: number; lat: number; lon: number } | null;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
   onDrawnFeature: (feature: DrawnFeature) => void;
@@ -71,7 +79,13 @@ function toLatLon(pts: LonLat[]): LatLon[] {
 function MapCommandRunner({
   command,
 }: {
-  command: { id: number; type: string } | null | undefined;
+  command: {
+    id: number;
+    type: string;
+    lat?: number;
+    lon?: number;
+    zoom?: number;
+  } | null | undefined;
 }) {
   const map = useMap();
   useEffect(() => {
@@ -83,6 +97,15 @@ function MapCommandRunner({
       if (!el) return;
       if (document.fullscreenElement) void document.exitFullscreen();
       else void el.requestFullscreen?.();
+    }
+    if (
+      command.type === 'fly-to' &&
+      Number.isFinite(command.lat) &&
+      Number.isFinite(command.lon)
+    ) {
+      map.flyTo([command.lat as number, command.lon as number], command.zoom ?? 16, {
+        duration: 0.75,
+      });
     }
   }, [command, map]);
   return null;
@@ -731,14 +754,38 @@ function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
 }
 
 function detectionPointToLayer(feature: GeoJSON.Feature, latlng: L.LatLng) {
-  const conf = Number((feature.properties as { confidence?: number } | null)?.confidence ?? 0.6);
-  const radius = 4 + Math.round(conf * 4);
+  const props = (feature.properties || {}) as {
+    confidence?: number;
+    contact_id?: number;
+    geom_role?: string;
+  };
+  if (props.geom_role && props.geom_role !== 'centroid') {
+    return L.circleMarker(latlng, { radius: 0, opacity: 0, fillOpacity: 0 });
+  }
+  const n = Number(props.contact_id ?? 0);
+  if (n > 0) {
+    return L.marker(latlng, {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({
+        className: '',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+        html:
+          `<div style="width:22px;height:22px;border-radius:999px;background:#ff0000;` +
+          `border:2px solid #fff;color:#fff;font:700 11px/18px sans-serif;` +
+          `text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.45)">${n}</div>`,
+      }),
+    });
+  }
+  const conf = Number(props.confidence ?? 0.6);
+  const radius = 5 + Math.round(conf * 3);
   return L.circleMarker(latlng, {
     radius,
     color: '#ff0000',
     weight: 2,
     fillColor: '#ff0000',
-    fillOpacity: 0.35,
+    fillOpacity: 0.25,
     opacity: 1,
   });
 }
@@ -754,6 +801,7 @@ export function LightMap({
   showGrid = true,
   mapChrome,
   mapCommand,
+  focusContact = null,
   onPlaceClick,
   onAoiComplete,
   onDrawnFeature,
@@ -880,6 +928,22 @@ export function LightMap({
           position={[place.latitude, place.longitude]}
           icon={markerIcon}
           interactive={false}
+        />
+      )}
+
+      {focusContact && (
+        <CircleMarker
+          center={[focusContact.lat, focusContact.lon]}
+          radius={14}
+          interactive={false}
+          pane="evDrawPane"
+          pathOptions={{
+            color: '#fbbf24',
+            weight: 3,
+            fillColor: '#f59e0b',
+            fillOpacity: 0.15,
+            opacity: 1,
+          }}
         />
       )}
 

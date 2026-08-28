@@ -60,8 +60,8 @@ export const detectionService = {
     confidence_min?: number;
   }): Promise<DetectionResult> {
     const { data } = await api.post<DetectionResult>('/detection/run', {
-      // Ship NIR CFAR scores often map ~0.25–0.40; 0.45 was dropping real ships.
-      confidence_min: 0.25,
+      // Ship NIR CFAR scores often map ~0.15–0.40; keep floor low for open-sea recall.
+      confidence_min: 0.12,
       ...payload,
     });
     return data;

@@ -46,6 +46,12 @@ def test_open_sea_bright_ship_not_masked_as_cloud():
         collection="SENTINEL-2",
     )
     assert out["count"] >= 1, out["message"]
+    cents = [
+        f
+        for f in out["geojson"]["features"]
+        if f["properties"].get("geom_role") == "centroid"
+    ]
+    assert cents and cents[0]["properties"].get("contact_id") == 1
     assert any(f["geometry"]["type"] == "Point" for f in out["geojson"]["features"])
     assert any(f["geometry"]["type"] == "Polygon" for f in out["geojson"]["features"])
     assert out["overlay"] is not None
