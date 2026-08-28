@@ -411,9 +411,9 @@ def detect_ships_optical_nir(
                 north - (rr + 0.5) / h * (north - south),
             ]
 
-        # Pad footprint a bit so red boxes stay readable on the map
-        pad_r = max(1.0, 0.35 * (r1 - r0 + 1))
-        pad_c = max(1.0, 0.35 * (c1 - c0 + 1))
+        # Tight footprint so red box frames the object without covering it
+        pad_r = 0.75
+        pad_c = 0.75
         ring = [
             rc_to_lonlat(r0 - pad_r, c0 - pad_c),
             rc_to_lonlat(r0 - pad_r, c1 + pad_c),
@@ -475,21 +475,21 @@ def _ship_overlay_rgba(
     water: np.ndarray,
     cloud: np.ndarray,
 ) -> np.ndarray:
-    """Transparent overlay: solid red ship bodies + thicker red outlines on imagery."""
+    """Transparent overlay: thin red outline only so the ship stays visible."""
     del water, cloud, bright  # imagery underneath stays visible
     h, w = ship_mask.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     if not ship_mask.any():
         return rgba
-    # Soft red fill on detected pixels
+    # Very light red wash on ship pixels (object still readable)
     rgba[ship_mask, 0] = 255
-    rgba[ship_mask, 1] = 24
-    rgba[ship_mask, 2] = 24
-    rgba[ship_mask, 3] = 200
-    # Bright red outline ring so objects read clearly on the satellite image
-    outline = _dilate(ship_mask, iters=2) & ~ship_mask
+    rgba[ship_mask, 1] = 40
+    rgba[ship_mask, 2] = 40
+    rgba[ship_mask, 3] = 70
+    # Crisp red ring around the object
+    outline = _dilate(ship_mask, iters=1) & ~ship_mask
     rgba[outline, 0] = 255
     rgba[outline, 1] = 0
     rgba[outline, 2] = 0
-    rgba[outline, 3] = 255
+    rgba[outline, 3] = 230
     return rgba
