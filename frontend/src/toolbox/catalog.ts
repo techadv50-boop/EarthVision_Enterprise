@@ -41,6 +41,8 @@ export interface ToolboxTool {
   hint?: string;
   /** Prefer a visible scene when running on imagery */
   needsScene?: boolean;
+  /** Landsat / Sentinel-2 optical only (e.g. Ship Detection) */
+  opticalOnly?: boolean;
 }
 
 export interface ToolboxDef {
@@ -138,7 +140,16 @@ export const TOOLBOXES: ToolboxDef[] = [
       { id: 'runway_detection', label: 'Runway Detection', action: { type: 'detection', task: 'runway_detection' }, needsScene: true },
       { id: 'port_mapping', label: 'Port Mapping', action: { type: 'detection', task: 'port_mapping' }, needsScene: true },
       { id: 'harbor_detection', label: 'Harbor Detection', action: { type: 'detection', task: 'harbor_detection' }, needsScene: true },
-      { id: 'ship_detection', label: 'Ship Detection', action: { type: 'detection', task: 'ship_detection' }, needsScene: true },
+      {
+        id: 'ship_detection',
+        label: 'Ship Detection',
+        action: { type: 'detection', task: 'ship_detection' },
+        needsScene: true,
+        opticalOnly: true,
+        hint:
+          'Optical only (Landsat / Sentinel-2). Uses NIR; ignores water & cloud; ' +
+          'metal/smoke cues → point & polygon shapefile',
+      },
       { id: 'aircraft_detection', label: 'Aircraft Detection', action: { type: 'detection', task: 'aircraft_detection' }, needsScene: true },
       { id: 'railway_detection', label: 'Railway Detection', action: { type: 'detection', task: 'railway_detection' }, needsScene: true },
       { id: 'powerline', label: 'Powerline Corridor Mapping', action: { type: 'detection', task: 'powerline_corridor_mapping' }, needsScene: true },
@@ -185,7 +196,15 @@ export const TOOLBOXES: ToolboxDef[] = [
     blurb: 'Ships, ports, ocean overlays & coasts',
     tools: [
       { id: 'ship_sar', label: 'Ship Detection (SAR)', action: { type: 'detection', task: 'ship_detection_sar' }, needsScene: true },
-      { id: 'ship_opt', label: 'Ship Detection (Optical)', action: { type: 'detection', task: 'ship_detection_optical' }, needsScene: true },
+      {
+        id: 'ship_opt',
+        label: 'Ship Detection (Optical)',
+        action: { type: 'detection', task: 'ship_detection_optical' },
+        needsScene: true,
+        opticalOnly: true,
+        hint:
+          'Optical only (Landsat / Sentinel-2). NIR metal/smoke cues; water & cloud ignored → shapefile',
+      },
       { id: 'vessel_density', label: 'Vessel Density Map', action: { type: 'detection', task: 'vessel_density_map' }, needsScene: true },
       { id: 'port_act', label: 'Port Activity Mapping', action: { type: 'detection', task: 'port_activity_mapping' }, needsScene: true },
       { id: 'anchorage', label: 'Anchorage Detection', action: { type: 'detection', task: 'anchorage_detection' }, needsScene: true },

@@ -83,6 +83,34 @@ function opticalProcessingBlockReason(collection?: string | null): string | null
   return null;
 }
 
+/** Ship Detection: Landsat / Sentinel-2 optical only. */
+function opticalShipBlockReason(
+  hasScene: boolean,
+  collection?: string | null,
+): string | null {
+  if (!hasScene) {
+    return 'Ship Detection stays off until you select a Landsat or Sentinel-2 image (turn the eye on).';
+  }
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  if (!c) {
+    return 'Ship Detection requires a Landsat or Sentinel-2 optical scene.';
+  }
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) {
+    return 'Ship Detection (optical) does not support Sentinel-1 SAR. Use Sentinel-2 or Landsat.';
+  }
+  const ok =
+    c.includes('SENTINEL-2') ||
+    c.startsWith('S2') ||
+    c.includes('LANDSAT') ||
+    c.startsWith('L8') ||
+    c.startsWith('L9') ||
+    c.startsWith('L7');
+  if (!ok) {
+    return 'Ship Detection works only with Landsat and Sentinel-2 optical imagery.';
+  }
+  return null;
+}
+
 function aoiBbox(
   aoi: GeoJSON.Feature | null,
   fallback: [number, number, number, number],
@@ -697,8 +725,27 @@ export function WorkspacePage() {
   };
 
   const runDetection = async (task: string) => {
+    const opticalShip =
+      task === 'ship_detection' || task === 'ship_detection_optical';
+    if (opticalShip) {
+      const blocked = opticalShipBlockReason(
+        Boolean(focusScene),
+        focusScene?.collection ?? catalogFilters.satelliteId,
+      );
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
+    } else if (!focusScene && !analysisBbox) {
+      setError('Show a satellite scene first');
+      return;
+    }
     setToolLoading(true);
-    setToolStatus(`Detection: ${task.replaceAll('_', ' ')}…`);
+    setToolStatus(
+      opticalShip
+        ? 'Ship Detection · NIR band · ignoring water & cloud…'
+        : `Detection: ${task.replaceAll('_', ' ')}…`,
+    );
     setError(null);
     try {
       const result = await detectionService.run({
@@ -706,7 +753,7 @@ export function WorkspacePage() {
         bbox: [...analysisBbox],
         scene_id: focusScene?.id,
         aoi: aoiGeoJson?.geometry ?? null,
-        confidence_min: 0.45,
+        confidence_min: opticalShip ? 0.45 : 0.45,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(
@@ -714,7 +761,6 @@ export function WorkspacePage() {
           ? `${result.message} · ${result.formula}`
           : result.message,
       );
-      // Force map cartography chrome whenever objects are detected
       useWorkflowStore.getState().setMapChrome({
         compass: true,
         scaleBar: true,
@@ -733,6 +779,23 @@ export function WorkspacePage() {
         label: task.replaceAll('_', ' '),
         visible: true,
       });
+      if (opticalShip && result.shapefile_ready && result.geojson?.features?.length) {
+        try {
+          await detectionService.downloadShapefile(
+            result.geojson,
+            `ship_detection_${(focusScene?.id || 'scene').slice(0, 40)}`,
+          );
+          setLastMessage(
+            (result.message || 'Ship Detection complete') +
+              ' · shapefile (points + polygons) downloaded',
+          );
+        } catch {
+          setLastMessage(
+            (result.message || 'Ship Detection complete') +
+              ' · map vectors ready (shapefile download failed — retry export)',
+          );
+        }
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {

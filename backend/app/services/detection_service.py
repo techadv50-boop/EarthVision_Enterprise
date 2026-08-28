@@ -143,8 +143,24 @@ TASK_META: dict[str, dict[str, Any]] = {
         "kind": "point",
         "count": (5, 18),
         "domain": "ai",
-        "algorithm": "Bright-target CFAR-style peaks on water (NDWI mask)",
-        "spectral": "water_blob",
+        "algorithm": (
+            "Optical NIR ship detect — ignore water(NDWI)+cloud(SCL); "
+            "metal deck & chimney-smoke CFAR peaks → point+polygon shapefile"
+        ),
+        "spectral": "optical_nir_ship",
+        "optical_only": True,
+    },
+    "ship_detection_optical": {
+        "label": "Ship (optical)",
+        "kind": "point",
+        "count": (5, 18),
+        "domain": "maritime",
+        "algorithm": (
+            "Optical NIR ship detect — ignore water(NDWI)+cloud(SCL); "
+            "metal deck & chimney-smoke CFAR peaks → point+polygon shapefile"
+        ),
+        "spectral": "optical_nir_ship",
+        "optical_only": True,
     },
     "aircraft_detection": {
         "label": "Aircraft",
@@ -250,14 +266,6 @@ TASK_META: dict[str, dict[str, Any]] = {
         "domain": "maritime",
         "algorithm": "CFAR bright-target detection on SAR-like intensity",
         "spectral": "blob",
-    },
-    "ship_detection_optical": {
-        "label": "Ship (optical)",
-        "kind": "point",
-        "count": (5, 18),
-        "domain": "maritime",
-        "algorithm": "Optical CFAR on NDWI water mask",
-        "spectral": "water_blob",
     },
     "vessel_density_map": {
         "label": "Vessel density",
@@ -527,6 +535,60 @@ class DetectionService:
         }
         algorithm = str(meta.get("algorithm") or "heuristic detector")
 
+        # Optical NIR ship detection (AI Tools → Ship Detection)
+        from app.services.optical_ship_detection import (
+            OPTICAL_SHIP_TASKS,
+            collection_is_optical_landsat_or_s2,
+            detect_ships_optical_nir,
+        )
+
+        if task in OPTICAL_SHIP_TASKS:
+            if not request.scene_id:
+                raise ValidationError(
+                    "Ship Detection stays off until you select a Landsat or Sentinel-2 image "
+                    "(turn the eye on)."
+                )
+            collection = self._scene_collection(request.scene_id)
+            if not collection_is_optical_landsat_or_s2(collection):
+                raise ValidationError(
+                    "Ship Detection works only with Landsat and Sentinel-2 optical imagery "
+                    f"(got {collection or 'unknown'})."
+                )
+            bands = self._try_load_bands(
+                request.scene_id,
+                size=512,
+                band_names=("red", "green", "blue", "nir", "swir", "scl"),
+            )
+            if not bands or "nir" not in bands:
+                raise ValidationError(
+                    "Could not load the NIR band for this scene — turn the eye off/on and retry."
+                )
+            result = detect_ships_optical_nir(
+                bands,
+                bounds,
+                confidence_min=request.confidence_min,
+                collection=collection,
+            )
+            overlay_b64 = None
+            if result.get("overlay") is not None:
+                from app.services.overlay_encode import encode_rgba_overlay
+
+                data, _mime = encode_rgba_overlay(result["overlay"], prefer="webp", quality=75)
+                overlay_b64 = base64.b64encode(data).decode("ascii")
+            legend = self._legend(meta["label"], result["formula"])
+            return DetectionRunResponse(
+                task=task,
+                bounds=bounds,
+                overlay_base64=overlay_b64,
+                geojson=result["geojson"],
+                count=int(result["count"]),
+                legend=legend,
+                message=result["message"],
+                formula=result["formula"],
+                shapefile_ready=True,
+                geometry_types=["Point", "Polygon"],
+            )
+
         bands = self._try_load_bands(request.scene_id)
         features: list[dict[str, Any]] = []
         mode = "synthetic_seeded"
@@ -563,7 +625,23 @@ class DetectionService:
             formula=f"{algorithm} [{mode}]",
         )
 
-    def _try_load_bands(self, scene_id: str | None) -> dict[str, np.ndarray] | None:
+    def _scene_collection(self, scene_id: str) -> str | None:
+        try:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            layer = SceneImageryService().get_layer(scene_id)
+            if layer:
+                return str(layer.get("collection") or layer.get("source") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("scene collection lookup failed: {}", exc)
+        return None
+
+    def _try_load_bands(
+        self,
+        scene_id: str | None,
+        size: int = 256,
+        band_names: tuple[str, ...] = ("red", "green", "blue", "nir", "swir", "swir2"),
+    ) -> dict[str, np.ndarray] | None:
         if not scene_id:
             return None
         try:
@@ -571,8 +649,8 @@ class DetectionService:
 
             bands, _bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
                 scene_id,
-                size=256,
-                band_names=("red", "green", "blue", "nir", "swir", "swir2"),
+                size=size,
+                band_names=band_names,
             )
             return bands or None
         except Exception as exc:  # noqa: BLE001
