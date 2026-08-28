@@ -598,7 +598,8 @@ class DetectionService:
                 legend=legend,
                 message=result["message"],
                 formula=result["formula"],
-                shapefile_ready=True,
+                # On-image red demarcation only — no automatic shapefile download
+                shapefile_ready=False,
                 geometry_types=["Point", "Polygon"],
             )
 

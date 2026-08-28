@@ -155,7 +155,7 @@ export const TOOLBOXES: ToolboxDef[] = [
         requiresWaterAoi: true,
         hint:
           'Active only with Landsat/Sentinel-2 eye ON + a drawn water-body AOI (Rect/Poly). ' +
-          'Runs open-sea reflectance vs water inside that AOI → point & polygon shapefile',
+          'Runs open-sea reflectance vs water inside that AOI and marks ships in red on the image',
       },
       { id: 'aircraft_detection', label: 'Aircraft Detection', action: { type: 'detection', task: 'aircraft_detection' }, needsScene: true, inactive: true },
       { id: 'railway_detection', label: 'Railway Detection', action: { type: 'detection', task: 'railway_detection' }, needsScene: true, inactive: true },

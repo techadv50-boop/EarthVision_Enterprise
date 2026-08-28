@@ -411,12 +411,15 @@ def detect_ships_optical_nir(
                 north - (rr + 0.5) / h * (north - south),
             ]
 
+        # Pad footprint a bit so red boxes stay readable on the map
+        pad_r = max(1.0, 0.35 * (r1 - r0 + 1))
+        pad_c = max(1.0, 0.35 * (c1 - c0 + 1))
         ring = [
-            rc_to_lonlat(r0 - 0.5, c0 - 0.5),
-            rc_to_lonlat(r0 - 0.5, c1 + 0.5),
-            rc_to_lonlat(r1 + 0.5, c1 + 0.5),
-            rc_to_lonlat(r1 + 0.5, c0 - 0.5),
-            rc_to_lonlat(r0 - 0.5, c0 - 0.5),
+            rc_to_lonlat(r0 - pad_r, c0 - pad_c),
+            rc_to_lonlat(r0 - pad_r, c1 + pad_c),
+            rc_to_lonlat(r1 + pad_r, c1 + pad_c),
+            rc_to_lonlat(r1 + pad_r, c0 - pad_c),
+            rc_to_lonlat(r0 - pad_r, c0 - pad_c),
         ]
         mean_nir = float(np.nanmean(nir_f[ys, xs]))
         mean_b = float(np.nanmean(bright[ys, xs]))
@@ -457,11 +460,11 @@ def detect_ships_optical_nir(
         "overlay": overlay,
         "formula": (
             "water-body AOI · open-sea object reflectance vs water (VIS+NIR CFAR) · "
-            "SCL cloud · metal/harbor NIR → point+polygon shapefile"
+            "SCL cloud · red on-image demarcation"
         ),
         "message": (
             f"{n_ships} ship candidate(s) inside water AOI "
-            f"(open-sea reflectance vs water · water/cloud ignored)"
+            f"(marked in red on the image)"
         ),
     }
 
@@ -472,24 +475,21 @@ def _ship_overlay_rgba(
     water: np.ndarray,
     cloud: np.ndarray,
 ) -> np.ndarray:
-    h, w = bright.shape
+    """Transparent overlay: solid red ship bodies + thicker red outlines on imagery."""
+    del water, cloud, bright  # imagery underneath stays visible
+    h, w = ship_mask.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
-    ctx = np.clip(bright, 0, 0.45) / 0.45
-    show = np.isfinite(bright) & ~cloud
-    gray = (ctx * 150).astype(np.uint8)
-    # Hint water in blue so overlay is readable at sea
-    water_show = show & water
-    land_show = show & ~water
-    rgba[land_show, 0] = gray[land_show]
-    rgba[land_show, 1] = gray[land_show]
-    rgba[land_show, 2] = (gray[land_show] * 0.85).astype(np.uint8)
-    rgba[land_show, 3] = 70
-    rgba[water_show, 0] = 20
-    rgba[water_show, 1] = 60
-    rgba[water_show, 2] = 140
-    rgba[water_show, 3] = 40
+    if not ship_mask.any():
+        return rgba
+    # Soft red fill on detected pixels
     rgba[ship_mask, 0] = 255
-    rgba[ship_mask, 1] = 60
-    rgba[ship_mask, 2] = 40
-    rgba[ship_mask, 3] = 230
+    rgba[ship_mask, 1] = 24
+    rgba[ship_mask, 2] = 24
+    rgba[ship_mask, 3] = 200
+    # Bright red outline ring so objects read clearly on the satellite image
+    outline = _dilate(ship_mask, iters=2) & ~ship_mask
+    rgba[outline, 0] = 255
+    rgba[outline, 1] = 0
+    rgba[outline, 2] = 0
+    rgba[outline, 3] = 255
     return rgba

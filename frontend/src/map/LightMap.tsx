@@ -699,21 +699,28 @@ function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
     return { color: '#7c3aed', weight: 2, fillColor: '#7c3aed', fillOpacity: 0.18 };
   }
   if (kind === 'detection') {
-    return { color: '#dc2626', weight: 2.5, fillColor: '#ef4444', fillOpacity: 0.28, opacity: 0.95 };
+    // Bright red boxes around detected ships on the imagery
+    return {
+      color: '#ff0000',
+      weight: 3,
+      fillColor: '#ff0000',
+      fillOpacity: 0.22,
+      opacity: 1,
+    };
   }
   return { color: '#0f766e', weight: 1.5, fillOpacity: 0, opacity: 0.9 };
 }
 
 function detectionPointToLayer(feature: GeoJSON.Feature, latlng: L.LatLng) {
   const conf = Number((feature.properties as { confidence?: number } | null)?.confidence ?? 0.6);
-  const radius = 4 + Math.round(conf * 6);
+  const radius = 6 + Math.round(conf * 8);
   return L.circleMarker(latlng, {
     radius,
-    color: '#991b1b',
-    weight: 1.5,
-    fillColor: '#ef4444',
-    fillOpacity: 0.85,
-    opacity: 0.95,
+    color: '#ff0000',
+    weight: 2.5,
+    fillColor: '#ff0000',
+    fillOpacity: 0.9,
+    opacity: 1,
   });
 }
 

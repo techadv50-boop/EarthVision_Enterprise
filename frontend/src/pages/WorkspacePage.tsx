@@ -820,34 +820,18 @@ export function WorkspacePage() {
           : '',
         bounds: result.bounds as [number, number, number, number],
         geojson: result.geojson,
-        opacity: layerOpacity,
+        opacity: opticalShip ? Math.max(layerOpacity, 0.92) : layerOpacity,
         label: task.replaceAll('_', ' '),
         visible: true,
       });
-      if (opticalShip && result.shapefile_ready) {
-        const nFeat = result.geojson?.features?.length ?? 0;
-        if (nFeat > 0) {
-          try {
-            await detectionService.downloadShapefile(
-              result.geojson,
-              `ship_detection_${(focusScene?.id || 'scene').slice(0, 40)}`,
-            );
-            setLastMessage(
-              (result.message || 'Ship Detection complete') +
-                ' · shapefile (points + polygons) downloaded',
-            );
-          } catch {
-            setLastMessage(
-              (result.message || 'Ship Detection complete') +
-                ' · map vectors ready (shapefile download failed — retry export)',
-            );
-          }
-        } else {
-          setLastMessage(
-            (result.message || 'No ships found') +
-              ' · try a coastal / harbor scene with the eye on (no shapefile when empty)',
-          );
-        }
+      if (opticalShip) {
+        const n = result.count ?? 0;
+        setLastMessage(
+          n > 0
+            ? `${result.message || `${n} ship(s) found`} · marked in red on the image`
+            : (result.message || 'No ships found inside the water AOI') +
+                ' · draw a tighter AOI over open water and retry',
+        );
       }
     } catch (err) {
       setError(getErrorMessage(err));
