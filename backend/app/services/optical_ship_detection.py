@@ -213,38 +213,52 @@ def detect_ships_optical_nir(
 
     cfar = _local_cfar(nir_f, bg, radius=5)
 
-    # Metal / deck-like NIR reflectance (not water-classed)
+    # Metal / deck-like NIR reflectance (not water/cloud-classed)
+    near_water = _dilate(water, iters=5)
     metal = (
         finite
         & ~water
         & ~cloud
+        & near_water
         & (nir_f >= NIR_METAL_LO)
         & (nir_f <= NIR_METAL_HI)
     )
-    # Suppress dense vegetation inland; keep near-water metal even if NDVI-ish
-    near_water = _dilate(water, iters=2)
     if red is not None:
         ndvi = _safe_div(nir_f - red.astype(np.float64), nir_f + red.astype(np.float64))
-        metal &= near_water | (np.nan_to_num(ndvi, nan=0.0) < 0.55)
+        # Soft vegetation veto (keep docks / metal even if NDVI-ish)
+        metal &= np.nan_to_num(ndvi, nan=0.0) < 0.65
 
-    # Chimney / exhaust: strong local NIR anomaly, not cloud/water
-    smoke_like = finite & ~water & ~cloud & (cfar >= CFAR_K) & (nir_f >= 0.08)
-
-    # Prefer targets near water (ships) — dilate water mask
-    ship_mask = ((metal & (cfar >= (CFAR_K * 0.55))) | smoke_like) & (
-        near_water | (cfar >= CFAR_K)
+    # Chimney / exhaust: strong local NIR anomaly on/near water only
+    smoke_like = (
+        finite & ~water & ~cloud & near_water & (cfar >= CFAR_K) & (nir_f >= 0.08)
     )
+
+    # Water/cloud reflectance itself is never labeled as ship.
+    ship_mask = (metal & (cfar >= (CFAR_K * 0.45))) | smoke_like
+
+    # Prefer water-adjacent neighborhoods (docked / at-sea); allow pier edges
+    water_frac = _box_filter(water.astype(np.float64), size=11)
+    ship_mask &= water_frac >= 0.10
 
     if int(ship_mask.sum()) > MAX_FEATURES * 40:
         thr = float(np.nanpercentile(cfar[ship_mask], 70))
         ship_mask &= cfar >= thr
 
     if int(ship_mask.sum()) == 0:
-        # Fallback: brightest non-water/non-cloud NIR peaks (metal window)
-        cand = metal & np.isfinite(cfar)
+        # Fallback: brightest near-water metal NIR peaks
+        cand = metal & near_water & np.isfinite(cfar) & (water_frac >= 0.2)
         if int(cand.sum()) > 0:
-            thr = float(np.nanpercentile(cfar[cand], 95))
+            thr = float(np.nanpercentile(cfar[cand], 92))
             ship_mask = cand & (cfar >= max(thr, 1.0))
+
+    # Drop tiny speckles (need a few coherent pixels ≈ small boat footprint)
+    labeled_pre, n_pre = _label_components(ship_mask)
+    keep = np.zeros_like(ship_mask)
+    for lab in range(1, n_pre + 1):
+        ys, xs = np.where(labeled_pre == lab)
+        if ys.size >= max(MIN_COMPONENT_PIXELS, 4):
+            keep[ys, xs] = True
+    ship_mask = keep
 
     labeled, nlab = _label_components(ship_mask)
     west, south, east, north = (float(v) for v in bounds)
