@@ -61,6 +61,7 @@ interface Props {
   onAoiComplete: (feature: GeoJSON.Feature) => void;
   onDrawnFeature: (feature: DrawnFeature) => void;
   onMeasure: (label: string | null) => void;
+  onViewBoundsChange?: (bbox: [number, number, number, number]) => void;
 }
 
 function toLatLon(pts: LonLat[]): LatLon[] {
@@ -84,6 +85,29 @@ function MapCommandRunner({
       else void el.requestFullscreen?.();
     }
   }, [command, map]);
+  return null;
+}
+
+function ViewBoundsReporter({
+  onChange,
+}: {
+  onChange?: (bbox: [number, number, number, number]) => void;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (!onChange) return;
+    const emit = () => {
+      const b = map.getBounds();
+      onChange([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    };
+    emit();
+    map.on('moveend', emit);
+    map.on('zoomend', emit);
+    return () => {
+      map.off('moveend', emit);
+      map.off('zoomend', emit);
+    };
+  }, [map, onChange]);
   return null;
 }
 
@@ -708,6 +732,7 @@ export function LightMap({
   onAoiComplete,
   onDrawnFeature,
   onMeasure,
+  onViewBoundsChange,
 }: Props) {
   const [draft, setDraft] = useState<DraftState>({
     points: [],
@@ -802,6 +827,7 @@ export function LightMap({
       />
       <MapInteractionMode mapTool={mapTool} />
       <MapCommandRunner command={mapCommand} />
+      <ViewBoundsReporter onChange={onViewBoundsChange} />
       <EnsureStackPane />
       <EnforceStackOrder overlays={overlays} zIndexById={overlayZIndex} />
       <LatLngGrid enabled={showGrid} />
@@ -872,9 +898,10 @@ export function LightMap({
                 maxZoom={20}
                 pane="evStackPane"
                 zIndex={zIndex}
-                updateWhenZooming={false}
-                updateWhenIdle
-                keepBuffer={2}
+                // Fetch tiles during zoom so clear imagery sharpens sooner
+                updateWhenZooming
+                updateWhenIdle={false}
+                keepBuffer={6}
                 eventHandlers={tagHandlers}
               />
             ) : overlay.url ? (

@@ -554,19 +554,25 @@ class DetectionService:
                     "Ship Detection works only with Landsat and Sentinel-2 optical imagery "
                     f"(got {collection or 'unknown'})."
                 )
-            bands = self._try_load_bands(
+            bands_pack = self._try_load_bands_with_bounds(
                 request.scene_id,
-                size=512,
+                bounds=bounds,
+                size=1280,
+                max_edge=1536,
                 band_names=("red", "green", "blue", "nir", "swir", "scl"),
             )
-            if not bands or "nir" not in bands:
+            if not bands_pack or "nir" not in bands_pack[0]:
                 raise ValidationError(
                     "Could not load the NIR band for this scene — turn the eye off/on and retry."
                 )
+            bands, band_bounds = bands_pack
+            # Live default was 0.45 which dropped real NIR CFAR ships (~0.25–0.35).
+            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.18)
+            conf_min = max(0.08, min(conf_min, 0.9))
             result = detect_ships_optical_nir(
                 bands,
-                bounds,
-                confidence_min=request.confidence_min,
+                band_bounds,
+                confidence_min=conf_min,
                 collection=collection,
             )
             overlay_b64 = None
@@ -578,7 +584,7 @@ class DetectionService:
             legend = self._legend(meta["label"], result["formula"])
             return DetectionRunResponse(
                 task=task,
-                bounds=bounds,
+                bounds=band_bounds,
                 overlay_base64=overlay_b64,
                 geojson=result["geojson"],
                 count=int(result["count"]),
@@ -635,6 +641,35 @@ class DetectionService:
         except Exception as exc:  # noqa: BLE001
             logger.debug("scene collection lookup failed: {}", exc)
         return None
+
+    def _try_load_bands_with_bounds(
+        self,
+        scene_id: str | None,
+        *,
+        bounds: list[float],
+        size: int = 1024,
+        max_edge: int = 1536,
+        band_names: tuple[str, ...] = ("red", "green", "blue", "nir", "swir", "swir2"),
+    ) -> tuple[dict[str, np.ndarray], list[float]] | None:
+        """Load bands clipped to ``bounds`` (viewport / AOI) at higher resolution."""
+        if not scene_id:
+            return None
+        try:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            bands, used_bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
+                scene_id,
+                size=size,
+                bounds=bounds,
+                band_names=band_names,
+                max_edge=max_edge,
+            )
+            if not bands:
+                return None
+            return bands, [float(x) for x in used_bounds]
+        except Exception as exc:  # noqa: BLE001
+            logger.info("No scene bands for detection ({}): {}", scene_id, exc)
+            return None
 
     def _try_load_bands(
         self,
