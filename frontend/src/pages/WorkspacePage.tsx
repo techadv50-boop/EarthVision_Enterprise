@@ -820,7 +820,7 @@ export function WorkspacePage() {
           : '',
         bounds: result.bounds as [number, number, number, number],
         geojson: result.geojson,
-        opacity: opticalShip ? Math.max(layerOpacity, 0.92) : layerOpacity,
+        opacity: layerOpacity,
         label: task.replaceAll('_', ' '),
         visible: true,
       });

@@ -205,17 +205,21 @@ function FlyToPlace({ place }: { place: PlaceSelection | null }) {
 
 function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
   const map = useMap();
-  const lastId = useRef<string | null>(null);
+  // Fit only when a new imagery layer is first added — never on visibility toggles
+  // (hiding ship detection used to re-fit the scene → jump to full extent).
+  const fittedIds = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const last = overlays[overlays.length - 1];
-    if (!last || last.id === lastId.current) return;
-    // Don't auto-fit buffer-only updates
-    if (last.kind === 'buffer') {
-      lastId.current = last.id;
-      return;
-    }
-    lastId.current = last.id;
+    const newcomers = overlays.filter(
+      (o) =>
+        !fittedIds.current.has(o.id) &&
+        o.kind !== 'buffer' &&
+        o.kind !== 'detection',
+    );
+    for (const o of overlays) fittedIds.current.add(o.id);
+    if (!newcomers.length) return;
+    const last = newcomers[newcomers.length - 1];
     const [west, south, east, north] = last.bounds;
+    if (!(east > west && north > south)) return;
     map.fitBounds(
       [
         [south, west],
@@ -533,26 +537,30 @@ function DraftGraphics({
         <Polyline
           positions={toLatLon(points)}
           interactive={false}
-          pathOptions={{ color, weight: 2.5, opacity: 0.95 }}
+          pane="evDrawPane"
+          pathOptions={{ color, weight: 3, opacity: 1 }}
         />
       )}
       {previewLine && (
         <Polyline
           positions={previewLine}
           interactive={false}
-          pathOptions={{ color, weight: 2, dashArray: '6 4', opacity: 0.7 }}
+          pane="evDrawPane"
+          pathOptions={{ color, weight: 2.5, dashArray: '6 4', opacity: 0.85 }}
         />
       )}
       {closedRing && points.length >= 3 && (
         <Polygon
           positions={closedRing}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
             color,
-            weight: 2,
+            weight: 3,
             fillColor: color,
-            fillOpacity: 0.12,
+            fillOpacity: 0.1,
             dashArray: '4 3',
+            opacity: 1,
           }}
         />
       )}
@@ -560,12 +568,14 @@ function DraftGraphics({
         <Rectangle
           bounds={rectBounds}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
-            color: '#b45309',
-            weight: 2,
-            fillColor: '#b45309',
-            fillOpacity: 0.12,
+            color: '#f59e0b',
+            weight: 3,
+            fillColor: '#fbbf24',
+            fillOpacity: 0.1,
             dashArray: '6 4',
+            opacity: 1,
           }}
         />
       )}
@@ -575,6 +585,7 @@ function DraftGraphics({
           center={[lat, lon]}
           radius={mapTool === 'draw-point' ? 7 : 5}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
             color: '#fff',
             weight: 2,
@@ -596,6 +607,7 @@ function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
         center={[lat, lon]}
         radius={7}
         interactive={false}
+        pane="evDrawPane"
         pathOptions={{ color: '#fff', weight: 2, fillColor: '#0f766e', fillOpacity: 1 }}
       />
     );
@@ -608,12 +620,13 @@ function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
       <Polyline
         positions={positions}
         interactive={false}
+        pane="evDrawPane"
         pathOptions={{ color: '#0ea5e9', weight: 3, opacity: 0.95 }}
       />
     );
   }
   if (feature.type === 'Polygon' && feature.geometry.type === 'Polygon') {
-    // AOI already rendered separately; skip duplicate if same
+    // Water-body AOI is drawn via aoiOutline on evDrawPane (avoid duplicate fill).
     return null;
   }
   return null;
@@ -625,6 +638,12 @@ function EnsureStackPane() {
   if (!map.getPane('evStackPane')) {
     const pane = map.createPane('evStackPane');
     pane.style.zIndex = '450';
+    pane.style.pointerEvents = 'none';
+  }
+  // Drawings / AOI bounds must sit ABOVE imagery so polygon lines stay visible
+  if (!map.getPane('evDrawPane')) {
+    const pane = map.createPane('evDrawPane');
+    pane.style.zIndex = '650';
     pane.style.pointerEvents = 'none';
   }
   return null;
@@ -699,12 +718,12 @@ function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
     return { color: '#7c3aed', weight: 2, fillColor: '#7c3aed', fillOpacity: 0.18 };
   }
   if (kind === 'detection') {
-    // Bright red boxes around detected ships on the imagery
+    // Outline only — do not cover the ship object underneath
     return {
       color: '#ff0000',
-      weight: 3,
+      weight: 2.5,
       fillColor: '#ff0000',
-      fillOpacity: 0.22,
+      fillOpacity: 0.08,
       opacity: 1,
     };
   }
@@ -713,13 +732,13 @@ function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
 
 function detectionPointToLayer(feature: GeoJSON.Feature, latlng: L.LatLng) {
   const conf = Number((feature.properties as { confidence?: number } | null)?.confidence ?? 0.6);
-  const radius = 6 + Math.round(conf * 8);
+  const radius = 4 + Math.round(conf * 4);
   return L.circleMarker(latlng, {
     radius,
     color: '#ff0000',
-    weight: 2.5,
+    weight: 2,
     fillColor: '#ff0000',
-    fillOpacity: 0.9,
+    fillOpacity: 0.35,
     opacity: 1,
   });
 }
@@ -839,7 +858,7 @@ export function LightMap({
       <EnforceStackOrder overlays={overlays} zIndexById={overlayZIndex} />
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
-      <FitOverlay overlays={visibleOverlays} />
+      <FitOverlay overlays={overlays} />
       <DemTerrainLayer
         overlay={demBaseOverlay}
         enabled={Boolean(demBaseOverlay)}
@@ -960,12 +979,14 @@ export function LightMap({
         <Polygon
           positions={aoiOutline}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
-            color: '#b45309',
-            weight: 2.5,
-            fillColor: '#b45309',
+            color: '#f59e0b',
+            weight: 3.5,
+            fillColor: '#fbbf24',
             fillOpacity: 0.08,
-            dashArray: '6 4',
+            opacity: 1,
+            dashArray: '10 6',
           }}
         />
       )}
@@ -974,6 +995,7 @@ export function LightMap({
         <Polygon
           positions={bufferPositions}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
             color: '#7c3aed',
             weight: 2.5,
