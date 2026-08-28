@@ -83,10 +83,11 @@ function opticalProcessingBlockReason(collection?: string | null): string | null
   return null;
 }
 
-/** Ship Detection: Landsat / Sentinel-2 optical only. */
+/** Ship Detection: Landsat/S2 eye ON + drawn water-body polygon AOI. */
 function opticalShipBlockReason(
   hasScene: boolean,
   collection?: string | null,
+  hasWaterAoi?: boolean,
 ): string | null {
   if (!hasScene) {
     return 'Ship Detection stays off until you select a Landsat or Sentinel-2 image (turn the eye on).';
@@ -107,6 +108,12 @@ function opticalShipBlockReason(
     c.startsWith('L7');
   if (!ok) {
     return 'Ship Detection works only with Landsat and Sentinel-2 optical imagery.';
+  }
+  if (!hasWaterAoi) {
+    return (
+      'Ship Detection needs a drawn water-body area first — use Rect AOI or Poly AOI ' +
+      'on the map to demarcate the water, then run Ship Detection.'
+    );
   }
   return null;
 }
@@ -303,6 +310,13 @@ export function WorkspacePage() {
   );
 
   const hasVisibleScene = visibleSceneIds.length > 0;
+
+  const hasWaterAoi = useMemo(
+    () =>
+      aoiGeoJson?.geometry?.type === 'Polygon' ||
+      drawnFeature?.type === 'Polygon',
+    [aoiGeoJson, drawnFeature],
+  );
 
   const satelliteActive = Boolean(catalogFilters.satelliteId);
 
@@ -734,6 +748,7 @@ export function WorkspacePage() {
       const blocked = opticalShipBlockReason(
         Boolean(focusScene),
         focusScene?.collection ?? catalogFilters.satelliteId,
+        hasWaterAoi,
       );
       if (blocked) {
         setError(blocked);
@@ -746,16 +761,21 @@ export function WorkspacePage() {
     setToolLoading(true);
     setToolStatus(
       opticalShip
-        ? 'Ship Detection · open-sea reflectance vs water (VIS+NIR)…'
+        ? 'Ship Detection · water-body AOI · open-sea reflectance vs water…'
         : `Detection: ${task.replaceAll('_', ' ')}…`,
     );
     setError(null);
     try {
-      // Ships are tiny vs a full S2 tile — run on map viewport (or drawn AOI).
+      // Ship Detection runs only inside the user-drawn water-body AOI.
       let shipBbox: [number, number, number, number] = [...analysisBbox];
+      let shipAoi: GeoJSON.Geometry | null = null;
       if (opticalShip) {
         if (aoiGeoJson?.geometry?.type === 'Polygon') {
-          const ring = (aoiGeoJson.geometry as GeoJSON.Polygon).coordinates[0];
+          shipAoi = aoiGeoJson.geometry;
+          shipBbox = aoiBbox(aoiGeoJson, analysisBbox);
+        } else if (drawnFeature?.type === 'Polygon' && drawnFeature.geometry) {
+          shipAoi = drawnFeature.geometry as GeoJSON.Polygon;
+          const ring = (shipAoi as GeoJSON.Polygon).coordinates[0];
           const lons = ring.map((c) => c[0]);
           const lats = ring.map((c) => c[1]);
           shipBbox = [
@@ -764,15 +784,20 @@ export function WorkspacePage() {
             Math.max(...lons),
             Math.max(...lats),
           ];
-        } else if (mapViewBbox) {
-          shipBbox = mapViewBbox;
+        } else {
+          setError(
+            'Draw a Rect/Poly AOI around the water body before running Ship Detection.',
+          );
+          setToolLoading(false);
+          setToolStatus(null);
+          return;
         }
       }
       const result = await detectionService.run({
         task,
         bbox: opticalShip ? [...shipBbox] : [...analysisBbox],
         scene_id: focusScene?.id,
-        aoi: aoiGeoJson?.geometry ?? null,
+        aoi: opticalShip ? shipAoi : aoiGeoJson?.geometry ?? null,
         confidence_min: opticalShip ? 0.18 : 0.35,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
@@ -795,34 +820,18 @@ export function WorkspacePage() {
           : '',
         bounds: result.bounds as [number, number, number, number],
         geojson: result.geojson,
-        opacity: layerOpacity,
+        opacity: opticalShip ? Math.max(layerOpacity, 0.92) : layerOpacity,
         label: task.replaceAll('_', ' '),
         visible: true,
       });
-      if (opticalShip && result.shapefile_ready) {
-        const nFeat = result.geojson?.features?.length ?? 0;
-        if (nFeat > 0) {
-          try {
-            await detectionService.downloadShapefile(
-              result.geojson,
-              `ship_detection_${(focusScene?.id || 'scene').slice(0, 40)}`,
-            );
-            setLastMessage(
-              (result.message || 'Ship Detection complete') +
-                ' · shapefile (points + polygons) downloaded',
-            );
-          } catch {
-            setLastMessage(
-              (result.message || 'Ship Detection complete') +
-                ' · map vectors ready (shapefile download failed — retry export)',
-            );
-          }
-        } else {
-          setLastMessage(
-            (result.message || 'No ships found') +
-              ' · try a coastal / harbor scene with the eye on (no shapefile when empty)',
-          );
-        }
+      if (opticalShip) {
+        const n = result.count ?? 0;
+        setLastMessage(
+          n > 0
+            ? `${result.message || `${n} ship(s) found`} · marked in red on the image`
+            : (result.message || 'No ships found inside the water AOI') +
+                ' · draw a tighter AOI over open water and retry',
+        );
       }
     } catch (err) {
       setError(getErrorMessage(err));
@@ -1416,8 +1425,12 @@ export function WorkspacePage() {
       return;
     }
     // Optical detectors/change use professional spectral recipes.
-    // AI Detection UI permanently exposes Ship Detection only.
+    // AI tools other than Ship Detection stay permanently inactive.
     // (Former high-res-only gate removed.)
+    if (tool.inactive) {
+      setError(`${tool.label} is inactive.`);
+      return;
+    }
 
     // Clicking the active tool again turns it off
     if (activeToolId === tool.id) {
@@ -1791,6 +1804,7 @@ export function WorkspacePage() {
               }
               hasDrawn={Boolean(drawnFeature)}
               drawnType={drawnFeature?.type ?? null}
+              hasWaterAoi={hasWaterAoi}
               bufferLoading={bufferLoading}
               lastBufferDistance={lastBufferDistance}
               lastBufferArea={lastBufferArea}

@@ -62,6 +62,8 @@ interface Props {
   sceneCollection?: string | null;
   hasDrawn: boolean;
   drawnType?: string | null;
+  /** User-drawn polygon AOI marking the water body (required for Ship Detection). */
+  hasWaterAoi?: boolean;
   bufferLoading?: boolean;
   lastBufferDistance?: number | null;
   lastBufferArea?: number | null;
@@ -138,6 +140,7 @@ export function ToolboxPanel({
   sceneCollection = null,
   hasDrawn,
   drawnType,
+  hasWaterAoi = false,
   bufferLoading,
   lastBufferDistance,
   lastBufferArea,
@@ -333,7 +336,7 @@ export function ToolboxPanel({
           {['ai', 'maritime', 'aviation'].includes(activeBox.id) && (
             <p className="mt-1 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10px] text-[var(--muted)]">
               {activeBox.id === 'ai'
-                ? 'Optical NIR / VIS ship detection on the current map view (Landsat / Sentinel-2). Open-sea objects use reflectance contrast vs water; SCL cloud sheets ignored for compact bright decks. Auto-downloads point + polygon shapefile.'
+                ? 'AI tools stay inactive except Ship Detection. Activate with Landsat/Sentinel-2 eye ON, then draw a Rect/Poly AOI around the water body — ships are marked in red on the image (no shapefile download).'
                 : 'Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its formula. Detections show legend, scale bar, north arrow, and grid on the map.'}
             </p>
           )}
@@ -469,22 +472,31 @@ export function ToolboxPanel({
                       c.startsWith('L7')
                     );
                   })());
+              const needsWaterAoi = Boolean(tool.requiresWaterAoi);
+              const waterAoiReady = !needsWaterAoi || hasWaterAoi;
+              const permanentlyOff = Boolean(tool.inactive);
               const toolOff =
+                permanentlyOff ||
                 loading ||
                 !actionsEnabled ||
                 (tool.needsScene && !hasScene) ||
-                (needsOpticalScene && !opticalReady);
-              const tip = !actionsEnabled
-                ? 'Select a satellite first'
-                : categoryLocked
-                  ? `${tool.label} — inactive`
-                  : tool.needsScene && !hasScene
-                    ? `${tool.label} — turn an eye on a scene first`
-                    : needsOpticalScene && !opticalReady
-                      ? `${tool.label} — Landsat / Sentinel-2 optical only`
-                      : active
-                        ? `${tool.label} (click again to turn off)`
-                        : algo || tool.hint || tool.label;
+                (needsOpticalScene && !opticalReady) ||
+                (needsWaterAoi && !waterAoiReady);
+              const tip = permanentlyOff
+                ? `${tool.label} — inactive`
+                : !actionsEnabled
+                  ? 'Select a satellite first'
+                  : categoryLocked
+                    ? `${tool.label} — inactive`
+                    : tool.needsScene && !hasScene
+                      ? `${tool.label} — turn an eye on a Landsat/Sentinel-2 scene first`
+                      : needsOpticalScene && !opticalReady
+                        ? `${tool.label} — Landsat / Sentinel-2 optical only`
+                        : needsWaterAoi && !waterAoiReady
+                          ? `${tool.label} — draw a Rect/Poly AOI around the water body first`
+                          : active
+                            ? `${tool.label} (click again to turn off)`
+                            : algo || tool.hint || tool.label;
               return (
                 <button
                   key={tool.id}
@@ -495,7 +507,9 @@ export function ToolboxPanel({
                   className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${
                     active
                       ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                      : 'border-[var(--line)] bg-white hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
+                      : permanentlyOff
+                        ? 'border-[var(--line)] bg-[var(--bg)] text-[var(--muted)] opacity-55'
+                        : 'border-[var(--line)] bg-white hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
                   } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   <span
@@ -508,7 +522,19 @@ export function ToolboxPanel({
                     {active ? '✓' : ''}
                   </span>
                   <span className="flex-1">{tool.label}</span>
-                  {tool.opticalOnly ? (
+                  {permanentlyOff ? (
+                    <span className="rounded px-1 py-0.5 text-[9px] uppercase bg-[var(--bg)] text-[var(--muted)]">
+                      Off
+                    </span>
+                  ) : tool.requiresWaterAoi ? (
+                    <span
+                      className={`rounded px-1 py-0.5 text-[9px] uppercase ${
+                        active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'
+                      }`}
+                    >
+                      AOI
+                    </span>
+                  ) : tool.opticalOnly ? (
                     <span
                       className={`rounded px-1 py-0.5 text-[9px] uppercase ${
                         active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'

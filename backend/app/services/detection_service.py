@@ -554,6 +554,13 @@ class DetectionService:
                     "Ship Detection works only with Landsat and Sentinel-2 optical imagery "
                     f"(got {collection or 'unknown'})."
                 )
+            aoi_geom = request.aoi
+            if not aoi_geom or (aoi_geom.get("type") if isinstance(aoi_geom, dict) else None) != "Polygon":
+                raise ValidationError(
+                    "Ship Detection needs a drawn water-body AOI — use Rect AOI or Poly AOI "
+                    "to demarcate the water, then run again."
+                )
+            # Detect only inside the drawn water-body polygon (bbox clip + aoi mask).
             bands_pack = self._try_load_bands_with_bounds(
                 request.scene_id,
                 bounds=bounds,
@@ -566,7 +573,6 @@ class DetectionService:
                     "Could not load the NIR band for this scene — turn the eye off/on and retry."
                 )
             bands, band_bounds = bands_pack
-            # Live default was 0.45 which dropped real NIR CFAR ships (~0.25–0.35).
             conf_min = float(request.confidence_min if request.confidence_min is not None else 0.18)
             conf_min = max(0.08, min(conf_min, 0.9))
             result = detect_ships_optical_nir(
@@ -574,6 +580,7 @@ class DetectionService:
                 band_bounds,
                 confidence_min=conf_min,
                 collection=collection,
+                aoi_polygon=aoi_geom,
             )
             overlay_b64 = None
             if result.get("overlay") is not None:
@@ -591,7 +598,8 @@ class DetectionService:
                 legend=legend,
                 message=result["message"],
                 formula=result["formula"],
-                shapefile_ready=True,
+                # On-image red demarcation only — no automatic shapefile download
+                shapefile_ready=False,
                 geometry_types=["Point", "Polygon"],
             )
 

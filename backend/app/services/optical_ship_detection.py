@@ -191,6 +191,47 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
     return labeled, lab
 
 
+def _aoi_mask(
+    shape: tuple[int, int],
+    bounds: list[float],
+    aoi_polygon: dict[str, Any] | None,
+) -> np.ndarray | None:
+    """Boolean mask True inside a GeoJSON Polygon AOI (row/col grid over bounds)."""
+    if not aoi_polygon or aoi_polygon.get("type") != "Polygon":
+        return None
+    coords = aoi_polygon.get("coordinates") or []
+    if not coords or not coords[0]:
+        return None
+    try:
+        from shapely.geometry import shape as shp_shape
+
+        poly = shp_shape(aoi_polygon)
+        if poly.is_empty:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    west, south, east, north = (float(v) for v in bounds)
+    h, w = shape
+    if east <= west or north <= south or h < 1 or w < 1:
+        return None
+    xs = west + (np.arange(w, dtype=np.float64) + 0.5) / w * (east - west)
+    ys = north - (np.arange(h, dtype=np.float64) + 0.5) / h * (north - south)
+    lon, lat = np.meshgrid(xs, ys)
+    try:
+        from shapely import contains_xy
+
+        mask = contains_xy(poly, lon, lat)
+    except Exception:  # noqa: BLE001
+        from shapely import vectorized
+
+        mask = vectorized.contains(poly, lon, lat)
+    mask = np.asarray(mask, dtype=bool)
+    if 0 < int(mask.sum()) < 16:
+        mask = _dilate(mask, iters=2)
+    return mask
+
+
 def _vis_brightness(
     red: np.ndarray | None,
     green: np.ndarray | None,
@@ -212,8 +253,13 @@ def detect_ships_optical_nir(
     *,
     confidence_min: float = 0.22,
     collection: str | None = None,
+    aoi_polygon: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run optical ship detection → GeoJSON + RGBA overlay."""
+    """Run optical ship detection → GeoJSON + RGBA overlay.
+
+    When ``aoi_polygon`` is provided (user-drawn water body), candidates
+    outside that polygon are discarded and the search mask is clipped to it.
+    """
     if collection is not None and not collection_is_optical_landsat_or_s2(collection):
         raise ValidationError(
             "Ship Detection (optical) works only with Landsat or Sentinel-2 imagery. "
@@ -236,6 +282,12 @@ def detect_ships_optical_nir(
     finite = np.isfinite(nir_f)
     water = _water_mask(green, nir_f)
     cloud = _cloud_mask(blue, nir_f, scl, water)
+    aoi_mask = _aoi_mask(nir_f.shape, bounds, aoi_polygon)
+    if aoi_mask is not None:
+        finite = finite & aoi_mask
+        # Treat outside-AOI as non-searchable (not water/cloud for CFAR bg either)
+        water = water & aoi_mask
+        cloud = cloud | ~aoi_mask
 
     bright = _vis_brightness(red, green, blue, nir_f)
     # CFAR background = water (open-sea contrast) + non-cloud
@@ -300,6 +352,8 @@ def detect_ships_optical_nir(
     )
 
     ship_mask = open_sea | non_water_obj | metal
+    if aoi_mask is not None:
+        ship_mask &= aoi_mask
 
     if int(ship_mask.sum()) > MAX_FEATURES * 80:
         thr = float(np.nanpercentile(cfar[ship_mask], 65))
@@ -357,12 +411,15 @@ def detect_ships_optical_nir(
                 north - (rr + 0.5) / h * (north - south),
             ]
 
+        # Pad footprint a bit so red boxes stay readable on the map
+        pad_r = max(1.0, 0.35 * (r1 - r0 + 1))
+        pad_c = max(1.0, 0.35 * (c1 - c0 + 1))
         ring = [
-            rc_to_lonlat(r0 - 0.5, c0 - 0.5),
-            rc_to_lonlat(r0 - 0.5, c1 + 0.5),
-            rc_to_lonlat(r1 + 0.5, c1 + 0.5),
-            rc_to_lonlat(r1 + 0.5, c0 - 0.5),
-            rc_to_lonlat(r0 - 0.5, c0 - 0.5),
+            rc_to_lonlat(r0 - pad_r, c0 - pad_c),
+            rc_to_lonlat(r0 - pad_r, c1 + pad_c),
+            rc_to_lonlat(r1 + pad_r, c1 + pad_c),
+            rc_to_lonlat(r1 + pad_r, c0 - pad_c),
+            rc_to_lonlat(r0 - pad_r, c0 - pad_c),
         ]
         mean_nir = float(np.nanmean(nir_f[ys, xs]))
         mean_b = float(np.nanmean(bright[ys, xs]))
@@ -402,12 +459,12 @@ def detect_ships_optical_nir(
         "count": n_ships,
         "overlay": overlay,
         "formula": (
-            "open-sea object reflectance vs water (VIS+NIR CFAR) · "
-            "SCL cloud · metal/harbor NIR → point+polygon shapefile"
+            "water-body AOI · open-sea object reflectance vs water (VIS+NIR CFAR) · "
+            "SCL cloud · red on-image demarcation"
         ),
         "message": (
-            f"{n_ships} ship candidate(s) "
-            f"(open-sea reflectance vs water · water/cloud ignored)"
+            f"{n_ships} ship candidate(s) inside water AOI "
+            f"(marked in red on the image)"
         ),
     }
 
@@ -418,24 +475,21 @@ def _ship_overlay_rgba(
     water: np.ndarray,
     cloud: np.ndarray,
 ) -> np.ndarray:
-    h, w = bright.shape
+    """Transparent overlay: solid red ship bodies + thicker red outlines on imagery."""
+    del water, cloud, bright  # imagery underneath stays visible
+    h, w = ship_mask.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
-    ctx = np.clip(bright, 0, 0.45) / 0.45
-    show = np.isfinite(bright) & ~cloud
-    gray = (ctx * 150).astype(np.uint8)
-    # Hint water in blue so overlay is readable at sea
-    water_show = show & water
-    land_show = show & ~water
-    rgba[land_show, 0] = gray[land_show]
-    rgba[land_show, 1] = gray[land_show]
-    rgba[land_show, 2] = (gray[land_show] * 0.85).astype(np.uint8)
-    rgba[land_show, 3] = 70
-    rgba[water_show, 0] = 20
-    rgba[water_show, 1] = 60
-    rgba[water_show, 2] = 140
-    rgba[water_show, 3] = 40
+    if not ship_mask.any():
+        return rgba
+    # Soft red fill on detected pixels
     rgba[ship_mask, 0] = 255
-    rgba[ship_mask, 1] = 60
-    rgba[ship_mask, 2] = 40
-    rgba[ship_mask, 3] = 230
+    rgba[ship_mask, 1] = 24
+    rgba[ship_mask, 2] = 24
+    rgba[ship_mask, 3] = 200
+    # Bright red outline ring so objects read clearly on the satellite image
+    outline = _dilate(ship_mask, iters=2) & ~ship_mask
+    rgba[outline, 0] = 255
+    rgba[outline, 1] = 0
+    rgba[outline, 2] = 0
+    rgba[outline, 3] = 255
     return rgba
