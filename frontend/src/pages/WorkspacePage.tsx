@@ -193,6 +193,9 @@ export function WorkspacePage() {
     };
   });
   const [geotiffLayerId, setGeotiffLayerId] = useState<string | null>(null);
+  const [mapViewBbox, setMapViewBbox] = useState<
+    [number, number, number, number] | null
+  >(null);
 
   const isAdmin = user?.role === 'admin';
   const allowedTools =
@@ -743,17 +746,34 @@ export function WorkspacePage() {
     setToolLoading(true);
     setToolStatus(
       opticalShip
-        ? 'Ship Detection · NIR band · ignoring water & cloud…'
+        ? 'Ship Detection · open-sea reflectance vs water (VIS+NIR)…'
         : `Detection: ${task.replaceAll('_', ' ')}…`,
     );
     setError(null);
     try {
+      // Ships are tiny vs a full S2 tile — run on map viewport (or drawn AOI).
+      let shipBbox: [number, number, number, number] = [...analysisBbox];
+      if (opticalShip) {
+        if (aoiGeoJson?.geometry?.type === 'Polygon') {
+          const ring = (aoiGeoJson.geometry as GeoJSON.Polygon).coordinates[0];
+          const lons = ring.map((c) => c[0]);
+          const lats = ring.map((c) => c[1]);
+          shipBbox = [
+            Math.min(...lons),
+            Math.min(...lats),
+            Math.max(...lons),
+            Math.max(...lats),
+          ];
+        } else if (mapViewBbox) {
+          shipBbox = mapViewBbox;
+        }
+      }
       const result = await detectionService.run({
         task,
-        bbox: [...analysisBbox],
+        bbox: opticalShip ? [...shipBbox] : [...analysisBbox],
         scene_id: focusScene?.id,
         aoi: aoiGeoJson?.geometry ?? null,
-        confidence_min: opticalShip ? 0.22 : 0.35,
+        confidence_min: opticalShip ? 0.18 : 0.35,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(
@@ -1395,7 +1415,8 @@ export function WorkspacePage() {
       setToolStatus('Select a satellite to use tools');
       return;
     }
-    // All 148 tools active — optical detectors/change use professional spectral recipes.
+    // Optical detectors/change use professional spectral recipes.
+    // AI Detection UI permanently exposes Ship Detection only.
     // (Former high-res-only gate removed.)
 
     // Clicking the active tool again turns it off
@@ -1703,6 +1724,7 @@ export function WorkspacePage() {
             }}
             onDrawnFeature={onDrawnFeature}
             onMeasure={setMeasureLabel}
+            onViewBoundsChange={setMapViewBbox}
           />
           <MapToolbar
             tool={mapTool}

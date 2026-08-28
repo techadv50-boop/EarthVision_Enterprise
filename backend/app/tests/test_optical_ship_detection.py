@@ -1,4 +1,4 @@
-"""Unit tests for optical NIR ship detection (no remote I/O)."""
+"""Unit tests for optical ship detection (no remote I/O)."""
 
 from __future__ import annotations
 
@@ -18,22 +18,52 @@ def test_collection_gate_landsat_s2_only():
     assert not collection_is_optical_landsat_or_s2(None)
 
 
+def test_open_sea_bright_ship_not_masked_as_cloud():
+    """Bright white decks over water must NOT be cloud-masked (live Asaluyeh bug)."""
+    from app.services.optical_ship_detection import detect_ships_optical_nir
+
+    h = w = 96
+    # Dark open water
+    nir = np.full((h, w), 0.02, dtype=np.float64)
+    green = np.full((h, w), 0.05, dtype=np.float64)
+    blue = np.full((h, w), 0.04, dtype=np.float64)
+    red = np.full((h, w), 0.03, dtype=np.float64)
+    # Bright white ship + wake (high VIS+NIR) — old code treated as cloud
+    nir[40:48, 55:70] = 0.42
+    green[40:48, 55:70] = 0.45
+    blue[40:48, 55:70] = 0.48
+    red[40:48, 55:70] = 0.44
+    # Wake trail
+    nir[44:47, 30:55] = 0.18
+    green[44:47, 30:55] = 0.22
+    blue[44:47, 30:55] = 0.25
+    red[44:47, 30:55] = 0.20
+
+    out = detect_ships_optical_nir(
+        {"nir": nir, "green": green, "blue": blue, "red": red},
+        [52.8, 26.5, 53.0, 26.7],
+        confidence_min=0.15,
+        collection="SENTINEL-2",
+    )
+    assert out["count"] >= 1, out["message"]
+    assert any(f["geometry"]["type"] == "Point" for f in out["geojson"]["features"])
+    assert any(f["geometry"]["type"] == "Polygon" for f in out["geojson"]["features"])
+    assert out["overlay"] is not None
+
+
 def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
     from app.services.optical_ship_detection import detect_ships_optical_nir
 
     h = w = 64
-    nir = np.full((h, w), 0.03, dtype=np.float64)  # dark water-ish
-    green = np.full((h, w), 0.08, dtype=np.float64)
+    nir = np.full((h, w), 0.02, dtype=np.float64)
+    green = np.full((h, w), 0.12, dtype=np.float64)
     blue = np.full((h, w), 0.06, dtype=np.float64)
     red = np.full((h, w), 0.04, dtype=np.float64)
-    # Open water (high NDWI): green high, nir low
-    green[:, :] = 0.12
-    nir[:, :] = 0.02
-    # Cloud patch (bright blue+nir)
+    # Inland cloud patch
     blue[2:10, 2:10] = 0.4
     nir[2:10, 2:10] = 0.35
     green[2:10, 2:10] = 0.35
-    # Metal ship deck on water — high NIR, not water-classed
+    # Metal ship deck on water
     nir[30:34, 40:48] = 0.28
     green[30:34, 40:48] = 0.06
     red[30:34, 40:48] = 0.08
@@ -43,15 +73,12 @@ def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
     bounds = [74.0, 31.0, 74.5, 31.4]
     out = detect_ships_optical_nir(bands, bounds, confidence_min=0.15, collection="SENTINEL-2")
     assert out["count"] >= 1
-    assert any(f["geometry"]["type"] == "Point" for f in out["geojson"]["features"])
-    assert any(f["geometry"]["type"] == "Polygon" for f in out["geojson"]["features"])
-    assert "NIR" in out["formula"]
+    assert "reflectance" in out["formula"].lower() or "NIR" in out["formula"] or "CFAR" in out["formula"]
     assert out["overlay"] is not None
     assert out["overlay"].shape == (h, w, 4)
 
 
 def test_nir_ship_detect_default_confidence_keeps_metal():
-    """Live bug: confidence_min=0.45 dropped CFAR~1.4 ships (mapped ~0.30)."""
     from app.services.optical_ship_detection import detect_ships_optical_nir
 
     h = w = 64
@@ -93,11 +120,6 @@ def test_ship_detect_rejects_sar_collection():
 def test_mixed_geometry_shapefile_zip():
     pyshp = pytest.importorskip("shapefile")
     del pyshp
-    # Import writer path without requiring pyproj (lazy GISService import fails otherwise)
-    import importlib.util
-    from pathlib import Path
-
-    # Exercise export helper via a minimal stub if GISService import is heavy
     from app.services.gis_service import GISService
 
     gj = {
@@ -105,15 +127,8 @@ def test_mixed_geometry_shapefile_zip():
         "features": [
             {
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [74.1, 31.2]},
-                "properties": {
-                    "label": "Ship",
-                    "class": "ship",
-                    "confidence": 0.8,
-                    "nir_mean": 0.25,
-                    "cue": "metal_nir",
-                    "geom_role": "centroid",
-                },
+                "geometry": {"type": "Point", "coordinates": [52.88, 26.61]},
+                "properties": {"class": "ship", "geom_role": "centroid"},
             },
             {
                 "type": "Feature",
@@ -121,25 +136,18 @@ def test_mixed_geometry_shapefile_zip():
                     "type": "Polygon",
                     "coordinates": [
                         [
-                            [74.09, 31.19],
-                            [74.11, 31.19],
-                            [74.11, 31.21],
-                            [74.09, 31.21],
-                            [74.09, 31.19],
+                            [52.879, 26.611],
+                            [52.881, 26.611],
+                            [52.881, 26.609],
+                            [52.879, 26.609],
+                            [52.879, 26.611],
                         ]
                     ],
                 },
-                "properties": {
-                    "label": "Ship",
-                    "class": "ship",
-                    "confidence": 0.8,
-                    "nir_mean": 0.25,
-                    "cue": "metal_nir",
-                    "geom_role": "footprint",
-                },
+                "properties": {"class": "ship", "geom_role": "footprint"},
             },
         ],
     }
-    z = GISService().geojson_to_shapefile_zip(gj)
-    assert z[:2] == b"PK"
-    assert len(z) > 100
+    data = GISService().geojson_to_shapefile_zip(gj)
+    assert data[:2] == b"PK"
+    assert len(data) > 200

@@ -141,8 +141,8 @@ export const TOOLBOXES: ToolboxDef[] = [
         needsScene: true,
         opticalOnly: true,
         hint:
-          'Optical only (Landsat / Sentinel-2). Uses NIR; ignores water & cloud; ' +
-          'metal/smoke cues → point & polygon shapefile',
+          'Optical only (Landsat / Sentinel-2). Open-sea objects vs water reflectance ' +
+          '(VIS+NIR); zoom to ships then run → point & polygon shapefile',
       },
     ],
   },

@@ -1639,11 +1639,13 @@ class SceneImageryService:
         size: int = 1024,
         bounds: list[float] | None = None,
         band_names: Sequence[str] | None = None,
+        max_edge: int | None = None,
     ) -> tuple[dict[str, np.ndarray], list[float], dict[str, Any] | None, dict[str, Any]]:
         """Load optical analysis bands for a prepared scene (optional AOI bounds).
 
         Pass ``band_names`` (e.g. NDVI → red,nir) to avoid fetching unused COGs.
         Identical href aliases are fetched once and shared. Band reads run in parallel.
+        ``max_edge`` raises the interactive size cap (ship detection needs sharper AOIs).
         """
         layer = self.get_layer(scene_id)
         if not layer:
@@ -1667,8 +1669,9 @@ class SceneImageryService:
         scale = "landsat_c2_sr" if is_landsat else "sentinel2_l2a"
         boa_scale = layer.get("boa_scale")
         boa_offset = layer.get("boa_offset")
-        # Cap interactive grids (slow links / Cloudflare); stay ≤ INTERACTIVE_PREVIEW_MAX
-        size = max(64, min(int(size), INTERACTIVE_PREVIEW_MAX))
+        # Cap interactive grids; callers may raise max_edge for ship detection AOIs
+        cap = int(max_edge) if max_edge is not None else INTERACTIVE_PREVIEW_MAX
+        size = max(64, min(int(size), max(64, cap)))
         out_shape = self.analysis_grid_shape(bounds, max_edge=size)
 
         wanted = self.resolve_requested_band_keys(
