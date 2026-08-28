@@ -51,6 +51,63 @@ def test_open_sea_bright_ship_not_masked_as_cloud():
     assert out["overlay"] is not None
 
 
+def test_open_sea_bright_ship_respects_water_aoi():
+    from app.services.optical_ship_detection import detect_ships_optical_nir
+
+    h = w = 96
+    nir = np.full((h, w), 0.02, dtype=np.float64)
+    green = np.full((h, w), 0.05, dtype=np.float64)
+    blue = np.full((h, w), 0.04, dtype=np.float64)
+    red = np.full((h, w), 0.03, dtype=np.float64)
+    nir[40:48, 55:70] = 0.42
+    green[40:48, 55:70] = 0.45
+    blue[40:48, 55:70] = 0.48
+    red[40:48, 55:70] = 0.44
+    bounds = [52.8, 26.5, 53.0, 26.7]
+    # AOI covering the ship cell
+    aoi = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [52.88, 26.58],
+                [52.95, 26.58],
+                [52.95, 26.64],
+                [52.88, 26.64],
+                [52.88, 26.58],
+            ]
+        ],
+    }
+    out = detect_ships_optical_nir(
+        {"nir": nir, "green": green, "blue": blue, "red": red},
+        bounds,
+        confidence_min=0.15,
+        collection="SENTINEL-2",
+        aoi_polygon=aoi,
+    )
+    assert out["count"] >= 1
+    # AOI far from ship → zero
+    aoi_miss = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [52.80, 26.50],
+                [52.82, 26.50],
+                [52.82, 26.52],
+                [52.80, 26.52],
+                [52.80, 26.50],
+            ]
+        ],
+    }
+    out0 = detect_ships_optical_nir(
+        {"nir": nir, "green": green, "blue": blue, "red": red},
+        bounds,
+        confidence_min=0.15,
+        collection="SENTINEL-2",
+        aoi_polygon=aoi_miss,
+    )
+    assert out0["count"] == 0
+
+
 def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
     from app.services.optical_ship_detection import detect_ships_optical_nir
 
