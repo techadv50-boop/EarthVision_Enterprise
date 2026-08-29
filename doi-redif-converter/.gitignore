@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+redif_out/
+*.zip
+.DS_Store
+.env
+build/
+dist/
+release/
+*.spec.bak
+DOI_REDIF_Converter.exe

@@ -1,0 +1,29 @@
+Template-Type: ReDIF-Article 1.0
+Author-Name:Zartasha Baloch
+Author-Email:zartasha.baloch@faculty.muet.edu.pk
+Author-Workplace-Name:Mehran University of Engineering and Technology, Jamshoro
+Author-Name:Irfan Ali
+Author-Workplace-Name:Mehran University of Engineering and Technology, Jamshoro
+Author-Name:Madeha Memon
+Author-Workplace-Name:Mehran University of Engineering and Technology, Jamshoro
+Author-Name:Mahwish Soomro
+Author-Workplace-Name:Mehran University of Engineering and Technology, Jamshoro
+Author-Name:Isra Samoo
+Author-Workplace-Name:Mehran University of Engineering and Technology, Jamshoro
+Author-Name:Muzaffar Hussain
+Author-Workplace-Name:Mehran University of Engineering and Technology, Jamshoro
+Title:No Smoke: Smart Surveillance for Cigarette Smoking Detection and Student Identification System
+Abstract:Cigarette smoking in educational institutes poses significant health and disciplinary challenges for university administration despite strict institutional policies. Manual surveillance systems are often inefficient in detecting such violations, especially within large campuses and indoor areas. To address this issue, this research presents an AI-based cigarette smoking detection and student identification system that leverages deep learning and computer vision for real-time surveillance. The proposed system uses YOLOv8 for cigarette detection from CCTV feeds. A custom dataset of cigarette-smoking images was used to train and validate the model to ensure robustness under diverse lighting and background conditions. The system then identifies the student using MTCNN and FaceNet for face detection. The system also integrates a web dashboard for an alert mechanism that captures screenshots when a cigarette-smoking violation is detected and notifies the concerned authorities via email to facilitate immediate action. The YOLOv8s cigarette detection module achieved an accuracy of 90.06%, precision of 95.80%, recall of 91.27%, F1-score of 93.48%, specificity of 85.71%, false positive rate of 14.29%, and a mAP@0.5 of 88%, demonstrating strong and reliable detection performance under diverse real-world CCTV conditions. The experimental results of the face recognition module have also shown satisfactory performance over all evaluation metrics, achieving an overall accuracy of 92.2%, precision of 91.8%, recall of 92.2%, and F1-score of 91.9%. The system contributes to maintaining smoke-free educational environments by enabling proactive policy enforcement. Overall, this research highlights the potential of AI-powered surveillance to reduce smoking incidents and foster a healthier academic community
+Keywords:Cigarette smoking, Face Detection, Computer Vision, Web Dashboard, Object Detection
+Journal:International Journal of Innovations in Science and Technology
+Pages:1429-1448
+Volume:8
+Issue:3
+Year:2026
+Month:June
+DOI:https://doi.org/10.33411/IJIST/1936
+File-URL:https://journal.50sea.com/index.php/IJIST/article/view/1936/2862
+File-Format: Application/pdf
+File-URL:https://journal.50sea.com/index.php/IJIST/article/view/1936
+File-Format: text/html
+Handle: RePEc:abq:IJIST1:v:8:y:2026:i:3:p:1429-1448

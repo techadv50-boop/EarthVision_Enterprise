@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DOI → ReDIF Converter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #14211c;
+      --muted: #4d6359;
+      --paper: #f3efe4;
+      --panel: rgba(255, 252, 245, 0.88);
+      --line: rgba(20, 33, 28, 0.12);
+      --accent: #0f6b4c;
+      --accent-deep: #0a4633;
+      --warn: #8a3b12;
+      --danger: #8f1d1d;
+      --ok: #0f6b4c;
+      --shadow: 0 18px 50px rgba(20, 33, 28, 0.12);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: "DM Sans", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(15, 107, 76, 0.18), transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, rgba(138, 59, 18, 0.12), transparent 50%),
+        linear-gradient(180deg, #efe8d8 0%, var(--paper) 45%, #e7f0ea 100%);
+    }
+
+    .wrap {
+      width: min(1100px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2.5rem 0 4rem;
+    }
+
+    header {
+      display: grid;
+      gap: 0.75rem;
+      margin-bottom: 1.75rem;
+      max-width: 42rem;
+    }
+
+    .brand {
+      font-family: "Fraunces", Georgia, serif;
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      margin: 0;
+    }
+
+    .lede {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.55;
+      max-width: 38rem;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+      padding: 1.25rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 1rem;
+    }
+
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    label {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.45rem;
+    }
+
+    textarea, input[type="text"], input[type="number"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      border-radius: 12px;
+      padding: 0.85rem 0.95rem;
+      font: inherit;
+      color: var(--ink);
+      outline: none;
+    }
+
+    textarea {
+      min-height: 220px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+
+    textarea:focus, input:focus {
+      border-color: rgba(15, 107, 76, 0.45);
+      box-shadow: 0 0 0 3px rgba(15, 107, 76, 0.12);
+    }
+
+    .drop {
+      border: 1.5px dashed rgba(15, 107, 76, 0.35);
+      border-radius: 14px;
+      padding: 1.25rem;
+      background: rgba(15, 107, 76, 0.04);
+      text-align: center;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }
+
+    .drop:hover, .drop.dragover {
+      background: rgba(15, 107, 76, 0.08);
+      border-color: var(--accent);
+    }
+
+    .drop strong { display: block; margin-bottom: 0.25rem; }
+    .drop span { color: var(--muted); font-size: 0.92rem; }
+    .file-name { margin-top: 0.65rem; color: var(--accent-deep); font-size: 0.92rem; }
+
+    .controls {
+      display: grid;
+      gap: 0.9rem;
+      margin-top: 1rem;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 120px;
+      gap: 0.75rem;
+    }
+
+    @media (max-width: 600px) {
+      .row { grid-template-columns: 1fr; }
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-top: 1.1rem;
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 0.8rem 1.2rem;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+    }
+
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #f7fff9;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-deep); }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .btn-secondary:hover:not(:disabled) { background: rgba(20, 33, 28, 0.04); }
+
+    .status {
+      margin-top: 1rem;
+      color: var(--muted);
+      font-size: 0.95rem;
+      min-height: 1.4em;
+    }
+
+    .progress-wrap {
+      margin-top: 0.9rem;
+      padding: 0.9rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffdf8;
+    }
+    .progress-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      font-weight: 650;
+      margin-bottom: 0.55rem;
+    }
+    .progress-bar {
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(20, 33, 28, 0.08);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0f6b4c, #1f9d6d);
+      transition: width 0.25s ease;
+    }
+    .progress-meta {
+      margin-top: 0.55rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .report-box {
+      margin: 0.9rem 0 1rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffdf8;
+      padding: 1rem 1.1rem;
+    }
+    .report-box h2 {
+      margin: 0 0 0.55rem;
+      font-family: "Fraunces", Georgia, serif;
+      font-size: 1.2rem;
+    }
+    .report-box pre {
+      margin: 0;
+      max-height: 280px;
+      background: #14211c;
+      color: #e8f2ec;
+      border-radius: 10px;
+      padding: 0.85rem;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin: 1.25rem 0 0.75rem;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .chip b { color: var(--ink); font-weight: 700; }
+
+    .results {
+      margin-top: 1rem;
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.9rem 1rem;
+      background: #fffdf8;
+      animation: rise 0.35s ease both;
+    }
+
+    .card.fail { border-color: rgba(143, 29, 29, 0.25); background: #fff7f5; }
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: baseline;
+    }
+    .card h3 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+    .badge {
+      flex: none;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--ok);
+    }
+    .card.fail .badge { color: var(--danger); }
+    .meta {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    details {
+      margin-top: 0.55rem;
+    }
+    summary {
+      cursor: pointer;
+      color: var(--accent-deep);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    pre {
+      margin: 0.5rem 0 0;
+      max-height: 240px;
+      overflow: auto;
+      background: #14211c;
+      color: #e8f2ec;
+      border-radius: 10px;
+      padding: 0.85rem;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    footer {
+      margin-top: 1.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1 class="brand">DOI → ReDIF</h1>
+      <p class="lede">
+        Paste DOIs or upload an Excel/text list. Each DOI is opened, metadata is extracted,
+        and a ReDIF article file is generated — one <code>.redif</code> per DOI.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="grid">
+        <div>
+          <label for="dois">Paste DOIs</label>
+          <textarea id="dois" placeholder="https://doi.org/10.33411/IJIST/1936&#10;10.33411/IJIST/20190101011&#10;..."></textarea>
+        </div>
+        <div>
+          <label>Upload list</label>
+          <div class="drop" id="dropzone">
+            <strong>Drop .xlsx / .txt / .csv here</strong>
+            <span>or click to browse</span>
+            <div class="file-name" id="fileName"></div>
+          </div>
+          <input type="file" id="file" accept=".xlsx,.xlsm,.txt,.csv,.tsv" hidden />
+
+          <div class="controls">
+            <div>
+              <label for="handlePrefix">RePEc handle prefix</label>
+              <input id="handlePrefix" type="text" value="RePEc:abq:IJIST1" />
+            </div>
+            <div class="row">
+              <div>
+                <label for="concurrency">Concurrency</label>
+                <input id="concurrency" type="number" min="1" max="10" value="5" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn-primary" id="btnConvert">Extract &amp; preview</button>
+        <button class="btn-secondary" id="btnZip" disabled>Download ZIP</button>
+        <button class="btn-secondary" id="btnClear">Clear</button>
+      </div>
+      <div class="status" id="status">Ready.</div>
+      <div class="progress-wrap" id="progressWrap" hidden>
+        <div class="progress-top">
+          <span id="progressLabel">0 / 0</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-meta" id="progressMeta"></div>
+      </div>
+    </section>
+
+    <section id="summary" hidden>
+      <div class="stats" id="stats"></div>
+      <div class="report-box" id="reportBox" hidden>
+        <h2>Final report</h2>
+        <pre id="reportText"></pre>
+        <div class="actions" style="margin-top:0.75rem">
+          <button class="btn-secondary" id="btnCopyReport" type="button">Copy report</button>
+          <button class="btn-secondary" id="btnDownloadFailed" type="button">Download failed DOIs CSV</button>
+        </div>
+      </div>
+      <div class="results" id="results"></div>
+    </section>
+
+    <footer>
+      Sources: journal landing page citation metadata, enriched with Crossref when needed.
+      Output format matches ReDIF-Article 1.0 (e.g. <code>V8i3p1429-1448.redif</code>).
+    </footer>
+  </div>
+
+  <script>
+    const els = {
+      dois: document.getElementById("dois"),
+      file: document.getElementById("file"),
+      dropzone: document.getElementById("dropzone"),
+      fileName: document.getElementById("fileName"),
+      handlePrefix: document.getElementById("handlePrefix"),
+      concurrency: document.getElementById("concurrency"),
+      btnConvert: document.getElementById("btnConvert"),
+      btnZip: document.getElementById("btnZip"),
+      btnClear: document.getElementById("btnClear"),
+      status: document.getElementById("status"),
+      progressWrap: document.getElementById("progressWrap"),
+      progressLabel: document.getElementById("progressLabel"),
+      progressPct: document.getElementById("progressPct"),
+      progressFill: document.getElementById("progressFill"),
+      progressMeta: document.getElementById("progressMeta"),
+      summary: document.getElementById("summary"),
+      stats: document.getElementById("stats"),
+      results: document.getElementById("results"),
+      reportBox: document.getElementById("reportBox"),
+      reportText: document.getElementById("reportText"),
+      btnCopyReport: document.getElementById("btnCopyReport"),
+      btnDownloadFailed: document.getElementById("btnDownloadFailed"),
+    };
+
+    let lastPayload = null;
+    let lastJobId = null;
+    let lastFailedDois = [];
+    let lastReportText = "";
+    let uploadedDois = [];
+
+    function setBusy(busy, msg) {
+      els.btnConvert.disabled = busy;
+      els.btnZip.disabled = busy || !lastJobId;
+      if (msg) els.status.textContent = msg;
+    }
+
+    function formatSeconds(sec) {
+      if (sec == null || Number.isNaN(sec)) return "—";
+      const s = Math.max(0, Math.round(sec));
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}m ${r}s`;
+    }
+
+    function updateProgress(job) {
+      els.progressWrap.hidden = false;
+      const total = job.total || 0;
+      const done = job.done || 0;
+      const left = job.left != null ? job.left : Math.max(0, total - done);
+      const pct = job.percent != null ? job.percent : (total ? Math.round(100 * done / total) : 0);
+      els.progressLabel.textContent = `${done} / ${total} done · ${left} left`;
+      els.progressPct.textContent = `${pct}%`;
+      els.progressFill.style.width = `${pct}%`;
+      const parts = [
+        `OK ${job.succeeded || 0}`,
+        `Failed ${job.failed || 0}`,
+        `Elapsed ${formatSeconds(job.elapsed_sec)}`,
+      ];
+      if (job.status === "running" || job.status === "queued") {
+        parts.push(`ETA ${formatSeconds(job.eta_sec)}`);
+      }
+      if (job.current_doi) {
+        parts.push(`Current: ${job.current_doi}`);
+      }
+      els.progressMeta.textContent = parts.join(" · ");
+      if (job.status === "completed") {
+        const failed = job.failed || 0;
+        els.status.textContent =
+          `Completed list. Done: ${job.succeeded || 0} · Failed: ${failed} · Left: 0` +
+          (failed ? ` · See final report for DOIs that could not be converted.` : "");
+      } else if (job.status === "failed") {
+        els.status.textContent = `Job error: ${job.error || "unknown error"}`;
+      } else {
+        els.status.textContent = `Working… ${done} of ${total} processed, ${left} remaining. Bad DOIs are skipped automatically.`;
+      }
+    }
+
+    function currentTextDois() {
+      return els.dois.value.trim();
+    }
+
+    function buildPayload() {
+      const text = currentTextDois();
+      const dois = uploadedDois.slice();
+      return {
+        text,
+        dois,
+        handle_prefix: els.handlePrefix.value.trim() || "RePEc:abq:IJIST1",
+        concurrency: Number(els.concurrency.value || 5),
+      };
+    }
+
+    async function loadFile(file) {
+      if (!file) return;
+      els.fileName.textContent = file.name;
+      const form = new FormData();
+      form.append("file", file);
+      setBusy(true, `Reading ${file.name}…`);
+      try {
+        const res = await fetch("/api/parse-upload", { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to parse file");
+        uploadedDois = data.dois || [];
+        els.status.textContent = `Loaded ${uploadedDois.length} DOI(s) from ${file.name}. You can still paste more below.`;
+      } catch (err) {
+        uploadedDois = [];
+        els.status.textContent = err.message || String(err);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    els.dropzone.addEventListener("click", () => els.file.click());
+    els.file.addEventListener("change", () => loadFile(els.file.files[0]));
+    ["dragenter", "dragover"].forEach((evt) => {
+      els.dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        els.dropzone.classList.add("dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach((evt) => {
+      els.dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        els.dropzone.classList.remove("dragover");
+      });
+    });
+    els.dropzone.addEventListener("drop", (e) => {
+      const file = e.dataTransfer.files?.[0];
+      if (file) loadFile(file);
+    });
+
+    function renderReport(data) {
+      lastFailedDois = data.failed_dois || (data.report && data.report.failed_dois) || [];
+      lastReportText = data.report_text || "";
+      if (!lastReportText && data.report) {
+        const r = data.report;
+        const lines = [
+          "DOI → ReDIF Conversion Report",
+          "=============================",
+          `Total DOIs in list : ${r.total || 0}`,
+          `Processed          : ${r.processed || 0}`,
+          `Succeeded (done)   : ${r.succeeded || 0}`,
+          `Failed (not done)  : ${r.failed || 0}`,
+          `Left incomplete    : ${r.left || 0}`,
+          "",
+        ];
+        if (lastFailedDois.length) {
+          lines.push("DOIs that could not be converted:");
+          lines.push("---------------------------------");
+          for (const item of lastFailedDois) {
+            lines.push(`- ${item.doi}`);
+            lines.push(`  Reason: ${item.error || "Unknown error"}`);
+          }
+        } else {
+          lines.push("All accessible DOIs were converted successfully.");
+        }
+        lastReportText = lines.join("\n");
+      }
+      els.reportBox.hidden = false;
+      els.reportText.textContent = lastReportText || "No report available.";
+    }
+
+    function renderResults(data) {
+      els.summary.hidden = false;
+      els.stats.innerHTML = `
+        <div class="chip">Total <b>${data.total}</b></div>
+        <div class="chip">Done <b>${data.succeeded}</b></div>
+        <div class="chip">Failed <b>${data.failed}</b></div>
+        <div class="chip">Left <b>0</b></div>
+      `;
+      renderReport(data);
+      els.results.innerHTML = "";
+
+      // Show failed DOIs first for visibility
+      const items = [...(data.results || [])].sort((a, b) => Number(a.ok) - Number(b.ok));
+      for (const item of items) {
+        const card = document.createElement("article");
+        card.className = "card" + (item.ok ? "" : " fail");
+        const authors = (item.authors || []).map((a) => a.name).join("; ");
+        card.innerHTML = `
+          <div class="card-top">
+            <h3>${escapeHtml(item.title || item.doi)}</h3>
+            <div class="badge">${item.ok ? "OK" : "Failed / Skipped"}</div>
+          </div>
+          <p class="meta">
+            ${escapeHtml(item.doi)}<br/>
+            ${item.ok ? `${escapeHtml(item.filename || "")} · Vol ${escapeHtml(item.volume || "—")} Issue ${escapeHtml(item.issue || "—")} · pp ${escapeHtml(item.pages || "—")} · ${escapeHtml(item.month || "")} ${escapeHtml(item.year || "")}` : escapeHtml(item.error || "Unknown error")}
+            ${authors ? `<br/>${escapeHtml(authors)}` : ""}
+          </p>
+          ${item.redif ? `<details><summary>View ReDIF</summary><pre>${escapeHtml(item.redif)}</pre></details>` : ""}
+        `;
+        els.results.appendChild(card);
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    async function pollJob(jobId) {
+      while (true) {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.detail || "Failed to read job status");
+        updateProgress(job);
+        if (job.status === "completed" || job.status === "failed") {
+          return job;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    els.btnConvert.addEventListener("click", async () => {
+      const payload = buildPayload();
+      if (!payload.text && !(payload.dois && payload.dois.length)) {
+        els.status.textContent = "Paste DOIs or upload a file first.";
+        return;
+      }
+      setBusy(true, "Starting conversion…");
+      els.progressWrap.hidden = false;
+      updateProgress({ total: 0, done: 0, left: 0, percent: 0, succeeded: 0, failed: 0, status: "queued" });
+      try {
+        const startRes = await fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const started = await startRes.json();
+        if (!startRes.ok) throw new Error(started.detail || "Could not start job");
+        lastPayload = payload;
+        lastJobId = started.job_id;
+        updateProgress(started);
+
+        await pollJob(lastJobId);
+        const finalRes = await fetch(`/api/jobs/${lastJobId}?include_results=true`);
+        const finalJob = await finalRes.json();
+        if (!finalRes.ok) throw new Error(finalJob.detail || "Failed to load results");
+        if (finalJob.status === "failed") {
+          throw new Error(finalJob.error || "Conversion failed");
+        }
+        updateProgress(finalJob);
+        renderResults(finalJob);
+        // ZIP always available after completion (includes report even if some/all failed)
+        els.btnZip.disabled = false;
+      } catch (err) {
+        els.status.textContent = err.message || String(err);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    els.btnZip.addEventListener("click", async () => {
+      if (!lastJobId) {
+        els.status.textContent = "Run Extract & preview first.";
+        return;
+      }
+      setBusy(true, "Building ZIP (.redif files + final report)…");
+      try {
+        const res = await fetch(`/api/jobs/${lastJobId}/zip`);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.detail || "ZIP export failed");
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "redif-export.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        els.status.textContent = "ZIP download started (includes _conversion_report.txt and _failed.csv).";
+      } catch (err) {
+        els.status.textContent = err.message || String(err);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    els.btnCopyReport.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(lastReportText || els.reportText.textContent || "");
+        els.status.textContent = "Report copied to clipboard.";
+      } catch {
+        els.status.textContent = "Could not copy report.";
+      }
+    });
+
+    els.btnDownloadFailed.addEventListener("click", () => {
+      const lines = ["doi,error"];
+      for (const item of lastFailedDois) {
+        const doi = String(item.doi || "").replaceAll('"', "'");
+        const err = String(item.error || "").replaceAll('"', "'");
+        lines.push(`"${doi}","${err}"`);
+      }
+      const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "failed-dois.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    els.btnClear.addEventListener("click", () => {
+      els.dois.value = "";
+      els.file.value = "";
+      els.fileName.textContent = "";
+      uploadedDois = [];
+      lastPayload = null;
+      lastJobId = null;
+      lastFailedDois = [];
+      lastReportText = "";
+      els.summary.hidden = true;
+      els.results.innerHTML = "";
+      els.stats.innerHTML = "";
+      els.reportBox.hidden = true;
+      els.reportText.textContent = "";
+      els.progressWrap.hidden = true;
+      els.btnZip.disabled = true;
+      els.status.textContent = "Cleared.";
+    });
+  </script>
+</body>
+</html>
