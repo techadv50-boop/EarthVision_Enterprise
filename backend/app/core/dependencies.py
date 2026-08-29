@@ -168,6 +168,18 @@ async def get_current_user_or_api_key(
     return await get_current_user(credentials=credentials, db=db)
 
 
+async def require_citation_admin(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """Admin role sees Journals, Search, and user management. User role does not."""
+    if current_user.is_citation_admin():
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin role required",
+    )
+
+
 def require_permission(resource: str, action: str):
     async def permission_checker(
         current_user: Annotated[User, Depends(get_current_user)],

@@ -224,7 +224,7 @@ def _pdf_from_text(text: str) -> bytes:
 async def _auth(client: AsyncClient) -> dict[str, str]:
     response = await client.post(
         "/api/v1/auth/login",
-        json={"username": "demo", "password": "Demo@123456"},
+        json={"username": "citation@xdgen.com", "password": "pak123"},
     )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}

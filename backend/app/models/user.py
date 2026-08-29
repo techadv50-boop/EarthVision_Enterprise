@@ -97,3 +97,6 @@ class User(Base):
 
     def has_role(self, role_name: str) -> bool:
         return any(role.name == role_name for role in self.roles)
+
+    def is_citation_admin(self) -> bool:
+        return bool(self.is_superuser or self.has_role("admin"))

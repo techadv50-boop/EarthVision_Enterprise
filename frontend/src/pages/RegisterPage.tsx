@@ -26,7 +26,7 @@ export default function RegisterPage() {
         full_name: fullName || undefined,
       });
       await login(username, password);
-      navigate('/');
+      navigate('/manuscripts');
     } catch (err: unknown) {
       const detail =
         err && typeof err === 'object' && 'response' in err
@@ -45,8 +45,8 @@ export default function RegisterPage() {
       <div className="relative panel p-8 w-full max-w-md">
         <div className="text-center mb-8">
           <Globe className="w-16 h-16 text-earth-400 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold">Create Account</h1>
-          <p className="text-gray-500 mt-2">Join EarthVision Enterprise</p>
+          <h1 className="text-2xl font-bold">Create account</h1>
+          <p className="text-gray-500 mt-2">Citation Assistant · user role</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, require_citation_admin
 from app.database.session import get_db
 from app.models.citation import (
     Article,
@@ -56,6 +56,7 @@ router = APIRouter(tags=["Citation Assistant"])
 
 Db = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+CitationAdmin = Annotated[User, Depends(require_citation_admin)]
 
 
 def _article_out(article: Article) -> ArticleOut:
@@ -146,7 +147,7 @@ def _issue_stats(issue: Issue, arts: list[Article]) -> IssueStatsOut:
 
 
 @router.post("/journals", response_model=JournalOut, status_code=status.HTTP_201_CREATED)
-async def create_journal(body: JournalCreate, db: Db, _user: CurrentUser):
+async def create_journal(body: JournalCreate, db: Db, _admin: CitationAdmin):
     taken = await db.execute(
         select(Journal).where(func.lower(Journal.name) == body.name.strip().lower())
     )
@@ -170,7 +171,7 @@ async def create_journal(body: JournalCreate, db: Db, _user: CurrentUser):
 
 
 @router.get("/journals", response_model=list[JournalOut])
-async def list_journals(db: Db, _user: CurrentUser):
+async def list_journals(db: Db, _admin: CitationAdmin):
     result = await db.execute(select(Journal).order_by(Journal.name))
     journals = list(result.scalars().all())
     out: list[JournalOut] = []
@@ -214,7 +215,7 @@ async def list_journals(db: Db, _user: CurrentUser):
 
 
 @router.get("/journals/{journal_id}", response_model=JournalOut)
-async def get_journal(journal_id: int, db: Db, _user: CurrentUser):
+async def get_journal(journal_id: int, db: Db, _admin: CitationAdmin):
     rows = await list_journals(db, _user)
     for row in rows:
         if row.id == journal_id:
@@ -223,7 +224,7 @@ async def get_journal(journal_id: int, db: Db, _user: CurrentUser):
 
 
 @router.patch("/journals/{journal_id}", response_model=JournalOut)
-async def update_journal(journal_id: int, body: JournalUpdate, db: Db, _user: CurrentUser):
+async def update_journal(journal_id: int, body: JournalUpdate, db: Db, _admin: CitationAdmin):
     journal = await _journal_or_404(db, journal_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(journal, field, value)
@@ -232,14 +233,14 @@ async def update_journal(journal_id: int, body: JournalUpdate, db: Db, _user: Cu
 
 
 @router.delete("/journals/{journal_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_journal(journal_id: int, db: Db, _user: CurrentUser):
+async def delete_journal(journal_id: int, db: Db, _admin: CitationAdmin):
     journal = await _journal_or_404(db, journal_id)
     await db.delete(journal)
     await db.flush()
 
 
 @router.get("/journals/{journal_id}/volumes", response_model=list[VolumeOut])
-async def list_volumes(journal_id: int, db: Db, _user: CurrentUser):
+async def list_volumes(journal_id: int, db: Db, _admin: CitationAdmin):
     await _journal_or_404(db, journal_id)
     issues = list(
         (await db.execute(select(Issue).where(Issue.journal_id == journal_id))).scalars().all()
@@ -275,7 +276,7 @@ async def list_volumes(journal_id: int, db: Db, _user: CurrentUser):
 
 
 @router.get("/journals/{journal_id}/issues", response_model=list[IssueStatsOut])
-async def list_journal_issues(journal_id: int, db: Db, _user: CurrentUser):
+async def list_journal_issues(journal_id: int, db: Db, _admin: CitationAdmin):
     await _journal_or_404(db, journal_id)
     issues = list(
         (
@@ -299,7 +300,7 @@ async def list_journal_issues(journal_id: int, db: Db, _user: CurrentUser):
     "/journals/{journal_id}/volumes/{volume}/issues",
     response_model=list[IssueStatsOut],
 )
-async def list_issues(journal_id: int, volume: int, db: Db, _user: CurrentUser):
+async def list_issues(journal_id: int, volume: int, db: Db, _admin: CitationAdmin):
     await _journal_or_404(db, journal_id)
     issues = list(
         (
@@ -332,7 +333,7 @@ async def list_issues(journal_id: int, volume: int, db: Db, _user: CurrentUser):
 
 @router.get("/journals/{journal_id}/volumes/{volume}/issues/{issue_number}/articles")
 async def list_issue_articles(
-    journal_id: int, volume: int, issue_number: int, db: Db, _user: CurrentUser
+    journal_id: int, volume: int, issue_number: int, db: Db, _admin: CitationAdmin
 ):
     await _journal_or_404(db, journal_id)
     issue = (
@@ -369,7 +370,7 @@ async def list_issue_articles(
     response_model=CoverageOut,
 )
 async def issue_coverage(
-    journal_id: int, volume: int, issue_number: int, db: Db, _user: CurrentUser
+    journal_id: int, volume: int, issue_number: int, db: Db, _admin: CitationAdmin
 ):
     data = await list_issue_articles(journal_id, volume, issue_number, db, _user)
     return data["coverage"]
@@ -379,7 +380,7 @@ async def issue_coverage(
 async def upload_papers(
     journal_id: int,
     db: Db,
-    _user: CurrentUser,
+    _admin: CitationAdmin,
     files: list[UploadFile] = File(...),
 ):
     journal = await _journal_or_404(db, journal_id)
@@ -402,7 +403,7 @@ async def upload_papers(
 
 
 @router.post("/journals/{journal_id}/papers-text")
-async def upload_paper_text(journal_id: int, body: TextPaperIn, db: Db, _user: CurrentUser):
+async def upload_paper_text(journal_id: int, body: TextPaperIn, db: Db, _admin: CitationAdmin):
     journal = await _journal_or_404(db, journal_id)
     article, created = await ingest_article_text(
         db,
@@ -428,7 +429,7 @@ async def start_crawl(
     body: CrawlStart,
     background: BackgroundTasks,
     db: Db,
-    _user: CurrentUser,
+    _admin: CitationAdmin,
 ):
     journal = await _journal_or_404(db, journal_id)
     journal.archive_url = body.archive_url
@@ -442,7 +443,7 @@ async def start_crawl(
 
 
 @router.get("/journals/{journal_id}/latest-crawl", response_model=CrawlJobOut)
-async def latest_crawl(journal_id: int, db: Db, _user: CurrentUser):
+async def latest_crawl(journal_id: int, db: Db, _admin: CitationAdmin):
     await _journal_or_404(db, journal_id)
     job = (
         await db.execute(
@@ -458,7 +459,7 @@ async def latest_crawl(journal_id: int, db: Db, _user: CurrentUser):
 
 
 @router.get("/crawl-jobs/{job_id}", response_model=CrawlJobOut)
-async def get_crawl_job(job_id: int, db: Db, _user: CurrentUser):
+async def get_crawl_job(job_id: int, db: Db, _admin: CitationAdmin):
     job = await db.get(CrawlJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Crawl job not found")
@@ -466,7 +467,7 @@ async def get_crawl_job(job_id: int, db: Db, _user: CurrentUser):
 
 
 @router.post("/crawl-jobs/{job_id}/cancel", response_model=CrawlJobOut)
-async def cancel_crawl(job_id: int, db: Db, _user: CurrentUser):
+async def cancel_crawl(job_id: int, db: Db, _admin: CitationAdmin):
     job = await db.get(CrawlJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Crawl job not found")
@@ -483,7 +484,7 @@ async def start_download(
     body: CrawlDownloadIn,
     background: BackgroundTasks,
     db: Db,
-    _user: CurrentUser,
+    _admin: CitationAdmin,
 ):
     job = await db.get(CrawlJob, job_id)
     if job is None:
@@ -520,7 +521,7 @@ async def start_download(
 @router.get("/archive/search")
 async def search_archive(
     db: Db,
-    _user: CurrentUser,
+    _admin: CitationAdmin,
     q: str = "",
     journal_id: Optional[int] = None,
     volume: Optional[int] = None,
@@ -560,7 +561,7 @@ async def search_archive(
 
 
 @router.get("/articles/{article_id}")
-async def get_article(article_id: int, db: Db, _user: CurrentUser):
+async def get_article(article_id: int, db: Db, _admin: CitationAdmin):
     article = (
         await db.execute(
             select(Article)
@@ -576,7 +577,7 @@ async def get_article(article_id: int, db: Db, _user: CurrentUser):
 
 
 @router.patch("/articles/{article_id}", response_model=ArticleOut)
-async def patch_article(article_id: int, body: ArticlePatch, db: Db, _user: CurrentUser):
+async def patch_article(article_id: int, body: ArticlePatch, db: Db, _admin: CitationAdmin):
     article = (
         await db.execute(
             select(Article)
@@ -593,7 +594,7 @@ async def patch_article(article_id: int, body: ArticlePatch, db: Db, _user: Curr
 
 
 @router.post("/articles/{article_id}/sync-citations", response_model=ArticleOut)
-async def sync_one_article(article_id: int, db: Db, _user: CurrentUser):
+async def sync_one_article(article_id: int, db: Db, _admin: CitationAdmin):
     article = (
         await db.execute(
             select(Article)
@@ -608,7 +609,7 @@ async def sync_one_article(article_id: int, db: Db, _user: CurrentUser):
 
 
 @router.post("/issues/{issue_id}/sync-citations")
-async def sync_issue_citations(issue_id: int, db: Db, _user: CurrentUser):
+async def sync_issue_citations(issue_id: int, db: Db, _admin: CitationAdmin):
     issue = await db.get(Issue, issue_id)
     if issue is None:
         raise HTTPException(status_code=404, detail="Issue not found")
@@ -629,7 +630,7 @@ async def sync_issue_citations(issue_id: int, db: Db, _user: CurrentUser):
 
 
 @router.post("/journals/{journal_id}/sync-citations")
-async def sync_journal_citations(journal_id: int, db: Db, _user: CurrentUser):
+async def sync_journal_citations(journal_id: int, db: Db, _admin: CitationAdmin):
     await _journal_or_404(db, journal_id)
     arts = list(
         (

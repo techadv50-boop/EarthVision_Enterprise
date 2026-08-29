@@ -107,10 +107,10 @@ async def list_users(
 async def update_user(
     user_id: int,
     data: UserAdminUpdate,
-    _admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    admin: Annotated[User, Depends(require_permission("admin", "all"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(selectinload(User.roles)).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -121,12 +121,33 @@ async def update_user(
         user.full_name = data.full_name
     if data.is_active is not None:
         user.is_active = data.is_active
-    if data.role_ids is not None:
+    if data.role is not None:
+        name = data.role.strip().lower()
+        if name not in ("admin", "user"):
+            raise HTTPException(status_code=400, detail="Role must be admin or user")
+        if user.id == admin.id and name != "admin":
+            raise HTTPException(status_code=400, detail="You cannot remove your own admin role")
+        role_row = await db.execute(select(Role).where(Role.name == name))
+        assigned = role_row.scalar_one_or_none()
+        if assigned is None:
+            raise HTTPException(status_code=400, detail="Role not found")
+        user.roles = [assigned]
+        user.is_superuser = name == "admin"
+    elif data.role_ids is not None:
         roles_result = await db.execute(select(Role).where(Role.id.in_(data.role_ids)))
         user.roles = list(roles_result.scalars().all())
 
     await db.flush()
-    return {"message": "User updated"}
+    result = await db.execute(
+        select(User).options(selectinload(User.roles)).where(User.id == user.id)
+    )
+    updated = result.scalar_one()
+    return {
+        "message": "User updated",
+        "id": updated.id,
+        "roles": [r.name for r in updated.roles],
+        "is_superuser": updated.is_superuser,
+    }
 
 
 @router.get("/roles", response_model=list[RoleResponse])

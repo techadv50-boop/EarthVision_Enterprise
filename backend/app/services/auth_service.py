@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.core.security import create_access_token, create_refresh_token, get_password_hash, verify_password
 from app.models.subscription import Subscription
-from app.models.user import Role, User
+from app.models.user import Role, User, user_roles
 from app.schemas.auth import UserCreate
 
 
@@ -42,11 +42,15 @@ class AuthService:
         self.db.add(user)
         await self.db.flush()
 
+        role_row = await self.db.execute(select(Role).where(Role.name == "user"))
+        user_role = role_row.scalar_one_or_none()
+        if user_role is not None:
+            await self.db.execute(user_roles.insert().values(user_id=user.id, role_id=user_role.id))
         subscription = Subscription(user_id=user.id, plan="free", status="active")
         self.db.add(subscription)
         await self.db.flush()
-        await self.db.refresh(user)
-        return user
+        loaded = await self.get_user_by_username(user.username)
+        return loaded or user
 
     async def authenticate(self, username: str, password: str) -> User | None:
         ident = (username or "").strip()
@@ -102,7 +106,8 @@ class AuthService:
             ]
             viewer_role.permissions = [p for p in permissions if p.action == "read"]
 
-            self.db.add_all([admin_role, analyst_role, viewer_role])
+            user_role = Role(name="user", description="Citation user — New manuscript only")
+            self.db.add_all([admin_role, analyst_role, viewer_role, user_role])
             await self.db.flush()
 
             admin_user = User(
@@ -132,7 +137,25 @@ class AuthService:
                 self.db.add(Subscription(user_id=user.id, plan="pro", status="active"))
             await self.db.flush()
 
+        await self.ensure_citation_roles()
         await self.ensure_operator_user()
+
+    async def ensure_citation_roles(self) -> None:
+        """Keep admin and user roles available after the first seed."""
+        from app.models.user import Permission
+
+        existing = {
+            row.name: row
+            for row in (await self.db.execute(select(Role))).scalars().all()
+        }
+        if "admin" not in existing:
+            admin_role = Role(name="admin", description="Administrator — full Citation Assistant")
+            perms = list((await self.db.execute(select(Permission))).scalars().all())
+            admin_role.permissions = perms
+            self.db.add(admin_role)
+        if "user" not in existing:
+            self.db.add(Role(name="user", description="Citation user — New manuscript only"))
+        await self.db.flush()
 
     async def ensure_operator_user(self) -> None:
         """Create the XDGEN operator login if it is missing (does not overwrite an existing password)."""

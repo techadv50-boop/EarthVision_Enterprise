@@ -74,6 +74,7 @@ class UserAdminUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
     role_ids: Optional[list[int]] = None
+    role: Optional[str] = Field(default=None, description="Citation role: admin or user")
 
 
 class AdminStats(BaseModel):

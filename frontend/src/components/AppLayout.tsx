@@ -1,15 +1,17 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { BookOpen, FilePlus, LogOut } from 'lucide-react';
-import { useAuthStore } from '@/store/authStore';
+import { BookOpen, FilePlus, LogOut, Shield } from 'lucide-react';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 export default function AppLayout() {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
+  const admin = isCitationAdmin(user);
+  const home = admin ? '/' : '/manuscripts';
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <header className="sticky top-0 z-30 flex items-center justify-between px-6 py-3 bg-gray-950/90 backdrop-blur border-b border-gray-800">
-        <Link to="/" className="flex items-center gap-3">
+        <Link to={home} className="flex items-center gap-3">
           <BookOpen className="w-6 h-6 text-earth-400" />
           <div>
             <h1 className="text-sm font-bold tracking-wide">Citation Assistant</h1>
@@ -17,23 +19,27 @@ export default function AppLayout() {
           </div>
         </Link>
         <nav className="flex items-center gap-4 text-sm">
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) =>
-              isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white'
-            }
-          >
-            Journals
-          </NavLink>
-          <NavLink
-            to="/archive"
-            className={({ isActive }) =>
-              isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white'
-            }
-          >
-            Search
-          </NavLink>
+          {admin && (
+            <>
+              <NavLink
+                to="/"
+                end
+                className={({ isActive }) =>
+                  isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white'
+                }
+              >
+                Journals
+              </NavLink>
+              <NavLink
+                to="/archive"
+                className={({ isActive }) =>
+                  isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white'
+                }
+              >
+                Search
+              </NavLink>
+            </>
+          )}
           <NavLink
             to="/manuscripts"
             className={({ isActive }) =>
@@ -44,8 +50,23 @@ export default function AppLayout() {
               <FilePlus className="w-4 h-4" /> New manuscript
             </span>
           </NavLink>
+          {admin && (
+            <NavLink
+              to="/users"
+              className={({ isActive }) =>
+                isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white'
+              }
+            >
+              <span className="inline-flex items-center gap-1">
+                <Shield className="w-4 h-4" /> Users
+              </span>
+            </NavLink>
+          )}
           {user && (
-            <span className="text-gray-500">{user.full_name || user.username}</span>
+            <span className="text-gray-500">
+              {user.full_name || user.username}
+              {admin ? ' · admin' : ' · user'}
+            </span>
           )}
           <button
             onClick={() => {
