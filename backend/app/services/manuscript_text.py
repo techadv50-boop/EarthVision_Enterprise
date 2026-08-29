@@ -30,7 +30,20 @@ def extract_manuscript_text(data: bytes, filename: str = "") -> str:
 
 
 def paragraph_text(para) -> str:
-    pieces = [node.text or "" for node in para.findall(".//w:t", W_NS)]
+    """Visible paragraph text, ignoring tracked inserts and note references."""
+    pieces: list[str] = []
+    for node in para.findall(".//w:t", W_NS):
+        skip = False
+        parent = node.getparent()
+        while parent is not None:
+            tag = etree.QName(parent).localname
+            if tag in {"ins", "del", "endnoteReference", "footnoteReference", "commentReference"}:
+                skip = True
+                break
+            parent = parent.getparent()
+        if skip:
+            continue
+        pieces.append(node.text or "")
     return re.sub(r"\s+", " ", "".join(pieces)).strip()
 
 
