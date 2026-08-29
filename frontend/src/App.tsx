@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { useAuthStore } from '@/store/authStore';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import AppLayout from '@/components/AppLayout';
@@ -11,6 +11,7 @@ import IssueArticlesPage from '@/pages/IssueArticlesPage';
 import ManuscriptsPage from '@/pages/ManuscriptsPage';
 import ManuscriptReviewPage from '@/pages/ManuscriptReviewPage';
 import ArchiveSearchPage from '@/pages/ArchiveSearchPage';
+import UsersPage from '@/pages/UsersPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
 import BillingSuccessPage from '@/pages/BillingSuccessPage';
 import BillingCancelPage from '@/pages/BillingCancelPage';
@@ -37,6 +38,22 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!isCitationAdmin(user)) {
+    return <Navigate to="/manuscripts" replace />;
+  }
+  return <>{children}</>;
+}
+
+function HomeRoute() {
+  const user = useAuthStore((s) => s.user);
+  if (!isCitationAdmin(user)) {
+    return <Navigate to="/manuscripts" replace />;
+  }
+  return <DashboardPage />;
+}
+
 export default function App() {
   return (
     <Routes>
@@ -52,16 +69,49 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/journals/:journalId" element={<JournalVolumesPage />} />
-        <Route path="/journals/:journalId/volumes/:volume" element={<VolumeIssuesPage />} />
+        <Route path="/" element={<HomeRoute />} />
+        <Route
+          path="/journals/:journalId"
+          element={
+            <AdminRoute>
+              <JournalVolumesPage />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path="/journals/:journalId/volumes/:volume"
+          element={
+            <AdminRoute>
+              <VolumeIssuesPage />
+            </AdminRoute>
+          }
+        />
         <Route
           path="/journals/:journalId/volumes/:volume/issues/:issueNumber"
-          element={<IssueArticlesPage />}
+          element={
+            <AdminRoute>
+              <IssueArticlesPage />
+            </AdminRoute>
+          }
         />
         <Route path="/manuscripts" element={<ManuscriptsPage />} />
         <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
-        <Route path="/archive" element={<ArchiveSearchPage />} />
+        <Route
+          path="/archive"
+          element={
+            <AdminRoute>
+              <ArchiveSearchPage />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path="/users"
+          element={
+            <AdminRoute>
+              <UsersPage />
+            </AdminRoute>
+          }
+        />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

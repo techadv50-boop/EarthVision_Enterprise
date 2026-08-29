@@ -12,6 +12,11 @@ interface User {
   roles: string[];
 }
 
+export function isCitationAdmin(user: User | null | undefined): boolean {
+  if (!user) return false;
+  return Boolean(user.is_superuser || (user.roles || []).includes('admin'));
+}
+
 interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
@@ -24,7 +29,7 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: !!localStorage.getItem('access_token'),
-  isLoading: false,
+  isLoading: !!localStorage.getItem('access_token'),
 
   login: async (username, password) => {
     set({ isLoading: true });

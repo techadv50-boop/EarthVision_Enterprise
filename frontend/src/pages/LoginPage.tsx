@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, Loader2 } from 'lucide-react';
-import { useAuthStore } from '@/store/authStore';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import { authApi } from '@/services/api';
 
 export default function LoginPage() {
@@ -22,7 +22,8 @@ export default function LoginPage() {
     setInfo('');
     try {
       await login(username, password);
-      navigate('/');
+      const signedIn = useAuthStore.getState().user;
+      navigate(isCitationAdmin(signedIn) ? '/' : '/manuscripts');
     } catch {
       setError('Invalid credentials. Use citation@xdgen.com / pak123');
     }
@@ -104,11 +105,22 @@ export default function LoginPage() {
             >
               Forgot password? Use master reset
             </button>
+            <p className="text-center text-sm text-gray-500">
+              Need an account?{' '}
+              <button
+                type="button"
+                className="text-earth-400 hover:underline"
+                onClick={() => navigate('/register')}
+              >
+                Create one
+              </button>
+            </p>
           </form>
         ) : (
           <form onSubmit={handleReset} className="space-y-4">
             <p className="text-sm text-gray-400">
-              Enter the account email, the master reset password, and a new login password.
+              Enter the account email, the master reset password <span className="text-gray-200">NTZHSS</span>, and a
+              new login password.
             </p>
             <div>
               <label className="text-sm text-gray-400 mb-1 block">Email</label>
