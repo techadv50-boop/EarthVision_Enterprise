@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models.user import UserRole
+from app.models.user import AccountStatus, UserRole
 
 
 class LoginRequest(BaseModel):
@@ -40,6 +40,8 @@ class UserResponse(BaseModel):
     organization: str | None = None
     avatar_url: str | None = None
     allowed_tools: list[str] | None = None
+    allowed_satellites: list[str] | None = None
+    account_status: AccountStatus = AccountStatus.APPROVED
 
     model_config = {"from_attributes": True}
 

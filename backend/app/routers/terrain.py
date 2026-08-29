@@ -34,4 +34,8 @@ async def list_products(user: CurrentUser) -> list[dict]:
 async def compute_terrain(
     data: TerrainComputeRequest, user: CurrentUser
 ) -> TerrainComputeResponse:
-    return TerrainService().compute(data)
+    from app.core.concurrency import run_sync_timeout
+
+    return await run_sync_timeout(
+        TerrainService().compute, data, timeout_s=55.0, label="Terrain"
+    )

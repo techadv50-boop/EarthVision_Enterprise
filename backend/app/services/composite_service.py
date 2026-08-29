@@ -18,96 +18,88 @@ from app.schemas.composite import (
     StretchRequest,
     StretchResponse,
 )
+from app.services.satellite_bands import (
+    COMPOSITE_BAND_CODES,
+    COMPOSITE_REQUIRED_KEYS,
+    INDEX_APPLICABLE,
+    INDEX_BAND_NOTES,
+    OPTICAL_SWIR_FAMILY,
+    composite_applicable_families,
+    composite_for_family,
+    family_label,
+    normalize_satellite_family,
+    unsupported_image_processing_reason,
+)
 
-# Standard remote-sensing RGB band combinations (Sentinel-2 / Landsat OLI mapping)
+# Standard remote-sensing RGB band combinations (sensor-accurate codes in satellite_bands)
 COMPOSITE_PRESETS: dict[str, dict[str, Any]] = {
     "true_color": {
         "label": "True Color (Natural)",
-        "keys": ("red", "green", "blue"),
+        "keys": COMPOSITE_REQUIRED_KEYS["true_color"],
         "display": {"R": "Red", "G": "Green", "B": "Blue"},
-        "s2": "B04-B03-B02",
-        "landsat": "B4-B3-B2",
         "formula": "R=Red, G=Green, B=Blue — natural color",
         "use": "General mapping, visual interpretation",
     },
     "false_color_infrared": {
         "label": "False Color Infrared (FCC)",
-        "keys": ("nir", "red", "green"),
+        "keys": COMPOSITE_REQUIRED_KEYS["false_color_infrared"],
         "display": {"R": "NIR", "G": "Red", "B": "Green"},
-        "s2": "B08-B04-B03",
-        "landsat": "B5-B4-B3",
         "formula": "R=NIR, G=Red, B=Green — vegetation appears bright red",
         "use": "Vegetation vigor, land/water contrast (classic FCC)",
     },
     "false_color_agriculture": {
         "label": "Agriculture / SWIR",
-        "keys": ("swir", "nir", "blue"),
+        "keys": COMPOSITE_REQUIRED_KEYS["false_color_agriculture"],
         "display": {"R": "SWIR1", "G": "NIR", "B": "Blue"},
-        "s2": "B11-B08-B02",
-        "landsat": "B6-B5-B2",
         "formula": "R=SWIR1, G=NIR, B=Blue — crops & soils",
         "use": "Crop health, bare soil vs vegetation",
     },
     "false_color_urban": {
         "label": "Urban / Built-up",
-        "keys": ("swir", "nir", "red"),
+        "keys": COMPOSITE_REQUIRED_KEYS["false_color_urban"],
         "display": {"R": "SWIR1", "G": "NIR", "B": "Red"},
-        "s2": "B11-B08-B04",
-        "landsat": "B6-B5-B4",
         "formula": "R=SWIR1, G=NIR, B=Red — built-up bright",
         "use": "Urban fabric, impervious surfaces (pairs with NDBI)",
     },
     "swir_composite": {
         "label": "SWIR Composite",
-        "keys": ("swir2", "swir", "red"),
+        "keys": COMPOSITE_REQUIRED_KEYS["swir_composite"],
         "display": {"R": "SWIR2", "G": "SWIR1", "B": "Red"},
-        "s2": "B12-B11-B04",
-        "landsat": "B7-B6-B4",
         "formula": "R=SWIR2, G=SWIR1, B=Red — moisture & geology",
         "use": "Soil moisture, lithology, burn scars",
     },
     "geology": {
         "label": "Geology / Lithology",
-        "keys": ("swir2", "swir", "blue"),
+        "keys": COMPOSITE_REQUIRED_KEYS["geology"],
         "display": {"R": "SWIR2", "G": "SWIR1", "B": "Blue"},
-        "s2": "B12-B11-B02",
-        "landsat": "B7-B6-B2",
         "formula": "R=SWIR2, G=SWIR1, B=Blue — rock & soil types",
         "use": "Geological mapping",
     },
     "atmospheric_penetration": {
         "label": "Atmospheric Penetration",
-        "keys": ("swir2", "swir", "nir"),
+        "keys": COMPOSITE_REQUIRED_KEYS["atmospheric_penetration"],
         "display": {"R": "SWIR2", "G": "SWIR1", "B": "NIR"},
-        "s2": "B12-B11-B08",
-        "landsat": "B7-B6-B5",
         "formula": "R=SWIR2, G=SWIR1, B=NIR — haze penetration",
         "use": "Smoke/haze penetration, fire mapping",
     },
     "land_water": {
         "label": "Land / Water",
-        "keys": ("nir", "swir", "red"),
+        "keys": COMPOSITE_REQUIRED_KEYS["land_water"],
         "display": {"R": "NIR", "G": "SWIR1", "B": "Red"},
-        "s2": "B08-B11-B04",
-        "landsat": "B5-B6-B4",
         "formula": "R=NIR, G=SWIR1, B=Red — water dark, land bright",
         "use": "Shorelines, flooding (pairs with NDWI)",
     },
     "vegetation_health": {
         "label": "Vegetation Health (NIR-focused)",
-        "keys": ("nir", "swir", "green"),
+        "keys": COMPOSITE_REQUIRED_KEYS["vegetation_health"],
         "display": {"R": "NIR", "G": "SWIR1", "B": "Green"},
-        "s2": "B08-B11-B03",
-        "landsat": "B5-B6-B3",
         "formula": "R=NIR, G=SWIR1, B=Green — healthy veg bright",
         "use": "Vegetation stress (pairs with NDVI / NDMI)",
     },
     "burn_severity": {
         "label": "Burn Severity Preview",
-        "keys": ("swir2", "nir", "green"),
+        "keys": COMPOSITE_REQUIRED_KEYS["burn_severity"],
         "display": {"R": "SWIR2", "G": "NIR", "B": "Green"},
-        "s2": "B12-B08-B03",
-        "landsat": "B7-B5-B3",
         "formula": "R=SWIR2, G=NIR, B=Green — burns magenta/red",
         "use": "Fire scars (pairs with NBR)",
     },
@@ -146,8 +138,8 @@ INDEX_THEMATIC: dict[str, dict[str, str]] = {
         "colormap": "Soil browns (−1…1)",
     },
     "EVI": {
-        "formula": "2.5 × (NIR−RED) / (NIR + 6·RED − 7.5·GREEN + 1)",
-        "bands": "NIR + Red + Green (S2: B08+B04+B03)",
+        "formula": "2.5 × (NIR−RED) / (NIR + 6·RED − 7.5·BLUE + 1)",
+        "bands": "NIR + Red + Blue (S2: B08+B04+B02 · LS8: B5+B4+B2)",
         "thematic_rgb": "False Color Infrared (NIR-Red-Green)",
         "colormap": "RdYlGn (−1…1)",
     },
@@ -164,8 +156,8 @@ INDEX_THEMATIC: dict[str, dict[str, str]] = {
         "colormap": "RdYlBu (−1…1)",
     },
     "LST": {
-        "formula": "BT = K2 / ln(K1/Lλ + 1) − 273.15 °C  (Landsat TIRS)",
-        "bands": "Thermal (Landsat ST_B10 / lwir11)",
+        "formula": "LST(°C) = DN×0.00341802 + 149 − 273.15  (Landsat C2 L2 ST_B10)",
+        "bands": "Thermal ST_B10 / lwir11 (Landsat-8/9 Collection-2 Level-2)",
         "thematic_rgb": "True Color underlay + thermal colormap",
         "colormap": "Thermal (°C)",
     },
@@ -175,26 +167,92 @@ INDEX_THEMATIC: dict[str, dict[str, str]] = {
 class CompositeService:
     """Build RGB composites and stretch previews from scene analysis bands."""
 
-    def list_presets(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": key,
-                "label": meta["label"],
-                "formula": meta["formula"],
-                "use": meta["use"],
-                "sentinel2": meta["s2"],
-                "landsat": meta["landsat"],
-                "bands": meta["display"],
-            }
-            for key, meta in COMPOSITE_PRESETS.items()
-        ]
+    def list_presets(self, collection: str | None = None) -> list[dict[str, Any]]:
+        family = normalize_satellite_family(collection) if collection else None
+        out: list[dict[str, Any]] = []
+        for key, meta in COMPOSITE_PRESETS.items():
+            applicable = composite_applicable_families(key)
+            sat_bands = COMPOSITE_BAND_CODES.get(key) or {}
+            active = composite_for_family(key, family) if family else None
+            # Default display codes: S2 / Landsat-8 / MODIS for UI cards
+            s2 = (sat_bands.get("SENTINEL-2") or {}).get("codes", "")
+            ls8 = (sat_bands.get("LANDSAT-8") or {}).get("codes", "")
+            ls9 = (sat_bands.get("LANDSAT-9") or {}).get("codes", "")
+            l7 = (sat_bands.get("LANDSAT-7") or {}).get("codes", "")
+            modis = (sat_bands.get("MODIS") or {}).get("codes", "")
+            formula = (active or {}).get("formula") or meta["formula"]
+            codes = (active or {}).get("codes") or s2
+            enabled = True if family is None else family in applicable
+            reason = None
+            if family and not enabled:
+                reason = unsupported_image_processing_reason(family) or (
+                    f"Not applicable to {family_label(family)} — needs optical "
+                    f"SWIR/VIS bands (supported: {', '.join(family_label(f) for f in applicable)})"
+                )
+            out.append(
+                {
+                    "id": key,
+                    "label": meta["label"],
+                    "formula": formula,
+                    "use": meta["use"],
+                    "sentinel2": s2,
+                    "landsat": ls8,
+                    "landsat8": ls8,
+                    "landsat9": ls9,
+                    "landsat7": l7,
+                    "modis": modis,
+                    "bands": meta["display"],
+                    "applicable": applicable,
+                    "enabled": enabled,
+                    "disabled_reason": reason,
+                    "active_codes": codes if enabled else None,
+                    "active_family": family if family and family != "UNKNOWN" else None,
+                    "satellite_formulas": {
+                        fam: {
+                            "codes": info["codes"],
+                            "formula": info["formula"],
+                        }
+                        for fam, info in sat_bands.items()
+                    },
+                }
+            )
+        return out
 
-    def list_index_thematic(self) -> list[dict[str, str]]:
-        return [{"id": k, **v} for k, v in INDEX_THEMATIC.items()]
+    def list_index_thematic(self, collection: str | None = None) -> list[dict[str, Any]]:
+        family = normalize_satellite_family(collection) if collection else None
+        rows: list[dict[str, Any]] = []
+        for k, v in INDEX_THEMATIC.items():
+            applicable = list(INDEX_APPLICABLE.get(k, OPTICAL_SWIR_FAMILY))
+            enabled = True if family is None else family in applicable
+            notes = INDEX_BAND_NOTES.get(k) or {}
+            band_note = notes.get(family or "", v.get("bands", ""))
+            reason = None
+            if family and not enabled:
+                if k == "LST":
+                    reason = "LST requires Landsat-8/9 thermal (TIRS) in this app"
+                else:
+                    reason = unsupported_image_processing_reason(family) or (
+                        f"Not applicable to {family_label(family)} — needs optical "
+                        f"multispectral bands"
+                    )
+            rows.append(
+                {
+                    "id": k,
+                    **v,
+                    "bands": band_note or v.get("bands", ""),
+                    "applicable": applicable,
+                    "enabled": enabled,
+                    "disabled_reason": reason,
+                    "satellite_bands": notes,
+                }
+            )
+        return rows
 
     def render_composite(self, request: CompositeRequest) -> CompositeResponse:
         preset_id = request.preset
         meta = COMPOSITE_PRESETS.get(preset_id)
+        family = self._resolve_family(request.scene_id, request.collection)
+
         if request.red_band and request.green_band and request.blue_band:
             keys = (request.red_band, request.green_band, request.blue_band)
             label = f"Custom ({keys[0]}-{keys[1]}-{keys[2]})"
@@ -202,30 +260,92 @@ class CompositeService:
             formula = f"R={keys[0]}, G={keys[1]}, B={keys[2]}"
             band_keys = {"R": keys[0], "G": keys[1], "B": keys[2]}
         elif meta:
+            applicable = composite_applicable_families(preset_id)
+            if family and family not in applicable and family != "UNKNOWN":
+                raise ValidationError(
+                    f"'{meta['label']}' is not applicable to {family_label(family)}. "
+                    f"Use with: {', '.join(family_label(f) for f in applicable)}."
+                )
             keys = meta["keys"]
             label = meta["label"]
             display = meta["display"]
-            formula = meta["formula"]
+            sat = composite_for_family(preset_id, family) if family else None
+            formula = (sat or {}).get("formula") or meta["formula"]
             band_keys = {"R": keys[0], "G": keys[1], "B": keys[2]}
         else:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
 
-        bands, bounds = self._load_bands(request.scene_id, request.bbox, request.size)
-        r = self._pick(bands, keys[0])
-        g = self._pick(bands, keys[1])
-        b = self._pick(bands, keys[2])
+        # True/false color: build from surface-reflectance bands with EO stretch.
+        # Extent follows the scene layer bounds passed by the client (original image).
+        # Use client size as-is — interactive map overlays stay fast on slow links.
+        size = max(64, min(int(request.size or 512), 640))
 
-        rgb = self._stack_stretch(
-            r, g, b,
-            mode=request.stretch,
-            p_low=request.p_low,
-            p_high=request.p_high,
-            gamma=request.gamma,
-            brightness=request.brightness,
-            contrast=request.contrast,
+        if preset_id == "true_color" and request.scene_id:
+            # Prefer ESA/USGS official visual TCI — already natural-color balanced.
+            visual = self._load_visual_rgb(request.scene_id, request.bbox, size)
+            if visual is not None:
+                from app.services.professional_viz import prepare_tci_display
+
+                rgb_raw, bounds, valid_mask = visual
+                rgb = prepare_tci_display(
+                    rgb_raw,
+                    brightness=request.brightness if abs(request.brightness - 1.0) > 0.02 else 1.0,
+                    contrast=request.contrast if abs(request.contrast - 1.0) > 0.02 else 1.0,
+                )
+                hist = self._rgb_histogram(rgb)
+                png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=85)
+                return CompositeResponse(
+                    preset=preset_id,
+                    label=label,
+                    bands=display,
+                    band_keys=band_keys,
+                    formula=formula,
+                    bounds=bounds,
+                    overlay_base64=base64.b64encode(png).decode("ascii"),
+                    histogram=hist,
+                    legend=self._rgb_legend(label, formula),
+                    message=(
+                        f"{label} · {family_label(family) if family else 'scene'} · "
+                        f"esa_tci · official natural color"
+                    ),
+                    stretch="esa_tci",
+                )
+
+        bands, bounds = self._load_bands(
+            request.scene_id, request.bbox, size, band_names=keys
         )
+        r = self._pick(bands, keys[0], required=True)
+        g = self._pick(bands, keys[1], required=True)
+        b = self._pick(bands, keys[2], required=True)
+        valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
+
+        if preset_id == "true_color":
+            # Highlight Optimized Natural Color (Sentinel Hub) — no neon blowouts
+            from app.services.professional_viz import true_color_highlight_optimized
+
+            rgb = true_color_highlight_optimized(
+                r, g, b,
+                brightness=1.0,
+                contrast=1.0,
+            )
+            stretch_label = "highlight_optimized"
+        else:
+            from app.services.professional_viz import false_color_professional
+
+            rgb = false_color_professional(
+                r, g, b,
+                p_low=request.p_low,
+                p_high=request.p_high,
+                gamma=request.gamma if request.gamma else 1.25,
+                brightness=request.brightness,
+                contrast=request.contrast,
+            )
+            stretch_label = "fcc_professional"
+
         hist = self._rgb_histogram(rgb)
-        png = self._rgb_to_png(rgb)
+        png = self._rgb_to_png(
+            rgb, valid_mask=valid_mask, quality=85 if preset_id == "true_color" else 70
+        )
         return CompositeResponse(
             preset=preset_id,
             label=label,
@@ -235,45 +355,70 @@ class CompositeService:
             bounds=bounds,
             overlay_base64=base64.b64encode(png).decode("ascii"),
             histogram=hist,
-            legend=LegendInfo(
-                min=0,
-                max=255,
-                unit="DN",
-                label=label,
-                formula=formula,
-                stops=[
-                    ColormapStop(value=0, color="#000000"),
-                    ColormapStop(value=128, color="#808080"),
-                    ColormapStop(value=255, color="#ffffff"),
-                ],
+            legend=self._rgb_legend(label, formula),
+            message=(
+                f"{label} · {family_label(family) if family else 'scene'} · "
+                f"{stretch_label} · professional EO standard"
             ),
-            message=f"{label} · stretch {request.stretch} {request.p_low}-{request.p_high}%",
-            stretch=f"{request.stretch} p{request.p_low}-{request.p_high} γ={request.gamma}",
+            stretch=f"{stretch_label} p{request.p_low}-{request.p_high}",
         )
 
+    def _resolve_family(self, scene_id: str | None, collection: str | None) -> str | None:
+        if collection:
+            fam = normalize_satellite_family(collection)
+            if fam != "UNKNOWN":
+                return fam
+        if scene_id:
+            try:
+                from app.services.scene_imagery_service import SceneImageryService
+
+                layer = SceneImageryService().get_layer(scene_id)
+                if layer and layer.get("collection"):
+                    return normalize_satellite_family(str(layer["collection"]))
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
     def stretch_scene(self, request: StretchRequest) -> StretchResponse:
-        bands, bounds = self._load_bands(request.scene_id, request.bbox, request.size)
+        family = self._resolve_family(request.scene_id, None)
+        if family:
+            blocked = unsupported_image_processing_reason(family)
+            if blocked:
+                raise ValidationError(blocked)
+        size = max(64, min(int(request.size or 512), 640))
+        bands, bounds = self._load_bands(
+            request.scene_id,
+            request.bbox,
+            size,
+            band_names=("red", "green", "blue"),
+        )
         r = self._pick(bands, "red")
         g = self._pick(bands, "green")
         b = self._pick(bands, "blue")
-        rgb = self._stack_stretch(
-            r, g, b,
-            mode="percentile",
-            p_low=request.p_low,
-            p_high=request.p_high,
-            gamma=request.gamma,
-            brightness=request.brightness,
-            contrast=request.contrast,
-        )
+        valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
+        if request.source == "true_color":
+            from app.services.professional_viz import true_color_highlight_optimized
+
+            rgb = true_color_highlight_optimized(
+                r, g, b,
+                brightness=request.brightness,
+                contrast=request.contrast,
+            )
+        else:
+            from app.services.professional_viz import false_color_professional
+
+            rgb = false_color_professional(
+                r, g, b,
+                p_low=request.p_low,
+                p_high=request.p_high,
+                gamma=request.gamma,
+                brightness=request.brightness,
+                contrast=request.contrast,
+            )
         hist = self._rgb_histogram(rgb)
-        # Also histogram of raw reflectance for the chart
-        raw_hist = self._channel_histograms(
-            self._pick(bands, "red"),
-            self._pick(bands, "green"),
-            self._pick(bands, "blue"),
-        )
+        raw_hist = self._channel_histograms(r, g, b)
         hist["raw"] = raw_hist
-        png = self._rgb_to_png(rgb)
+        png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=85)
         return StretchResponse(
             bounds=bounds,
             overlay_base64=base64.b64encode(png).decode("ascii"),
@@ -289,48 +434,197 @@ class CompositeService:
             ),
         )
 
+    def _rgb_legend(self, label: str, formula: str) -> LegendInfo:
+        return LegendInfo(
+            min=0,
+            max=255,
+            unit="DN",
+            label=label,
+            formula=formula,
+            stops=[
+                ColormapStop(value=0, color="#000000"),
+                ColormapStop(value=128, color="#808080"),
+                ColormapStop(value=255, color="#ffffff"),
+            ],
+        )
+
+    def _load_visual_rgb(
+        self, scene_id: str, bbox: list[float] | None, size: int
+    ) -> tuple[np.ndarray, list[float], np.ndarray] | None:
+        try:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            imagery = SceneImageryService()
+            layer = imagery.get_layer(scene_id)
+            if not layer:
+                return None
+            bounds = imagery.clip_bounds_to_layer(layer, bbox)
+            result = imagery.read_visual_rgb(scene_id, bounds, size=size)
+            if result is None:
+                return None
+            rgb, bounds = result
+            valid = np.any(rgb > 0.01, axis=2) & np.all(np.isfinite(rgb), axis=2)
+            return rgb, bounds, valid
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Visual composite load failed: {}", exc)
+            return None
+
+    def _true_color_stretch(
+        self,
+        r: np.ndarray,
+        g: np.ndarray,
+        b: np.ndarray,
+        *,
+        p_low: float,
+        p_high: float,
+        gamma: float,
+        brightness: float,
+        contrast: float,
+    ) -> np.ndarray:
+        """Natural-looking S2/Landsat true color from surface reflectance.
+
+        Stretch statistics are computed on land (cloud/snow excluded), with a soft
+        knee on highlights so bright clouds don't wash the whole composite out.
+        """
+        stacked = np.stack(
+            [r.astype(np.float64), g.astype(np.float64), b.astype(np.float64)],
+            axis=-1,
+        )
+        if np.nanmax(stacked) > 1.5:
+            stacked = stacked / 10000.0
+        stacked = np.clip(stacked, 0, 1)
+        finite = np.all(np.isfinite(stacked), axis=2)
+        bright = np.nanmean(stacked, axis=2)
+        # Cloud / bright roof mask for statistics only
+        cloud = finite & ((stacked[:, :, 2] > 0.25) | (bright > 0.28))
+        land = finite & ~cloud
+        if land.sum() < max(64, int(0.08 * max(1, finite.sum()))):
+            land = self._land_mask(stacked)
+
+        vals = stacked[land]
+        if vals.size == 0:
+            vals = stacked[finite]
+        if vals.size == 0:
+            return np.zeros_like(stacked)
+
+        lo = float(np.percentile(vals, p_low))
+        hi = float(np.percentile(vals, p_high))
+        hi = min(max(hi, lo + 0.04), 0.24)
+        lo = max(0.0, min(lo, hi - 0.03))
+
+        norm = (stacked - lo) / (hi - lo + 1e-9)
+        # Soft knee above 1.0 keeps cloud structure without crushing land
+        over = norm > 1.0
+        norm = np.where(over, 1.0 + 0.25 * np.tanh(norm - 1.0), np.clip(norm, 0, 1))
+        norm = np.clip(norm, 0, 1.2) / 1.2
+        norm[~finite] = 0
+
+        g = float(gamma) if gamma and gamma > 0 else 1.45
+        # Keep gamma moderate — too high re-washes urban surfaces
+        out = np.power(np.clip(norm, 0, 1), 1.0 / max(1.2, min(g, 1.7)))
+
+        # Mild saturation so vegetation/urban read clearer
+        mean = out.mean(axis=2, keepdims=True)
+        out = np.clip(mean + (out - mean) * 1.12, 0, 1)
+
+        c = float(contrast) if contrast else 1.05
+        bval = float(brightness) if brightness else 1.0
+        out = (out - 0.5) * max(0.9, min(c, 1.15)) + 0.5
+        out = out * max(0.9, min(bval, 1.1))
+        return np.clip(out, 0, 1)
+
     def _load_bands(
-        self, scene_id: str | None, bbox: list[float] | None, size: int
+        self,
+        scene_id: str | None,
+        bbox: list[float] | None,
+        size: int,
+        band_names: tuple[str, ...] | list[str] | None = None,
     ) -> tuple[dict[str, np.ndarray], list[float]]:
         bounds = bbox if bbox and len(bbox) == 4 else [74.15, 31.35, 74.55, 31.7]
         if scene_id:
-            try:
-                from app.services.scene_imagery_service import SceneImageryService
+            from app.services.scene_imagery_service import SceneImageryService
 
-                imagery = SceneImageryService()
-                bands, bounds, _fp, _layer = imagery.load_analysis_bands(scene_id, size=size)
-                if bands:
-                    # Ensure swir2 alias
-                    if "swir2" not in bands and "swir" in bands:
-                        bands["swir2"] = bands["swir"]
-                    return bands, bounds
+            imagery = SceneImageryService()
+            try:
+                bands, bounds, _fp, _layer = imagery.load_analysis_bands(
+                    scene_id,
+                    size=size,
+                    bounds=bbox,
+                    band_names=band_names,
+                )
+            except ValidationError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Composite band load failed: {}", exc)
+                raise ValidationError(
+                    "Failed to load satellite bands for this scene — "
+                    "turn the eye off/on and retry True Color."
+                ) from exc
+            if not bands:
+                raise ValidationError(
+                    "No optical bands available for this scene — "
+                    "turn the eye on first, then retry the composite."
+                )
+            return bands, bounds
 
         from app.services.analytics_service import AnalyticsService
 
-        synth = AnalyticsService()._synthetic_bands(size=size, seed=hash(scene_id or "comp") % (2**31))
+        # Synthetic only for demos without a prepared scene — never mask COG failures.
+        synth = AnalyticsService()._synthetic_bands(
+            size=size, seed=hash(scene_id or "comp") % (2**31)
+        )
         return synth, [float(x) for x in bounds]
 
-    def _pick(self, bands: dict[str, np.ndarray], key: str) -> np.ndarray:
+    def _pick(
+        self,
+        bands: dict[str, np.ndarray],
+        key: str,
+        *,
+        required: bool = False,
+    ) -> np.ndarray:
         if key in bands:
             return bands[key].astype(np.float64)
-        # Fallbacks
+        # Naming aliases only (never substitute a different spectral region)
         aliases = {
-            "swir2": ["swir2", "swir", "nir"],
-            "swir": ["swir", "swir2", "red"],
-            "nir": ["nir", "green"],
-            "red": ["red", "nir"],
-            "green": ["green", "blue"],
-            "blue": ["blue", "green"],
+            "swir2": ["swir2", "swir22"],
+            "swir": ["swir", "swir16"],
+            "nir": ["nir", "nir08"],
+            "red": ["red"],
+            "green": ["green"],
+            "blue": ["blue"],
+            "thermal": ["thermal", "lwir11"],
         }
         for alt in aliases.get(key, [key]):
             if alt in bands:
                 return bands[alt].astype(np.float64)
-        # Last resort: zeros matching any available band shape
+        if required:
+            available = ", ".join(sorted(bands.keys())) or "none"
+            raise ValidationError(
+                f"Required band '{key}' is not available for this satellite "
+                f"(have: {available}). Choose a composite that matches the sensor."
+            )
         for arr in bands.values():
             return np.zeros_like(arr, dtype=np.float64)
         raise ValidationError(f"Band '{key}' not available")
+
+    @staticmethod
+    def _land_mask(stacked: np.ndarray) -> np.ndarray:
+        """Pixels used for stretch stats — exclude nodata and bright clouds/snow."""
+        finite = np.all(np.isfinite(stacked), axis=2)
+        if not finite.any():
+            return finite
+        # Brightness in reflectance units (or normalized visual)
+        bright = np.nanmean(stacked, axis=2)
+        vals = bright[finite]
+        # Drop the brightest ~8% (clouds/snow) from statistics so land isn't crushed
+        cloud_cut = float(np.percentile(vals, 92))
+        # Also drop near-zero fill
+        dark_cut = float(np.percentile(vals, 2))
+        land = finite & (bright >= dark_cut) & (bright <= cloud_cut)
+        # Fallback if too aggressive
+        if land.sum() < max(64, int(0.05 * finite.sum())):
+            land = finite & (bright > 0)
+        return land
 
     def _stack_stretch(
         self,
@@ -345,9 +639,17 @@ class CompositeService:
         brightness: float,
         contrast: float,
     ) -> np.ndarray:
-        stacked = np.stack([r, g, b], axis=-1)
-        valid = np.isfinite(stacked)
+        stacked = np.stack(
+            [r.astype(np.float64), g.astype(np.float64), b.astype(np.float64)],
+            axis=-1,
+        )
+        # Reflectance bands should already be 0–1; clip wild values
+        if np.nanmax(stacked) > 1.5:
+            stacked = stacked / 10000.0
+        stacked = np.clip(stacked, 0, 1)
+        finite = np.all(np.isfinite(stacked), axis=2)
         out = np.zeros_like(stacked, dtype=np.float64)
+
         if mode == "none":
             out = np.nan_to_num(stacked, nan=0.0)
             out = np.clip(out, 0, 1)
@@ -360,37 +662,56 @@ class CompositeService:
                 lo, hi = float(np.nanmin(ch)), float(np.nanmax(ch))
                 out[:, :, i] = np.clip((ch - lo) / (hi - lo + 1e-9), 0, 1)
                 out[:, :, i][~m] = 0
-        else:  # percentile — joint stretch across channels (standard EO display)
-            vals = stacked[valid]
+        elif mode in {"joint_land", "percentile"}:
+            # Shared stretch across RGB using land pixels (natural color balance)
+            land = self._land_mask(stacked)
+            vals = stacked[land]
+            if vals.size == 0:
+                vals = stacked[finite]
             if vals.size:
                 lo = float(np.percentile(vals, p_low))
                 hi = float(np.percentile(vals, p_high))
+                # Cap hi so bright clouds don't force land into darkness
+                hi = min(hi, max(lo + 0.05, float(np.percentile(vals, 90)) * 1.15, 0.35))
                 if hi <= lo:
                     hi = lo + 1e-6
                 out = np.clip((stacked - lo) / (hi - lo), 0, 1)
-                out[~valid] = 0
-            else:
-                out = np.zeros_like(stacked)
+                out[~finite] = 0
+        else:  # channel_land — per-channel on land (FCC / thematic)
+            land = self._land_mask(stacked)
+            for i in range(3):
+                ch = stacked[:, :, i]
+                sample = ch[land & np.isfinite(ch)]
+                if sample.size == 0:
+                    sample = ch[finite]
+                if sample.size == 0:
+                    continue
+                lo = float(np.percentile(sample, p_low))
+                hi = float(np.percentile(sample, p_high))
+                hi = min(hi, max(lo + 0.05, float(np.percentile(sample, 90)) * 1.2, 0.45))
+                if hi <= lo:
+                    hi = lo + 1e-6
+                out[:, :, i] = np.clip((ch - lo) / (hi - lo), 0, 1)
+                out[:, :, i][~finite] = 0
 
-        if abs(gamma - 1.0) > 1e-6:
-            out = np.power(np.clip(out, 0, 1), 1.0 / gamma)
-
-        # brightness / contrast as linear ops in [0,1]
+        # Midtone lift — EO reflectance often looks dark without gamma > 1
+        g = gamma if gamma and gamma > 0 else 1.15
+        out = np.power(np.clip(out, 0, 1), 1.0 / g)
         out = (out - 0.5) * contrast + 0.5
         out = out * brightness
         return np.clip(out, 0, 1)
 
-    def _rgb_to_png(self, rgb: np.ndarray) -> bytes:
-        u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-        alpha = np.full(u8.shape[:2], 220, dtype=np.uint8)
-        # Transparent where all near black (no data)
-        dark = (u8.sum(axis=2) < 3)
-        alpha[dark] = 0
-        rgba = np.dstack([u8, alpha])
-        img = Image.fromarray(rgba, mode="RGBA")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
-        return buf.getvalue()
+    def _rgb_to_png(
+        self,
+        rgb: np.ndarray,
+        valid_mask: np.ndarray | None = None,
+        *,
+        quality: int = 70,
+    ) -> bytes:
+        from app.services.overlay_encode import encode_rgb_mask_overlay
+
+        data, _mime = encode_rgb_mask_overlay(rgb, valid_mask, quality=int(quality))
+        return data
 
     def _rgb_histogram(self, rgb: np.ndarray) -> dict[str, Any]:
         u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)

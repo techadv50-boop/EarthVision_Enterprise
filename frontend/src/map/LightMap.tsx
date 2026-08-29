@@ -56,11 +56,20 @@ interface Props {
     rotate?: boolean;
     terrainRelief?: boolean;
   };
-  mapCommand?: { id: number; type: string } | null;
+  mapCommand?: {
+    id: number;
+    type: string;
+    lat?: number;
+    lon?: number;
+    zoom?: number;
+  } | null;
+  /** Highlighted ship contact after Locate (lat, lon, id). */
+  focusContact?: { id: number; lat: number; lon: number } | null;
   onPlaceClick: (lon: number, lat: number) => void;
   onAoiComplete: (feature: GeoJSON.Feature) => void;
   onDrawnFeature: (feature: DrawnFeature) => void;
   onMeasure: (label: string | null) => void;
+  onViewBoundsChange?: (bbox: [number, number, number, number]) => void;
 }
 
 function toLatLon(pts: LonLat[]): LatLon[] {
@@ -70,7 +79,13 @@ function toLatLon(pts: LonLat[]): LatLon[] {
 function MapCommandRunner({
   command,
 }: {
-  command: { id: number; type: string } | null | undefined;
+  command: {
+    id: number;
+    type: string;
+    lat?: number;
+    lon?: number;
+    zoom?: number;
+  } | null | undefined;
 }) {
   const map = useMap();
   useEffect(() => {
@@ -83,7 +98,39 @@ function MapCommandRunner({
       if (document.fullscreenElement) void document.exitFullscreen();
       else void el.requestFullscreen?.();
     }
+    if (
+      command.type === 'fly-to' &&
+      Number.isFinite(command.lat) &&
+      Number.isFinite(command.lon)
+    ) {
+      map.flyTo([command.lat as number, command.lon as number], command.zoom ?? 16, {
+        duration: 0.75,
+      });
+    }
   }, [command, map]);
+  return null;
+}
+
+function ViewBoundsReporter({
+  onChange,
+}: {
+  onChange?: (bbox: [number, number, number, number]) => void;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (!onChange) return;
+    const emit = () => {
+      const b = map.getBounds();
+      onChange([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    };
+    emit();
+    map.on('moveend', emit);
+    map.on('zoomend', emit);
+    return () => {
+      map.off('moveend', emit);
+      map.off('zoomend', emit);
+    };
+  }, [map, onChange]);
   return null;
 }
 
@@ -97,7 +144,10 @@ function CursorCoordinates({ enabled }: { enabled: boolean }) {
   });
   if (!enabled) return null;
   return (
-    <div className="pointer-events-none absolute bottom-3 left-1/2 z-[1000] -translate-x-1/2 rounded-full border border-[var(--line)] bg-white/95 px-3 py-1 font-mono text-[11px] shadow">
+    <div
+      className="pointer-events-none absolute bottom-3 right-3 z-[1000] rounded-md border border-[var(--line)] bg-white/95 px-3 py-1 font-mono text-[11px] shadow"
+      data-map-chrome="coordinates"
+    >
       {pos}
     </div>
   );
@@ -178,17 +228,21 @@ function FlyToPlace({ place }: { place: PlaceSelection | null }) {
 
 function FitOverlay({ overlays }: { overlays: MapOverlay[] }) {
   const map = useMap();
-  const lastId = useRef<string | null>(null);
+  // Fit only when a new imagery layer is first added — never on visibility toggles
+  // (hiding ship detection used to re-fit the scene → jump to full extent).
+  const fittedIds = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const last = overlays[overlays.length - 1];
-    if (!last || last.id === lastId.current) return;
-    // Don't auto-fit buffer-only updates
-    if (last.kind === 'buffer') {
-      lastId.current = last.id;
-      return;
-    }
-    lastId.current = last.id;
+    const newcomers = overlays.filter(
+      (o) =>
+        !fittedIds.current.has(o.id) &&
+        o.kind !== 'buffer' &&
+        o.kind !== 'detection',
+    );
+    for (const o of overlays) fittedIds.current.add(o.id);
+    if (!newcomers.length) return;
+    const last = newcomers[newcomers.length - 1];
     const [west, south, east, north] = last.bounds;
+    if (!(east > west && north > south)) return;
     map.fitBounds(
       [
         [south, west],
@@ -506,26 +560,30 @@ function DraftGraphics({
         <Polyline
           positions={toLatLon(points)}
           interactive={false}
-          pathOptions={{ color, weight: 2.5, opacity: 0.95 }}
+          pane="evDrawPane"
+          pathOptions={{ color, weight: 3, opacity: 1 }}
         />
       )}
       {previewLine && (
         <Polyline
           positions={previewLine}
           interactive={false}
-          pathOptions={{ color, weight: 2, dashArray: '6 4', opacity: 0.7 }}
+          pane="evDrawPane"
+          pathOptions={{ color, weight: 2.5, dashArray: '6 4', opacity: 0.85 }}
         />
       )}
       {closedRing && points.length >= 3 && (
         <Polygon
           positions={closedRing}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
             color,
-            weight: 2,
+            weight: 3,
             fillColor: color,
-            fillOpacity: 0.12,
+            fillOpacity: 0.1,
             dashArray: '4 3',
+            opacity: 1,
           }}
         />
       )}
@@ -533,12 +591,14 @@ function DraftGraphics({
         <Rectangle
           bounds={rectBounds}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
-            color: '#b45309',
-            weight: 2,
-            fillColor: '#b45309',
-            fillOpacity: 0.12,
+            color: '#f59e0b',
+            weight: 3,
+            fillColor: '#fbbf24',
+            fillOpacity: 0.1,
             dashArray: '6 4',
+            opacity: 1,
           }}
         />
       )}
@@ -548,6 +608,7 @@ function DraftGraphics({
           center={[lat, lon]}
           radius={mapTool === 'draw-point' ? 7 : 5}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
             color: '#fff',
             weight: 2,
@@ -569,6 +630,7 @@ function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
         center={[lat, lon]}
         radius={7}
         interactive={false}
+        pane="evDrawPane"
         pathOptions={{ color: '#fff', weight: 2, fillColor: '#0f766e', fillOpacity: 1 }}
       />
     );
@@ -581,12 +643,13 @@ function DrawnFeatureLayer({ feature }: { feature: DrawnFeature | null }) {
       <Polyline
         positions={positions}
         interactive={false}
+        pane="evDrawPane"
         pathOptions={{ color: '#0ea5e9', weight: 3, opacity: 0.95 }}
       />
     );
   }
   if (feature.type === 'Polygon' && feature.geometry.type === 'Polygon') {
-    // AOI already rendered separately; skip duplicate if same
+    // Water-body AOI is drawn via aoiOutline on evDrawPane (avoid duplicate fill).
     return null;
   }
   return null;
@@ -598,6 +661,12 @@ function EnsureStackPane() {
   if (!map.getPane('evStackPane')) {
     const pane = map.createPane('evStackPane');
     pane.style.zIndex = '450';
+    pane.style.pointerEvents = 'none';
+  }
+  // Drawings / AOI bounds must sit ABOVE imagery so polygon lines stay visible
+  if (!map.getPane('evDrawPane')) {
+    const pane = map.createPane('evDrawPane');
+    pane.style.zIndex = '650';
     pane.style.pointerEvents = 'none';
   }
   return null;
@@ -646,10 +715,25 @@ function EnforceStackOrder({
   return null;
 }
 
-function tagOverlayElement(el: HTMLElement | undefined | null, id: string, zIndex: number) {
+function tagOverlayElement(
+  el: HTMLElement | undefined | null,
+  id: string,
+  zIndex: number,
+  crisp = false,
+) {
   if (!el) return;
   el.dataset.evId = id;
   el.style.zIndex = String(zIndex);
+  if (crisp) {
+    // Keep categorical LULC pixels sharp (no browser bilinear blur when scaled).
+    el.style.imageRendering = 'pixelated';
+    (el.style as CSSStyleDeclaration & { msInterpolationMode?: string }).msInterpolationMode =
+      'nearest-neighbor';
+    const imgs = el.tagName === 'IMG' ? [el] : Array.from(el.querySelectorAll('img'));
+    for (const img of imgs) {
+      (img as HTMLElement).style.imageRendering = 'pixelated';
+    }
+  }
 }
 
 function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
@@ -657,21 +741,52 @@ function geoStyle(kind: MapOverlay['kind']): L.PathOptions {
     return { color: '#7c3aed', weight: 2, fillColor: '#7c3aed', fillOpacity: 0.18 };
   }
   if (kind === 'detection') {
-    return { color: '#dc2626', weight: 2.5, fillColor: '#ef4444', fillOpacity: 0.28, opacity: 0.95 };
+    // Outline only — do not cover the ship object underneath
+    return {
+      color: '#ff0000',
+      weight: 2.5,
+      fillColor: '#ff0000',
+      fillOpacity: 0.08,
+      opacity: 1,
+    };
   }
   return { color: '#0f766e', weight: 1.5, fillOpacity: 0, opacity: 0.9 };
 }
 
 function detectionPointToLayer(feature: GeoJSON.Feature, latlng: L.LatLng) {
-  const conf = Number((feature.properties as { confidence?: number } | null)?.confidence ?? 0.6);
-  const radius = 4 + Math.round(conf * 6);
+  const props = (feature.properties || {}) as {
+    confidence?: number;
+    contact_id?: number;
+    geom_role?: string;
+  };
+  if (props.geom_role && props.geom_role !== 'centroid') {
+    return L.circleMarker(latlng, { radius: 0, opacity: 0, fillOpacity: 0 });
+  }
+  const n = Number(props.contact_id ?? 0);
+  if (n > 0) {
+    return L.marker(latlng, {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({
+        className: '',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+        html:
+          `<div style="width:22px;height:22px;border-radius:999px;background:#ff0000;` +
+          `border:2px solid #fff;color:#fff;font:700 11px/18px sans-serif;` +
+          `text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.45)">${n}</div>`,
+      }),
+    });
+  }
+  const conf = Number(props.confidence ?? 0.6);
+  const radius = 5 + Math.round(conf * 3);
   return L.circleMarker(latlng, {
     radius,
-    color: '#991b1b',
-    weight: 1.5,
-    fillColor: '#ef4444',
-    fillOpacity: 0.85,
-    opacity: 0.95,
+    color: '#ff0000',
+    weight: 2,
+    fillColor: '#ff0000',
+    fillOpacity: 0.25,
+    opacity: 1,
   });
 }
 
@@ -686,10 +801,12 @@ export function LightMap({
   showGrid = true,
   mapChrome,
   mapCommand,
+  focusContact = null,
   onPlaceClick,
   onAoiComplete,
   onDrawnFeature,
   onMeasure,
+  onViewBoundsChange,
 }: Props) {
   const [draft, setDraft] = useState<DraftState>({
     points: [],
@@ -784,11 +901,12 @@ export function LightMap({
       />
       <MapInteractionMode mapTool={mapTool} />
       <MapCommandRunner command={mapCommand} />
+      <ViewBoundsReporter onChange={onViewBoundsChange} />
       <EnsureStackPane />
       <EnforceStackOrder overlays={overlays} zIndexById={overlayZIndex} />
       <LatLngGrid enabled={showGrid} />
       <FlyToPlace place={place} />
-      <FitOverlay overlays={visibleOverlays} />
+      <FitOverlay overlays={overlays} />
       <DemTerrainLayer
         overlay={demBaseOverlay}
         enabled={Boolean(demBaseOverlay)}
@@ -813,6 +931,22 @@ export function LightMap({
         />
       )}
 
+      {focusContact && (
+        <CircleMarker
+          center={[focusContact.lat, focusContact.lon]}
+          radius={14}
+          interactive={false}
+          pane="evDrawPane"
+          pathOptions={{
+            color: '#fbbf24',
+            weight: 3,
+            fillColor: '#f59e0b',
+            fillOpacity: 0.15,
+            opacity: 1,
+          }}
+        />
+      )}
+
       {visibleOverlays.map((overlay) => {
         const [west, south, east, north] = overlay.bounds;
         const leafletBounds: [[number, number], [number, number]] = [
@@ -829,6 +963,9 @@ export function LightMap({
             : null;
 
         const zIndex = overlayZIndex.get(overlay.id) ?? 430;
+        const crispRaster =
+          overlay.id.startsWith('classify-') ||
+          (overlay.label ?? '').toLowerCase().includes('lulc');
         const tagHandlers = {
           add: (e: { target: L.Layer & { getContainer?: () => HTMLElement; getElement?: () => HTMLElement } }) => {
             const el =
@@ -836,7 +973,7 @@ export function LightMap({
               e.target.getElement?.() ||
               (e.target as unknown as { _container?: HTMLElement; _image?: HTMLElement })._container ||
               (e.target as unknown as { _image?: HTMLElement })._image;
-            tagOverlayElement(el ?? null, overlay.id, zIndex);
+            tagOverlayElement(el ?? null, overlay.id, zIndex, crispRaster);
           },
         };
 
@@ -847,13 +984,14 @@ export function LightMap({
                 url={overlay.tileUrl}
                 bounds={leafletBounds}
                 opacity={overlay.opacity}
-                maxNativeZoom={16}
-                maxZoom={18}
+                maxNativeZoom={18}
+                maxZoom={20}
                 pane="evStackPane"
                 zIndex={zIndex}
-                updateWhenZooming={false}
-                updateWhenIdle
-                keepBuffer={2}
+                // Fetch tiles during zoom so clear imagery sharpens sooner
+                updateWhenZooming
+                updateWhenIdle={false}
+                keepBuffer={6}
                 eventHandlers={tagHandlers}
               />
             ) : overlay.url ? (
@@ -905,12 +1043,14 @@ export function LightMap({
         <Polygon
           positions={aoiOutline}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
-            color: '#b45309',
-            weight: 2.5,
-            fillColor: '#b45309',
+            color: '#f59e0b',
+            weight: 3.5,
+            fillColor: '#fbbf24',
             fillOpacity: 0.08,
-            dashArray: '6 4',
+            opacity: 1,
+            dashArray: '10 6',
           }}
         />
       )}
@@ -919,6 +1059,7 @@ export function LightMap({
         <Polygon
           positions={bufferPositions}
           interactive={false}
+          pane="evDrawPane"
           pathOptions={{
             color: '#7c3aed',
             weight: 2.5,

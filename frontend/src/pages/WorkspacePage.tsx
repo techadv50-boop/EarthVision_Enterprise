@@ -3,7 +3,11 @@ import { LogOut, Shield, Wrench } from 'lucide-react';
 import { LightMap } from '../map/LightMap';
 import { MapToolbar } from '../components/map/MapToolbar';
 import { MapLegend } from '../components/map/MapLegend';
-import { PlaceStep } from '../components/workflow/PlaceStep';
+import {
+  PlaceStep,
+  SATELLITE_OPTIONS,
+  type CatalogFilters,
+} from '../components/workflow/PlaceStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
 import { AdminPanel } from '../components/admin/AdminPanel';
@@ -28,6 +32,10 @@ import {
   type StretchResult,
 } from '../services/compositeService';
 import {
+  classificationService,
+  type ClassificationResult,
+} from '../services/classificationService';
+import {
   terrainService,
   type TerrainProduct,
 } from '../services/terrainService';
@@ -38,7 +46,7 @@ import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
 import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
 import { bookmarkService } from '../services/bookmarkService';
-import { TOOLBOXES } from '../toolbox/catalog';
+import { HIGH_RES_ONLY_TOOLBOXES, TOOLBOXES } from '../toolbox/catalog';
 
 function sceneBounds(
   scene: SceneSummary,
@@ -48,6 +56,66 @@ function sceneBounds(
     footprintBbox(scene.footprint as GeoJSON.Geometry | null, place?.bbox) ??
     place?.bbox ?? [74.15, 31.35, 74.55, 31.7]
   );
+}
+
+/** Sensors with no optical Image Processing pipeline in this app. */
+function opticalProcessingBlockReason(collection?: string | null): string | null {
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  if (!c) return null;
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) {
+    return 'Sentinel-1 SAR does not support optical Image Processing tools. Use Sentinel-2 or Landsat.';
+  }
+  if (
+    c.includes('SENTINEL-3') ||
+    c === 'S3' ||
+    c === 'OLCI' ||
+    c === 'SLSTR' ||
+    c.startsWith('S3-')
+  ) {
+    return 'Sentinel-3 is not wired for land optical composites/indices in this app. Use Sentinel-2 or Landsat.';
+  }
+  if (c.includes('SENTINEL-5') || c.includes('S5P')) {
+    return 'Sentinel-5P atmospheric products do not support land optical Image Processing tools.';
+  }
+  if (c.includes('SMOS')) {
+    return 'SMOS does not support optical Image Processing tools. Use Sentinel-2 or Landsat.';
+  }
+  return null;
+}
+
+/** Ship Detection: Landsat/S2 eye ON + drawn water-body polygon AOI. */
+function opticalShipBlockReason(
+  hasScene: boolean,
+  collection?: string | null,
+  hasWaterAoi?: boolean,
+): string | null {
+  if (!hasScene) {
+    return 'Ship Detection stays off until you select a Landsat or Sentinel-2 image (turn the eye on).';
+  }
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  if (!c) {
+    return 'Ship Detection requires a Landsat or Sentinel-2 optical scene.';
+  }
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) {
+    return 'Ship Detection (optical) does not support Sentinel-1 SAR. Use Sentinel-2 or Landsat.';
+  }
+  const ok =
+    c.includes('SENTINEL-2') ||
+    c.startsWith('S2') ||
+    c.includes('LANDSAT') ||
+    c.startsWith('L8') ||
+    c.startsWith('L9') ||
+    c.startsWith('L7');
+  if (!ok) {
+    return 'Ship Detection works only with Landsat and Sentinel-2 optical imagery.';
+  }
+  if (!hasWaterAoi) {
+    return (
+      'Ship Detection needs a drawn water-body area first — use Rect AOI or Poly AOI ' +
+      'on the map to demarcate the water, then run Ship Detection.'
+    );
+  }
+  return null;
 }
 
 function aoiBbox(
@@ -95,15 +163,32 @@ export function WorkspacePage() {
   const [bufferLoading, setBufferLoading] = useState(false);
   const [lastBufferDistance, setLastBufferDistance] = useState<number | null>(null);
   const [lastBufferArea, setLastBufferArea] = useState<number | null>(null);
-  const [mapCommand, setMapCommand] = useState<{ id: number; type: string } | null>(null);
+  const [mapCommand, setMapCommand] = useState<{
+    id: number;
+    type: string;
+    lat?: number;
+    lon?: number;
+    zoom?: number;
+  } | null>(null);
+  const [shipContacts, setShipContacts] = useState<
+    Array<{ id: number; lon: number; lat: number; confidence: number; label: string }>
+  >([]);
+  const [activeContactId, setActiveContactId] = useState<number | null>(null);
+  const [focusContact, setFocusContact] = useState<{
+    id: number;
+    lat: number;
+    lon: number;
+  } | null>(null);
   const [compositeResult, setCompositeResult] = useState<CompositeResult | null>(null);
+  const [classificationResult, setClassificationResult] =
+    useState<ClassificationResult | null>(null);
   const [stretchResult, setStretchResult] = useState<StretchResult | null>(null);
   const [stretchParams, setStretchParams] = useState({
     p_low: 2,
     p_high: 98,
-    gamma: 1,
-    brightness: 1,
-    contrast: 1,
+    gamma: 1.2,
+    brightness: 1.05,
+    contrast: 1.05,
   });
   const [processFilter, setProcessFilter] = useState({
     brightness: 1,
@@ -112,17 +197,31 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [adminTab, setAdminTab] = useState<'satellites' | 'clients'>('clients');
+  const [satelliteRefreshKey, setSatelliteRefreshKey] = useState(0);
+  const [geotiffBusy, setGeotiffBusy] = useState(false);
+  const [catalogFilters, setCatalogFilters] = useState<CatalogFilters>(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setUTCDate(start.getUTCDate() - 90);
+    const defaultSat = SATELLITE_OPTIONS[0];
+    return {
+      satelliteId: '',
+      satelliteLabel: '',
+      collections: defaultSat.collections,
+      isHighResolution: false,
+      startDate: start.toISOString().slice(0, 10),
+      endDate: end.toISOString().slice(0, 10),
+    };
+  });
+  const [geotiffLayerId, setGeotiffLayerId] = useState<string | null>(null);
+  const [mapViewBbox, setMapViewBbox] = useState<
+    [number, number, number, number] | null
+  >(null);
 
   const isAdmin = user?.role === 'admin';
   const allowedTools =
     isAdmin || user?.allowed_tools == null ? null : user.allowed_tools;
-  const toolCount = useMemo(() => {
-    const boxes =
-      allowedTools == null
-        ? TOOLBOXES
-        : TOOLBOXES.filter((b) => allowedTools.includes(b.id));
-    return boxes.reduce((n, b) => n + b.tools.length, 0);
-  }, [allowedTools]);
 
   const {
     step,
@@ -227,17 +326,60 @@ export function WorkspacePage() {
 
   const hasVisibleScene = visibleSceneIds.length > 0;
 
+  const hasWaterAoi = useMemo(
+    () =>
+      aoiGeoJson?.geometry?.type === 'Polygon' ||
+      drawnFeature?.type === 'Polygon',
+    [aoiGeoJson, drawnFeature],
+  );
+
+  const satelliteActive = Boolean(catalogFilters.satelliteId);
+
+  const toolCount = useMemo(() => {
+    // Count includes AI / Change / Maritime / Air (visible but always inactive).
+    const boxes =
+      allowedTools == null
+        ? TOOLBOXES
+        : TOOLBOXES.filter(
+            (b) =>
+              allowedTools.includes(b.id) ||
+              HIGH_RES_ONLY_TOOLBOXES.includes(b.id),
+          );
+    return boxes.reduce((n, b) => n + b.tools.length, 0);
+  }, [allowedTools]);
+
   const analysisBbox = useMemo((): [number, number, number, number] => {
+    // Processed overlays must match the original scene extent on the map.
+    // Prefer the loaded scene layer bounds / STAC footprint, not the place pin AOI
+    // (place bbox is only a search window and was clipping false/true color to a small inset).
     const sceneOverlay = focusScene
       ? overlays.find((o) => o.kind === 'scene' && o.sceneId === focusScene.id)
       : null;
     if (sceneOverlay?.bounds) return sceneOverlay.bounds;
-    if (place) return aoiBbox(aoiGeoJson, place.bbox);
+    if (focusScene) return sceneBounds(focusScene, place);
+    if (place || aoiGeoJson) {
+      const fallback = (place?.bbox ??
+        ([74.15, 31.35, 74.55, 31.7] as [number, number, number, number]));
+      return aoiBbox(aoiGeoJson, fallback);
+    }
     return [74.15, 31.35, 74.55, 31.7];
   }, [aoiGeoJson, focusScene, overlays, place]);
 
   const loadScenesForPlace = useCallback(
-    async (selected: PlaceSelection) => {
+    async (selected: PlaceSelection, filters: CatalogFilters) => {
+      if (!filters.satelliteId || !filters.collections.length) {
+        setError('Select a satellite first');
+        return;
+      }
+      if (!filters.startDate || !filters.endDate) {
+        setError('Choose a From and To date for scenes');
+        return;
+      }
+      if (filters.startDate > filters.endDate) {
+        setError('From date must be on or before To date');
+        return;
+      }
+      setCatalogFilters(filters);
       setPlace(selected);
       resetFromPlace();
       setLoadingScenes(true);
@@ -245,7 +387,9 @@ export function WorkspacePage() {
       try {
         const bbox = aoiBbox(aoiGeoJson, selected.bbox);
         const result = await catalogService.search({
-          collections: ['SENTINEL-1', 'SENTINEL-2', 'LANDSAT-8', 'LANDSAT-9', 'MODIS'],
+          collections: filters.collections,
+          start_date: `${filters.startDate}T00:00:00.000Z`,
+          end_date: `${filters.endDate}T23:59:59.000Z`,
           cloud_cover_max: 80,
           bbox: [...bbox],
           max_results: 20,
@@ -266,25 +410,43 @@ export function WorkspacePage() {
     async (lon: number, lat: number) => {
       if (step !== 'place') return;
       if (mapTool !== 'navigate') return;
+      if (!catalogFilters.satelliteId) {
+        setError('Select a satellite first');
+        return;
+      }
+      if (!catalogFilters.startDate || !catalogFilters.endDate) {
+        setError('Choose a From and To date for scenes');
+        return;
+      }
+      if (catalogFilters.startDate > catalogFilters.endDate) {
+        setError('From date must be on or before To date');
+        return;
+      }
       const pad = 0.18;
       try {
         const reverse = await gisService.reverseGeocode(lon, lat);
-        await loadScenesForPlace({
-          name: reverse.display_name || `Point ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
-          longitude: lon,
-          latitude: lat,
-          bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
-        });
+        await loadScenesForPlace(
+          {
+            name: reverse.display_name || `Point ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
+            longitude: lon,
+            latitude: lat,
+            bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
+          },
+          catalogFilters,
+        );
       } catch {
-        await loadScenesForPlace({
-          name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
-          longitude: lon,
-          latitude: lat,
-          bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
-        });
+        await loadScenesForPlace(
+          {
+            name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
+            longitude: lon,
+            latitude: lat,
+            bbox: [lon - pad, lat - pad, lon + pad, lat + pad],
+          },
+          catalogFilters,
+        );
       }
     },
-    [loadScenesForPlace, mapTool, step],
+    [catalogFilters, loadScenesForPlace, mapTool, setError, step],
   );
 
   const onDrawnFeature = useCallback(
@@ -317,13 +479,19 @@ export function WorkspacePage() {
         });
         const tileUrl =
           overlay.tile_url || analyticsService.sceneTileUrl(scene.id);
+        const coll = (scene.collection || '').toUpperCase();
         const label =
           overlay.label ||
-          (scene.collection === 'SENTINEL-1'
+          (coll === 'SENTINEL-1'
             ? 'Sentinel-1 GRD (grayscale)'
-            : scene.collection.startsWith('LANDSAT')
+            : coll.startsWith('LANDSAT')
               ? `${scene.collection} true-color`
-              : `${scene.collection} true-color (TCI)`);
+              : coll.includes('MODIS') ||
+                  coll === 'TERRA' ||
+                  coll === 'AQUA' ||
+                  coll === 'TERRAAQUA'
+                ? 'MODIS true-color'
+                : `${scene.collection} true-color (TCI)`);
         const hasDemBase = useWorkflowStore
           .getState()
           .overlays.some(
@@ -387,6 +555,13 @@ export function WorkspacePage() {
     if (!focusScene) {
       setError('Show a satellite scene first (eye icon)');
       return;
+    }
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
     }
     setToolLoading(true);
     setToolStatus(`Computing ${index} on scene…`);
@@ -582,16 +757,63 @@ export function WorkspacePage() {
   };
 
   const runDetection = async (task: string) => {
+    const opticalShip =
+      task === 'ship_detection' || task === 'ship_detection_optical';
+    if (opticalShip) {
+      const blocked = opticalShipBlockReason(
+        Boolean(focusScene),
+        focusScene?.collection ?? catalogFilters.satelliteId,
+        hasWaterAoi,
+      );
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
+    } else if (!focusScene && !analysisBbox) {
+      setError('Show a satellite scene first');
+      return;
+    }
     setToolLoading(true);
-    setToolStatus(`Detection: ${task.replaceAll('_', ' ')}…`);
+    setToolStatus(
+      opticalShip
+        ? 'Ship Detection · AOI-first · sensitive NIR (GEE Optimized)…'
+        : `Detection: ${task.replaceAll('_', ' ')}…`,
+    );
     setError(null);
     try {
+      // Ship Detection runs only inside the user-drawn water-body AOI.
+      let shipBbox: [number, number, number, number] = [...analysisBbox];
+      let shipAoi: GeoJSON.Geometry | null = null;
+      if (opticalShip) {
+        if (aoiGeoJson?.geometry?.type === 'Polygon') {
+          shipAoi = aoiGeoJson.geometry;
+          shipBbox = aoiBbox(aoiGeoJson, analysisBbox);
+        } else if (drawnFeature?.type === 'Polygon' && drawnFeature.geometry) {
+          shipAoi = drawnFeature.geometry as GeoJSON.Polygon;
+          const ring = (shipAoi as GeoJSON.Polygon).coordinates[0];
+          const lons = ring.map((c) => c[0]);
+          const lats = ring.map((c) => c[1]);
+          shipBbox = [
+            Math.min(...lons),
+            Math.min(...lats),
+            Math.max(...lons),
+            Math.max(...lats),
+          ];
+        } else {
+          setError(
+            'Draw a Rect/Poly AOI around the water body before running Ship Detection.',
+          );
+          setToolLoading(false);
+          setToolStatus(null);
+          return;
+        }
+      }
       const result = await detectionService.run({
         task,
-        bbox: [...analysisBbox],
+        bbox: opticalShip ? [...shipBbox] : [...analysisBbox],
         scene_id: focusScene?.id,
-        aoi: aoiGeoJson?.geometry ?? null,
-        confidence_min: 0.45,
+        aoi: opticalShip ? shipAoi : aoiGeoJson?.geometry ?? null,
+        confidence_min: opticalShip ? 0.08 : 0.35,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(
@@ -599,7 +821,6 @@ export function WorkspacePage() {
           ? `${result.message} · ${result.formula}`
           : result.message,
       );
-      // Force map cartography chrome whenever objects are detected
       useWorkflowStore.getState().setMapChrome({
         compass: true,
         scaleBar: true,
@@ -618,6 +839,43 @@ export function WorkspacePage() {
         label: task.replaceAll('_', ' '),
         visible: true,
       });
+      if (opticalShip) {
+        const contacts = (result.geojson?.features || [])
+          .filter(
+            (f) =>
+              f.geometry?.type === 'Point' &&
+              (f.properties as { geom_role?: string } | null)?.geom_role === 'centroid',
+          )
+          .map((f, i) => {
+            const props = (f.properties || {}) as {
+              contact_id?: number;
+              confidence?: number;
+              label?: string;
+              lon?: number;
+              lat?: number;
+            };
+            const coords = (f.geometry as GeoJSON.Point).coordinates;
+            const id = Number(props.contact_id ?? i + 1);
+            return {
+              id,
+              lon: Number(props.lon ?? coords[0]),
+              lat: Number(props.lat ?? coords[1]),
+              confidence: Number(props.confidence ?? 0),
+              label: String(props.label ?? `Ship ${id}`),
+            };
+          })
+          .sort((a, b) => a.id - b.id);
+        setShipContacts(contacts);
+        setActiveContactId(null);
+        setFocusContact(null);
+        const n = contacts.length;
+        setLastMessage(
+          n > 0
+            ? `${n} ship contact(s) · use the list below to Locate each one`
+            : (result.message || 'No ships found inside the water AOI') +
+                ' · draw a tighter AOI over open water and retry',
+        );
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -726,11 +984,33 @@ export function WorkspacePage() {
 
   const applyProcessFilter = (op: string) => {
     if (op === 'true_color') {
+      // Never leave CSS brightness/contrast on the map — it neon-blows True Color
+      setProcessFilter({ brightness: 1, contrast: 1, gamma: 1 });
+      setStretchParams((s) => ({ ...s, brightness: 1.0, contrast: 1.0, gamma: 1.2 }));
       void runComposite('true_color');
       return;
     }
     if (op === 'false_color') {
-      void runComposite('false_color_infrared');
+      // Cycle USGS/ESA professional false-color recipes on repeat clicks
+      const fccCycle: CompositePreset[] = [
+        'false_color_infrared',
+        'false_color_agriculture',
+        'false_color_urban',
+        'swir_composite',
+        'land_water',
+        'vegetation_health',
+        'burn_severity',
+        'geology',
+        'atmospheric_penetration',
+      ];
+      const cur = (compositeResult?.preset || 'false_color_infrared') as CompositePreset;
+      const idx = fccCycle.indexOf(cur);
+      const next = fccCycle[(idx + 1) % fccCycle.length];
+      void runComposite(next);
+      return;
+    }
+    if (op === 'unsupervised_classify') {
+      void runClassification();
       return;
     }
     if (op === 'histogram') {
@@ -761,39 +1041,179 @@ export function WorkspacePage() {
       return;
     }
     if (op === 'mosaic') {
-      setLastMessage('Mosaic: all visible scene layers shown');
+      setLastMessage('Mosaic: all visible scene layers shown (professional multi-scene stack)');
       return;
     }
     if (op === 'reproject' || op === 'resample') {
-      setLastMessage(`${op}: display CRS EPSG:3857 / native scene resolution`);
+      setLastMessage(
+        `${op}: display CRS EPSG:3857 · interactive grid ≤640px (slow-link professional preview)`,
+      );
+    }
+  };
+
+  const recolorClassification = async (
+    styles: import('../services/classificationService').ClassStyle[],
+  ) => {
+    if (!classificationResult?.class_map_base64 || !focusScene) {
+      setError('Run classification first, then change colors');
+      return;
+    }
+    try {
+      // Instant local recolor for the map overlay
+      const dataUrl = await classificationService.recolorLocal(
+        classificationResult.class_map_base64,
+        styles.map((s) => ({
+          class_id: s.class_id ?? 0,
+          color: s.color,
+        })),
+      );
+      const overlayB64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+      const nextClasses = classificationResult.classes.map((c) => {
+        const style = styles.find(
+          (s) => s.class_id === c.class_id || s.name === c.name,
+        );
+        return style
+          ? { ...c, color: style.color, label: style.label || c.label }
+          : c;
+      });
+      setClassificationResult({
+        ...classificationResult,
+        overlay_base64: overlayB64,
+        classes: nextClasses,
+        message: `Recolored ${nextClasses.length} classes (classification unchanged)`,
+      });
+      upsertOverlay({
+        id: `classify-${focusScene.id}`,
+        kind: 'classify',
+        sceneId: focusScene.id,
+        url: dataUrl.startsWith('data:')
+          ? dataUrl
+          : classificationService.toDataUrl(overlayB64),
+        bounds: classificationResult.bounds as [number, number, number, number],
+        opacity: 1,
+        label: `LULC ${nextClasses.length}-class (opaque)`,
+        visible: true,
+      });
+      setLastMessage(`Recolored ${nextClasses.length} classes`);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  };
+
+  const runClassification = async (opts?: {
+    n_classes?: import('../services/classificationService').ClassCount;
+    class_styles?: import('../services/classificationService').ClassStyle[];
+  }) => {
+    if (!focusScene) {
+      setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
+    }
+    const nClasses = opts?.n_classes ?? 6;
+    setToolLoading(true);
+    setActiveToolId('unsupervised_classify');
+    setToolStatus(`Unsupervised classification (${nClasses} classes)…`);
+    setError(null);
+    try {
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      // Always classify over the same geographic extent as the eye-loaded scene
+      // (not the place pin / small AOI), so the overlay covers the complete image.
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+
+      const result = await classificationService.classify({
+        scene_id: focusScene.id,
+        bbox: [...bounds],
+        size: 512,
+        n_classes: nClasses,
+        class_styles: opts?.class_styles,
+      });
+      setClassificationResult(result);
+      setLastLegend(result.legend);
+      setLastMessage(result.message);
+      upsertOverlay({
+        id: `classify-${focusScene.id}`,
+        kind: 'classify',
+        sceneId: focusScene.id,
+        url: classificationService.toDataUrl(result.overlay_base64),
+        // Prefer backend bounds, but never shrink below the original scene extent.
+        bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+        footprint: sceneOverlay?.footprint ?? null,
+        opacity: 1,
+        label: `LULC ${nClasses}-class (opaque)`,
+        visible: true,
+      });
+      useWorkflowStore.getState().setExpandedToolbox('image');
+      useWorkflowStore.getState().setToolboxOpen(true);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setToolLoading(false);
+      setToolStatus(null);
     }
   };
 
   const runComposite = async (preset: CompositePreset) => {
+    if (!focusScene) {
+      setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
+    }
     setToolLoading(true);
     setActiveToolId(`composite-${preset}`);
     setToolStatus(`Rendering ${preset.replaceAll('_', ' ')}…`);
     setError(null);
     try {
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      // Always process over the same geographic extent as the original scene layer.
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+      const stretch =
+        preset === 'true_color'
+          ? { p_low: 2, p_high: 98, gamma: 1.0, brightness: 1.0, contrast: 1.0 }
+          : stretchParams;
       const result = await compositeService.render({
         preset,
-        scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
-        ...stretchParams,
+        scene_id: focusScene.id,
+        collection: focusScene.collection,
+        bbox: [...bounds],
+        size: 512,
+        ...stretch,
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(`${result.label} · ${result.formula}`);
+      setLastMessage(
+        `${result.label} · ${result.formula} · download GeoTIFF from Image Processing exports`,
+      );
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
-        sceneId: focusScene?.id,
+        sceneId: focusScene.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
-        opacity: layerOpacity,
+        // Prefer backend bounds, but never shrink below the original scene extent.
+        bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+        footprint: sceneOverlay?.footprint ?? null,
+        // RGB composites should be fully opaque for natural color
+        opacity: 1,
         label: result.label,
         visible: true,
       });
+      useWorkflowStore.getState().setExpandedToolbox('image');
+      useWorkflowStore.getState().setToolboxOpen(true);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -803,14 +1223,30 @@ export function WorkspacePage() {
   };
 
   const runStretch = async (params = stretchParams) => {
+    if (!focusScene) {
+      setError('Show a satellite scene first (eye icon)');
+      return;
+    }
+    {
+      const blocked = opticalProcessingBlockReason(focusScene.collection);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
+    }
     setToolLoading(true);
     setActiveToolId('histogram');
     setToolStatus('Applying histogram stretch…');
     setError(null);
     try {
+      const sceneOverlay = overlays.find(
+        (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+      );
+      const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
       const result = await compositeService.stretch({
-        scene_id: focusScene?.id,
-        bbox: [...analysisBbox],
+        scene_id: focusScene.id,
+        bbox: [...bounds],
+        size: 512,
         ...params,
       });
       setStretchResult(result);
@@ -818,9 +1254,10 @@ export function WorkspacePage() {
       upsertOverlay({
         id: 'stretch-overlay',
         kind: 'index',
-        sceneId: focusScene?.id,
+        sceneId: focusScene.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        bounds: result.bounds as [number, number, number, number],
+        bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+        footprint: sceneOverlay?.footprint ?? null,
         opacity: layerOpacity,
         label: `Stretch ${params.p_low}-${params.p_high}%`,
         visible: true,
@@ -836,17 +1273,110 @@ export function WorkspacePage() {
   const exportActiveOverlayPng = () => {
     const last = [...overlays].reverse().find(
       (o) =>
-        (o.kind === 'index' || o.kind === 'change' || o.kind === 'terrain' || o.kind === 'detection') &&
+        (o.kind === 'classify' ||
+          o.kind === 'index' ||
+          o.kind === 'change' ||
+          o.kind === 'terrain' ||
+          o.kind === 'detection') &&
         o.url,
     );
     if (!last?.url) {
       setError('No processed overlay to export — run an index, composite, or stretch first');
       return;
     }
+    if (
+      (last.kind === 'classify' || last.id.startsWith('classify-')) &&
+      classificationResult
+    ) {
+      void classificationService
+        .downloadDecoratedPng(classificationResult, focusScene?.id || 'scene')
+        .catch((err) => setError(getErrorMessage(err)));
+      return;
+    }
     const a = document.createElement('a');
     a.href = last.url;
     a.download = `${last.label.replace(/\W+/g, '_')}.png`;
     a.click();
+  };
+
+  const exportActiveOverlayGeotiff = async () => {
+    const last = [...overlays].reverse().find(
+      (o) =>
+        (o.kind === 'classify' ||
+          o.kind === 'index' ||
+          o.kind === 'change' ||
+          o.kind === 'terrain' ||
+          o.kind === 'detection' ||
+          o.kind === 'scene') &&
+        (o.url || o.demGrid?.length),
+    );
+    if (!last) {
+      setError('No processed overlay to export as GeoTIFF — run a procedure first');
+      return;
+    }
+    await downloadLayerGeotiff(last);
+  };
+
+  const downloadLayerGeotiff = async (layer: (typeof overlays)[number]) => {
+    setGeotiffBusy(true);
+    setGeotiffLayerId(layer.id);
+    setError(null);
+    setToolStatus(`Exporting ${layer.label} GeoTIFF…`);
+    try {
+      const isClassify =
+        layer.kind === 'classify' ||
+        layer.id.startsWith('classify-') ||
+        /^LULC\b/i.test(layer.label);
+      if (isClassify && classificationResult) {
+        const sceneId =
+          layer.sceneId || focusScene?.id || classificationResult.metadata?.scene_id;
+        if (!sceneId || typeof sceneId !== 'string') {
+          throw new Error('Missing scene id for classification GeoTIFF');
+        }
+        // Use current overlay pixels (includes recolor) + class areas for legend
+        const overlayB64 = layer.url
+          ? await compositeService.overlayUrlToBase64(layer.url)
+          : classificationResult.overlay_base64;
+        await classificationService.downloadGeotiff(
+          {
+            ...classificationResult,
+            overlay_base64: overlayB64,
+            bounds: [...layer.bounds],
+          },
+          sceneId,
+        );
+        setLastMessage(
+          `Downloaded GeoTIFF · LULC map sheet with legend (${Math.round(classificationResult.total_area_km2)} km²)`,
+        );
+        return;
+      }
+
+      const filename = `${layer.label.replace(/\W+/g, '_') || layer.kind}.tif`;
+      if (layer.demGrid?.length) {
+        await compositeService.downloadGeotiff({
+          bounds: [...layer.bounds],
+          filename,
+          dem_grid: layer.demGrid,
+        });
+      } else if (layer.url) {
+        const overlay_base64 = await compositeService.overlayUrlToBase64(layer.url);
+        await compositeService.downloadGeotiff({
+          bounds: [...layer.bounds],
+          filename,
+          overlay_base64,
+          procedure: 'overlay',
+        });
+      } else {
+        throw new Error('Layer has no raster to export');
+      }
+      setLastMessage(`Downloaded GeoTIFF · ${layer.label}`);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setGeotiffBusy(false);
+      setGeotiffLayerId(null);
+      setToolStatus(null);
+    }
   };
 
   const deactivateTool = useCallback(
@@ -932,6 +1462,19 @@ export function WorkspacePage() {
   );
 
   const onTool = async (tool: ToolboxTool) => {
+    if (!catalogFilters.satelliteId) {
+      setError('Select a satellite first to activate toolbox options');
+      setToolStatus('Select a satellite to use tools');
+      return;
+    }
+    // Optical detectors/change use professional spectral recipes.
+    // AI tools other than Ship Detection stay permanently inactive.
+    // (Former high-res-only gate removed.)
+    if (tool.inactive) {
+      setError(`${tool.label} is inactive.`);
+      return;
+    }
+
     // Clicking the active tool again turns it off
     if (activeToolId === tool.id) {
       deactivateTool(tool);
@@ -1067,10 +1610,10 @@ export function WorkspacePage() {
         lastLegend || changeResult?.legend || indexResult?.legend || null;
       await exportMapJpeg({
         mapElement,
-        title: 'EarthVision Map Export',
+        title: 'SAT EYE Map Export',
         placeName: place?.name,
         legend,
-        filename: `earthvision-${(place?.name || 'map').replace(/\W+/g, '_').slice(0, 40)}.jpg`,
+        filename: `sateye-${(place?.name || 'map').replace(/\W+/g, '_').slice(0, 40)}.jpg`,
       });
     } catch (err) {
       setError(getErrorMessage(err));
@@ -1082,33 +1625,52 @@ export function WorkspacePage() {
   const legend: LegendInfo | null =
     lastLegend || changeResult?.legend || indexResult?.legend || null;
 
-  const filterStyle = {
-    filter: `brightness(${processFilter.brightness}) contrast(${processFilter.contrast})`,
-  };
+  const filterStyle =
+    processFilter.brightness !== 1 || processFilter.contrast !== 1
+      ? {
+          filter: `brightness(${processFilter.brightness}) contrast(${processFilter.contrast})`,
+        }
+      : undefined;
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)]">
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-3 py-2 sm:px-4">
         <div className="min-w-0">
           <div className="font-display text-sm font-semibold tracking-wide sm:text-base">
-            EarthVision
+            SAT EYE Pakistan
           </div>
           <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">
-            Light Explorer
+            Eye In Sky
           </div>
         </div>
 
         <div className="flex items-center gap-2">
           {isAdmin && (
-            <button
-              type="button"
-              className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[var(--bg)]"
-              onClick={() => setAdminOpen(true)}
-              title="Manage client accounts"
-            >
-              <Shield className="h-4 w-4 text-[var(--accent)]" />
-              <span className="hidden sm:inline">Admin</span>
-            </button>
+            <>
+              <button
+                type="button"
+                className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] px-2.5 py-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white"
+                onClick={() => {
+                  setAdminTab('clients');
+                  setAdminOpen(true);
+                }}
+                title="Admin only: approve clients, tools, satellites"
+              >
+                <Shield className="h-4 w-4" />
+                <span>Admin · Clients</span>
+              </button>
+              <button
+                type="button"
+                className="ev-btn inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[var(--accent-soft)]"
+                onClick={() => {
+                  setAdminTab('satellites');
+                  setAdminOpen(true);
+                }}
+                title="Admin only: add satellite catalog APIs"
+              >
+                <span>Add Satellite API</span>
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -1131,7 +1693,16 @@ export function WorkspacePage() {
         </div>
       </header>
 
-      {adminOpen && isAdmin && <AdminPanel onClose={() => setAdminOpen(false)} />}
+      {adminOpen && isAdmin && (
+        <AdminPanel
+          key={adminTab}
+          initialTab={adminTab}
+          onClose={() => {
+            setAdminOpen(false);
+            setSatelliteRefreshKey((n) => n + 1);
+          }}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[min(21rem,100%)] shrink-0 flex-col gap-3 overflow-y-auto border-r border-[var(--line)] bg-white p-3 sm:p-4">
@@ -1142,7 +1713,22 @@ export function WorkspacePage() {
           )}
 
           {step === 'place' && (
-            <PlaceStep onSelect={loadScenesForPlace} busy={loadingScenes} />
+            <PlaceStep
+              onSelect={loadScenesForPlace}
+              busy={loadingScenes}
+              filters={catalogFilters}
+              onFiltersChange={setCatalogFilters}
+              isAdmin={isAdmin}
+              satelliteRefreshKey={satelliteRefreshKey}
+              onOpenSatelliteAdmin={
+                isAdmin
+                  ? () => {
+                      setAdminTab('satellites');
+                      setAdminOpen(true);
+                    }
+                  : undefined
+              }
+            />
           )}
 
           {step === 'browse' && place && (
@@ -1153,6 +1739,9 @@ export function WorkspacePage() {
               focusSceneId={focusSceneId}
               loading={loadingScenes}
               loadingOverlayIds={loadingOverlayIds}
+              satelliteLabel={catalogFilters.satelliteLabel}
+              dateFrom={catalogFilters.startDate}
+              dateTo={catalogFilters.endDate}
               onToggleEye={onToggleEye}
               onFocus={(scene) => setFocusSceneId(scene.id)}
               onBack={backToPlace}
@@ -1177,6 +1766,7 @@ export function WorkspacePage() {
             showGrid={mapChrome.grid !== false}
             mapChrome={mapChrome}
             mapCommand={mapCommand}
+            focusContact={focusContact}
             onPlaceClick={onPlaceClick}
             onAoiComplete={(feature) => {
               setAoiGeoJson(feature);
@@ -1191,6 +1781,7 @@ export function WorkspacePage() {
             }}
             onDrawnFeature={onDrawnFeature}
             onMeasure={setMeasureLabel}
+            onViewBoundsChange={setMapViewBbox}
           />
           <MapToolbar
             tool={mapTool}
@@ -1252,15 +1843,36 @@ export function WorkspacePage() {
               overlays={overlays}
               layerOpacity={layerOpacity}
               hasScene={hasVisibleScene}
+              sceneCollection={
+                focusScene?.collection ?? catalogFilters.satelliteId ?? null
+              }
               hasDrawn={Boolean(drawnFeature)}
               drawnType={drawnFeature?.type ?? null}
+              hasWaterAoi={hasWaterAoi}
               bufferLoading={bufferLoading}
               lastBufferDistance={lastBufferDistance}
               lastBufferArea={lastBufferArea}
               lastLegend={lastLegend}
               lastMessage={lastMessage}
+              shipContacts={shipContacts}
+              activeContactId={activeContactId}
+              onLocateContact={(c) => {
+                setActiveContactId(c.id);
+                setFocusContact({ id: c.id, lat: c.lat, lon: c.lon });
+                setMapCommand({
+                  id: Date.now(),
+                  type: 'fly-to',
+                  lat: c.lat,
+                  lon: c.lon,
+                  zoom: 16,
+                });
+                setLastMessage(
+                  `Locating ${c.label} · ${c.lat.toFixed(5)}°, ${c.lon.toFixed(5)}°`,
+                );
+              }}
               mapChrome={mapChrome}
               allowedTools={allowedTools}
+              toolsEnabled={satelliteActive}
               onExpand={(id) => setExpandedToolbox(id)}
               onTool={onTool}
               onClose={() => setToolboxOpen(false)}
@@ -1284,10 +1896,13 @@ export function WorkspacePage() {
               indexResult={indexResult}
               compositeResult={compositeResult}
               stretchResult={stretchResult}
+              classificationResult={classificationResult}
               stretchParams={stretchParams}
               colormap={selectedColormap}
               onComposite={(preset) => void runComposite(preset)}
               onIndexTool={(index) => void runIndex(index)}
+              onClassify={(opts) => void runClassification(opts)}
+              onRecolorClassify={(styles) => void recolorClassification(styles)}
               onColormapChange={(cmap) => {
                 setSelectedColormap(cmap);
                 if (indexResult?.index) {
@@ -1299,6 +1914,41 @@ export function WorkspacePage() {
                 setStretchParams((s) => ({ ...s, ...patch }))
               }
               onEnhance={(op) => applyProcessFilter(op)}
+              onExportClassifyPng={() => {
+                if (!classificationResult?.overlay_base64 || !focusScene) {
+                  setError('Run Unsupervised Classify first');
+                  return;
+                }
+                void classificationService
+                  .downloadDecoratedPng(classificationResult, focusScene.id)
+                  .catch((err) => setError(getErrorMessage(err)));
+              }}
+              onExportClassifyCsv={() => {
+                if (!classificationResult || !focusScene) {
+                  setError('Run Unsupervised Classify first');
+                  return;
+                }
+                classificationService.downloadCsvText(
+                  classificationService.buildResultsCsv(classificationResult),
+                  `lulc4_${focusScene.id}_areas.csv`,
+                );
+              }}
+              onExportClassifyGeotiff={() => {
+                if (!classificationResult || !focusScene) {
+                  setError('Run Unsupervised Classify first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void classificationService
+                  .downloadGeotiff(classificationResult, focusScene.id)
+                  .then(() =>
+                    setLastMessage(
+                      `Downloaded GeoTIFF · LULC ${classificationResult.classes.length}-class (${Math.round(classificationResult.total_area_km2)} km²)`,
+                    ),
+                  )
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
               onExportIndexPng={() => {
                 if (!indexResult || !focusScene) {
                   setError('Compute an index first');
@@ -1349,6 +1999,75 @@ export function WorkspacePage() {
                 );
               }}
               onExportOverlayPng={exportActiveOverlayPng}
+              onExportIndexGeotiff={() => {
+                if (!indexResult || !focusScene) {
+                  setError('Compute an index first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void compositeService
+                  .downloadGeotiff({
+                    bounds: (indexResult.bounds as number[]) || [...analysisBbox],
+                    filename: `${indexResult.index}_${focusScene.id}.tif`,
+                    overlay_base64: indexResult.overlay_base64,
+                    procedure: indexResult.overlay_base64 ? 'overlay' : 'index',
+                    scene_id: focusScene.id,
+                    index: indexResult.index,
+                    colormap: indexResult.colormap,
+                  })
+                  .then(() => setLastMessage(`Downloaded GeoTIFF · ${indexResult.index}`))
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
+              onExportCompositeGeotiff={() => {
+                if (!compositeResult) {
+                  setError('Render a composite (e.g. True Color) first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void compositeService
+                  .downloadGeotiff({
+                    bounds: [...compositeResult.bounds],
+                    filename: `${compositeResult.preset}.tif`,
+                    overlay_base64: compositeResult.overlay_base64,
+                    procedure: compositeResult.overlay_base64 ? 'overlay' : 'composite',
+                    scene_id: focusScene?.id,
+                    preset: compositeResult.preset,
+                  })
+                  .then(() =>
+                    setLastMessage(`Downloaded GeoTIFF · ${compositeResult.label}`),
+                  )
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
+              onExportStretchGeotiff={() => {
+                if (!stretchResult) {
+                  setError('Apply histogram stretch first');
+                  return;
+                }
+                setGeotiffBusy(true);
+                void compositeService
+                  .downloadGeotiff({
+                    bounds: [...stretchResult.bounds],
+                    filename: `stretch_${focusScene?.id || 'aoi'}.tif`,
+                    overlay_base64: stretchResult.overlay_base64,
+                    procedure: stretchResult.overlay_base64 ? 'overlay' : 'stretch',
+                    scene_id: focusScene?.id,
+                    p_low: stretchResult.p_low,
+                    p_high: stretchResult.p_high,
+                  })
+                  .then(() => setLastMessage('Downloaded GeoTIFF · histogram stretch'))
+                  .catch((err) => setError(getErrorMessage(err)))
+                  .finally(() => setGeotiffBusy(false));
+              }}
+              onExportOverlayGeotiff={() => {
+                void exportActiveOverlayGeotiff();
+              }}
+              onDownloadLayerGeotiff={(layer) => {
+                void downloadLayerGeotiff(layer);
+              }}
+              geotiffBusy={geotiffBusy}
+              geotiffLayerId={geotiffLayerId}
             />
           </div>
         ) : (

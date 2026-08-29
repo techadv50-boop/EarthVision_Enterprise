@@ -1,9 +1,9 @@
 [project]
 name = "earthvision-enterprise"
 version = "1.0.0"
-description = "EarthVision Enterprise - Commercial Earth Observation Platform"
+description = "SAT EYE — Eye In Sky commercial Earth observation platform"
 requires-python = ">=3.12"
-authors = [{ name = "EarthVision Technologies" }]
+authors = [{ name = "SAT EYE" }]
 
 [tool.ruff]
 line-length = 100

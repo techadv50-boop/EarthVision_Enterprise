@@ -25,6 +25,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/register", response_model=UserResponse, status_code=201)
 async def register(data: RegisterRequest, db: DbSession) -> UserResponse:
+    """Public sign-up — account stays pending until an admin approves it."""
     service = UserService(db)
     user = await service.create(
         UserCreate(
@@ -32,7 +33,8 @@ async def register(data: RegisterRequest, db: DbSession) -> UserResponse:
             password=data.password,
             full_name=data.full_name,
             organization=data.organization,
-        )
+        ),
+        public_registration=True,
     )
     return UserResponse.model_validate(user)
 
@@ -64,8 +66,8 @@ async def refresh(data: RefreshRequest, db: DbSession) -> TokenResponse:
     user_id = payload.get("sub")
     service = UserService(db)
     user = await service.get_by_id(user_id)
-    if user is None or not user.is_active:
-        raise UnauthorizedError("User not found")
+    if user is None or not user.can_login():
+        raise UnauthorizedError("User not found or not permitted to sign in")
     settings = get_settings()
     access = create_access_token(
         user.id, claims={"role": user.role.value, "email": user.email}

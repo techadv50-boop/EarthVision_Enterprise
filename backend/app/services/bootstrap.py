@@ -7,17 +7,30 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.models.subscription import PlanTier, Subscription, SubscriptionStatus
-from app.models.user import User, UserRole
+from app.models.user import AccountStatus, User, UserRole
 
 
 async def bootstrap_admin(session: AsyncSession) -> None:
-    """Ensure the default administrator account exists."""
+    """Ensure the default administrator account exists and password is current.
+
+    When ``ADMIN_PASSWORD`` is set in the environment (or defaults), the
+    bootstrap admin's hash is refreshed on startup if it no longer matches so
+    ops password resets take effect after a container restart.
+    """
     settings = get_settings()
     result = await session.execute(select(User).where(User.email == settings.admin_email))
     admin = result.scalar_one_or_none()
     if admin is not None:
+        # Keep legacy admin accounts fully unlocked after schema upgrades
+        if getattr(admin, "account_status", None) != AccountStatus.APPROVED.value:
+            admin.account_status = AccountStatus.APPROVED.value
+            admin.is_active = True
+            admin.is_verified = True
+        if not verify_password(settings.admin_password, admin.hashed_password):
+            admin.hashed_password = hash_password(settings.admin_password)
+            logger.info("Reset bootstrap admin password for {}", settings.admin_email)
         logger.debug("Admin user already exists: {}", settings.admin_email)
         return
 
@@ -28,7 +41,10 @@ async def bootstrap_admin(session: AsyncSession) -> None:
         role=UserRole.ADMIN,
         is_active=True,
         is_verified=True,
-        organization="EarthVision Technologies",
+        account_status=AccountStatus.APPROVED.value,
+        allowed_tools=None,
+        allowed_satellites=None,
+        organization="SAT EYE",
     )
     session.add(admin)
     await session.flush()

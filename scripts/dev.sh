@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-echo "Starting EarthVision Enterprise…"
+echo "Starting SAT EYE — Eye In Sky…"
 cd "$ROOT/backend"
 source .venv/bin/activate
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload &

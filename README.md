@@ -1,4 +1,4 @@
-# EarthVision Enterprise
+# SAT EYE — Eye In Sky
 
 Commercial Earth Observation Platform combining interactive 3D globe visualization, satellite catalog search (Copernicus / Sentinel / Landsat / MODIS), spectral analytics, GIS tools, and machine learning — in one integrated product.
 
@@ -44,7 +44,7 @@ App: http://localhost:5173
 docker compose up --build
 ```
 
-## Primary workflow (Light Explorer)
+## Primary workflow (Eye In Sky)
 
 1. **Place** — search (e.g. Lahore) or click the map  
 2. **Images** — see the **20 most recent** Sentinel / Landsat / MODIS scenes for that area  
@@ -86,4 +86,4 @@ Without credentials the catalog returns realistic demo scenes so the full UI rem
 
 ## License
 
-Proprietary — EarthVision Technologies
+Proprietary — SAT EYE

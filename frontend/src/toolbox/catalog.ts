@@ -1,4 +1,4 @@
-/** Light Explorer toolbox catalog — maps UI tools to runnable actions. */
+/** Eye In Sky toolbox catalog — maps UI tools to runnable actions. */
 
 export type ToolboxId =
   | 'navigation'
@@ -11,6 +11,15 @@ export type ToolboxId =
   | 'terrain'
   | 'gis'
   | 'measure';
+
+/**
+ * Previously reserved for high-res APIs. Keep empty so categories stay visible;
+ * individual AI tools use ``inactive`` / Ship Detection water-AOI gating instead.
+ */
+export const HIGH_RES_ONLY_TOOLBOXES: ToolboxId[] = [];
+
+/** @deprecated Use HIGH_RES_ONLY_TOOLBOXES */
+export const EO_HIDDEN_TOOLBOXES = HIGH_RES_ONLY_TOOLBOXES;
 
 export type ToolAction =
   | { type: 'map'; mode: string }
@@ -31,6 +40,15 @@ export interface ToolboxTool {
   hint?: string;
   /** Prefer a visible scene when running on imagery */
   needsScene?: boolean;
+  /** Landsat / Sentinel-2 optical only (e.g. Ship Detection) */
+  opticalOnly?: boolean;
+  /** Permanently disabled in the UI (still listed for the 148-tool catalog). */
+  inactive?: boolean;
+  /**
+   * Ship Detection: also requires a user-drawn polygon AOI that demarcates
+   * the water body — detection runs only inside that AOI.
+   */
+  requiresWaterAoi?: boolean;
 }
 
 export interface ToolboxDef {
@@ -89,6 +107,12 @@ export const TOOLBOXES: ToolboxDef[] = [
     tools: [
       { id: 'true_color', label: 'True Color', action: { type: 'process', op: 'true_color' }, needsScene: true },
       { id: 'false_color', label: 'False Color', action: { type: 'process', op: 'false_color' }, needsScene: true },
+      {
+        id: 'unsupervised_classify',
+        label: 'Unsupervised Classify',
+        action: { type: 'process', op: 'unsupervised_classify' },
+        needsScene: true,
+      },
       { id: 'ndvi', label: 'NDVI', action: { type: 'index', index: 'NDVI' }, needsScene: true },
       { id: 'ndwi', label: 'NDWI', action: { type: 'index', index: 'NDWI' }, needsScene: true },
       { id: 'ndbi', label: 'NDBI', action: { type: 'index', index: 'NDBI' }, needsScene: true },
@@ -115,28 +139,39 @@ export const TOOLBOXES: ToolboxDef[] = [
     title: 'AI Detection',
     blurb: 'Object & land-cover detection on imagery',
     tools: [
-      { id: 'building_detection', label: 'Building Detection', action: { type: 'detection', task: 'building_detection' }, needsScene: true },
-      { id: 'road_extraction', label: 'Road Extraction', action: { type: 'detection', task: 'road_extraction' }, needsScene: true },
-      { id: 'bridge_detection', label: 'Bridge Detection', action: { type: 'detection', task: 'bridge_detection' }, needsScene: true },
-      { id: 'airport_mapping', label: 'Airport Mapping', action: { type: 'detection', task: 'airport_mapping' }, needsScene: true },
-      { id: 'runway_detection', label: 'Runway Detection', action: { type: 'detection', task: 'runway_detection' }, needsScene: true },
-      { id: 'port_mapping', label: 'Port Mapping', action: { type: 'detection', task: 'port_mapping' }, needsScene: true },
-      { id: 'harbor_detection', label: 'Harbor Detection', action: { type: 'detection', task: 'harbor_detection' }, needsScene: true },
-      { id: 'ship_detection', label: 'Ship Detection', action: { type: 'detection', task: 'ship_detection' }, needsScene: true },
-      { id: 'aircraft_detection', label: 'Aircraft Detection', action: { type: 'detection', task: 'aircraft_detection' }, needsScene: true },
-      { id: 'railway_detection', label: 'Railway Detection', action: { type: 'detection', task: 'railway_detection' }, needsScene: true },
-      { id: 'powerline', label: 'Powerline Corridor Mapping', action: { type: 'detection', task: 'powerline_corridor_mapping' }, needsScene: true },
-      { id: 'solar', label: 'Solar Farm Detection', action: { type: 'detection', task: 'solar_farm_detection' }, needsScene: true },
-      { id: 'wind', label: 'Wind Farm Detection', action: { type: 'detection', task: 'wind_farm_detection' }, needsScene: true },
-      { id: 'construction', label: 'Construction Site Detection', action: { type: 'detection', task: 'construction_site_detection' }, needsScene: true },
-      { id: 'urban_exp', label: 'Urban Expansion Detection', action: { type: 'detection', task: 'urban_expansion_detection' }, needsScene: true },
-      { id: 'veg_class', label: 'Vegetation Classification', action: { type: 'detection', task: 'vegetation_classification' }, needsScene: true },
-      { id: 'flood', label: 'Flood Detection', action: { type: 'detection', task: 'flood_detection' }, needsScene: true },
-      { id: 'burn', label: 'Burn Scar Detection', action: { type: 'detection', task: 'burn_scar_detection' }, needsScene: true },
-      { id: 'water', label: 'Water Body Extraction', action: { type: 'detection', task: 'water_body_extraction' }, needsScene: true },
-      { id: 'lulc', label: 'Land Cover Classification', action: { type: 'detection', task: 'land_cover_classification' }, needsScene: true },
-      { id: 'conf', label: 'Confidence Heatmap', action: { type: 'detection', task: 'confidence_heatmap' }, needsScene: true },
-      { id: 'manual', label: 'Manual Verification Mode', action: { type: 'toggle', key: 'manualVerify' } },
+      { id: 'building_detection', label: 'Building Detection', action: { type: 'detection', task: 'building_detection' }, needsScene: true, inactive: true },
+      { id: 'road_extraction', label: 'Road Extraction', action: { type: 'detection', task: 'road_extraction' }, needsScene: true, inactive: true },
+      { id: 'bridge_detection', label: 'Bridge Detection', action: { type: 'detection', task: 'bridge_detection' }, needsScene: true, inactive: true },
+      { id: 'airport_mapping', label: 'Airport Mapping', action: { type: 'detection', task: 'airport_mapping' }, needsScene: true, inactive: true },
+      { id: 'runway_detection', label: 'Runway Detection', action: { type: 'detection', task: 'runway_detection' }, needsScene: true, inactive: true },
+      { id: 'port_mapping', label: 'Port Mapping', action: { type: 'detection', task: 'port_mapping' }, needsScene: true, inactive: true },
+      { id: 'harbor_detection', label: 'Harbor Detection', action: { type: 'detection', task: 'harbor_detection' }, needsScene: true, inactive: true },
+      {
+        id: 'ship_detection',
+        label: 'Ship Detection',
+        action: { type: 'detection', task: 'ship_detection' },
+        needsScene: true,
+        opticalOnly: true,
+        requiresWaterAoi: true,
+        hint:
+          'Active only with Landsat/Sentinel-2 eye ON + a drawn water-body AOI (Rect/Poly). ' +
+          'GEE OPTIMIZED (sensitive): AOI-first NIR ~0.04–0.07 + soft wakes, thick red morph outline, ' +
+          'ship contacts for Locate (no shapefile on run)',
+      },
+      { id: 'aircraft_detection', label: 'Aircraft Detection', action: { type: 'detection', task: 'aircraft_detection' }, needsScene: true, inactive: true },
+      { id: 'railway_detection', label: 'Railway Detection', action: { type: 'detection', task: 'railway_detection' }, needsScene: true, inactive: true },
+      { id: 'powerline', label: 'Powerline Corridor Mapping', action: { type: 'detection', task: 'powerline_corridor_mapping' }, needsScene: true, inactive: true },
+      { id: 'solar', label: 'Solar Farm Detection', action: { type: 'detection', task: 'solar_farm_detection' }, needsScene: true, inactive: true },
+      { id: 'wind', label: 'Wind Farm Detection', action: { type: 'detection', task: 'wind_farm_detection' }, needsScene: true, inactive: true },
+      { id: 'construction', label: 'Construction Site Detection', action: { type: 'detection', task: 'construction_site_detection' }, needsScene: true, inactive: true },
+      { id: 'urban_exp', label: 'Urban Expansion Detection', action: { type: 'detection', task: 'urban_expansion_detection' }, needsScene: true, inactive: true },
+      { id: 'veg_class', label: 'Vegetation Classification', action: { type: 'detection', task: 'vegetation_classification' }, needsScene: true, inactive: true },
+      { id: 'flood', label: 'Flood Detection', action: { type: 'detection', task: 'flood_detection' }, needsScene: true, inactive: true },
+      { id: 'burn', label: 'Burn Scar Detection', action: { type: 'detection', task: 'burn_scar_detection' }, needsScene: true, inactive: true },
+      { id: 'water', label: 'Water Body Extraction', action: { type: 'detection', task: 'water_body_extraction' }, needsScene: true, inactive: true },
+      { id: 'lulc', label: 'Land Cover Classification', action: { type: 'detection', task: 'land_cover_classification' }, needsScene: true, inactive: true },
+      { id: 'conf', label: 'Confidence Heatmap', action: { type: 'detection', task: 'confidence_heatmap' }, needsScene: true, inactive: true },
+      { id: 'manual', label: 'Manual Verification Mode', action: { type: 'toggle', key: 'manualVerify' }, inactive: true },
     ],
   },
   {
@@ -169,7 +204,15 @@ export const TOOLBOXES: ToolboxDef[] = [
     blurb: 'Ships, ports, ocean overlays & coasts',
     tools: [
       { id: 'ship_sar', label: 'Ship Detection (SAR)', action: { type: 'detection', task: 'ship_detection_sar' }, needsScene: true },
-      { id: 'ship_opt', label: 'Ship Detection (Optical)', action: { type: 'detection', task: 'ship_detection_optical' }, needsScene: true },
+      {
+        id: 'ship_opt',
+        label: 'Ship Detection (Optical)',
+        action: { type: 'detection', task: 'ship_detection_optical' },
+        needsScene: true,
+        opticalOnly: true,
+        hint:
+          'Optical only (Landsat / Sentinel-2). NIR metal/smoke cues; water & cloud ignored → shapefile',
+      },
       { id: 'vessel_density', label: 'Vessel Density Map', action: { type: 'detection', task: 'vessel_density_map' }, needsScene: true },
       { id: 'port_act', label: 'Port Activity Mapping', action: { type: 'detection', task: 'port_activity_mapping' }, needsScene: true },
       { id: 'anchorage', label: 'Anchorage Detection', action: { type: 'detection', task: 'anchorage_detection' }, needsScene: true },

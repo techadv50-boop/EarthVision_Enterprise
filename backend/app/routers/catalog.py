@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from app.core.deps import CurrentUser, DbSession
+from app.models.user import UserRole
 from app.schemas.catalog import (
     CatalogSearchRequest,
     CatalogSearchResponse,
@@ -13,6 +14,7 @@ from app.schemas.catalog import (
     SceneDownloadResponse,
 )
 from app.services.copernicus_service import CopernicusCatalogService
+from app.services.satellite_provider_service import SatelliteProviderService
 from app.services.scene_service import SceneService
 from pydantic import BaseModel, Field
 from typing import Any
@@ -26,6 +28,25 @@ async def search_catalog(
     db: DbSession,
     user: CurrentUser,
 ) -> CatalogSearchResponse:
+    # Enforce per-account satellite allowlist (admin assigns satellite name keys).
+    if user.role != UserRole.ADMIN and user.allowed_satellites is not None:
+        sat_service = SatelliteProviderService(db)
+        await sat_service.ensure_builtins()
+        enabled = await sat_service.list_enabled()
+        allowed_names = set(user.allowed_satellites)
+        allowed_collections = {
+            row.collection_id for row in enabled if row.name in allowed_names
+        } | allowed_names
+        data.collections = [
+            c for c in (data.collections or []) if c in allowed_collections
+        ]
+        if not data.collections:
+            return CatalogSearchResponse(
+                total=0,
+                items=[],
+                query=data.model_dump(mode="json"),
+            )
+
     catalog = CopernicusCatalogService()
     scenes, total = await catalog.search(data)
     scene_service = SceneService(db)
@@ -103,15 +124,18 @@ class SceneOverlayBody(BaseModel):
 
 @router.post("/scenes/overlay")
 async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
-    """Prepare Sentinel-2 true-color (TCI) tiles for a scene and return map layer metadata.
+    """Prepare scene map tiles and return layer metadata.
 
-    Uses real Sentinel-2 L2A visual COGs (B04/B03/B02) served as XYZ tiles so
-    features stay sharp when zooming — not a low-res basemap PNG.
+    Sentinel-2 uses Element84 TCI COGs via our XYZ proxy.
+    Landsat / MODIS use Planetary Computer hosted XYZ tiles (fast) when available.
     """
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    layer = imagery.prepare_scene_layer(
+    layer = await run_in_threadpool(
+        imagery.prepare_scene_layer,
         data.scene_id,
         bbox=data.bbox,
         footprint=data.footprint,
@@ -142,11 +166,13 @@ async def scene_map_overlay(data: SceneOverlayBody, user: CurrentUser) -> dict:
 
 @router.get("/scenes/{scene_id}/tiles/{z}/{x}/{y}.png")
 async def scene_tile_png(scene_id: str, z: int, x: int, y: int) -> Response:
-    """XYZ tile from the scene's Sentinel-2 true-color COG (no auth — used by Leaflet)."""
+    """XYZ tile from the scene COG proxy (no auth — used by Leaflet for S2/S1)."""
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
-    png = imagery.render_tile(scene_id, z, x, y)
+    png = await run_in_threadpool(imagery.render_tile, scene_id, z, x, y)
     return Response(
         content=png,
         media_type="image/png",
@@ -162,39 +188,173 @@ async def scene_overlay_png(
     south: float | None = None,
     east: float | None = None,
     north: float | None = None,
+    size: int = 768,
+    collection: str | None = None,
 ) -> Response:
-    """Export a single true-color preview PNG for the scene AOI (download helper)."""
+    """Download a full-scene imagery PNG (true-color / SAR grayscale)."""
+    from starlette.concurrency import run_in_threadpool
+
     from app.services.scene_imagery_service import SceneImageryService
 
     imagery = SceneImageryService()
     bbox = None
     if None not in (west, south, east, north):
         bbox = [west, south, east, north]  # type: ignore[list-item]
-    layer = imagery.get_layer(scene_id)
-    if not layer:
-        layer = imagery.prepare_scene_layer(scene_id, bbox=bbox)
-    # Build a mid-zoom mosaic preview from a few tiles
-    bounds = layer["bounds"]
-    # Approximate center tile at z=13
-    clon = (bounds[0] + bounds[2]) / 2
-    clat = (bounds[1] + bounds[3]) / 2
-    z = 13
-    n = 2**z
-    import math
 
-    tx = int((clon + 180.0) / 360.0 * n)
-    ty = int(
-        (
-            1.0
-            - math.log(math.tan(math.radians(clat)) + 1.0 / math.cos(math.radians(clat)))
-            / math.pi
-        )
-        / 2.0
-        * n
-    )
-    png = imagery.render_tile(scene_id, z, tx, ty)
+    def _build() -> tuple[bytes, str]:
+        layer = imagery.get_layer(scene_id)
+        if not layer:
+            layer = imagery.prepare_scene_layer(
+                scene_id,
+                bbox=bbox,
+                collection=collection,
+            )
+        png = imagery.render_preview(scene_id, size=size)
+        coll = (layer.get("collection") or "scene").replace(" ", "_")
+        stac = (layer.get("stac_id") or scene_id)[:80]
+        mode = layer.get("render_mode") or "rgb"
+        suffix = "sar_gray" if mode == "grayscale" else "true_color"
+        filename = f"{coll}_{stac}_{suffix}.png".replace("/", "_")
+        return png, filename
+
+    png, filename = await run_in_threadpool(_build)
     return Response(
         content=png,
         media_type="image/png",
-        headers={"Content-Disposition": f'attachment; filename="scene_{scene_id}_tci.png"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, max-age=60",
+        },
+    )
+
+
+@router.get("/scenes/{scene_id}/overlay.tif")
+async def scene_overlay_geotiff(
+    scene_id: str,
+    user: CurrentUser,
+    west: float | None = None,
+    south: float | None = None,
+    east: float | None = None,
+    north: float | None = None,
+    size: int = 768,
+    collection: str | None = None,
+) -> Response:
+    """Download scene imagery as a georeferenced GeoTIFF."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.geotiff_export import png_bytes_to_geotiff
+    from app.services.scene_imagery_service import SceneImageryService
+
+    imagery = SceneImageryService()
+    bbox = None
+    if None not in (west, south, east, north):
+        bbox = [west, south, east, north]  # type: ignore[list-item]
+
+    def _build() -> tuple[bytes, str]:
+        layer = imagery.get_layer(scene_id)
+        if not layer:
+            layer = imagery.prepare_scene_layer(
+                scene_id,
+                bbox=bbox,
+                collection=collection,
+            )
+        png = imagery.render_preview(scene_id, size=size)
+        tif, filename = png_bytes_to_geotiff(
+            png,
+            list(layer["bounds"]),
+            filename=f"{(layer.get('collection') or 'scene')}_{scene_id}.tif",
+        )
+        return tif, filename
+
+    tif, filename = await run_in_threadpool(_build)
+    return Response(
+        content=tif,
+        media_type="image/tiff",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, max-age=60",
+        },
+    )
+
+
+class SceneBandsBody(BaseModel):
+    collection: str | None = None
+    bbox: list[float] | None = None
+    footprint: dict[str, Any] | None = None
+    sensing_time: str | None = None
+    cloud_cover: float | None = None
+    bands: list[str] = Field(default_factory=list)
+    # Kept for compatibility; full product COG download ignores resample size
+    size: int = Field(default=512, ge=64, le=2048)
+
+
+@router.get("/scenes/{scene_id}/bands")
+async def list_scene_bands(
+    scene_id: str,
+    user: CurrentUser,
+    collection: str | None = None,
+    west: float | None = None,
+    south: float | None = None,
+    east: float | None = None,
+    north: float | None = None,
+    sensing_time: str | None = None,
+    cloud_cover: float | None = None,
+) -> dict[str, Any]:
+    """List selectable spectral / SAR bands for download."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.scene_imagery_service import SceneImageryService
+
+    bbox = None
+    if None not in (west, south, east, north):
+        bbox = [west, south, east, north]  # type: ignore[list-item]
+    imagery = SceneImageryService()
+    return await run_in_threadpool(
+        imagery.list_download_bands,
+        scene_id,
+        bbox=bbox,
+        sensing_time=sensing_time,
+        cloud_cover=cloud_cover,
+        collection=collection,
+    )
+
+
+@router.post("/scenes/{scene_id}/bands/download")
+async def download_scene_bands(
+    scene_id: str,
+    data: SceneBandsBody,
+    user: CurrentUser,
+) -> FileResponse:
+    """Download original full-resolution product band COGs (.tif) or a ZIP of them."""
+    from starlette.background import BackgroundTask
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.scene_imagery_service import SceneImageryService
+
+    imagery = SceneImageryService()
+    path, filename, media_type, cleanup = await run_in_threadpool(
+        imagery.export_selected_bands,
+        scene_id,
+        data.bands,
+        size=data.size,
+        collection=data.collection,
+        bbox=data.bbox,
+        footprint=data.footprint,
+        sensing_time=data.sensing_time,
+        cloud_cover=data.cloud_cover,
+    )
+
+    def _cleanup() -> None:
+        if cleanup:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename,
+        background=BackgroundTask(_cleanup),
+        headers={"Cache-Control": "private, max-age=60"},
     )
