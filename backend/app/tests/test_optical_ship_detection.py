@@ -18,6 +18,22 @@ def test_collection_gate_landsat_s2_only():
     assert not collection_is_optical_landsat_or_s2(None)
 
 
+def test_scale_nir_reflectance_s2_and_landsat_dn():
+    from app.services.optical_ship_detection import _scale_nir_reflectance
+
+    s2 = np.full((4, 4), 2500.0, dtype=np.float64)
+    out_s2 = _scale_nir_reflectance(s2, "SENTINEL-2")
+    assert abs(float(out_s2.mean()) - 0.25) < 1e-6
+
+    l8 = np.full((4, 4), 12000.0, dtype=np.float64)
+    out_l8 = _scale_nir_reflectance(l8, "LANDSAT-8")
+    assert abs(float(out_l8.mean()) - (12000.0 * 0.0000275 - 0.2)) < 1e-6
+
+    # Already-reflectance arrays stay untouched
+    ref = np.full((4, 4), 0.12, dtype=np.float64)
+    assert abs(float(_scale_nir_reflectance(ref, "SENTINEL-2").mean()) - 0.12) < 1e-9
+
+
 def test_open_sea_bright_ship_not_masked_as_cloud():
     """Bright white decks over water must NOT be cloud-masked."""
     from app.services.optical_ship_detection import detect_ships_optical_nir
