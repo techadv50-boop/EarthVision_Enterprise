@@ -136,7 +136,7 @@ def test_nir_ge_threshold_finds_metal_deck():
     out = detect_ships_optical_nir(bands, bounds, confidence_min=0.15, collection="SENTINEL-2")
     assert out["count"] >= 1
     formula = out["formula"].lower()
-    assert "nir" in formula and ("0.10" in formula or "≥" in out["formula"] or ">=" in formula or "threshold" in formula)
+    assert "nir" in formula and ("0.10" in formula or "opt" in formula or "threshold" in formula)
     assert out["overlay"] is not None
     assert out["overlay"].shape == (h, w, 4)
 
