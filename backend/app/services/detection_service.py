@@ -144,8 +144,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "ai",
         "algorithm": (
-            "Open-sea water NIR/VIS range — highlight pixels above water "
-            "reflectance (+ wake streaks) → red on-image contacts"
+            "GEE-style open-sea NIR ≥ 0.10 inside water AOI · "
+            "connected-pixel size filter · thick red morph outline"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
@@ -156,8 +156,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "maritime",
         "algorithm": (
-            "Open-sea water NIR/VIS range — highlight pixels above water "
-            "reflectance (+ wake streaks) → red on-image contacts"
+            "GEE-style open-sea NIR ≥ 0.10 inside water AOI · "
+            "connected-pixel size filter · thick red morph outline"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
