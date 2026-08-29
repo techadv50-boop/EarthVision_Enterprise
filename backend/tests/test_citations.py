@@ -18,6 +18,7 @@ import zipfile
 def test_normalize_doi():
     assert normalize_doi("https://doi.org/10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
     assert normalize_doi("doi:10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
+    assert normalize_doi("10.33411/10.33411/ijist/20190102033") == "10.33411/ijist/20190102033"
 
 
 def test_article_page_pdfs_ignore_related_links():
@@ -102,6 +103,52 @@ def test_merge_citing_works_dedupes_within_crossref_and_keeps_scholar_separate()
     same = next(row for row in crossref if row["doi"] == "10.1/abc")
     assert same["venue"] == "Soft Computing"
     assert same["authors"] == "CR Author"
+
+
+def test_dedupe_citing_works_collapses_preprint_and_doubled_doi():
+    from app.services.citation_counts import _citing_record, dedupe_citing_works
+
+    rows = dedupe_citing_works(
+        [
+            _citing_record(
+                source="crossref",
+                title="Securing China's Rice Harvest: Unveiling Dominant Factors",
+                doi="10.21203/rs.3.rs-4238478/v1",
+                year=2024,
+            ),
+            _citing_record(
+                source="crossref",
+                title="Securing China's rice harvest: unveiling dominant factors",
+                doi="10.1038/s41598-024-64269-0",
+                year=2024,
+                venue="Scientific Reports",
+            ),
+            _citing_record(
+                source="crossref",
+                title="Evaluation of LNG consumption in local market through GIS",
+                doi="10.33411/10.33411/ijist/20190102033",
+                authors="Ghulam Nabi",
+                year=2019,
+            ),
+            _citing_record(
+                source="crossref",
+                title="Evaluation of LNG consumption in local market through GIS",
+                doi="10.33411/ijist/2019010203",
+                authors="Ghulam Nabi",
+                year=2019,
+                venue="International Journal of Innovations in Science and Technology",
+            ),
+        ],
+        source="crossref",
+    )
+    dois = [row["doi"] for row in rows]
+    assert "10.1038/s41598-024-64269-0" in dois
+    assert not any("rs.3.rs-4238478" in (doi or "") for doi in dois)
+    lng = [row for row in rows if "LNG" in (row["title"] or "")]
+    assert len(lng) == 1
+    assert lng[0]["doi"] == "10.33411/ijist/2019010203"
+    rice = [row for row in rows if "rice harvest" in (row["title"] or "").lower()]
+    assert len(rice) == 1
 
 
 def test_dedupe_citing_works_collapses_title_only_duplicate():
