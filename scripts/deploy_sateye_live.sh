@@ -29,7 +29,14 @@ HEALTH_URLS=(
   "${HEALTH_URL_BACKEND:-http://127.0.0.1:8000/health}"
   "${HEALTH_URL_LOCAL:-http://127.0.0.1:8080/health}"
 )
+# Homepage must also be up — /health alone can pass while / returns Cloudflare 502
+# when edge nginx keeps a stale frontend upstream IP.
+FRONTEND_URLS=(
+  "${HEALTH_URL_FRONTEND:-http://127.0.0.1:8081/}"
+  "${HEALTH_URL_EDGE_ROOT:-http://127.0.0.1:8080/}"
+)
 PUBLIC_HEALTH_URL="${HEALTH_URL_PUBLIC:-https://sateye.xdgen.com/health}"
+PUBLIC_ROOT_URL="${HEALTH_URL_PUBLIC_ROOT:-https://sateye.xdgen.com/}"
 
 # Exact dirty-tree allowlist only (no directory wildcards).
 ALLOWLISTED_PATHS=(
@@ -352,19 +359,21 @@ rebuild_and_restart() {
   docker compose build backend frontend
 
   # Recreate app containers only. Never down -v. Postgres volume preserved.
-  log "starting stack (preserving volumes)"
-  docker compose up -d --remove-orphans
+  # Always recreate nginx with frontend/backend so it picks up new container IPs
+  # (static upstream resolution at nginx start is a common Cloudflare 502 cause).
+  log "starting stack (preserving volumes; recreate backend/frontend/nginx)"
+  docker compose up -d --remove-orphans --force-recreate backend frontend nginx
 
   log "compose status after up:"
   docker compose ps
 }
 
 restart_backend_only() {
-  log "restarting backend container (recovery for hung / 502 origin)"
-  docker compose up -d --force-recreate --no-deps backend
+  log "restarting backend + edge nginx (recovery for hung / 502 origin)"
+  docker compose up -d --force-recreate --no-deps backend nginx
   # Give uvicorn a moment to bind before health checks
   sleep 5
-  log "compose status after backend recreate:"
+  log "compose status after backend/nginx recreate:"
   docker compose ps
 }
 
@@ -412,43 +421,73 @@ sync_admin_password_env() {
 }
 
 local_health_ok() {
-  local url
+  local url backend_ok=0 frontend_ok=0
   for url in "${HEALTH_URLS[@]}"; do
     if curl -fsS --max-time 15 "$url" >/dev/null 2>/dev/null; then
-      return 0
+      backend_ok=1
+      break
     fi
   done
-  return 1
+  for url in "${FRONTEND_URLS[@]}"; do
+    # Accept any 2xx/3xx HTML response from the SPA / edge proxy
+    if curl -fsS --max-time 15 -o /dev/null "$url" 2>/dev/null; then
+      frontend_ok=1
+      break
+    fi
+  done
+  [[ "$backend_ok" -eq 1 && "$frontend_ok" -eq 1 ]]
 }
 
 healthcheck() {
   # Backend often needs a few seconds after recreate (uvicorn + DB init).
-  # Master workflow historically probed :80 (nothing useful) — keep trying
-  # all HEALTH_URLS with retries so a brief Connection reset is not fatal.
-  local attempt max_attempts=18 url ok=0
+  # Also require the homepage (frontend) — /health alone missed Cloudflare 502 on /.
+  local attempt max_attempts=18 url ok=0 fe_ok=0
   log "running health checks (up to ${max_attempts} attempts, 5s apart)"
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     ok=0
+    fe_ok=0
     for url in "${HEALTH_URLS[@]}"; do
       if curl -fsS --max-time 10 "$url" >/dev/null 2>/dev/null; then
-        log "health OK (attempt ${attempt}): $url"
+        log "backend health OK (attempt ${attempt}): $url"
         ok=1
         break
       else
-        log "health miss (attempt ${attempt}): $url"
+        log "backend health miss (attempt ${attempt}): $url"
       fi
     done
-    if [[ "$ok" -eq 1 ]]; then
+    for url in "${FRONTEND_URLS[@]}"; do
+      if curl -fsS --max-time 10 -o /dev/null "$url" 2>/dev/null; then
+        log "frontend OK (attempt ${attempt}): $url"
+        fe_ok=1
+        break
+      else
+        log "frontend miss (attempt ${attempt}): $url"
+      fi
+    done
+    if [[ "$ok" -eq 1 && "$fe_ok" -eq 1 ]]; then
       break
+    fi
+    # If backend is up but frontend/edge is stale, bounce nginx mid-check once
+    if [[ "$ok" -eq 1 && "$fe_ok" -eq 0 && "$attempt" -eq 3 ]]; then
+      log "frontend still down — force-recreating edge nginx to refresh upstream DNS"
+      docker compose up -d --force-recreate --no-deps nginx || true
+      docker compose up -d --force-recreate --no-deps frontend || true
+      sleep 3
     fi
     sleep 5
   done
-  [[ "$ok" -eq 1 ]] || die "local health checks failed after ${max_attempts} attempts"
+  [[ "$ok" -eq 1 ]] || die "local backend health checks failed after ${max_attempts} attempts"
+  [[ "$fe_ok" -eq 1 ]] || die "local frontend/homepage checks failed after ${max_attempts} attempts (would be Cloudflare 502 on /)"
 
   if curl -fsS --max-time 30 "$PUBLIC_HEALTH_URL" >/dev/null; then
     log "public health OK: $PUBLIC_HEALTH_URL"
   else
     log "WARNING: public health check failed ($PUBLIC_HEALTH_URL) — local health passed; check Cloudflare/DNS"
+  fi
+  if curl -fsS --max-time 30 -o /dev/null "$PUBLIC_ROOT_URL"; then
+    log "public homepage OK: $PUBLIC_ROOT_URL"
+  else
+    log "WARNING: public homepage failed ($PUBLIC_ROOT_URL) — local frontend passed; check Cloudflare/DNS"
   fi
 }
 
