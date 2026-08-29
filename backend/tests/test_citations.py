@@ -57,7 +57,7 @@ def test_citing_record_from_crossref():
     assert row["doi"] == "10.1007/s00500-022-06794-6"
 
 
-def test_merge_citing_works_includes_crossref_and_dedupes():
+def test_merge_citing_works_dedupes_within_crossref_and_keeps_scholar_separate():
     from app.services.citation_counts import _citing_record, merge_citing_works
 
     merged = merge_citing_works(
@@ -70,33 +70,61 @@ def test_merge_citing_works_includes_crossref_and_dedupes():
                 year=2022,
                 venue="Soft Computing",
             ),
+            _citing_record(
+                source="crossref",
+                title="Same paper.",
+                doi="10.1/ABC",
+                authors="",
+                year=2022,
+            ),
             _citing_record(source="crossref", title="Only Crossref", doi="10.cr/1", year=2023),
-        ],
-        [
             _citing_record(source="openalex", title="Same paper", doi="10.1/abc", authors="OA Only"),
             _citing_record(source="openalex", title="Only OpenAlex", doi="10.oa/1", year=2024),
         ],
+        [
+            _citing_record(
+                source="scholar",
+                title="Same paper",
+                doi="10.1/abc",
+                authors="Scholar Author",
+                year=2022,
+            ),
+            _citing_record(source="scholar", title="Same paper", doi="10.1/abc"),
+        ],
     )
-    dois = [row["doi"] for row in merged]
-    assert dois[0] in {"10.cr/1", "10.1/abc"}
-    assert "10.cr/1" in dois
-    assert "10.oa/1" in dois
-    same = next(row for row in merged if row["doi"] == "10.1/abc")
-    assert "crossref" in same["source"]
-    assert "openalex" in same["source"]
+    crossref = [row for row in merged if row["source"] == "crossref"]
+    scholar = [row for row in merged if row["source"] == "scholar"]
+    assert [row["doi"] for row in crossref] == ["10.cr/1", "10.1/abc"]
+    assert [row["doi"] for row in scholar] == ["10.1/abc"]
+    assert all(row["source"] == "crossref" for row in crossref)
+    assert all(row["source"] == "scholar" for row in scholar)
+    assert not any("openalex" in (row["source"] or "") for row in merged)
+    same = next(row for row in crossref if row["doi"] == "10.1/abc")
     assert same["venue"] == "Soft Computing"
     assert same["authors"] == "CR Author"
-    assert merged[0]["source"].split(",")[0] == "crossref" or "crossref" in merged[0]["source"]
+
+
+def test_dedupe_citing_works_collapses_title_only_duplicate():
+    from app.services.citation_counts import _citing_record, dedupe_citing_works
+
+    rows = dedupe_citing_works(
+        [
+            _citing_record(source="crossref", title="Heat Island Study", doi="10.1/keep", year=2021),
+            _citing_record(source="crossref", title="Heat Island Study!"),
+            _citing_record(source="crossref", title="A different citing paper"),
+        ],
+        source="crossref",
+    )
+    titles = [row["title"] for row in rows]
+    assert titles.count("Heat Island Study") == 1
+    assert "A different citing paper" in titles
 
 
 @pytest.mark.asyncio
-async def test_fetch_citing_works_keeps_crossref_if_openalex_fails(monkeypatch):
+async def test_fetch_citing_works_does_not_use_openalex(monkeypatch):
     from types import SimpleNamespace
 
     from app.services import citation_counts as counts_mod
-
-    async def boom(*_args, **_kwargs):
-        raise RuntimeError("openalex down")
 
     async def fake_crossref(_client, doi):
         assert doi == "10.33411/ijist/20190101011"
@@ -107,18 +135,64 @@ async def test_fetch_citing_works_keeps_crossref_if_openalex_fails(monkeypatch):
                 doi="10.1007/s00500-022-06794-6",
                 year=2022,
                 venue="Soft Computing",
+            ),
+            counts_mod._citing_record(
+                source="crossref",
+                title="Crossref citing article",
+                doi="10.1007/s00500-022-06794-6",
+            ),
+        ]
+
+    async def fake_scholar(_article):
+        return [
+            counts_mod._citing_record(
+                source="scholar",
+                title="Scholar citing article",
+                url="https://scholar.google.com/scholar?q=cite",
+                year=2024,
             )
         ]
 
-    monkeypatch.setattr(counts_mod, "_fetch_openalex_citing_works", boom)
     monkeypatch.setattr(counts_mod, "_fetch_crossref_citing_works", fake_crossref)
+    monkeypatch.setattr(counts_mod, "_fetch_scholar_citing_works", fake_scholar)
 
     rows = await counts_mod.fetch_citing_works(
-        SimpleNamespace(doi="10.33411/ijist/20190101011", title="Urban Heat Island")
+        SimpleNamespace(
+            doi="10.33411/ijist/20190101011",
+            title="Urban Heat Island",
+            scholar_url="https://scholar.google.com/scholar?cites=123",
+        )
     )
-    assert len(rows) == 1
-    assert rows[0]["source"] == "crossref"
+    assert [row["source"] for row in rows] == ["crossref", "scholar"]
     assert rows[0]["doi"] == "10.1007/s00500-022-06794-6"
+    assert rows[1]["title"] == "Scholar citing article"
+    source = __import__("inspect").getsource(counts_mod.fetch_citing_works)
+    assert "openalex.org" not in source.lower()
+    assert "OPENALEX" not in source
+    source_file = __import__("inspect").getsource(counts_mod)
+    assert "api.openalex.org" not in source_file
+
+
+def test_parse_scholar_citing_html_reads_results_once():
+    from app.services.citation_counts import parse_scholar_citing_html
+
+    html = """
+    <div class="gs_ri">
+      <h3 class="gs_rt"><a href="https://doi.org/10.1007/cite">A <b>citing</b> article</a></h3>
+      <div class="gs_a">Jane Doe - Soft Computing, 2022 - Springer</div>
+    </div>
+    <div class="gs_ri">
+      <h3 class="gs_rt"><a href="https://doi.org/10.1007/cite">A citing article</a></h3>
+      <div class="gs_a">Jane Doe - Soft Computing, 2022 - Springer</div>
+    </div>
+    """
+    rows = parse_scholar_citing_html(html)
+    assert len(rows) == 1
+    assert rows[0]["source"] == "scholar"
+    assert rows[0]["title"] == "A citing article"
+    assert rows[0]["year"] == 2022
+    assert "Jane Doe" in rows[0]["authors"]
+    assert rows[0]["doi"] == "10.1007/cite"
 
 
 def test_citing_dois_from_opencitations():
@@ -494,13 +568,13 @@ async def test_citation_sync_and_operator_patch(client: AsyncClient, monkeypatch
                 "url": "https://doi.org/10.1007/cite",
             },
             {
-                "source": "openalex",
-                "title": "A later paper that cites this work",
+                "source": "scholar",
+                "title": "A Scholar paper that cites this work",
                 "authors": "A. Reviewer, B. Editor",
                 "year": 2024,
                 "venue": "Example Journal",
-                "doi": "10.9999/cite",
-                "url": "https://doi.org/10.9999/cite",
+                "doi": None,
+                "url": "https://scholar.google.com/scholar?q=cite",
             },
         ]
 
@@ -514,8 +588,8 @@ async def test_citation_sync_and_operator_patch(client: AsyncClient, monkeypatch
     assert body["doi"] == "10.1234/fake"
     sources = {row["source"]: row for row in body["citing_works"]}
     assert sources["crossref"]["doi"] == "10.1007/cite"
-    assert sources["openalex"]["authors"] == "A. Reviewer, B. Editor"
-    assert sources["openalex"]["doi"] == "10.9999/cite"
+    assert sources["scholar"]["authors"] == "A. Reviewer, B. Editor"
+    assert sources["scholar"]["title"] == "A Scholar paper that cites this work"
 
     patched = await client.patch(
         f"/api/v1/articles/{aid}",

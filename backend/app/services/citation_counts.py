@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
+from html import unescape
 from itertools import chain
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,10 +18,8 @@ from app.core.config import get_settings
 from app.models.citation import Article
 
 CROSSREF = "https://api.crossref.org/works"
-OPENALEX = "https://api.openalex.org/works"
 SCHOLAR = "https://scholar.google.com/scholar"
 OPENCITATIONS_CITATIONS = "https://api.opencitations.net/index/v1/citations"
-SOURCE_RANK = {"crossref": 0, "openalex": 1, "scholar": 2}
 DOI_PREFIX_RE = re.compile(r"^(https?://)?(dx\.)?doi\.org/", re.I)
 CITED_BY_RE = re.compile(r"Cited by\s+(\d+)", re.I)
 SCHOLAR_CITES_RE = re.compile(
@@ -47,12 +46,6 @@ def _crossref_headers() -> dict[str, str]:
     return {"User-Agent": f"CitationAssistant/1.0 (mailto:{mail})"}
 
 
-def _openalex_headers() -> dict[str, str]:
-    settings = get_settings()
-    mail = getattr(settings, "crossref_mailto", None) or "citation-assistant@example.com"
-    return {"User-Agent": f"CitationAssistant/1.0 (mailto:{mail})"}
-
-
 def _citing_record(
     *,
     source: str,
@@ -73,33 +66,6 @@ def _citing_record(
         "doi": doi,
         "url": url or (f"https://doi.org/{doi}" if doi else None),
     }
-
-
-def _openalex_authors(work: dict) -> str:
-    names = []
-    for item in work.get("authorships") or []:
-        name = ((item.get("author") or {}).get("display_name") or "").strip()
-        if name:
-            names.append(name)
-        if len(names) >= 8:
-            break
-    return ", ".join(names)
-
-
-def _from_openalex_work(work: dict) -> dict:
-    doi = (work.get("ids") or {}).get("doi") or work.get("doi")
-    loc = work.get("primary_location") or {}
-    venue = ((loc.get("source") or {}).get("display_name") or "").strip()
-    url = loc.get("landing_page_url") or (work.get("ids") or {}).get("doi") or work.get("id")
-    return _citing_record(
-        source="openalex",
-        title=(work.get("display_name") or work.get("title") or "").strip(),
-        authors=_openalex_authors(work),
-        year=work.get("publication_year"),
-        venue=venue,
-        doi=doi,
-        url=url,
-    )
 
 
 def _crossref_authors(msg: dict) -> str:
@@ -150,52 +116,87 @@ def _source_parts(value: Optional[str]) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
 
 
-def merge_citing_works(*groups: list[dict]) -> list[dict]:
-    """Dedupe citing records by DOI/title and keep Crossref rows first."""
-    by_key: dict[str, dict] = {}
-    for row in chain.from_iterable(groups):
-        if not row:
+def _display_source(value: Optional[str]) -> Optional[str]:
+    parts = _source_parts(value)
+    if "scholar" in parts:
+        return "scholar"
+    if "crossref" in parts:
+        return "crossref"
+    return None
+
+
+def _norm_title(value: Optional[str]) -> str:
+    text = unescape(re.sub(r"<[^>]+>", " ", value or ""))
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return " ".join(text.split())
+
+
+def _prefer_row(existing: dict, incoming: dict) -> dict:
+    out = dict(existing)
+    for field in ("authors", "year", "venue", "url", "doi", "title"):
+        if not out.get(field) and incoming.get(field):
+            out[field] = incoming[field]
+    return out
+
+
+def dedupe_citing_works(rows: list[dict], *, source: Optional[str] = None) -> list[dict]:
+    """Keep one row per DOI, or per normalized title when a row has no DOI."""
+    by_doi: dict[str, dict] = {}
+    by_title: dict[str, dict] = {}
+    untitled: list[dict] = []
+    for raw in rows:
+        if not raw:
             continue
+        row = dict(raw)
+        if source:
+            row["source"] = source
         doi = normalize_doi(row.get("doi")) if row.get("doi") else None
+        if doi:
+            row["doi"] = doi
         title = (row.get("title") or "").strip() or doi or ""
         if not title:
             continue
-        merged = dict(row)
-        merged["title"] = title
+        row["title"] = title
         if doi:
-            merged["doi"] = doi
-        key = (doi or title).lower()
-        existing = by_key.get(key)
-        if existing is None:
-            by_key[key] = merged
+            key = doi.lower()
+            by_doi[key] = _prefer_row(by_doi[key], row) if key in by_doi else row
             continue
-        sources: list[str] = []
-        for part in _source_parts(existing.get("source")) + _source_parts(merged.get("source")):
-            if part not in sources:
-                sources.append(part)
-        existing["source"] = ",".join(sources)
-        prefer_incoming = "crossref" in _source_parts(merged.get("source")) and "crossref" not in _source_parts(
-            existing.get("source")
-        )
-        for field in ("authors", "year", "venue", "url", "doi", "title"):
-            if prefer_incoming and merged.get(field):
-                existing[field] = merged[field]
-            elif not existing.get(field) and merged.get(field):
-                existing[field] = merged[field]
-    rows = list(by_key.values())
+        nt = _norm_title(title)
+        if not nt:
+            untitled.append(row)
+            continue
+        by_title[nt] = _prefer_row(by_title[nt], row) if nt in by_title else row
+
+    doi_titles = {_norm_title(item.get("title")) for item in by_doi.values()}
+    leftover = [item for item in by_title.values() if _norm_title(item.get("title")) not in doi_titles]
+    out = list(by_doi.values()) + leftover + untitled
 
     def _sort_key(item: dict) -> tuple:
-        sources = _source_parts(item.get("source"))
-        rank = min((SOURCE_RANK.get(source, 9) for source in sources), default=9)
         year = item.get("year") or 0
         try:
             year_n = -int(year)
         except (TypeError, ValueError):
             year_n = 0
-        return (rank, year_n, (item.get("title") or "").lower())
+        return (year_n, (item.get("title") or "").lower())
 
-    rows.sort(key=_sort_key)
-    return rows
+    out.sort(key=_sort_key)
+    return out
+
+
+def merge_citing_works(*groups: list[dict]) -> list[dict]:
+    """Dedupe within Crossref and within Scholar. Never mix the two sources."""
+    by_source: dict[str, list[dict]] = {"crossref": [], "scholar": []}
+    for row in chain.from_iterable(groups):
+        if not row:
+            continue
+        source = _display_source(row.get("source"))
+        if source is None:
+            continue
+        by_source[source].append(row)
+    ordered: list[dict] = []
+    for source in ("crossref", "scholar"):
+        ordered.extend(dedupe_citing_works(by_source[source], source=source))
+    return ordered
 
 
 def _citing_dois_from_opencitations(payload) -> list[str]:
@@ -212,33 +213,6 @@ def _citing_dois_from_opencitations(payload) -> list[str]:
     return dois
 
 
-async def _fetch_openalex_citing_works(client: httpx.AsyncClient, doi: Optional[str], title: str) -> list[dict]:
-    work = None
-    if doi:
-        resp = await client.get(f"{OPENALEX}/doi:{doi}")
-        if resp.status_code == 200:
-            work = resp.json()
-    if work is None and title:
-        resp = await client.get(OPENALEX, params={"search": title, "per-page": 5})
-        if resp.status_code == 200:
-            for item in resp.json().get("results") or []:
-                if _title_overlap(title, item.get("display_name") or item.get("title") or ""):
-                    work = item
-                    break
-    if not work:
-        return []
-    oid = str(work.get("id") or "").rsplit("/", 1)[-1]
-    if not oid:
-        return []
-    cited = await client.get(
-        OPENALEX,
-        params={"filter": f"cites:{oid}", "per-page": 50, "sort": "publication_year:desc"},
-    )
-    if cited.status_code != 200:
-        return []
-    return [_from_openalex_work(item) for item in cited.json().get("results") or []]
-
-
 async def _hydrate_crossref_citing_doi(client: httpx.AsyncClient, citing_doi: str) -> dict:
     resp = await client.get(f"{CROSSREF}/{quote(citing_doi, safe=':/')}")
     if resp.status_code == 200:
@@ -248,6 +222,8 @@ async def _hydrate_crossref_citing_doi(client: httpx.AsyncClient, citing_doi: st
 
 async def _opencitations_citing_dois(client: httpx.AsyncClient, doi: str) -> list[str]:
     encoded = quote(doi, safe="")
+    found: list[str] = []
+    seen: set[str] = set()
     for url in (
         f"{OPENCITATIONS_CITATIONS}/{encoded}",
         f"https://opencitations.net/index/coci/api/v1/citations/{encoded}",
@@ -263,20 +239,25 @@ async def _opencitations_citing_dois(client: httpx.AsyncClient, doi: str) -> lis
             dois = _citing_dois_from_opencitations(resp.json())
         except Exception:
             continue
-        if dois:
-            return dois
-    return []
+        for citing in dois:
+            key = citing.lower()
+            if key not in seen:
+                seen.add(key)
+                found.append(citing)
+    return found
 
 
 async def _fetch_crossref_citing_works(client: httpx.AsyncClient, doi: str) -> list[dict]:
     """Citing articles from the Crossref citation graph (OpenCitations COCI)."""
+    cited_key = doi.lower()
     found: list[str] = []
     seen: set[str] = set()
     for citing in await _opencitations_citing_dois(client, doi):
         key = citing.lower()
-        if key not in seen:
-            seen.add(key)
-            found.append(citing)
+        if key == cited_key or key in seen:
+            continue
+        seen.add(key)
+        found.append(citing)
     if not found:
         return []
     sem = asyncio.Semaphore(5)
@@ -289,40 +270,196 @@ async def _fetch_crossref_citing_works(client: httpx.AsyncClient, doi: str) -> l
                 return _citing_record(source="crossref", title=citing_doi, doi=citing_doi)
 
     rows = await asyncio.gather(*[_one(citing_doi) for citing_doi in found[:50]])
-    return [row for row in rows if row]
+    return dedupe_citing_works([row for row in rows if row], source="crossref")
+
+
+def _scholar_cites_id(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    cites = (parse_qs(parsed.query).get("cites") or [None])[0]
+    if cites and str(cites).isdigit():
+        return str(cites)
+    return None
+
+
+def _parse_gs_a(meta: str) -> tuple[str, int | None, str]:
+    text = unescape(re.sub(r"<[^>]+>", "", meta or "")).replace("\xa0", " ").strip()
+    authors = ""
+    venue = ""
+    year = None
+    year_match = re.search(r"\b((?:19|20)\d{2})\b", text)
+    if year_match:
+        year = int(year_match.group(1))
+    parts = [part.strip(" -") for part in re.split(r"\s+-\s+", text) if part.strip(" -")]
+    if parts:
+        authors = parts[0]
+    if len(parts) >= 2:
+        venue = re.sub(r"\b(?:19|20)\d{2}\b", "", parts[1]).strip(" ,-")
+    return authors, year, venue
+
+
+def parse_scholar_citing_html(html: str) -> list[dict]:
+    """Parse citing articles from a Google Scholar cited-by results page."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    pattern = re.compile(
+        r'<div class="gs_ri">\s*<h3 class="gs_rt">(.*?)</h3>\s*<div class="gs_a">(.*?)</div>',
+        re.I | re.S,
+    )
+    for match in pattern.finditer(html or ""):
+        rt, meta = match.group(1), match.group(2)
+        href = None
+        link = re.search(r'<a[^>]+href="([^"]+)"', rt, re.I)
+        if link:
+            href = unescape(link.group(1))
+            if href.startswith("/"):
+                href = "https://scholar.google.com" + href
+        title = unescape(re.sub(r"<[^>]+>", " ", rt)).strip()
+        title = re.sub(r"\s+", " ", title)
+        if not title:
+            continue
+        key = _norm_title(title)
+        if key in seen:
+            continue
+        seen.add(key)
+        authors, year, venue = _parse_gs_a(meta)
+        doi = normalize_doi(href) if href and "doi.org/" in href else None
+        rows.append(
+            _citing_record(
+                source="scholar",
+                title=title,
+                authors=authors,
+                year=year,
+                venue=venue,
+                doi=doi,
+                url=href,
+            )
+        )
+    return rows
+
+
+def parse_serpapi_scholar_citing(payload: dict) -> list[dict]:
+    rows: list[dict] = []
+    for item in payload.get("organic_results") or []:
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        info = item.get("publication_info") or {}
+        authors = ""
+        names = info.get("authors") or []
+        if isinstance(names, list):
+            authors = ", ".join(
+                (person.get("name") or "").strip() for person in names if isinstance(person, dict) and person.get("name")
+            )
+        summary = info.get("summary") or ""
+        meta_authors, year, venue = _parse_gs_a(summary)
+        rows.append(
+            _citing_record(
+                source="scholar",
+                title=title,
+                authors=authors or meta_authors,
+                year=year,
+                venue=venue,
+                url=item.get("link"),
+            )
+        )
+    return dedupe_citing_works(rows, source="scholar")
+
+
+async def _scholar_cited_by_url(article: Article) -> Optional[str]:
+    url = getattr(article, "scholar_url", None)
+    cites = _scholar_cites_id(url)
+    if cites:
+        return f"{SCHOLAR}?cites={cites}&hl=en"
+    if not url:
+        return None
+    headers = {"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"}
+    async with httpx.AsyncClient(timeout=20.0, headers=headers, follow_redirects=True) as client:
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        found = SCHOLAR_CITES_RE.search(resp.text or "")
+        if not found:
+            return None
+        link = found.group(1)
+        if link.startswith("/"):
+            link = "https://scholar.google.com" + link
+        return link
+
+
+async def _fetch_scholar_citing_html(cited_by_url: str) -> list[dict]:
+    headers = {"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"}
+    rows: list[dict] = []
+    async with httpx.AsyncClient(timeout=20.0, headers=headers, follow_redirects=True) as client:
+        parsed = urlparse(cited_by_url)
+        query = parse_qs(parsed.query)
+        cites = (query.get("cites") or [None])[0]
+        for start in (0, 10):
+            if cites:
+                resp = await client.get(SCHOLAR, params={"cites": cites, "hl": "en", "start": start})
+            else:
+                resp = await client.get(cited_by_url, params={"start": start} if start else None)
+            if resp.status_code != 200:
+                break
+            page = parse_scholar_citing_html(resp.text or "")
+            if not page:
+                break
+            rows.extend(page)
+            if len(page) < 10:
+                break
+    return dedupe_citing_works(rows, source="scholar")
+
+
+async def _fetch_scholar_citing_works(article: Article) -> list[dict]:
+    """Citing articles from Google Scholar only. Does not change fetch_scholar() counts."""
+    settings = get_settings()
+    api_key = getattr(settings, "serpapi_key", "") or ""
+    cites = _scholar_cites_id(getattr(article, "scholar_url", None))
+    if api_key and cites:
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(
+                    "https://serpapi.com/search.json",
+                    params={"engine": "google_scholar", "cites": cites, "api_key": api_key},
+                )
+            if resp.status_code == 200:
+                rows = parse_serpapi_scholar_citing(resp.json() or {})
+                if rows:
+                    return rows
+        except Exception:
+            pass
+    cited_by = await _scholar_cited_by_url(article)
+    if not cited_by:
+        return []
+    try:
+        return await _fetch_scholar_citing_html(cited_by)
+    except Exception:
+        return []
 
 
 async def fetch_citing_works(article: Article) -> list[dict]:
-    """Return works that cite this article (Crossref + OpenAlex) so the operator can open them."""
+    """Return works that cite this article: Crossref list, then Google Scholar list.
+
+    Duplicate DOIs/titles are dropped within each source so the same paper
+    is not listed two or three times.
+    """
     doi = normalize_doi(article.doi)
-    title = (article.title or "").strip()
-    openalex_rows: list[dict] = []
     crossref_rows: list[dict] = []
-    headers = {**_crossref_headers(), **_openalex_headers()}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), headers=headers, follow_redirects=True) as client:
-        try:
-            openalex_rows = await _fetch_openalex_citing_works(client, doi, title)
-        except Exception:
-            openalex_rows = []
-        if doi:
+    scholar_rows: list[dict] = []
+    if doi:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(25.0), headers=_crossref_headers(), follow_redirects=True
+        ) as client:
             try:
                 crossref_rows = await _fetch_crossref_citing_works(client, doi)
             except Exception:
                 crossref_rows = []
-    return merge_citing_works(crossref_rows, openalex_rows)
-
-
-def _title_overlap(left: str, right: str) -> bool:
-    a = re.sub(r"[^a-z0-9]+", " ", (left or "").lower()).strip()
-    b = re.sub(r"[^a-z0-9]+", " ", (right or "").lower()).strip()
-    if not a or not b:
-        return False
-    if a[:48] in b or b[:48] in a:
-        return True
-    aw, bw = set(a.split()), set(b.split())
-    if not aw or not bw:
-        return False
-    return len(aw & bw) / max(1, min(len(aw), len(bw))) >= 0.55
+    try:
+        scholar_rows = await _fetch_scholar_citing_works(article)
+    except Exception:
+        scholar_rows = []
+    return merge_citing_works(crossref_rows, scholar_rows)
 
 
 async def fetch_crossref(article: Article) -> tuple[int, Optional[str], Optional[str]]:
