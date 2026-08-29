@@ -601,7 +601,9 @@ class DetectionService:
                 confidence_min=conf_min,
                 collection=collection,
                 aoi_polygon=aoi_geom,
-                # None → AOI-adaptive sensitive threshold (~0.04–0.07)
+                # Keep the same sensitive open-sea logic as the working GEE version:
+                # AOI-adaptive NIR threshold constrained to 0.040–0.070, with
+                # a soft 0.72× band for faint decks/wakes.
                 nir_threshold=None,
             )
             overlay_b64 = None

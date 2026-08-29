@@ -250,13 +250,32 @@ def _optimum_nir_threshold(nir: np.ndarray, search: np.ndarray) -> float:
     return float(np.clip(thr, NIR_THR_MIN, NIR_THR_MAX))
 
 
-def _scale_nir_reflectance(nir: np.ndarray) -> np.ndarray:
+def _scale_nir_reflectance(nir: np.ndarray, collection: str | None = None) -> np.ndarray:
+    """Normalize Sentinel-2 / Landsat surface-reflectance NIR to 0–1.
+
+    Sentinel-2 SR uses DN / 10000. Landsat Collection-2 Level-2 SR uses
+    DN * 0.0000275 - 0.2. Keeping the collection-specific conversion here
+    makes the server detector use the same reflectance basis as the GEE app.
+    """
     nir_f = nir.astype(np.float64)
+    c = (collection or "").upper().replace("_", "-")
     finite_sample = nir_f[np.isfinite(nir_f)]
-    if finite_sample.size and float(np.nanpercentile(finite_sample, 99)) > 1.5:
-        # S2_SR DN → reflectance (GEE: divide 10000)
+    if not finite_sample.size:
+        return nir_f
+
+    p99 = float(np.nanpercentile(finite_sample, 99))
+    if "LANDSAT" in c or c.startswith(("L7", "L8", "L9")):
+        # Raw Landsat C2 L2 SR DN. If the loader already returned reflectance,
+        # values are normally <= 1.5 and are left untouched.
+        if p99 > 1.5:
+            nir_f = nir_f * 0.0000275 - 0.2
+    elif "SENTINEL-2" in c or c.startswith("S2") or "L2A" in c:
+        # Sentinel-2 SR DN -> reflectance.
+        if p99 > 1.5:
+            nir_f = nir_f / 10000.0
+    elif p99 > 1.5:
+        # Conservative generic fallback for unknown optical SR arrays.
         nir_f = nir_f / 10000.0
-    # Landsat SR sometimes still in scaled int; already handled if >1.5
     return nir_f
 
 
@@ -285,7 +304,7 @@ def detect_ships_optical_nir(
         )
 
     scl = bands.get("scl")
-    nir_full = _scale_nir_reflectance(nir)
+    nir_full = _scale_nir_reflectance(nir, collection)
     finite = np.isfinite(nir_full)
 
     # OPT 1: AOI mask first (precomputed once per call, reused)
@@ -321,7 +340,7 @@ def detect_ships_optical_nir(
     else:
         thr = _optimum_nir_threshold(nir_f, search)
     # Soft band for wakes / faint decks just below the hard threshold
-    thr_soft = max(NIR_THR_MIN * 0.9, thr * 0.72)
+    thr_soft = max(NIR_THR_MIN * 0.90, thr * 0.72)
     min_px = max(1, int(min_pixels) if min_pixels is not None else MIN_COMPONENT_PIXELS)
 
     px_area = _estimate_pixel_area_m2(work_bounds, nir_f.shape, collection)
