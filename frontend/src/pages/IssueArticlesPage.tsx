@@ -28,12 +28,6 @@ interface CitingWork {
   url?: string;
 }
 
-const SOURCE_LABELS: Record<string, string> = {
-  crossref: 'Crossref',
-  openalex: 'OpenAlex',
-  scholar: 'Google Scholar',
-};
-
 function sourceParts(source?: string) {
   return (source || '')
     .split(',')
@@ -41,37 +35,59 @@ function sourceParts(source?: string) {
     .filter(Boolean);
 }
 
-function sourceLabel(source?: string) {
-  return sourceParts(source)
-    .map((part) => SOURCE_LABELS[part] || part)
-    .join(' · ');
+function displaySource(source?: string): 'crossref' | 'scholar' | null {
+  const parts = sourceParts(source);
+  if (parts.includes('scholar')) return 'scholar';
+  if (parts.includes('crossref')) return 'crossref';
+  return null;
 }
 
-function citingGroups(works: CitingWork[]) {
-  const buckets: { key: string; label: string; items: CitingWork[] }[] = [
-    { key: 'crossref', label: 'Crossref citing articles', items: [] },
-    { key: 'openalex', label: 'OpenAlex citing articles', items: [] },
-    { key: 'scholar', label: 'Google Scholar citing articles', items: [] },
-    { key: 'other', label: 'Other citing records', items: [] },
-  ];
+function normTitle(title?: string) {
+  return (title || '')
+    .toLowerCase()
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function uniqueWorks(works: CitingWork[]) {
+  const byDoi = new Map<string, CitingWork>();
+  const noDoi: CitingWork[] = [];
   for (const work of works) {
-    const parts = sourceParts(work.source);
-    const bucket = parts.includes('crossref')
-      ? 'crossref'
-      : parts.includes('openalex')
-        ? 'openalex'
-        : parts.includes('scholar')
-          ? 'scholar'
-          : 'other';
-    buckets.find((group) => group.key === bucket)!.items.push(work);
+    const doi = (work.doi || '').trim().toLowerCase();
+    if (doi) {
+      if (!byDoi.has(doi)) byDoi.set(doi, work);
+      continue;
+    }
+    noDoi.push(work);
   }
-  return buckets.filter((group) => group.items.length);
+  const seenTitle = new Set(
+    [...byDoi.values()].map((work) => normTitle(work.title)).filter(Boolean),
+  );
+  const leftover: CitingWork[] = [];
+  for (const work of noDoi) {
+    const title = normTitle(work.title);
+    if (title && seenTitle.has(title)) continue;
+    if (title) seenTitle.add(title);
+    leftover.push(work);
+  }
+  return [...byDoi.values(), ...leftover];
 }
 
-function hasCrossrefCitingList(articles: Article[]) {
-  return articles.some((article) =>
-    (article.citing_works || []).some((work) => sourceParts(work.source).includes('crossref')),
-  );
+function worksForSource(works: CitingWork[], source: 'crossref' | 'scholar') {
+  return uniqueWorks(works.filter((work) => displaySource(work.source) === source));
+}
+
+function needsCitingListRefresh(articles: Article[]) {
+  return articles.some((article) => {
+    const works = article.citing_works || [];
+    if (works.some((work) => sourceParts(work.source).includes('openalex'))) return true;
+    const hasScholarList = works.some((work) => displaySource(work.source) === 'scholar');
+    if ((article.scholar_citation_count || 0) > 0 && article.scholar_url && !hasScholarList) return true;
+    const hasCrossrefList = works.some((work) => displaySource(work.source) === 'crossref');
+    if ((article.crossref_citation_count || 0) > 0 && !hasCrossrefList) return true;
+    return false;
+  });
 }
 
 interface Payload {
@@ -107,12 +123,13 @@ export default function IssueArticlesPage() {
     void (async () => {
       const payload = await load();
       if (!payload.issue.id) return;
-      const marker = `citing-works-crossref-v1-${payload.issue.id}`;
+      const marker = `citing-works-v2-${payload.issue.id}`;
       const needCounts = (payload.articles || []).some((a) => !a.citation_synced_at);
-      const needCrossrefList = !hasCrossrefCitingList(payload.articles || []) && !sessionStorage.getItem(marker);
-      if (!needCounts && !needCrossrefList) return;
+      const needLists =
+        needsCitingListRefresh(payload.articles || []) && !sessionStorage.getItem(marker);
+      if (!needCounts && !needLists) return;
       sessionStorage.setItem(marker, '1');
-      setMsg('Fetching Crossref and Google Scholar citing articles…');
+      setMsg('Fetching Cite by Crossref and Cite by Google Scholar lists…');
       await citationApi.syncIssue(payload.issue.id);
       await load();
       setMsg('');
@@ -247,58 +264,88 @@ export default function IssueArticlesPage() {
   );
 }
 
-function CitingWorksList({ article }: { article: Article }) {
-  const works = article.citing_works || [];
-  const groups = citingGroups(works);
-  const crossrefListed = works.filter((work) => sourceParts(work.source).includes('crossref')).length;
-  const crossrefCount = article.crossref_citation_count || 0;
-
-  if (!works.length && crossrefCount === 0) {
+function CitingWorkItems({
+  source,
+  works,
+}: {
+  source: 'crossref' | 'scholar';
+  works: CitingWork[];
+}) {
+  if (!works.length) {
     return null;
   }
+  return (
+    <ul className="space-y-2">
+      {works.map((work, idx) => {
+        const href = work.url || (work.doi ? `https://doi.org/${work.doi}` : undefined);
+        return (
+          <li key={`${source}-${work.doi || work.url || work.title || idx}`} className="text-sm text-gray-300">
+            <span className="text-gray-500 mr-2">{idx + 1}.</span>
+            {href ? (
+              <a className="text-earth-400 hover:underline" href={href} target="_blank" rel="noreferrer">
+                {work.title}
+              </a>
+            ) : (
+              <span>{work.title}</span>
+            )}
+            <div className="text-xs text-gray-500 ml-5">
+              {[work.authors, work.year, work.venue].filter(Boolean).join(' · ')}
+              {work.doi ? ` · DOI ${work.doi}` : ''}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function CitingWorksList({ article }: { article: Article }) {
+  const works = article.citing_works || [];
+  const crossrefWorks = worksForSource(works, 'crossref');
+  const scholarWorks = worksForSource(works, 'scholar');
+  const crossrefCount = article.crossref_citation_count || 0;
+  const scholarCount = article.scholar_citation_count || 0;
 
   return (
-    <div className="mt-4">
-      <p className="text-sm font-medium mb-2">
-        Cited by {works.length} record{works.length === 1 ? '' : 's'}
-        {works.length > 0
-          ? ` (${groups
-              .map((group) => `${group.label.replace(' citing articles', '').replace(' citing records', '')} ${group.items.length}`)
-              .join(' · ')})`
-          : ''}
-      </p>
-      {crossrefCount > 0 && crossrefListed === 0 && (
-        <p className="text-xs text-gray-500 mb-2">
-          Crossref reports {crossrefCount} citation{crossrefCount === 1 ? '' : 's'}, but no citing-article
-          records were returned for this DOI. Use Refresh citations to look them up again.
+    <div className="mt-4 space-y-4">
+      <section>
+        <p className="text-sm font-medium mb-1">
+          Cite by Crossref{' '}
+          <span className="text-gray-400 font-normal">
+            ({crossrefWorks.length}
+            {crossrefCount > 0 && crossrefWorks.length !== crossrefCount ? ` of ${crossrefCount}` : ''})
+          </span>
         </p>
-      )}
-      {groups.map((group) => (
-        <div key={group.key} className="mb-3">
-          <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">{group.label}</p>
-          <ul className="space-y-2">
-            {group.items.map((work, idx) => {
-              const href = work.url || (work.doi ? `https://doi.org/${work.doi}` : undefined);
-              return (
-                <li key={`${group.key}-${work.doi || work.url || work.title || idx}`} className="text-sm text-gray-300">
-                  <span className="text-gray-500 mr-2">{idx + 1}.</span>
-                  {href ? (
-                    <a className="text-earth-400 hover:underline" href={href} target="_blank" rel="noreferrer">
-                      {work.title}
-                    </a>
-                  ) : (
-                    <span>{work.title}</span>
-                  )}
-                  <div className="text-xs text-gray-500 ml-5">
-                    {[sourceLabel(work.source), work.authors, work.year, work.venue].filter(Boolean).join(' · ')}
-                    {work.doi ? ` · DOI ${work.doi}` : ''}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+        {crossrefCount > 0 && crossrefWorks.length === 0 && (
+          <p className="text-xs text-gray-500 mb-2">
+            Crossref reports {crossrefCount} citation{crossrefCount === 1 ? '' : 's'}, but no citing-article
+            records were returned for this DOI. Use Refresh citations to look them up again.
+          </p>
+        )}
+        {crossrefCount === 0 && crossrefWorks.length === 0 && (
+          <p className="text-xs text-gray-500">No Crossref citing articles for this paper.</p>
+        )}
+        <CitingWorkItems source="crossref" works={crossrefWorks} />
+      </section>
+      <section>
+        <p className="text-sm font-medium mb-1">
+          Cite by Google Scholar{' '}
+          <span className="text-gray-400 font-normal">
+            ({scholarWorks.length}
+            {scholarCount > 0 && scholarWorks.length !== scholarCount ? ` of ${scholarCount}` : ''})
+          </span>
+        </p>
+        {scholarCount > 0 && scholarWorks.length === 0 && (
+          <p className="text-xs text-gray-500 mb-2">
+            Google Scholar reports {scholarCount} citation{scholarCount === 1 ? '' : 's'}
+            {article.scholar_url ? ', but the cited-by list could not be loaded here. Open the Scholar link above.' : '.'}
+          </p>
+        )}
+        {scholarCount === 0 && scholarWorks.length === 0 && (
+          <p className="text-xs text-gray-500">No Google Scholar citing articles for this paper.</p>
+        )}
+        <CitingWorkItems source="scholar" works={scholarWorks} />
+      </section>
     </div>
   );
 }
