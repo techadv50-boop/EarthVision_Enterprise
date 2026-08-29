@@ -44,7 +44,7 @@ export default function ManuscriptsPage() {
     setMsg(`Reading ${file.name} paragraph by paragraph…`);
     try {
       const { data } = await citationApi.manuscripts.upload(file);
-      setMsg('Matching each paragraph against the journal archive…');
+        setMsg('Matching Introduction through Materials and Methods against the journal archive…');
       await citationApi.manuscripts.suggest(data.id);
       setMsg('Building a Word file with Accept / Reject suggestions…');
       await downloadReview(data.id, data.title || file.name);
@@ -53,7 +53,7 @@ export default function ManuscriptsPage() {
         'Downloaded. Open it in Word → Review. Accept keeps the citation and its reference; Reject removes both. Each comment explains why it was suggested.',
       );
     } catch {
-      setMsg('Could not read that file. Upload a Word (.docx) or PDF manuscript.');
+      setMsg('Could not read that file. Upload a Word (.docx) manuscript.');
     } finally {
       setBusy(false);
     }
@@ -70,25 +70,38 @@ export default function ManuscriptsPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">New manuscript</h2>
       <p className="text-gray-400 mb-4 max-w-3xl">
-        Upload a Word document. The system reads it paragraph by paragraph and matches
-        substantive paragraphs against articles already stored in Citation Assistant. It
-        keeps at most ten of the strongest matches for the whole manuscript, and at most
-        one match per paragraph — not every paragraph gets a citation. Open that file in
-        Microsoft Word and use <span className="text-gray-200">Review → Accept or Reject</span>.
-        Each comment explains why the citation was suggested. The matching reference is the
-        shared endnote for that archive article — accepting keeps citation and reference;
-        rejecting the last citation to that article also drops its reference.
+        Upload a Word (.docx) manuscript. Citation Assistant reads only from the
+        Introduction through the end of Materials and Methods. It suggests at most ten
+        house citations from articles already stored across your journals — never from
+        the open web — and writes them into the same Word file as tracked Accept/Reject
+        suggestions. Matching references are added under the References section. Open the
+        downloaded file in Microsoft Word and use{" "}
+        <span className="text-gray-200">Review → Accept or Reject</span>. Accept keeps
+        the in-text citation and its reference; rejecting the last citation to that
+        archive article also drops its reference.
       </p>
-      <input
-        type="file"
-        disabled={busy}
-        accept=".docx,.pdf,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/plain"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          e.currentTarget.value = '';
-          if (file) void upload(file);
-        }}
-      />
+      <form
+        className="panel p-4 space-y-3 max-w-xl"
+        onSubmit={(e) => e.preventDefault()}
+      >
+        <label className="block text-sm text-gray-300" htmlFor="manuscript-upload">
+          Manuscript file
+        </label>
+        <input
+          id="manuscript-upload"
+          type="file"
+          disabled={busy}
+          accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.currentTarget.value = '';
+            if (file) void upload(file);
+          }}
+        />
+        <p className="text-xs text-gray-500">
+          Choose a .docx file. Suggestions come only from the Citation Assistant archive.
+        </p>
+      </form>
       {msg && <p className="text-earth-400 text-sm mt-2">{msg}</p>}
       <div className="mt-6 space-y-2">
         {items.map((m) => (

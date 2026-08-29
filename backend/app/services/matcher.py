@@ -52,6 +52,44 @@ _AFFIL_LINE_RE = re.compile(
     r"^\d+\s*(Department|Faculty|School|College|University|Institute)\b",
     re.I,
 )
+_NUMBERED_PREFIX_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)*|[IVXLCM]+)[\.\)]\s+",
+    re.I,
+)
+_INTRO_LABELS = {
+    "introduction",
+    "introduction importance of study",
+    "introduction importance of the study",
+}
+_METHODS_LABELS = {
+    "materials and methods",
+    "material and methods",
+    "materials and method",
+    "material and method",
+    "methodology",
+    "methods",
+    "experimental setup",
+    "experimental procedure",
+    "experimental section",
+}
+_AFTER_METHODS_LABELS = {
+    "results",
+    "result",
+    "results and discussion",
+    "result and discussion",
+    "discussion",
+    "conclusion",
+    "conclusions",
+    "acknowledgement",
+    "acknowledgements",
+    "acknowledgment",
+    "acknowledgments",
+    "references",
+    "bibliography",
+    "works cited",
+    "literature cited",
+    "appendix",
+}
 
 
 @dataclass(frozen=True)
@@ -68,6 +106,97 @@ class RankedCandidate:
 def is_references_heading(text: str) -> bool:
     compact = re.sub(r"\s+", " ", (text or "").strip())
     return bool(compact and _REFERENCES_HEADING_RE.match(compact))
+
+
+def _heading_label(text: str) -> str:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    compact = _NUMBERED_PREFIX_RE.sub("", compact)
+    prefix = compact.split(":", 1)[0]
+    return re.sub(r"[^a-z]+", " ", prefix.lower()).strip()
+
+
+def section_heading_kind(text: str) -> str | None:
+    """Classify a paragraph as a major manuscript heading, if it is one."""
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if not compact:
+        return None
+    if is_references_heading(compact):
+        return "after_methods"
+    label = _heading_label(compact)
+    words = label.split()
+    if not label:
+        return None
+    if label in _INTRO_LABELS or (label.startswith("introduction") and len(words) <= 6):
+        return "introduction"
+    if label in _METHODS_LABELS:
+        return "methods"
+    if label in _AFTER_METHODS_LABELS or (label.startswith("appendix") and len(words) <= 4):
+        return "after_methods"
+    if _HEADING_RE.match(compact):
+        if label in {"related work", "literature review", "abstract"}:
+            return None
+    return None
+
+
+def citation_section_range(texts: Sequence[str]) -> tuple[int, int] | None:
+    """Return [start, end) covering Introduction through Materials and Methods.
+
+    Citations are not suggested in the title, abstract, results, discussion,
+    or reference list. If Introduction is missing, no citation window is used.
+    """
+    intro_at: int | None = None
+    stop_at: int | None = None
+    for index, text in enumerate(texts):
+        kind = section_heading_kind(text)
+        if kind == "introduction" and intro_at is None:
+            intro_at = index
+            continue
+        if intro_at is None:
+            continue
+        if kind == "after_methods":
+            stop_at = index
+            break
+    if intro_at is None:
+        return None
+    return intro_at, len(texts) if stop_at is None else stop_at
+
+
+def in_citation_window(index: int, window: tuple[int, int] | None) -> bool:
+    if window is None:
+        return False
+    start, end = window
+    return start <= index < end
+
+
+def split_manuscript_paragraphs(text: str) -> list[str]:
+    """Keep section headings even when they are short single lines."""
+    paragraphs: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if not buf:
+            return
+        para = re.sub(r"\s+", " ", " ".join(buf)).strip()
+        if para:
+            paragraphs.append(para)
+        buf.clear()
+
+    for raw in (text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        if not line:
+            flush()
+            continue
+        if (
+            section_heading_kind(line)
+            or is_references_heading(line)
+            or _HEADING_RE.match(line)
+        ):
+            flush()
+            paragraphs.append(line)
+            continue
+        buf.append(line)
+    flush()
+    return paragraphs
 
 
 def is_substantive_paragraph(text: str, *, index: int = 0, in_references: bool = False) -> bool:
@@ -251,7 +380,7 @@ async def suggest_for_manuscript(
         meta = parse_ijist_header(text)
         if not manuscript.title:
             manuscript.title = meta.get("title")
-        paras = split_paragraphs(text, min_len=40) or [
+        paras = split_manuscript_paragraphs(text) or split_paragraphs(text, min_len=40) or [
             p.strip() for p in text.split("\n\n") if len(p.strip()) > 40
         ]
         for i, p in enumerate(paras):
@@ -288,10 +417,13 @@ async def suggest_for_manuscript(
 
     per_paragraph = max(1, int(per_paragraph or MAX_SUGGESTIONS_PER_PARAGRAPH))
     raw_matches: list[RankedCandidate] = []
+    window = citation_section_range([para.text or "" for para in paragraphs])
     in_references = False
     for para in paragraphs:
         if is_references_heading(para.text or ""):
             in_references = True
+            continue
+        if not in_citation_window(para.index, window):
             continue
         if not is_substantive_paragraph(para.text or "", index=para.index, in_references=in_references):
             continue

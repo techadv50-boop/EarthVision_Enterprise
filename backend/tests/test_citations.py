@@ -212,8 +212,13 @@ async def test_journal_ingest_coverage_and_match(client: AsyncClient):
     assert any("Drinking Water" in t for t in titles)
 
     pdf = _pdf_from_text(
+        "Introduction\n"
         "This manuscript reviews drinking water contamination, Water Quality Index (WQI) "
-        "and SPI modelling for groundwater in rural Sindh and Khairpur."
+        "and SPI modelling for groundwater in rural Sindh and Khairpur.\n"
+        "Materials and Methods\n"
+        "Field teams sampled groundwater in rural Sindh and calibrated WQI and SPI models.\n"
+        "Results\n"
+        "The results should not receive archive citation suggestions."
     )
     up = await client.post(
         "/api/v1/manuscripts",
@@ -235,8 +240,13 @@ async def test_journal_ingest_coverage_and_match(client: AsyncClient):
     assert "Drinking Water" in reasons or "Water" in reasons
 
     pdf2 = _pdf_from_text(
+        "Introduction\n"
         "This manuscript proposes an EdDSA watermarking scheme for digital document "
-        "authentication and tamper detection using Edward curve signatures."
+        "authentication and tamper detection using Edward curve signatures.\n"
+        "Materials and Methods\n"
+        "The EdDSA watermarking pipeline signs each document page before embedding.\n"
+        "Results\n"
+        "The signature scheme results are reported separately."
     )
     up2 = await client.post(
         "/api/v1/manuscripts",
@@ -295,9 +305,15 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
     )
     assert paper.status_code == 200, paper.text
     archive_id = paper.json()["article"]["id"]
-    docx = _docx_from_text(
+    docx = _docx_from_paragraphs(
+        "Introduction",
         "This manuscript reviews drinking water contamination, Water Quality Index (WQI) "
-        "and SPI modelling for groundwater in rural Sindh and Khairpur."
+        "and SPI modelling for groundwater in rural Sindh and Khairpur.",
+        "Materials and Methods",
+        "Groundwater samples from rural Sindh and Khairpur were analysed with WQI and SPI models.",
+        "Results",
+        "These result tables about drinking water must not receive a citation.",
+        "References",
     )
     up = await client.post(
         "/api/v1/manuscripts",
@@ -331,6 +347,8 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
     assert first.get("article_title")
     for p in detail["paragraphs"]:
         assert len(p["suggestions"]) <= 1
+        if (p.get("text") or "").startswith("These result tables"):
+            assert p["suggestions"] == []
         for s in p["suggestions"]:
             stored = await client.get(f"/api/v1/articles/{s['article_id']}", headers=headers)
             assert stored.status_code == 200
@@ -349,6 +367,8 @@ async def test_word_manuscript_suggest_and_delete(client: AsyncClient):
     assert "Suggestion S-" in comments
     assert "Accept" in comments and "Reject" in comments
     assert "Shared archive reference" in endnotes
+    assert "References" in document
+    assert first["house_citation"] in document or first["house_citation"].split("“")[0].strip() in document
     listing = await client.get("/api/v1/manuscripts", headers=headers)
     assert any(row["id"] == mid for row in listing.json())
     deleted = await client.delete(f"/api/v1/manuscripts/{mid}", headers=headers)
@@ -375,8 +395,13 @@ async def test_word_review_shares_one_reference_for_same_article(client: AsyncCl
     )
     archive_id = paper.json()["article"]["id"]
     docx = _docx_from_paragraphs(
+        "Introduction",
         "This manuscript reviews drinking water contamination and Water Quality Index (WQI) in rural Sindh.",
+        "Materials and Methods",
         "SPI modelling for groundwater contamination in Khairpur also depends on drinking water quality.",
+        "Results",
+        "Result scores for drinking water quality are listed below.",
+        "References",
     )
     up = await client.post(
         "/api/v1/manuscripts",
