@@ -144,8 +144,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "ai",
         "algorithm": (
-            "GEE-style open-sea NIR ≥ 0.10 inside water AOI · "
-            "connected-pixel size filter · thick red morph outline"
+            "GEE OPT · AOI-first NIR ≥ 0.10 · morph red outline (dilate−erode) · "
+            "connected-pixel contacts"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
@@ -156,8 +156,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "maritime",
         "algorithm": (
-            "GEE-style open-sea NIR ≥ 0.10 inside water AOI · "
-            "connected-pixel size filter · thick red morph outline"
+            "GEE OPT · AOI-first NIR ≥ 0.10 · morph red outline (dilate−erode) · "
+            "connected-pixel contacts"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
@@ -560,14 +560,34 @@ class DetectionService:
                     "Ship Detection needs a drawn water-body AOI — use Rect AOI or Poly AOI "
                     "to demarcate the water, then run again."
                 )
-            # Detect only inside the drawn water-body polygon (bbox clip + aoi mask).
+            # OPT (GEE): clip load to water AOI bbox; NIR-only (+SCL) — fewer bands,
+            # higher res on the small AOI intersection.
+            aoi_bounds = bounds
+            try:
+                from shapely.geometry import shape as shp_shape
+
+                geom = shp_shape(aoi_geom)
+                if not geom.is_empty:
+                    minx, miny, maxx, maxy = geom.bounds
+                    aoi_bounds = [float(minx), float(miny), float(maxx), float(maxy)]
+            except Exception:  # noqa: BLE001
+                aoi_bounds = bounds
             bands_pack = self._try_load_bands_with_bounds(
                 request.scene_id,
-                bounds=bounds,
-                size=1280,
-                max_edge=1536,
-                band_names=("red", "green", "blue", "nir", "swir", "scl"),
+                bounds=aoi_bounds,
+                size=1536,
+                max_edge=2048,
+                band_names=("nir", "scl"),
             )
+            if not bands_pack or "nir" not in bands_pack[0]:
+                # Fallback: include VIS if NIR-only fetch failed
+                bands_pack = self._try_load_bands_with_bounds(
+                    request.scene_id,
+                    bounds=aoi_bounds,
+                    size=1280,
+                    max_edge=1536,
+                    band_names=("red", "green", "blue", "nir", "scl"),
+                )
             if not bands_pack or "nir" not in bands_pack[0]:
                 raise ValidationError(
                     "Could not load the NIR band for this scene — turn the eye off/on and retry."
@@ -581,6 +601,7 @@ class DetectionService:
                 confidence_min=conf_min,
                 collection=collection,
                 aoi_polygon=aoi_geom,
+                nir_threshold=0.10,
             )
             overlay_b64 = None
             if result.get("overlay") is not None:
@@ -588,10 +609,11 @@ class DetectionService:
 
                 data, _mime = encode_rgba_overlay(result["overlay"], prefer="webp", quality=75)
                 overlay_b64 = base64.b64encode(data).decode("ascii")
+            out_bounds = result.get("bounds") or band_bounds
             legend = self._legend(meta["label"], result["formula"])
             return DetectionRunResponse(
                 task=task,
-                bounds=band_bounds,
+                bounds=[float(x) for x in out_bounds],
                 overlay_base64=overlay_b64,
                 geojson=result["geojson"],
                 count=int(result["count"]),

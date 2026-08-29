@@ -1,16 +1,16 @@
 """Optical ship / open-sea object detection for Landsat / Sentinel-2.
 
-Ported from the GEE "Ship Detection — NIR VERSION (FAST EDITION)" logic:
+Ported from GEE "Ship Detection — NIR VERSION (OPTIMIZED)":
 
-  1. Require Landsat / Sentinel-2 + drawn water-body AOI (raster mask).
-  2. Scale NIR to reflectance; keep only AOI pixels.
-  3. Ship candidates: NIR >= threshold (default 0.10).
-  4. Connected-component size filter (min pixels … ~40 000 m² max).
-  5. On-image mark = morphological outline (dilate − erode), thick red ring.
-  6. Centroids → numbered ship contacts (Locate list); no shapefile download.
+  1. Clip / mask to water AOI *before* threshold & morphology (fewer pixels).
+  2. Candidates: NIR >= threshold (default 0.10).
+  3. On-image mark = morph outline on the *raw* threshold mask (dilate−erode),
+     matching GEE Map.addLayer — not delayed until vectorization.
+  4. Connected-pixel size filter only for contact centroids (Locate list).
+  5. No automatic shapefile; vectors stay optional / UI contacts only.
 
-Threshold can float slightly above the AOI water floor so turbid/shallow
-water does not light up the whole AOI, while open-sea ships stay above 0.10.
+Performance mirrors the GEE opts: AOI-first, light NIR-only path, morph on
+the clipped mask, cheap in-memory components instead of full-scene reducers.
 """
 
 from __future__ import annotations
@@ -30,12 +30,11 @@ OPTICAL_SHIP_TASKS = frozenset(
     }
 )
 
-# GEE defaults (FAST EDITION)
+# GEE OPTIMIZED defaults
 DEFAULT_NIR_THRESHOLD = 0.10
 MIN_COMPONENT_PIXELS = 1
 MAX_AREA_M2 = 40_000
 MAX_FEATURES = 300
-# Absolute ceiling — vast sheets above this are treated as cloud/glare
 ABS_CLOUD_HI = 0.85
 OUTLINE_RADIUS_PX = 2
 
@@ -63,7 +62,7 @@ def _nominal_scale_m(collection: str | None) -> float:
     c = (collection or "").upper()
     if "LANDSAT" in c or c.startswith("L8") or c.startswith("L9") or c.startswith("L7"):
         return 30.0
-    return 10.0  # Sentinel-2 NIR
+    return 10.0
 
 
 def _dilate(mask: np.ndarray, iters: int = 1) -> np.ndarray:
@@ -103,14 +102,13 @@ def _erode(mask: np.ndarray, iters: int = 1) -> np.ndarray:
 
 
 def _morph_outline(ship_mask: np.ndarray, radius: int = OUTLINE_RADIUS_PX) -> np.ndarray:
-    """GEE-style thick raster ring: dilate(r) − erode(r)."""
+    """GEE: dilated − eroded → thick raster ring (radius 2 px)."""
     if not ship_mask.any():
         return np.zeros_like(ship_mask, dtype=bool)
     r = max(1, int(radius))
     dilated = _dilate(ship_mask, iters=r)
     eroded = _erode(ship_mask, iters=r)
     outline = dilated & ~eroded
-    # Tiny 1-px ships: eroded empties → fall back to dilated ring around core
     if not outline.any():
         outline = dilated & ~ship_mask
         if not outline.any():
@@ -119,9 +117,20 @@ def _morph_outline(ship_mask: np.ndarray, radius: int = OUTLINE_RADIUS_PX) -> np
 
 
 def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
+    """8-connected components (GEE eightConnected: true)."""
     h, w = mask.shape
     labeled = np.zeros((h, w), dtype=np.int32)
     lab = 0
+    neighbors = (
+        (0, 1),
+        (0, -1),
+        (1, 0),
+        (-1, 0),
+        (1, 1),
+        (1, -1),
+        (-1, 1),
+        (-1, -1),
+    )
     for y in range(h):
         for x in range(w):
             if not mask[y, x] or labeled[y, x]:
@@ -131,16 +140,7 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
             labeled[y, x] = lab
             while q:
                 cy, cx = q.popleft()
-                for dy, dx in (
-                    (0, 1),
-                    (0, -1),
-                    (1, 0),
-                    (-1, 0),
-                    (1, 1),
-                    (1, -1),
-                    (-1, 1),
-                    (-1, -1),
-                ):
+                for dy, dx in neighbors:
                     ny, nx = cy + dy, cx + dx
                     if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not labeled[ny, nx]:
                         labeled[ny, nx] = lab
@@ -188,40 +188,59 @@ def _aoi_mask(
     return mask
 
 
+def _crop_to_mask(
+    nir: np.ndarray,
+    mask: np.ndarray,
+    bounds: list[float],
+    pad: int = 4,
+) -> tuple[np.ndarray, np.ndarray, list[float], tuple[int, int, int, int]] | None:
+    """OPT: work only on AOI bbox pixels (GEE clip to processRegion)."""
+    ys, xs = np.where(mask)
+    if ys.size == 0:
+        return None
+    h, w = nir.shape
+    r0 = max(0, int(ys.min()) - pad)
+    r1 = min(h, int(ys.max()) + 1 + pad)
+    c0 = max(0, int(xs.min()) - pad)
+    c1 = min(w, int(xs.max()) + 1 + pad)
+    west, south, east, north = (float(v) for v in bounds)
+    # Row 0 = north edge
+    north_c = north - r0 / h * (north - south)
+    south_c = north - r1 / h * (north - south)
+    west_c = west + c0 / w * (east - west)
+    east_c = west + c1 / w * (east - west)
+    return (
+        nir[r0:r1, c0:c1].copy(),
+        mask[r0:r1, c0:c1].copy(),
+        [west_c, south_c, east_c, north_c],
+        (r0, r1, c0, c1),
+    )
+
+
 def _estimate_pixel_area_m2(bounds: list[float], shape: tuple[int, int], collection: str | None) -> float:
-    """Approx ground area per array pixel; fall back to sensor nominal scale."""
     west, south, east, north = (float(v) for v in bounds)
     h, w = shape
     if h < 1 or w < 1 or east <= west or north <= south:
         s = _nominal_scale_m(collection)
         return s * s
-    # metres per degree (rough mid-latitude)
     mid_lat = 0.5 * (south + north)
     m_per_deg_lat = 111_320.0
     m_per_deg_lon = 111_320.0 * max(0.2, float(np.cos(np.deg2rad(mid_lat))))
     px_w = (east - west) / w * m_per_deg_lon
     px_h = (north - south) / h * m_per_deg_lat
     area = abs(px_w * px_h)
-    # Clamp to something sane vs sensor scale
     nom = _nominal_scale_m(collection) ** 2
     return float(np.clip(area, nom * 0.25, nom * 64.0))
 
 
-def _resolve_nir_threshold(
-    nir: np.ndarray,
-    search: np.ndarray,
-    base: float = DEFAULT_NIR_THRESHOLD,
-) -> float:
-    """GEE default 0.10; raise only if AOI water floor is unusually bright."""
-    vals = nir[search & np.isfinite(nir)]
-    if vals.size < 16:
-        return float(base)
-    # Water is the dark majority of an open-sea AOI
-    water_hi = float(np.nanpercentile(vals, 80))
-    # Keep GEE threshold on clear open sea; lift for turbid/sunglint water
-    if water_hi + 0.02 > base:
-        return float(min(0.35, water_hi + 0.025))
-    return float(base)
+def _scale_nir_reflectance(nir: np.ndarray) -> np.ndarray:
+    nir_f = nir.astype(np.float64)
+    finite_sample = nir_f[np.isfinite(nir_f)]
+    if finite_sample.size and float(np.nanpercentile(finite_sample, 99)) > 1.5:
+        # S2_SR DN → reflectance (GEE: divide 10000)
+        nir_f = nir_f / 10000.0
+    # Landsat SR sometimes still in scaled int; already handled if >1.5
+    return nir_f
 
 
 def detect_ships_optical_nir(
@@ -234,7 +253,7 @@ def detect_ships_optical_nir(
     nir_threshold: float | None = None,
     min_pixels: int | None = None,
 ) -> dict[str, Any]:
-    """GEE-style open-sea ship detect: NIR >= threshold inside water AOI."""
+    """GEE OPTIMIZED open-sea detect: AOI-first NIR ≥ threshold + morph outline."""
     if collection is not None and not collection_is_optical_landsat_or_s2(collection):
         raise ValidationError(
             "Ship Detection (optical) works only with Landsat or Sentinel-2 imagery. "
@@ -249,47 +268,52 @@ def detect_ships_optical_nir(
         )
 
     scl = bands.get("scl")
-    nir_f = nir.astype(np.float64)
-    # If DN-like (0–10000), scale like S2_SR / 10000
-    finite_sample = nir_f[np.isfinite(nir_f)]
-    if finite_sample.size and float(np.nanpercentile(finite_sample, 99)) > 1.5:
-        nir_f = nir_f / 10000.0
+    nir_full = _scale_nir_reflectance(nir)
+    finite = np.isfinite(nir_full)
 
-    finite = np.isfinite(nir_f)
-    aoi_mask = _aoi_mask(nir_f.shape, bounds, aoi_polygon)
-    search = finite.copy()
+    # OPT 1: AOI mask first (precomputed once per call, reused)
+    aoi_mask = _aoi_mask(nir_full.shape, bounds, aoi_polygon)
+    search_full = finite.copy()
     if aoi_mask is not None:
-        search &= aoi_mask
+        search_full &= aoi_mask
 
-    if int(search.sum()) < 8:
+    if int(search_full.sum()) < 8:
         return {
             "geojson": {"type": "FeatureCollection", "features": []},
             "count": 0,
             "overlay": None,
-            "formula": "NIR ≥ threshold · AOI mask — empty AOI",
+            "bounds": list(bounds),
+            "formula": "NIR ≥ threshold · AOI-first — empty AOI",
             "message": "Water AOI has no usable pixels for ship detection",
         }
 
-    thr = float(nir_threshold) if nir_threshold is not None else _resolve_nir_threshold(nir_f, search)
-    min_px = int(min_pixels) if min_pixels is not None else MIN_COMPONENT_PIXELS
-    min_px = max(1, min_px)
+    # OPT: crop to AOI bbox so morph/CC only touch the intersection
+    cropped = _crop_to_mask(nir_full, search_full, bounds, pad=4)
+    if cropped is None:
+        return {
+            "geojson": {"type": "FeatureCollection", "features": []},
+            "count": 0,
+            "overlay": None,
+            "bounds": list(bounds),
+            "formula": "NIR ≥ threshold · AOI-first — empty AOI",
+            "message": "Water AOI has no usable pixels for ship detection",
+        }
+    nir_f, search, work_bounds, (r0, r1, c0, c1) = cropped
+    thr = float(DEFAULT_NIR_THRESHOLD if nir_threshold is None else nir_threshold)
+    min_px = max(1, int(min_pixels) if min_pixels is not None else MIN_COMPONENT_PIXELS)
 
-    px_area = _estimate_pixel_area_m2(bounds, nir_f.shape, collection)
+    px_area = _estimate_pixel_area_m2(work_bounds, nir_f.shape, collection)
     nom = _nominal_scale_m(collection)
-    # GEE: maxPixels = ceil(40000 / scale²) at native resolution.
-    # Our AOI arrays are often downsampled (1 array px ≫ sensor px), so use the
-    # larger of native max and area/px_area — otherwise real ships exceed max_px.
     max_px_native = int(np.ceil(MAX_AREA_M2 / (nom * nom)))
     max_px_area = int(np.ceil(MAX_AREA_M2 / max(px_area, 1.0)))
-    max_px = max(min_px, max_px_native, max_px_area)
-    # Hard cap so full-scene cloud sheets cannot explode contact count
-    max_px = min(max_px, 5_000)
+    max_px = min(5_000, max(min_px, max_px_native, max_px_area))
 
-    # Drop only huge SCL cloud sheets — never compact bright decks
+    # Huge cloud sheets only (never compact decks)
     cloud = np.zeros(nir_f.shape, dtype=bool)
     if scl is not None:
-        scl_cloud = np.isin(scl.astype(np.int16), [8, 9, 10])
-        labeled_c, n_c = _label_components(scl_cloud & search)
+        scl_c = scl[r0:r1, c0:c1]
+        scl_cloud = np.isin(scl_c.astype(np.int16), [8, 9, 10]) & search
+        labeled_c, n_c = _label_components(scl_cloud)
         for lab in range(1, n_c + 1):
             ys, xs = np.where(labeled_c == lab)
             if int(ys.size) >= 4000:
@@ -301,31 +325,29 @@ def detect_ships_optical_nir(
         if int(ys.size) >= 5000:
             cloud[ys, xs] = True
 
-    # PRIMARY (GEE): NIR >= threshold inside AOI
-    candidates = search & ~cloud & (nir_f >= thr)
+    # GEE display path: NIR >= threshold on already-clipped AOI mask
+    ship_mask_raw = search & ~cloud & (nir_f >= thr)
 
-    labeled, nlab = _label_components(candidates)
-    ship_mask = np.zeros_like(candidates)
+    # OPT: morph outline on clipped threshold mask (not full scene)
+    overlay = _ship_overlay_rgba(ship_mask_raw)
+
+    # Contacts = connected cleanup (GEE reduceToVectors / export path), in-memory
+    labeled, nlab = _label_components(ship_mask_raw)
     comps: list[tuple[float, np.ndarray, np.ndarray]] = []
     for lab in range(1, nlab + 1):
         ys, xs = np.where(labeled == lab)
         n = int(ys.size)
         if n < min_px or n > max_px:
             continue
-        score = float(np.nanmax(nir_f[ys, xs]))
-        comps.append((score, ys, xs))
-        ship_mask[ys, xs] = True
-
+        comps.append((float(np.nanmax(nir_f[ys, xs])), ys, xs))
     comps.sort(key=lambda t: -t[0])
 
-    west, south, east, north = (float(v) for v in bounds)
+    west, south, east, north = (float(v) for v in work_bounds)
     h, w = nir_f.shape
     features: list[dict[str, Any]] = []
     contact_n = 0
 
     for score, ys, xs in comps:
-        # Confidence from how far above the NIR threshold (GEE has no score;
-        # we keep a soft score for the contacts UI).
         excess = max(0.0, score - thr)
         conf01 = float(np.clip(0.35 + excess / 0.25, 0.15, 0.99))
         if conf01 < confidence_min:
@@ -334,8 +356,8 @@ def detect_ships_optical_nir(
         col_c = float(xs.mean())
         lon = west + (col_c + 0.5) / w * (east - west)
         lat = north - (row_c + 0.5) / h * (north - south)
-        r0, r1 = int(ys.min()), int(ys.max())
-        c0, c1 = int(xs.min()), int(xs.max())
+        rr0, rr1 = int(ys.min()), int(ys.max())
+        cc0, cc1 = int(xs.min()), int(xs.max())
 
         def rc_to_lonlat(rr: float, cc: float) -> list[float]:
             return [
@@ -345,11 +367,11 @@ def detect_ships_optical_nir(
 
         pad_r, pad_c = 0.75, 0.75
         ring = [
-            rc_to_lonlat(r0 - pad_r, c0 - pad_c),
-            rc_to_lonlat(r0 - pad_r, c1 + pad_c),
-            rc_to_lonlat(r1 + pad_r, c1 + pad_c),
-            rc_to_lonlat(r1 + pad_r, c0 - pad_c),
-            rc_to_lonlat(r0 - pad_r, c0 - pad_c),
+            rc_to_lonlat(rr0 - pad_r, cc0 - pad_c),
+            rc_to_lonlat(rr0 - pad_r, cc1 + pad_c),
+            rc_to_lonlat(rr1 + pad_r, cc1 + pad_c),
+            rc_to_lonlat(rr1 + pad_r, cc0 - pad_c),
+            rc_to_lonlat(rr0 - pad_r, cc0 - pad_c),
         ]
         mean_nir = float(np.nanmean(nir_f[ys, xs]))
         max_nir = float(np.nanmax(nir_f[ys, xs]))
@@ -385,35 +407,41 @@ def detect_ships_optical_nir(
         if contact_n >= MAX_FEATURES:
             break
 
-    overlay = _ship_overlay_rgba(ship_mask)
+    # Fast pixel-sum style count of threshold pixels (GEE status-bar idea)
+    bright_px = int(ship_mask_raw.sum())
     n_ships = contact_n
     logger.info(
-        "Ship detect GEE-NIR: thr={:.3f} min_px={} max_px={} contacts={}",
+        "Ship detect GEE-NIR-OPT: thr={:.3f} bright_px={} contacts={} crop={}x{}",
         thr,
-        min_px,
-        max_px,
+        bright_px,
         n_ships,
+        h,
+        w,
     )
     return {
         "geojson": {"type": "FeatureCollection", "features": features},
         "count": n_ships,
         "overlay": overlay,
+        "bounds": work_bounds,
         "formula": (
-            f"NIR ≥ {thr:.3f} (AOI mask) · connected {min_px}–{max_px} px · "
-            f"morph outline dilate−erode · red ring"
+            f"GEE OPT · AOI-first · NIR ≥ {thr:.3f} · "
+            f"morph outline (dilate−erode r={OUTLINE_RADIUS_PX}) · "
+            f"contacts {min_px}–{max_px} px"
         ),
-        "message": f"{n_ships} ship(s) with NIR ≥ {thr:.3f} inside water AOI",
+        "message": (
+            f"{n_ships} ship contact(s) · NIR ≥ {thr:.3f} inside water AOI "
+            f"({bright_px} bright px)"
+        ),
     }
 
 
 def _ship_overlay_rgba(ship_mask: np.ndarray) -> np.ndarray:
-    """Thick red morphological outline only (GEE FAST EDITION display)."""
+    """Thick red morphological outline @ ~90% opacity (GEE palette ff0000)."""
     h, w = ship_mask.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     if not ship_mask.any():
         return rgba
     outline = _morph_outline(ship_mask, radius=OUTLINE_RADIUS_PX)
-    # Bright red ring ~90% opacity (matches GEE palette + 0.9 opacity)
     rgba[outline, 0] = 255
     rgba[outline, 1] = 0
     rgba[outline, 2] = 0
