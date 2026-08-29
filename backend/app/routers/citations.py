@@ -46,7 +46,7 @@ from app.schemas.citation import (
 from app.services.citation_counts import sync_article_citations
 from app.services.crawler import run_crawl_job, run_download_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
-from app.services.matcher import house_citation_for, suggest_for_manuscript
+from app.services.matcher import house_citation_for, split_manuscript_paragraphs, suggest_for_manuscript
 from app.services.citation_parser import split_paragraphs
 from app.services.manuscript_export import assign_citations
 from app.services.manuscript_review_docx import build_review_docx
@@ -674,7 +674,7 @@ async def upload_manuscript(
             detail="Could not read text from that file. Upload a Word (.docx) or PDF manuscript.",
         )
     if not paragraphs:
-        paragraphs = split_paragraphs(text, min_len=40) or [
+        paragraphs = split_manuscript_paragraphs(text) or split_paragraphs(text, min_len=40) or [
             p.strip() for p in text.split("\n\n") if len(p.strip()) > 40
         ]
     from app.core.config import get_settings

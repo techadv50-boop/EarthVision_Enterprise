@@ -157,6 +157,14 @@ def annotate_docx(data: bytes, paragraphs: list[dict[str, Any]]) -> bytes:
             rev_id += 2
         _mark_paragraph(para, marks=marks, stamp=stamp)
 
+    comment_id, rev_id = _append_reference_section(
+        doc,
+        by_index,
+        stamp=stamp,
+        comment_id=comment_id,
+        rev_id=rev_id,
+    )
+
     files["word/document.xml"] = _dumps(doc)
     files["word/comments.xml"] = _dumps(comments_root)
     files["word/endnotes.xml"] = _dumps(endnotes_root)
@@ -214,6 +222,97 @@ def _mark_paragraph(
         mstyle.set(w("val"), "CommentReference")
         cref = etree.SubElement(mark, w("commentReference"))
         cref.set(w("id"), str(comment_id))
+
+
+def _is_references_heading_text(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    compact = re.sub(r"^(?:\d+(?:\.\d+)*|[IVXLCM]+)[\.\)]\s+", "", compact, flags=re.I)
+    return compact.lower() in {"references", "bibliography", "works cited", "literature cited"}
+
+
+def _tracked_paragraph(text: str, *, stamp: str, rev_id: int, bold: bool = False) -> etree._Element:
+    para = etree.Element(w("p"))
+    ins = etree.SubElement(para, w("ins"))
+    ins.set(w("id"), str(rev_id))
+    ins.set(w("author"), AUTHOR)
+    ins.set(w("date"), stamp)
+    run = etree.SubElement(ins, w("r"))
+    if bold:
+        rpr = etree.SubElement(run, w("rPr"))
+        etree.SubElement(rpr, w("b"))
+    node = etree.SubElement(run, w("t"))
+    node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    node.text = text
+    return para
+
+
+def _append_reference_section(
+    doc: etree._Element,
+    by_index: dict[int, list[dict[str, Any]]],
+    *,
+    stamp: str,
+    comment_id: int,
+    rev_id: int,
+) -> tuple[int, int]:
+    """Insert unique house citations into the manuscript References section."""
+    unique: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for index in sorted(by_index):
+        for sug in by_index[index]:
+            article_id = int(sug.get("article_id") or 0)
+            if not article_id or article_id in seen:
+                continue
+            seen.add(article_id)
+            unique.append(sug)
+    unique.sort(key=lambda item: int(item.get("citation_number") or 0))
+    if not unique:
+        return comment_id, rev_id
+
+    body = doc.find(w("body"))
+    if body is None:
+        return comment_id, rev_id
+
+    children = list(body)
+    heading_idx = None
+    for i, child in enumerate(children):
+        if etree.QName(child).localname != "p":
+            continue
+        if _is_references_heading_text(paragraph_text(child)):
+            heading_idx = i
+            break
+
+    nodes: list[etree._Element] = []
+    if heading_idx is None:
+        nodes.append(_tracked_paragraph("References", stamp=stamp, rev_id=rev_id, bold=True))
+        rev_id += 1
+        insert_at = len(children)
+        for i, child in enumerate(children):
+            if etree.QName(child).localname == "sectPr":
+                insert_at = i
+                break
+    else:
+        insert_at = heading_idx + 1
+        for i in range(heading_idx + 1, len(children)):
+            child = children[i]
+            if etree.QName(child).localname == "sectPr":
+                break
+            insert_at = i + 1
+
+    for sug in unique:
+        number = int(sug.get("citation_number") or len(nodes))
+        citation = (sug.get("house_citation") or "").strip()
+        nodes.append(
+            _tracked_paragraph(
+                f"[{number}] {citation}",
+                stamp=stamp,
+                rev_id=rev_id,
+            )
+        )
+        rev_id += 1
+
+    for offset, node in enumerate(nodes):
+        body.insert(insert_at + offset, node)
+    return comment_id, rev_id
 
 
 def _article_fields(sug: dict[str, Any]) -> dict[str, Any]:

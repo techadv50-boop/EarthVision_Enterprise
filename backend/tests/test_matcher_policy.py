@@ -11,10 +11,14 @@ from httpx import AsyncClient
 
 from app.services.matcher import (
     RankedCandidate,
+    citation_section_range,
+    in_citation_window,
     is_substantive_paragraph,
     one_per_paragraph,
     passes_relevance_gate,
+    section_heading_kind,
     select_manuscript_matches,
+    split_manuscript_paragraphs,
 )
 from app.services.manuscript_review_docx import suggestions_for_review
 from tests.test_citation_parser import GALLEY_WATER
@@ -57,6 +61,40 @@ def test_is_substantive_skips_title_heading_authors_and_bibliography():
         "This manuscript reviews drinking water contamination, Water Quality Index (WQI) and SPI modell"
     )
     assert is_substantive_paragraph(truncated_first, index=0) is True
+
+
+def test_citation_window_is_introduction_through_methods_only():
+    texts = [
+        "A Long Manuscript Title Without A Period Here",
+        "Abstract",
+        "This abstract summarises drinking water contamination and must not be cited.",
+        "Introduction",
+        "Rural Sindh groundwater is contaminated and Water Quality Index models are needed.",
+        "Materials and Methods",
+        "Samples were collected from Khairpur wells and analysed in the laboratory.",
+        "Results",
+        "The WQI scores were high in several wells that should not receive suggestions.",
+        "Discussion",
+        "These findings should also stay outside the citation window.",
+        "References",
+        "[1] Ali, A. (2026). Water quality. IJIST.",
+    ]
+    window = citation_section_range(texts)
+    assert window == (3, 7)
+    allowed = [i for i, _text in enumerate(texts) if in_citation_window(i, window)]
+    assert allowed == [3, 4, 5, 6]
+    assert section_heading_kind("1. Introduction") == "introduction"
+    assert section_heading_kind("Material and Method") == "methods"
+    assert section_heading_kind("2. Materials and Methods") == "methods"
+    assert section_heading_kind("Results and Discussion") == "after_methods"
+    assert citation_section_range(["Title only", "Body without headings." * 4]) is None
+    split = split_manuscript_paragraphs(
+        "Introduction\nRural Sindh groundwater is contaminated.\nMaterials and Methods\n"
+        "Samples were collected.\nResults\nScores were high."
+    )
+    assert split[0] == "Introduction"
+    assert "Materials and Methods" in split
+    assert split[split.index("Results") - 1].startswith("Samples")
 
 
 def test_weak_matches_are_excluded_by_relevance_gate():
@@ -183,7 +221,11 @@ async def test_manuscript_keeps_top_10_suggestions_one_per_paragraph(client: Asy
         "Introduction",
         "Pat Researcher",
         "*Correspondence: pat@example.com",
-        *[ _topic_paragraph(n) for n in range(22) ],
+        "This study reviews xenon sensor calibration for arid-basin groundwater mapping.",
+        "Materials and Methods",
+        *[_topic_paragraph(n) for n in range(22)],
+        "Results",
+        "The results paragraph repeats Xenon0ology measurements but must not be cited.",
         "References",
         "[1] Researcher, P. (2026). Advances in Xenon0ology. IJIST.",
         GALLEY_WATER.strip().splitlines()[0],
@@ -210,6 +252,8 @@ async def test_manuscript_keeps_top_10_suggestions_one_per_paragraph(client: Asy
     assert len(sugs) == sug.json()["suggestion_count"]
     for para in detail["paragraphs"]:
         assert len(para["suggestions"]) <= 1
+        if (para.get("text") or "").startswith("The results paragraph"):
+            assert para["suggestions"] == []
     annotated = [
         (para["index"], para["suggestions"][0]["score"])
         for para in detail["paragraphs"]
@@ -235,6 +279,11 @@ async def test_manuscript_keeps_top_10_suggestions_one_per_paragraph(client: Asy
     assert "Accept" in comments and "Reject" in comments
     assert "Shared archive reference" in endnotes
     assert "ins" in document
+    assert "References" in document
+    assert any(
+        (s.get("house_citation") or "") in document
+        for s in sugs
+    )
     ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     from lxml import etree
 
