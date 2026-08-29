@@ -776,7 +776,7 @@ export function WorkspacePage() {
     setToolLoading(true);
     setToolStatus(
       opticalShip
-        ? 'Ship Detection · AOI-first · NIR ≥ 0.10 (GEE Optimized)…'
+        ? 'Ship Detection · AOI-first · sensitive NIR (GEE Optimized)…'
         : `Detection: ${task.replaceAll('_', ' ')}…`,
     );
     setError(null);
@@ -813,7 +813,7 @@ export function WorkspacePage() {
         bbox: opticalShip ? [...shipBbox] : [...analysisBbox],
         scene_id: focusScene?.id,
         aoi: opticalShip ? shipAoi : aoiGeoJson?.geometry ?? null,
-        confidence_min: opticalShip ? 0.10 : 0.35,
+        confidence_min: opticalShip ? 0.08 : 0.35,
       });
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(

@@ -60,8 +60,8 @@ export const detectionService = {
     confidence_min?: number;
   }): Promise<DetectionResult> {
     const { data } = await api.post<DetectionResult>('/detection/run', {
-      // GEE-style NIR≥threshold contacts — keep floor low for open-sea recall.
-      confidence_min: 0.10,
+      // Sensitive open-sea NIR contacts — low floor so faint hulls/wakes stay listed.
+      confidence_min: 0.08,
       ...payload,
     });
     return data;

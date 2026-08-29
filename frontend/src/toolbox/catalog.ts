@@ -155,7 +155,7 @@ export const TOOLBOXES: ToolboxDef[] = [
         requiresWaterAoi: true,
         hint:
           'Active only with Landsat/Sentinel-2 eye ON + a drawn water-body AOI (Rect/Poly). ' +
-          'GEE OPTIMIZED: clip to AOI first, NIR ≥ 0.10, thick red morph outline on the image, ' +
+          'GEE OPTIMIZED (sensitive): AOI-first NIR ~0.04–0.07 + soft wakes, thick red morph outline, ' +
           'ship contacts for Locate (no shapefile on run)',
       },
       { id: 'aircraft_detection', label: 'Aircraft Detection', action: { type: 'detection', task: 'aircraft_detection' }, needsScene: true, inactive: true },

@@ -144,8 +144,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "ai",
         "algorithm": (
-            "GEE OPT · AOI-first NIR ≥ 0.10 · morph red outline (dilate−erode) · "
-            "connected-pixel contacts"
+            "GEE OPT · AOI-first sensitive NIR (~0.04–0.07 + soft wakes) · "
+            "morph red outline · connected-pixel contacts"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
@@ -156,8 +156,8 @@ TASK_META: dict[str, dict[str, Any]] = {
         "count": (5, 18),
         "domain": "maritime",
         "algorithm": (
-            "GEE OPT · AOI-first NIR ≥ 0.10 · morph red outline (dilate−erode) · "
-            "connected-pixel contacts"
+            "GEE OPT · AOI-first sensitive NIR (~0.04–0.07 + soft wakes) · "
+            "morph red outline · connected-pixel contacts"
         ),
         "spectral": "optical_nir_ship",
         "optical_only": True,
@@ -593,15 +593,16 @@ class DetectionService:
                     "Could not load the NIR band for this scene — turn the eye off/on and retry."
                 )
             bands, band_bounds = bands_pack
-            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.10)
-            conf_min = max(0.06, min(conf_min, 0.9))
+            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.08)
+            conf_min = max(0.05, min(conf_min, 0.9))
             result = detect_ships_optical_nir(
                 bands,
                 band_bounds,
                 confidence_min=conf_min,
                 collection=collection,
                 aoi_polygon=aoi_geom,
-                nir_threshold=0.10,
+                # None → AOI-adaptive sensitive threshold (~0.04–0.07)
+                nir_threshold=None,
             )
             overlay_b64 = None
             if result.get("overlay") is not None:

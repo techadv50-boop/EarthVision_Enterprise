@@ -1,16 +1,12 @@
 """Optical ship / open-sea object detection for Landsat / Sentinel-2.
 
-Ported from GEE "Ship Detection — NIR VERSION (OPTIMIZED)":
+Ported from GEE "Ship Detection — NIR VERSION (OPTIMIZED)" with higher recall:
 
-  1. Clip / mask to water AOI *before* threshold & morphology (fewer pixels).
-  2. Candidates: NIR >= threshold (default 0.10).
-  3. On-image mark = morph outline on the *raw* threshold mask (dilate−erode),
-     matching GEE Map.addLayer — not delayed until vectorization.
-  4. Connected-pixel size filter only for contact centroids (Locate list).
-  5. No automatic shapefile; vectors stay optional / UI contacts only.
-
-Performance mirrors the GEE opts: AOI-first, light NIR-only path, morph on
-the clipped mask, cheap in-memory components instead of full-scene reducers.
+  1. Clip / mask to water AOI *before* threshold & morphology.
+  2. Sensitive NIR threshold (~0.04–0.07 from AOI water floor; was 0.10).
+  3. Soft wake band near hard cores / elongated streaks.
+  4. Morph outline (dilate−erode) on the detection mask.
+  5. Connected-pixel contacts for Locate; no shapefile on run.
 """
 
 from __future__ import annotations
@@ -30,11 +26,14 @@ OPTICAL_SHIP_TASKS = frozenset(
     }
 )
 
-# GEE OPTIMIZED defaults
-DEFAULT_NIR_THRESHOLD = 0.10
+# Open-sea sensitive defaults (0.10 missed faint hulls/wakes in Persian Gulf AOIs)
+DEFAULT_NIR_THRESHOLD = 0.055
+# Adaptive clamp — never as high as the old 0.10 miss-rate, never noise-floor
+NIR_THR_MIN = 0.040
+NIR_THR_MAX = 0.070
 MIN_COMPONENT_PIXELS = 1
 MAX_AREA_M2 = 40_000
-MAX_FEATURES = 300
+MAX_FEATURES = 500
 ABS_CLOUD_HI = 0.85
 OUTLINE_RADIUS_PX = 2
 
@@ -233,6 +232,24 @@ def _estimate_pixel_area_m2(bounds: list[float], shape: tuple[int, int], collect
     return float(np.clip(area, nom * 0.25, nom * 64.0))
 
 
+def _optimum_nir_threshold(nir: np.ndarray, search: np.ndarray) -> float:
+    """Sensitive open-sea threshold from AOI water floor (optimum recall).
+
+    Water NIR is typically ~0.02–0.04; ships/wakes sit above that. Using a fixed
+    0.10 dropped many visible contacts. We set thr ≈ water_p80 + margin, clamped
+    to a sensitive band so faint hulls are kept without lighting the whole AOI.
+    """
+    vals = nir[search & np.isfinite(nir)]
+    if vals.size < 32:
+        return float(DEFAULT_NIR_THRESHOLD)
+    water_p80 = float(np.nanpercentile(vals, 80))
+    water_med = float(np.nanmedian(vals))
+    # Small margin above the water high-end; keep sensitive on clear open sea
+    margin = max(0.012, 0.45 * max(water_p80 - water_med, 0.008))
+    thr = water_p80 + margin
+    return float(np.clip(thr, NIR_THR_MIN, NIR_THR_MAX))
+
+
 def _scale_nir_reflectance(nir: np.ndarray) -> np.ndarray:
     nir_f = nir.astype(np.float64)
     finite_sample = nir_f[np.isfinite(nir_f)]
@@ -299,7 +316,12 @@ def detect_ships_optical_nir(
             "message": "Water AOI has no usable pixels for ship detection",
         }
     nir_f, search, work_bounds, (r0, r1, c0, c1) = cropped
-    thr = float(DEFAULT_NIR_THRESHOLD if nir_threshold is None else nir_threshold)
+    if nir_threshold is not None:
+        thr = float(nir_threshold)
+    else:
+        thr = _optimum_nir_threshold(nir_f, search)
+    # Soft band for wakes / faint decks just below the hard threshold
+    thr_soft = max(NIR_THR_MIN * 0.9, thr * 0.72)
     min_px = max(1, int(min_pixels) if min_pixels is not None else MIN_COMPONENT_PIXELS)
 
     px_area = _estimate_pixel_area_m2(work_bounds, nir_f.shape, collection)
@@ -325,8 +347,26 @@ def detect_ships_optical_nir(
         if int(ys.size) >= 5000:
             cloud[ys, xs] = True
 
-    # GEE display path: NIR >= threshold on already-clipped AOI mask
-    ship_mask_raw = search & ~cloud & (nir_f >= thr)
+    usable = search & ~cloud
+    # Hard cores (optimum thr) + soft wakes near cores / elongated soft streaks
+    hard = usable & (nir_f >= thr)
+    soft = usable & (nir_f >= thr_soft) & (nir_f < thr)
+    near_hard = _dilate(hard, iters=6) if hard.any() else soft
+    wake = soft & near_hard
+    # Also keep elongated soft-only streaks (wakes detached a few pixels)
+    if soft.any():
+        labeled_s, n_s = _label_components(soft)
+        for lab in range(1, n_s + 1):
+            ys, xs = np.where(labeled_s == lab)
+            n = int(ys.size)
+            if n < 2 or n > max_px:
+                continue
+            hspan = int(ys.max() - ys.min()) + 1
+            wspan = int(xs.max() - xs.min()) + 1
+            aspect = max(hspan, wspan) / max(1, min(hspan, wspan))
+            if aspect >= 2.0 or near_hard[ys, xs].any():
+                wake[ys, xs] = True
+    ship_mask_raw = hard | wake
 
     # OPT: morph outline on clipped threshold mask (not full scene)
     overlay = _ship_overlay_rgba(ship_mask_raw)
@@ -348,8 +388,9 @@ def detect_ships_optical_nir(
     contact_n = 0
 
     for score, ys, xs in comps:
-        excess = max(0.0, score - thr)
-        conf01 = float(np.clip(0.35 + excess / 0.25, 0.15, 0.99))
+        excess = max(0.0, score - thr_soft)
+        # Generous scores so faint-but-real contacts stay in the Locate list
+        conf01 = float(np.clip(0.28 + excess / 0.22, 0.12, 0.99))
         if conf01 < confidence_min:
             continue
         row_c = float(ys.mean())
@@ -384,6 +425,7 @@ def detect_ships_optical_nir(
             "nir_mean": round(mean_nir, 4),
             "nir_max": round(max_nir, 4),
             "nir_threshold": round(thr, 4),
+            "nir_soft": round(thr_soft, 4),
             "pixels": int(ys.size),
             "cue": "nir_ge_threshold",
             "band": "NIR",
@@ -411,8 +453,9 @@ def detect_ships_optical_nir(
     bright_px = int(ship_mask_raw.sum())
     n_ships = contact_n
     logger.info(
-        "Ship detect GEE-NIR-OPT: thr={:.3f} bright_px={} contacts={} crop={}x{}",
+        "Ship detect GEE-NIR-OPT sensitive: thr={:.3f} soft={:.3f} bright_px={} contacts={} crop={}x{}",
         thr,
+        thr_soft,
         bright_px,
         n_ships,
         h,
@@ -424,13 +467,14 @@ def detect_ships_optical_nir(
         "overlay": overlay,
         "bounds": work_bounds,
         "formula": (
-            f"GEE OPT · AOI-first · NIR ≥ {thr:.3f} · "
+            f"GEE OPT · AOI-first · sensitive NIR ≥ {thr:.3f} "
+            f"(soft≥{thr_soft:.3f} wakes) · "
             f"morph outline (dilate−erode r={OUTLINE_RADIUS_PX}) · "
             f"contacts {min_px}–{max_px} px"
         ),
         "message": (
-            f"{n_ships} ship contact(s) · NIR ≥ {thr:.3f} inside water AOI "
-            f"({bright_px} bright px)"
+            f"{n_ships} ship contact(s) · sensitive NIR ≥ {thr:.3f} "
+            f"inside water AOI ({bright_px} bright px)"
         ),
     }
 
