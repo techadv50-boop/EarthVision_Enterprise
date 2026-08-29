@@ -54,7 +54,10 @@ jobs:
           REMOTE: origin
           HEALTH_URL_LOCAL: http://127.0.0.1:8080/health
           HEALTH_URL_BACKEND: http://127.0.0.1:8000/health
+          HEALTH_URL_FRONTEND: http://127.0.0.1:8081/
+          HEALTH_URL_EDGE_ROOT: http://127.0.0.1:8080/
           HEALTH_URL_PUBLIC: https://sateye.xdgen.com/health
+          HEALTH_URL_PUBLIC_ROOT: https://sateye.xdgen.com/
           RESET_ADMIN_PASSWORD: "1"
           ADMIN_PASSWORD_RESET: Alihussain
         run: |
