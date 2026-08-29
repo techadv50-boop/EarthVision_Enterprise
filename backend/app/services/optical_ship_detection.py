@@ -1,14 +1,16 @@
 """Optical ship / open-sea object detection for Landsat / Sentinel-2.
 
-User rule (open sea):
-  Water NIR/VIS reflectance stays in a narrow range. Anything brighter
-  than that water range — including ship hulls and wakes — is an object.
+Ported from the GEE "Ship Detection — NIR VERSION (FAST EDITION)" logic:
 
-Workflow:
-  1. Require Landsat / Sentinel-2 + drawn water-body AOI.
-  2. Estimate water reflectance stats inside the AOI (NIR + VIS).
-  3. Flag pixels above the water range (objects) and wake-like streaks.
-  4. Vectorize → numbered contacts (points + footprints) + red outline overlay.
+  1. Require Landsat / Sentinel-2 + drawn water-body AOI (raster mask).
+  2. Scale NIR to reflectance; keep only AOI pixels.
+  3. Ship candidates: NIR >= threshold (default 0.10).
+  4. Connected-component size filter (min pixels … ~40 000 m² max).
+  5. On-image mark = morphological outline (dilate − erode), thick red ring.
+  6. Centroids → numbered ship contacts (Locate list); no shapefile download.
+
+Threshold can float slightly above the AOI water floor so turbid/shallow
+water does not light up the whole AOI, while open-sea ships stay above 0.10.
 """
 
 from __future__ import annotations
@@ -28,11 +30,14 @@ OPTICAL_SHIP_TASKS = frozenset(
     }
 )
 
-MIN_COMPONENT_PIXELS = 2
+# GEE defaults (FAST EDITION)
+DEFAULT_NIR_THRESHOLD = 0.10
+MIN_COMPONENT_PIXELS = 1
+MAX_AREA_M2 = 40_000
 MAX_FEATURES = 300
-MAX_OBJECT_PIXELS = 20_000
-# Absolute ceiling — above this over open water is almost always cloud sheet
-ABS_CLOUD_HI = 0.90
+# Absolute ceiling — vast sheets above this are treated as cloud/glare
+ABS_CLOUD_HI = 0.85
+OUTLINE_RADIUS_PX = 2
 
 
 def collection_is_optical_landsat_or_s2(collection: str | None) -> bool:
@@ -54,15 +59,11 @@ def collection_is_optical_landsat_or_s2(collection: str | None) -> bool:
     return False
 
 
-def _safe_div(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out = a / b
-        out[~np.isfinite(out)] = np.nan
-    return out
-
-
-def _ndwi(green: np.ndarray, nir: np.ndarray) -> np.ndarray:
-    return np.clip(_safe_div(green - nir, green + nir), -1.0, 1.0)
+def _nominal_scale_m(collection: str | None) -> float:
+    c = (collection or "").upper()
+    if "LANDSAT" in c or c.startswith("L8") or c.startswith("L9") or c.startswith("L7"):
+        return 30.0
+    return 10.0  # Sentinel-2 NIR
 
 
 def _dilate(mask: np.ndarray, iters: int = 1) -> np.ndarray:
@@ -83,20 +84,38 @@ def _dilate(mask: np.ndarray, iters: int = 1) -> np.ndarray:
     return out
 
 
-def _box_filter(arr: np.ndarray, size: int) -> np.ndarray:
-    k = max(3, int(size) | 1)
-    r = k // 2
-    a = np.pad(arr.astype(np.float64), ((r, r), (r, r)), mode="edge")
-    c = np.pad(a, ((1, 0), (1, 0)), mode="constant")
-    c = np.cumsum(np.cumsum(c, axis=0), axis=1)
-    h, w = arr.shape
-    out = (
-        c[k : k + h, k : k + w]
-        - c[0:h, k : k + w]
-        - c[k : k + h, 0:w]
-        + c[0:h, 0:w]
-    )
-    return out / float(k * k)
+def _erode(mask: np.ndarray, iters: int = 1) -> np.ndarray:
+    out = mask.astype(bool)
+    for _ in range(max(1, iters)):
+        p = np.pad(out, 1, mode="constant", constant_values=False)
+        out = (
+            p[0:-2, 0:-2]
+            & p[0:-2, 1:-1]
+            & p[0:-2, 2:]
+            & p[1:-1, 0:-2]
+            & p[1:-1, 1:-1]
+            & p[1:-1, 2:]
+            & p[2:, 0:-2]
+            & p[2:, 1:-1]
+            & p[2:, 2:]
+        )
+    return out
+
+
+def _morph_outline(ship_mask: np.ndarray, radius: int = OUTLINE_RADIUS_PX) -> np.ndarray:
+    """GEE-style thick raster ring: dilate(r) − erode(r)."""
+    if not ship_mask.any():
+        return np.zeros_like(ship_mask, dtype=bool)
+    r = max(1, int(radius))
+    dilated = _dilate(ship_mask, iters=r)
+    eroded = _erode(ship_mask, iters=r)
+    outline = dilated & ~eroded
+    # Tiny 1-px ships: eroded empties → fall back to dilated ring around core
+    if not outline.any():
+        outline = dilated & ~ship_mask
+        if not outline.any():
+            outline = dilated
+    return outline
 
 
 def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
@@ -112,7 +131,16 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
             labeled[y, x] = lab
             while q:
                 cy, cx = q.popleft()
-                for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                for dy, dx in (
+                    (0, 1),
+                    (0, -1),
+                    (1, 0),
+                    (-1, 0),
+                    (1, 1),
+                    (1, -1),
+                    (-1, 1),
+                    (-1, -1),
+                ):
                     ny, nx = cy + dy, cx + dx
                     if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not labeled[ny, nx]:
                         labeled[ny, nx] = lab
@@ -160,110 +188,40 @@ def _aoi_mask(
     return mask
 
 
-def _peak_reflectance(
-    red: np.ndarray | None,
-    green: np.ndarray | None,
-    blue: np.ndarray | None,
+def _estimate_pixel_area_m2(bounds: list[float], shape: tuple[int, int], collection: str | None) -> float:
+    """Approx ground area per array pixel; fall back to sensor nominal scale."""
+    west, south, east, north = (float(v) for v in bounds)
+    h, w = shape
+    if h < 1 or w < 1 or east <= west or north <= south:
+        s = _nominal_scale_m(collection)
+        return s * s
+    # metres per degree (rough mid-latitude)
+    mid_lat = 0.5 * (south + north)
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * max(0.2, float(np.cos(np.deg2rad(mid_lat))))
+    px_w = (east - west) / w * m_per_deg_lon
+    px_h = (north - south) / h * m_per_deg_lat
+    area = abs(px_w * px_h)
+    # Clamp to something sane vs sensor scale
+    nom = _nominal_scale_m(collection) ** 2
+    return float(np.clip(area, nom * 0.25, nom * 64.0))
+
+
+def _resolve_nir_threshold(
     nir: np.ndarray,
-) -> np.ndarray:
-    """Per-pixel peak of NIR+VIS — water is low; hulls/wakes are higher."""
-    layers = [nir.astype(np.float64)]
-    for band in (red, green, blue):
-        if band is not None:
-            layers.append(band.astype(np.float64))
-    return np.nanmax(np.stack(layers, axis=0), axis=0)
-
-
-def _water_seed(green: np.ndarray | None, nir: np.ndarray, search: np.ndarray) -> np.ndarray:
-    """Conservative water seed used only to estimate the water reflectance range.
-
-    Intentionally excludes bright hulls/wakes so they cannot raise the water ceiling.
-    """
-    nir_f = nir.astype(np.float64)
-    if green is None:
-        seed = search & np.isfinite(nir_f) & (nir_f < 0.05)
-    else:
-        ndwi = _ndwi(green.astype(np.float64), nir_f)
-        seed = (
-            search
-            & np.isfinite(nir_f)
-            & (np.nan_to_num(ndwi, nan=-1.0) > 0.08)
-            & (nir_f < 0.08)
-        )
-    # Prefer the darker majority of the AOI if NDWI seed is tiny
-    if int(seed.sum()) < 64:
-        vals = nir_f[search & np.isfinite(nir_f)]
-        if vals.size:
-            thr = float(np.nanpercentile(vals, 50))
-            seed = search & np.isfinite(nir_f) & (nir_f <= thr)
-    return seed
-
-
-def _large_cloud_sheets(
-    scl: np.ndarray | None,
-    water_seed: np.ndarray,
-    peak: np.ndarray,
-) -> np.ndarray:
-    """Only huge bright sheets count as cloud — never compact ship/wake blobs."""
-    cloud = np.zeros(peak.shape, dtype=bool)
-    if scl is not None:
-        scl_cloud = np.isin(scl.astype(np.int16), [8, 9, 10])
-        labeled, nlab = _label_components(scl_cloud)
-        for lab in range(1, nlab + 1):
-            ys, xs = np.where(labeled == lab)
-            n = int(ys.size)
-            # Compact SCL "cloud" over water is usually a ship — keep it
-            if n < 4000:
-                continue
-            cloud[ys, xs] = True
-    # Extremely bright vast glare
-    very_bright = peak >= ABS_CLOUD_HI
-    labeled, nlab = _label_components(very_bright)
-    for lab in range(1, nlab + 1):
-        ys, xs = np.where(labeled == lab)
-        if int(ys.size) >= 5000:
-            cloud[ys, xs] = True
-    # Don't erase water seed itself
-    cloud &= ~water_seed
-    return cloud
-
-
-def _wake_mask(
-    peak: np.ndarray,
-    nir: np.ndarray,
-    object_core: np.ndarray,
-    water_peak_hi: float,
-    water_nir_hi: float,
     search: np.ndarray,
-) -> np.ndarray:
-    """Ship wake / foam: elongated brightening above the water range near a hull."""
-    soft_hi_p = water_peak_hi + max(0.004, 0.15 * max(water_peak_hi, 0.02))
-    soft_hi_n = water_nir_hi + max(0.004, 0.15 * max(water_nir_hi, 0.02))
-    soft = search & ~object_core & (
-        ((peak > soft_hi_p) | (nir > soft_hi_n)) & (peak < ABS_CLOUD_HI)
-    )
-    if not soft.any():
-        return np.zeros_like(object_core)
-
-    near_hull = _dilate(object_core, iters=12) if object_core.any() else soft
-    # Prefer soft pixels attached to / near a brighter hull
-    wake_near = soft & near_hull
-
-    labeled, nlab = _label_components(soft)
-    keep = np.zeros_like(soft)
-    for lab in range(1, nlab + 1):
-        ys, xs = np.where(labeled == lab)
-        n = int(ys.size)
-        if n < 2 or n > MAX_OBJECT_PIXELS:
-            continue
-        hspan = int(ys.max() - ys.min()) + 1
-        wspan = int(xs.max() - xs.min()) + 1
-        aspect = max(hspan, wspan) / max(1, min(hspan, wspan))
-        # Wakes are elongated streaks; also keep any soft patch touching a hull
-        touches_hull = bool(near_hull[ys, xs].any()) if object_core.any() else True
-        if touches_hull or aspect >= 2.0:
-            keep[ys, xs] = True
-    return wake_near | keep
+    base: float = DEFAULT_NIR_THRESHOLD,
+) -> float:
+    """GEE default 0.10; raise only if AOI water floor is unusually bright."""
+    vals = nir[search & np.isfinite(nir)]
+    if vals.size < 16:
+        return float(base)
+    # Water is the dark majority of an open-sea AOI
+    water_hi = float(np.nanpercentile(vals, 80))
+    # Keep GEE threshold on clear open sea; lift for turbid/sunglint water
+    if water_hi + 0.02 > base:
+        return float(min(0.35, water_hi + 0.025))
+    return float(base)
 
 
 def detect_ships_optical_nir(
@@ -273,8 +231,10 @@ def detect_ships_optical_nir(
     confidence_min: float = 0.08,
     collection: str | None = None,
     aoi_polygon: dict[str, Any] | None = None,
+    nir_threshold: float | None = None,
+    min_pixels: int | None = None,
 ) -> dict[str, Any]:
-    """Detect open-sea objects as reflectance above the water range (+ wakes)."""
+    """GEE-style open-sea ship detect: NIR >= threshold inside water AOI."""
     if collection is not None and not collection_is_optical_landsat_or_s2(collection):
         raise ValidationError(
             "Ship Detection (optical) works only with Landsat or Sentinel-2 imagery. "
@@ -288,108 +248,86 @@ def detect_ships_optical_nir(
             "Sentinel-2 or Landsat scene and retry."
         )
 
-    green = bands.get("green")
-    blue = bands.get("blue")
-    red = bands.get("red")
     scl = bands.get("scl")
-
     nir_f = nir.astype(np.float64)
-    finite = np.isfinite(nir_f)
-    peak = _peak_reflectance(red, green, blue, nir_f)
+    # If DN-like (0–10000), scale like S2_SR / 10000
+    finite_sample = nir_f[np.isfinite(nir_f)]
+    if finite_sample.size and float(np.nanpercentile(finite_sample, 99)) > 1.5:
+        nir_f = nir_f / 10000.0
 
+    finite = np.isfinite(nir_f)
     aoi_mask = _aoi_mask(nir_f.shape, bounds, aoi_polygon)
     search = finite.copy()
     if aoi_mask is not None:
         search &= aoi_mask
 
-    if int(search.sum()) < 16:
+    if int(search.sum()) < 8:
         return {
             "geojson": {"type": "FeatureCollection", "features": []},
             "count": 0,
             "overlay": None,
-            "formula": "water-range anomaly · wake — empty AOI",
+            "formula": "NIR ≥ threshold · AOI mask — empty AOI",
             "message": "Water AOI has no usable pixels for ship detection",
         }
 
-    water_seed = _water_seed(green, nir_f, search)
-    if int(water_seed.sum()) < 16:
-        # Fallback: darkest 55% of AOI (by NIR) as water
-        vals = nir_f[search]
-        thr = float(np.nanpercentile(vals, 55))
-        water_seed = search & (nir_f <= thr)
+    thr = float(nir_threshold) if nir_threshold is not None else _resolve_nir_threshold(nir_f, search)
+    min_px = int(min_pixels) if min_pixels is not None else MIN_COMPONENT_PIXELS
+    min_px = max(1, min_px)
 
-    water_nir = nir_f[water_seed]
-    water_peak = peak[water_seed]
-    # Tight water range: open-sea water sits in a narrow NIR/VIS band.
-    # Use a mid-high percentile so bright hulls never inflate the water ceiling.
-    water_nir_hi = float(np.nanpercentile(water_nir, 85))
-    water_peak_hi = float(np.nanpercentile(water_peak, 85))
-    water_nir_med = float(np.nanmedian(water_nir))
-    water_peak_med = float(np.nanmedian(water_peak))
-    # Small margin — anything clearly different from water is an object
-    spread = max(water_nir_hi - water_nir_med, water_peak_hi - water_peak_med, 0.005)
-    margin = max(0.005, 0.25 * spread)
-    nir_thr = water_nir_hi + margin
-    peak_thr = water_peak_hi + margin
+    px_area = _estimate_pixel_area_m2(bounds, nir_f.shape, collection)
+    nom = _nominal_scale_m(collection)
+    # GEE: maxPixels = ceil(40000 / scale²) at native resolution.
+    # Our AOI arrays are often downsampled (1 array px ≫ sensor px), so use the
+    # larger of native max and area/px_area — otherwise real ships exceed max_px.
+    max_px_native = int(np.ceil(MAX_AREA_M2 / (nom * nom)))
+    max_px_area = int(np.ceil(MAX_AREA_M2 / max(px_area, 1.0)))
+    max_px = max(min_px, max_px_native, max_px_area)
+    # Hard cap so full-scene cloud sheets cannot explode contact count
+    max_px = min(max_px, 5_000)
 
-    cloud = _large_cloud_sheets(scl, water_seed, peak)
-    usable = search & ~cloud
+    # Drop only huge SCL cloud sheets — never compact bright decks
+    cloud = np.zeros(nir_f.shape, dtype=bool)
+    if scl is not None:
+        scl_cloud = np.isin(scl.astype(np.int16), [8, 9, 10])
+        labeled_c, n_c = _label_components(scl_cloud & search)
+        for lab in range(1, n_c + 1):
+            ys, xs = np.where(labeled_c == lab)
+            if int(ys.size) >= 4000:
+                cloud[ys, xs] = True
+    very_bright = search & (nir_f >= ABS_CLOUD_HI)
+    labeled_b, n_b = _label_components(very_bright)
+    for lab in range(1, n_b + 1):
+        ys, xs = np.where(labeled_b == lab)
+        if int(ys.size) >= 5000:
+            cloud[ys, xs] = True
 
-    # PRIMARY RULE (user): NIR (and VIS peak) above the water reflectance range
-    above_nir = usable & (nir_f >= nir_thr)
-    above_peak = usable & (peak >= peak_thr)
-    # Strong decks: well above water median even if water_hi was slightly high
-    strong = usable & (
-        (nir_f >= water_nir_med + 3.0 * margin) | (peak >= water_peak_med + 3.0 * margin)
-    )
-    object_core = above_nir | above_peak | strong
+    # PRIMARY (GEE): NIR >= threshold inside AOI
+    candidates = search & ~cloud & (nir_f >= thr)
 
-    # SECONDARY: wakes / foam trails (elongated soft brightening near hulls)
-    wakes = _wake_mask(peak, nir_f, object_core, water_peak_hi, water_nir_hi, usable)
-
-    ship_mask = object_core | wakes
-    if aoi_mask is not None:
-        ship_mask &= aoi_mask
-
-    # Size filter — keep compact objects; drop vast dim haze sheets only
-    labeled_pre, n_pre = _label_components(ship_mask)
-    keep = np.zeros_like(ship_mask)
-    for lab in range(1, n_pre + 1):
-        ys, xs = np.where(labeled_pre == lab)
+    labeled, nlab = _label_components(candidates)
+    ship_mask = np.zeros_like(candidates)
+    comps: list[tuple[float, np.ndarray, np.ndarray]] = []
+    for lab in range(1, nlab + 1):
+        ys, xs = np.where(labeled == lab)
         n = int(ys.size)
-        if n < MIN_COMPONENT_PIXELS or n > MAX_OBJECT_PIXELS:
+        if n < min_px or n > max_px:
             continue
-        mean_p = float(np.nanmean(peak[ys, xs]))
-        if n > 10_000 and mean_p < peak_thr + 0.04:
-            continue
-        keep[ys, xs] = True
-    ship_mask = keep
+        score = float(np.nanmax(nir_f[ys, xs]))
+        comps.append((score, ys, xs))
+        ship_mask[ys, xs] = True
 
-    if int(ship_mask.sum()) > MAX_FEATURES * 120:
-        thr = float(np.nanpercentile(peak[ship_mask], 35))
-        ship_mask &= peak >= thr
+    comps.sort(key=lambda t: -t[0])
 
-    labeled, nlab = _label_components(ship_mask)
     west, south, east, north = (float(v) for v in bounds)
     h, w = nir_f.shape
     features: list[dict[str, Any]] = []
     contact_n = 0
 
-    # Rank by how far above water (NIR excess preferred — user rule)
-    comps: list[tuple[float, int, np.ndarray, np.ndarray]] = []
-    for lab in range(1, nlab + 1):
-        ys, xs = np.where(labeled == lab)
-        if ys.size < MIN_COMPONENT_PIXELS:
-            continue
-        score = float(
-            max(np.nanmax(nir_f[ys, xs]) - water_nir_med, np.nanmax(peak[ys, xs]) - water_peak_med)
-        )
-        comps.append((score, lab, ys, xs))
-    comps.sort(key=lambda t: -t[0])
-
-    for score, _lab, ys, xs in comps:
-        excess = max(0.0, score)
-        conf01 = float(np.clip(0.20 + excess / max(0.06, 0.28), 0.1, 0.99))
+    for score, ys, xs in comps:
+        # Confidence from how far above the NIR threshold (GEE has no score;
+        # we keep a soft score for the contacts UI).
+        excess = max(0.0, score - thr)
+        conf01 = float(np.clip(0.35 + excess / 0.25, 0.15, 0.99))
         if conf01 < confidence_min:
             continue
         row_c = float(ys.mean())
@@ -414,16 +352,7 @@ def detect_ships_optical_nir(
             rc_to_lonlat(r0 - pad_r, c0 - pad_c),
         ]
         mean_nir = float(np.nanmean(nir_f[ys, xs]))
-        mean_p = float(np.nanmean(peak[ys, xs]))
         max_nir = float(np.nanmax(nir_f[ys, xs]))
-        hspan = int(ys.max() - ys.min()) + 1
-        wspan = int(xs.max() - xs.min()) + 1
-        aspect = max(hspan, wspan) / max(1, min(hspan, wspan))
-        cue = (
-            "wake"
-            if aspect >= 2.5 and max_nir < nir_thr + 0.05
-            else "above_water_nir"
-        )
         contact_n += 1
         props = {
             "class": "ship",
@@ -432,12 +361,10 @@ def detect_ships_optical_nir(
             "confidence": round(conf01, 3),
             "nir_mean": round(mean_nir, 4),
             "nir_max": round(max_nir, 4),
-            "brightness": round(mean_p, 4),
-            "water_nir_hi": round(water_nir_hi, 4),
-            "nir_thr": round(nir_thr, 4),
+            "nir_threshold": round(thr, 4),
             "pixels": int(ys.size),
-            "cue": cue,
-            "band": "NIR+VIS",
+            "cue": "nir_ge_threshold",
+            "band": "NIR",
             "lon": round(lon, 6),
             "lat": round(lat, 6),
         }
@@ -455,15 +382,16 @@ def detect_ships_optical_nir(
                 "properties": {**props, "geom_role": "footprint"},
             }
         )
-        if len(features) >= MAX_FEATURES * 2:
+        if contact_n >= MAX_FEATURES:
             break
 
     overlay = _ship_overlay_rgba(ship_mask)
     n_ships = contact_n
     logger.info(
-        "Ship detect water-range: water_nir_hi={:.4f} nir_thr={:.4f} contacts={}",
-        water_nir_hi,
-        nir_thr,
+        "Ship detect GEE-NIR: thr={:.3f} min_px={} max_px={} contacts={}",
+        thr,
+        min_px,
+        max_px,
         n_ships,
     )
     return {
@@ -471,32 +399,23 @@ def detect_ships_optical_nir(
         "count": n_ships,
         "overlay": overlay,
         "formula": (
-            f"open-sea water NIR/VIS range (NIR hi≈{water_nir_hi:.3f}) · "
-            f"highlight NIR>{nir_thr:.3f} / peak>{peak_thr:.3f} + wakes · red outline"
+            f"NIR ≥ {thr:.3f} (AOI mask) · connected {min_px}–{max_px} px · "
+            f"morph outline dilate−erode · red ring"
         ),
-        "message": (
-            f"{n_ships} object(s) above water reflectance range "
-            f"(+ wakes) inside water AOI"
-        ),
+        "message": f"{n_ships} ship(s) with NIR ≥ {thr:.3f} inside water AOI",
     }
 
 
 def _ship_overlay_rgba(ship_mask: np.ndarray) -> np.ndarray:
-    """Light red fill on anomaly pixels + strong red outline (hull stays readable)."""
+    """Thick red morphological outline only (GEE FAST EDITION display)."""
     h, w = ship_mask.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     if not ship_mask.any():
         return rgba
-    # Soft fill so every above-water / wake pixel is visibly highlighted
-    rgba[ship_mask, 0] = 255
-    rgba[ship_mask, 1] = 40
-    rgba[ship_mask, 2] = 40
-    rgba[ship_mask, 3] = 70
-    outline = _dilate(ship_mask, iters=1) & ~ship_mask
-    if not outline.any():
-        outline = _dilate(ship_mask, iters=2) & ~ship_mask
+    outline = _morph_outline(ship_mask, radius=OUTLINE_RADIUS_PX)
+    # Bright red ring ~90% opacity (matches GEE palette + 0.9 opacity)
     rgba[outline, 0] = 255
     rgba[outline, 1] = 0
     rgba[outline, 2] = 0
-    rgba[outline, 3] = 245
+    rgba[outline, 3] = 230
     return rgba

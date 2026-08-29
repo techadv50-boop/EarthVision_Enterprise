@@ -155,8 +155,8 @@ export const TOOLBOXES: ToolboxDef[] = [
         requiresWaterAoi: true,
         hint:
           'Active only with Landsat/Sentinel-2 eye ON + a drawn water-body AOI (Rect/Poly). ' +
-          'Estimates the water NIR/VIS reflectance range, highlights every pixel above that range ' +
-          '(hulls + wakes), and marks contacts in red on the image',
+          'GEE-style open-sea detect: NIR ≥ ~0.10 inside the AOI, connected-pixel cleanup, ' +
+          'thick red morph outline on the image (contacts list for Locate)',
       },
       { id: 'aircraft_detection', label: 'Aircraft Detection', action: { type: 'detection', task: 'aircraft_detection' }, needsScene: true, inactive: true },
       { id: 'railway_detection', label: 'Railway Detection', action: { type: 'detection', task: 'railway_detection' }, needsScene: true, inactive: true },

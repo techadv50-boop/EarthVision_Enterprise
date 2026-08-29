@@ -1,4 +1,4 @@
-"""Unit tests for optical ship detection (no remote I/O)."""
+"""Unit tests for optical ship detection (GEE NIR≥threshold, no remote I/O)."""
 
 from __future__ import annotations
 
@@ -19,21 +19,19 @@ def test_collection_gate_landsat_s2_only():
 
 
 def test_open_sea_bright_ship_not_masked_as_cloud():
-    """Bright white decks over water must NOT be cloud-masked (live Asaluyeh bug)."""
+    """Bright white decks over water must NOT be cloud-masked."""
     from app.services.optical_ship_detection import detect_ships_optical_nir
 
     h = w = 96
-    # Dark open water
     nir = np.full((h, w), 0.02, dtype=np.float64)
     green = np.full((h, w), 0.05, dtype=np.float64)
     blue = np.full((h, w), 0.04, dtype=np.float64)
     red = np.full((h, w), 0.03, dtype=np.float64)
-    # Bright white ship + wake (high VIS+NIR) — old code treated as cloud
+    # Bright white ship + wake (NIR well above GEE 0.10)
     nir[40:48, 55:70] = 0.42
     green[40:48, 55:70] = 0.45
     blue[40:48, 55:70] = 0.48
     red[40:48, 55:70] = 0.44
-    # Wake trail
     nir[44:47, 30:55] = 0.18
     green[44:47, 30:55] = 0.22
     blue[44:47, 30:55] = 0.25
@@ -55,6 +53,8 @@ def test_open_sea_bright_ship_not_masked_as_cloud():
     assert any(f["geometry"]["type"] == "Point" for f in out["geojson"]["features"])
     assert any(f["geometry"]["type"] == "Polygon" for f in out["geojson"]["features"])
     assert out["overlay"] is not None
+    # Morph outline only — some red pixels with high alpha
+    assert int((out["overlay"][:, :, 3] > 0).sum()) > 0
 
 
 def test_open_sea_bright_ship_respects_water_aoi():
@@ -70,7 +70,6 @@ def test_open_sea_bright_ship_respects_water_aoi():
     blue[40:48, 55:70] = 0.48
     red[40:48, 55:70] = 0.44
     bounds = [52.8, 26.5, 53.0, 26.7]
-    # AOI covering the ship cell
     aoi = {
         "type": "Polygon",
         "coordinates": [
@@ -91,7 +90,6 @@ def test_open_sea_bright_ship_respects_water_aoi():
         aoi_polygon=aoi,
     )
     assert out["count"] >= 1
-    # AOI far from ship → zero
     aoi_miss = {
         "type": "Polygon",
         "coordinates": [
@@ -114,7 +112,7 @@ def test_open_sea_bright_ship_respects_water_aoi():
     assert out0["count"] == 0
 
 
-def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
+def test_nir_ge_threshold_finds_metal_deck():
     from app.services.optical_ship_detection import detect_ships_optical_nir
 
     h = w = 64
@@ -122,11 +120,12 @@ def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
     green = np.full((h, w), 0.12, dtype=np.float64)
     blue = np.full((h, w), 0.06, dtype=np.float64)
     red = np.full((h, w), 0.04, dtype=np.float64)
-    # Inland cloud patch
+    # Inland cloud patch (large) — should be ignored if outside water logic;
+    # still in search when no AOI, but size > max_px drops huge sheets
     blue[2:10, 2:10] = 0.4
     nir[2:10, 2:10] = 0.35
     green[2:10, 2:10] = 0.35
-    # Metal ship deck on water
+    # Metal ship deck on water — NIR > 0.10
     nir[30:34, 40:48] = 0.28
     green[30:34, 40:48] = 0.06
     red[30:34, 40:48] = 0.08
@@ -137,13 +136,13 @@ def test_nir_ship_detect_ignores_water_and_cloud_finds_metal():
     out = detect_ships_optical_nir(bands, bounds, confidence_min=0.15, collection="SENTINEL-2")
     assert out["count"] >= 1
     formula = out["formula"].lower()
-    assert "water" in formula and ("nir" in formula or "wake" in formula)
+    assert "nir" in formula and ("0.10" in formula or "≥" in out["formula"] or ">=" in formula or "threshold" in formula)
     assert out["overlay"] is not None
     assert out["overlay"].shape == (h, w, 4)
 
 
-def test_two_open_sea_hulls_with_wakes_are_both_found():
-    """Bright hulls + wakes above dark open-sea water must both become contacts."""
+def test_two_open_sea_hulls_above_nir_threshold():
+    """Two bright hulls (NIR≥0.10) on dark open water → two contacts."""
     from app.services.optical_ship_detection import detect_ships_optical_nir
 
     h = w = 96
@@ -151,27 +150,23 @@ def test_two_open_sea_hulls_with_wakes_are_both_found():
     green = np.full((h, w), 0.04, dtype=np.float64)
     blue = np.full((h, w), 0.045, dtype=np.float64)
     red = np.full((h, w), 0.03, dtype=np.float64)
-    # Ship A hull + elongated wake
+    # Ship A
     nir[30:34, 20:28] = 0.32
     red[30:34, 20:28] = 0.28
     green[30:34, 20:28] = 0.26
     blue[30:34, 20:28] = 0.24
-    nir[31:33, 28:48] = 0.09
-    red[31:33, 28:48] = 0.06
-    green[31:33, 28:48] = 0.055
-    # Ship B hull + wake
+    # Ship B
     nir[55:59, 50:58] = 0.30
     red[55:59, 50:58] = 0.25
     green[55:59, 50:58] = 0.22
     blue[55:59, 50:58] = 0.20
-    nir[56:58, 58:78] = 0.085
-    red[56:58, 58:78] = 0.055
 
     out = detect_ships_optical_nir(
         {"nir": nir, "green": green, "blue": blue, "red": red},
         [52.8, 26.8, 52.9, 26.9],
         confidence_min=0.10,
         collection="SENTINEL-2",
+        nir_threshold=0.10,
     )
     assert out["count"] >= 2, out["message"]
     cents = [
@@ -180,6 +175,21 @@ def test_two_open_sea_hulls_with_wakes_are_both_found():
         if f["properties"].get("geom_role") == "centroid"
     ]
     assert len(cents) >= 2
+
+
+def test_water_pixels_below_threshold_are_not_ships():
+    from app.services.optical_ship_detection import detect_ships_optical_nir
+
+    h = w = 48
+    nir = np.full((h, w), 0.04, dtype=np.float64)  # all below 0.10
+    out = detect_ships_optical_nir(
+        {"nir": nir, "green": nir + 0.01, "blue": nir, "red": nir},
+        [52.0, 26.0, 52.1, 26.1],
+        confidence_min=0.10,
+        collection="SENTINEL-2",
+        nir_threshold=0.10,
+    )
+    assert out["count"] == 0
 
 
 def test_nir_ship_detect_default_confidence_keeps_metal():

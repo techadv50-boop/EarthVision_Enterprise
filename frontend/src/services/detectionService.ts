@@ -60,7 +60,7 @@ export const detectionService = {
     confidence_min?: number;
   }): Promise<DetectionResult> {
     const { data } = await api.post<DetectionResult>('/detection/run', {
-      // Water-range anomaly scores — keep floor low so bright hulls/wakes are not dropped.
+      // GEE-style NIR≥threshold contacts — keep floor low for open-sea recall.
       confidence_min: 0.10,
       ...payload,
     });
