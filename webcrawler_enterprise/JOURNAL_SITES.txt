@@ -1,0 +1,51 @@
+Journal / OJS sites (Hamdard Islamicus and similar)
+====================================================
+
+What we found for https://hamdardislamicus.com.pk/
+--------------------------------------------------
+- This is an Open Journal Systems (OJS) site.
+- sitemap.xml lists ONLY the homepage — not articles, not PDFs.
+- OAI-PMH ListRecords lists ~345 articles and each galley relation, e.g.
+    dc:identifier → /article/view/101
+    dc:relation    → /article/view/101/113   (PDF button page)
+- Real PDF file URL:
+    /article/download/101/113
+  (no ".pdf" in the URL; Content-Type is application/pdf).
+
+PDF discovery methods built into the crawler
+--------------------------------------------
+1) Article pages
+   - meta citation_pdf_url
+   - <a class="obj_galley_link pdf"> PDF button
+2) Galley / PDF-button pages (/article/view/{id}/{galley})
+   - download link + JS pdfUrl=...
+   - synthesized /article/download/{id}/{galley}
+3) Issue table of contents (/issue/view/{n})
+   - PDF buttons next to each article
+4) Issue archive (/issue/archive, paginated) + issue/current + search/feeds
+5) OAI-PMH ListRecords (preferred) / ListIdentifiers (fallback)
+   - seeds every article view, galley view, and download URL up front
+
+Crawl order (priority heap)
+---------------------------
+  PDF /article/download/...     → highest
+  /article/view/101/113         → galley HTML
+  /article/view/101             → abstract
+  /issue/view|archive           → issues
+  other site pages              → lowest
+
+Defaults
+--------
+- max_pages_per_site = 500000
+- crawl_depth = 10000 (deep/light mode ignores depth cap)
+- every page of each PDF is scanned for emails/phones
+
+How to re-run for max contacts
+------------------------------
+1. Use Light mode ON
+2. Start with only: https://hamdardislamicus.com.pk/
+3. Fresh Start (not an old Resume) so OAI + archive seeding runs
+4. Watch logs for:
+     "PDF discovery methods enabled: ..."
+     "OAI-PMH seeded articles=... galley_pages=... pdf_downloads=..."
+     "PDF harvest on .../article/view/..."

@@ -1,0 +1,61 @@
+WebCrawler Enterprise — Stable Long-Run Guide
+=============================================
+
+Confirmed stability improvements in this build:
+- Crawl loop recovers from per-page errors (does not stop the whole site)
+- Broken / 404 URLs are skipped; crawl continues to the next URL
+- URL frontier saved to SQLite — survives power loss, PC reboot, app crash
+- If internet drops, the crawl waits and continues automatically when online
+- Resume unfinished websites instead of wiping progress by default
+- On startup, the app offers to Resume unfinished websites
+- Heartbeat log every 30 seconds so you can see it is still alive
+- Download backpressure + size limits to avoid memory/disk blowups
+- SQLite busy retries for multi-hour writes
+- Windows long-path safety for deep university site URLs
+- Playwright fallback capped so it cannot stall for hours
+
+Recommended Settings for all-day crawls
+---------------------------------------
+File -> Settings:
+- Page workers: 6 to 12
+- Download workers: 4 to 8
+- Download complete website: ON
+- Fresh crawl each Start: OFF   << important for resume
+- Playwright fallback: ON
+- Max pages: 50000 (or higher)
+
+Data isolation
+--------------
+- This build uses ONLY: %APPDATA%\WebCrawlerEnterprise_v2
+- It never opens/copies: %APPDATA%\WebCrawlerEnterprise (old program)
+
+Start vs resume
+---------------
+- Start = crawl ONLY the URLs currently in the box, from scratch
+- Broken / 404 URLs are skipped; crawl continues to the next URL
+- URL box opens empty (old lists are not shown)
+- Nothing crawls until you click Start (or approve Resume)
+- After disconnect / reboot, the app ASKS before resuming (default: No)
+
+If the PC turns off / power cut / internet disconnects
+-----------------------------------------------------
+1. Open the app again when power/internet is back
+2. If asked "Resume unfinished crawl?", click Yes only if you want that
+3. Or click No, paste URLs, and Start from scratch
+
+Speed tips
+----------
+- Page workers: 12–24
+- Download workers: 8–16
+- Request pause is 0 by default
+
+If it looks stuck
+-----------------
+- Check Logs\crawl_log.txt for "Heartbeat:" lines
+- Heartbeats mean it is still working
+- "Still offline…" means it is waiting for internet, then will continue
+- Large sites can run many hours; that is expected
+
+Windows note
+------------
+Use Windows 10/11. Keep the PC awake (disable sleep) during long crawls.

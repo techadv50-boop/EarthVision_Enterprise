@@ -1,0 +1,96 @@
+# WebCrawler Enterprise — Package
+
+## Best option: Standalone (no Python / no VS Code)
+
+Download the CI artifact for your Windows version:
+
+- **Windows 7 SP1 / 8 / 10 / 11:** `WebCrawlerEnterprise-Standalone-Windows7`
+- **Windows 10 / 11 (with Playwright):** `WebCrawlerEnterprise-Standalone-Windows`
+
+Unzip it, then double-click:
+
+`Start WebCrawler Enterprise.bat`
+
+## Portable source package (needs Python once)
+
+1. Unzip this folder anywhere (example: `D:\WebCrawlerEnterprise`)
+2. Double-click **`Setup.bat`** (once)
+3. Double-click **`Run_WebCrawlerEnterprise.bat`**
+
+### Login
+| Item | Value |
+|------|--------|
+| Username | `admin` |
+| Password | `admin` (change on first login) |
+| Master reset | `NTZHSS` |
+
+This build stores its own data in:
+  `%APPDATA%\WebCrawlerEnterprise_v2`
+It does **not** open or copy the old folder:
+  `%APPDATA%\WebCrawlerEnterprise`
+
+Login for a fresh store: `admin` / `admin` (change on first login).
+If login fails, use **Master Reset…** with code `NTZHSS`.
+Nothing crawls until you click **Start**.
+
+## Local folder scan (PDFs / Word / HTML / email files)
+1. Click **Browse Folder** and select a folder of documents
+2. Optionally enable **Include subfolders** and **OCR**
+3. Click **Scan Folder**
+4. Results are written in that same folder as:
+   - `emails.txt`
+   - `phone_numbers.txt`
+   - `folder_scan_report.txt` (totals + titles of files that could not be scanned)
+   - `folder_scan_summary.txt`
+5. Corrupt / unreadable files are skipped; the scan continues and lists them in the report
+
+## Requirements
+- Windows 10/11
+- Python 3.11+ ([download](https://www.python.org/downloads/)) with **Add to PATH** enabled
+- Internet connection for first setup and crawling
+- Optional for OCR of scanned PDFs/images: [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)
+## Modes
+- **Light mode (recommended for contacts):** crawls every page, reads PDF/docs for
+  emails & phones only, does NOT save website files. Faster.
+- **Full download:** saves HTML + documents + images to disk (slower).
+
+Toggle on the main screen:
+`Light mode — crawl ALL pages for emails & phones only`
+
+## Start / broken URLs / auto-resume
+- **Start** uses only the URLs in the box, from scratch
+- Broken URLs are skipped; work continues on the next URL
+- After internet drop or PC restart, the app **auto-resumes** from where it stopped
+
+## Output
+Choose an output folder in the app. Each website creates:
+
+```
+YourFolder\
+  domain.com\
+    emails.txt
+    phone_numbers.txt
+    Reports\
+    Logs\
+    HTML\ PDF\ ...   (only in Full download mode)
+  Master_Report.xlsx
+```
+
+See LIGHT_MODE.txt for details.
+
+## Speed settings
+File → Settings:
+- Page workers: 12–24
+- Download workers: 8–16
+- Keep Light mode ON for contact collection
+
+## Troubleshooting
+- If `Setup.bat` fails, open Command Prompt in this folder and run:
+  ```bat
+  python -m pip install -r requirements.txt
+  python -m playwright install chromium
+  python main.py
+  ```
+- To reset login/queue data for THIS build, delete:
+  `%APPDATA%\WebCrawlerEnterprise_v2`
+  (the old `%APPDATA%\WebCrawlerEnterprise` folder is ignored)
