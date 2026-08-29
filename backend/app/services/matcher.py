@@ -71,6 +71,36 @@ _METHODS_LABELS = {
     "experimental setup",
     "experimental procedure",
     "experimental section",
+    "simulation setup",
+    "proposed method",
+    "proposed methodology",
+    "system model",
+}
+_METHODS_PREFIXES = (
+    "materials and method",
+    "material and method",
+    "methodology",
+    "methods",
+    "simulation setup",
+    "experimental setup",
+    "experimental procedure",
+    "experimental section",
+    "proposed method",
+    "system model",
+)
+_STOP_FIRST_WORDS = {
+    "results",
+    "result",
+    "discussion",
+    "conclusion",
+    "conclusions",
+    "references",
+    "bibliography",
+    "acknowledgement",
+    "acknowledgements",
+    "acknowledgment",
+    "acknowledgments",
+    "appendix",
 }
 _AFTER_METHODS_LABELS = {
     "results",
@@ -115,6 +145,27 @@ def _heading_label(text: str) -> str:
     return re.sub(r"[^a-z]+", " ", prefix.lower()).strip()
 
 
+def _is_methods_heading(label: str) -> bool:
+    if label in _METHODS_LABELS:
+        return True
+    return any(label == prefix or label.startswith(prefix + " ") for prefix in _METHODS_PREFIXES)
+
+
+def _is_stop_heading(label: str, compact: str) -> bool:
+    if label in _AFTER_METHODS_LABELS:
+        return True
+    first = label.split()[0] if label else ""
+    if first not in _STOP_FIRST_WORDS:
+        return False
+    stripped = compact.rstrip(". ")
+    # Real headings are short and usually lack a full sentence period.
+    if len(label.split()) <= 12 and not re.search(r"[.!?]$", stripped):
+        return True
+    if re.match(r"^(results|discussion|conclusion)s?\b", label) and len(label.split()) <= 10:
+        return True
+    return False
+
+
 def section_heading_kind(text: str) -> str | None:
     """Classify a paragraph as a major manuscript heading, if it is one."""
     compact = re.sub(r"\s+", " ", (text or "").strip())
@@ -122,17 +173,17 @@ def section_heading_kind(text: str) -> str | None:
         return None
     if is_references_heading(compact):
         return "after_methods"
-    label = _heading_label(compact)
+    label = _heading_label(compact.rstrip("."))
     words = label.split()
     if not label:
         return None
-    if label in _INTRO_LABELS or (label.startswith("introduction") and len(words) <= 6):
+    if label in _INTRO_LABELS or (label.startswith("introduction") and len(words) <= 8):
         return "introduction"
-    if label in _METHODS_LABELS:
+    if _is_methods_heading(label):
         return "methods"
-    if label in _AFTER_METHODS_LABELS or (label.startswith("appendix") and len(words) <= 4):
+    if _is_stop_heading(label, compact):
         return "after_methods"
-    if _HEADING_RE.match(compact):
+    if _HEADING_RE.match(compact.rstrip(".")):
         if label in {"related work", "literature review", "abstract"}:
             return None
     return None

@@ -97,6 +97,37 @@ def test_citation_window_is_introduction_through_methods_only():
     assert split[split.index("Results") - 1].startswith("Samples")
 
 
+def test_citation_window_stops_at_results_heading_with_extra_words():
+    texts = [
+        "100 Gbps FlexE-over-DMT for B5G Optical Fronthaul using NLP-Optimized Preamble Equalization",
+        "Mohsan Niaz Chughtai1*, Shumaila Sabeen Gull1",
+        "Keywords: FlexE; DMT; Optimal Equalization.",
+        "Introduction",
+        "The evolution of advanced 5G to 6G networks has resulted in optical fronthaul research.",
+        "DMT-based FlexE transport in fronthaul",
+        "Flexible Ethernet is particularly relevant for deterministic transport.",
+        "Simulation Setup for DMT-based FlexE transport.",
+        "The DMT-based fronthaul link was tested using simulations in Optisystem.",
+        "Results for DMT-based FlexE transport",
+        "The performance was assessed by sweeping the transmit power of the laser source.",
+        "Conclusion",
+        "A detailed system analysis was conducted for a short 10 km fiber optic link.",
+        "References",
+    ]
+    assert section_heading_kind("Results for DMT-based FlexE transport") == "after_methods"
+    assert section_heading_kind("Simulation Setup for DMT-based FlexE transport.") == "methods"
+    assert section_heading_kind("Conclusion") == "after_methods"
+    window = citation_section_range(texts)
+    assert window == (3, 9)
+    allowed = {texts[i] for i in range(len(texts)) if in_citation_window(i, window)}
+    assert "Introduction" in allowed
+    assert "Simulation Setup for DMT-based FlexE transport." in allowed
+    assert "100 Gbps FlexE-over-DMT for B5G Optical Fronthaul using NLP-Optimized Preamble Equalization" not in allowed
+    assert "Results for DMT-based FlexE transport" not in allowed
+    assert "The performance was assessed by sweeping the transmit power of the laser source." not in allowed
+    assert "A detailed system analysis was conducted for a short 10 km fiber optic link." not in allowed
+
+
 def test_weak_matches_are_excluded_by_relevance_gate():
     assert passes_relevance_gate(0.10, ["water"]) is False
     assert passes_relevance_gate(0.20, []) is False
