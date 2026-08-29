@@ -177,17 +177,40 @@ def test_two_open_sea_hulls_above_nir_threshold():
     assert len(cents) >= 2
 
 
+def test_faint_open_sea_ships_caught_with_sensitive_threshold():
+    """Hulls at NIR≈0.07 (below old 0.10) must become contacts."""
+    from app.services.optical_ship_detection import detect_ships_optical_nir
+
+    h = w = 96
+    nir = np.full((h, w), 0.030, dtype=np.float64)
+    # Three faint ships that 0.10 would miss
+    nir[20:23, 15:20] = 0.072
+    nir[40:43, 40:46] = 0.068
+    nir[60:64, 55:62] = 0.085
+    # Soft wake trail
+    nir[41:42, 46:58] = 0.050
+
+    out = detect_ships_optical_nir(
+        {"nir": nir},
+        [52.2, 26.3, 52.4, 26.5],
+        confidence_min=0.08,
+        collection="SENTINEL-2",
+    )
+    assert out["count"] >= 3, out["message"]
+    assert out["overlay"] is not None
+
+
 def test_water_pixels_below_threshold_are_not_ships():
     from app.services.optical_ship_detection import detect_ships_optical_nir
 
     h = w = 48
-    nir = np.full((h, w), 0.04, dtype=np.float64)  # all below 0.10
+    nir = np.full((h, w), 0.025, dtype=np.float64)  # clear open-sea water
     out = detect_ships_optical_nir(
         {"nir": nir, "green": nir + 0.01, "blue": nir, "red": nir},
         [52.0, 26.0, 52.1, 26.1],
-        confidence_min=0.10,
+        confidence_min=0.08,
         collection="SENTINEL-2",
-        nir_threshold=0.10,
+        nir_threshold=0.055,
     )
     assert out["count"] == 0
 
