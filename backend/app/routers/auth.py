@@ -34,7 +34,7 @@ async def register(
         raise HTTPException(status_code=400, detail="Username already registered")
     if await service.get_user_by_email(user_data.email):
         raise HTTPException(status_code=400, detail="Email already registered")
-    user = await service.create_user(user_data)
+    user = await service.create_user(user_data, role_name="user", approved=False)
     return UserResponse(
         id=user.id,
         email=user.email,
@@ -44,6 +44,7 @@ async def register(
         is_active=user.is_active,
         is_superuser=user.is_superuser,
         roles=[r.name for r in user.roles],
+        access_status=user.portal_status(),
         created_at=user.created_at,
     )
 
@@ -57,8 +58,11 @@ async def login(
     user = await service.authenticate(credentials.username, credentials.password)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is disabled")
+    status_name = user.portal_status()
+    if status_name == "pending":
+        raise HTTPException(status_code=403, detail="Account is pending admin approval")
+    if status_name == "restricted" or not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is restricted")
     return TokenResponse(**service.create_tokens(user))
 
 
@@ -102,7 +106,7 @@ async def refresh_token(
     )
     user = result.scalar_one_or_none()
 
-    if user is None or not user.is_active:
+    if user is None or not user.can_access_portal():
         raise HTTPException(status_code=401, detail="User not found")
 
     service = AuthService(db)
@@ -120,6 +124,7 @@ async def get_me(current_user: Annotated[User, Depends(get_current_user)]):
         is_active=current_user.is_active,
         is_superuser=current_user.is_superuser,
         roles=[r.name for r in current_user.roles],
+        access_status=current_user.portal_status(),
         created_at=current_user.created_at,
     )
 

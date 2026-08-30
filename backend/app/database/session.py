@@ -41,6 +41,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_sqlite_columns)
+        await conn.run_sync(_ensure_postgres_columns)
         if "sqlite" in settings.database_url:
             await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
             await conn.exec_driver_sql("PRAGMA busy_timeout=30000")
@@ -67,4 +68,17 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("crawl_jobs", "message", "VARCHAR(500)")
     _add_if_missing("crawl_jobs", "inventory", "JSON")
     _add_if_missing("articles", "citing_works", "JSON")
+    _add_if_missing("users", "access_status", "VARCHAR(32) DEFAULT 'approved'")
+
+
+def _ensure_postgres_columns(sync_conn) -> None:
+    dialect = sync_conn.dialect.name
+    if dialect not in ("postgresql", "postgres"):
+        return
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS access_status VARCHAR(32) DEFAULT 'approved'"
+    )
+    sync_conn.exec_driver_sql(
+        "UPDATE users SET access_status = 'approved' WHERE access_status IS NULL"
+    )
 

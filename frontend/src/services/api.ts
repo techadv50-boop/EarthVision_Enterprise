@@ -155,6 +155,7 @@ export const adminApi = {
   stats: () => api.get('/admin/stats'),
   users: () => api.get('/admin/users'),
   roles: () => api.get('/admin/roles'),
+  createUser: (data: Record<string, unknown>) => api.post('/admin/users', data),
   updateUser: (id: number, data: Record<string, unknown>) => api.patch(`/admin/users/${id}`, data),
   projects: {
     list: () => api.get('/admin/projects'),

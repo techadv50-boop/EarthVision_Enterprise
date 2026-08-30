@@ -31,21 +31,35 @@ class AuthService:
         )
         return result.scalar_one_or_none()
 
-    async def create_user(self, user_data: UserCreate) -> User:
+    async def create_user(
+        self,
+        user_data: UserCreate,
+        *,
+        role_name: str = "user",
+        approved: bool = True,
+    ) -> User:
+        status = "approved" if approved else "pending"
         user = User(
             email=user_data.email,
             username=user_data.username,
             hashed_password=get_password_hash(user_data.password),
             full_name=user_data.full_name,
             organization=user_data.organization,
+            is_active=approved,
+            access_status=status,
+            is_superuser=approved and role_name == "admin",
         )
         self.db.add(user)
         await self.db.flush()
 
-        role_row = await self.db.execute(select(Role).where(Role.name == "user"))
-        user_role = role_row.scalar_one_or_none()
-        if user_role is not None:
-            await self.db.execute(user_roles.insert().values(user_id=user.id, role_id=user_role.id))
+        wanted = "admin" if role_name == "admin" else "user"
+        role_row = await self.db.execute(select(Role).where(Role.name == wanted))
+        assigned = role_row.scalar_one_or_none()
+        if assigned is None and wanted == "admin":
+            role_row = await self.db.execute(select(Role).where(Role.name == "user"))
+            assigned = role_row.scalar_one_or_none()
+        if assigned is not None:
+            await self.db.execute(user_roles.insert().values(user_id=user.id, role_id=assigned.id))
         subscription = Subscription(user_id=user.id, plan="free", status="active")
         self.db.add(subscription)
         await self.db.flush()

@@ -66,6 +66,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     organization: Mapped[Optional[str]] = mapped_column(String(255))
+    access_status: Mapped[str] = mapped_column(String(32), default="approved")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -100,3 +101,12 @@ class User(Base):
 
     def is_citation_admin(self) -> bool:
         return bool(self.is_superuser or self.has_role("admin"))
+
+    def portal_status(self) -> str:
+        status = (self.access_status or "approved").strip().lower()
+        if status not in ("pending", "approved", "restricted"):
+            return "approved" if self.is_active else "restricted"
+        return status
+
+    def can_access_portal(self) -> bool:
+        return bool(self.is_active) and self.portal_status() == "approved"

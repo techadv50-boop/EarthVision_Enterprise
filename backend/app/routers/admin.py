@@ -29,9 +29,10 @@ from app.schemas.admin import (
     ProjectResponse,
     RoleResponse,
     SubscriptionResponse,
+    UserAdminCreate,
     UserAdminUpdate,
 )
-from app.schemas.auth import UserResponse as AuthUserResponse
+from app.schemas.auth import UserCreate, UserResponse as AuthUserResponse
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
@@ -78,6 +79,21 @@ async def get_stats(
     )
 
 
+def _user_payload(user: User) -> AuthUserResponse:
+    return AuthUserResponse(
+        id=user.id,
+        email=user.email,
+        username=user.username,
+        full_name=user.full_name,
+        organization=user.organization,
+        is_active=user.is_active,
+        is_superuser=user.is_superuser,
+        roles=[r.name for r in user.roles],
+        access_status=user.portal_status(),
+        created_at=user.created_at,
+    )
+
+
 @router.get("/users", response_model=list[AuthUserResponse])
 async def list_users(
     _admin: Annotated[User, Depends(require_permission("admin", "all"))],
@@ -86,21 +102,36 @@ async def list_users(
     result = await db.execute(
         select(User).options(selectinload(User.roles)).order_by(User.created_at.desc())
     )
-    users = result.scalars().all()
-    return [
-        AuthUserResponse(
-            id=u.id,
-            email=u.email,
-            username=u.username,
-            full_name=u.full_name,
-            organization=u.organization,
-            is_active=u.is_active,
-            is_superuser=u.is_superuser,
-            roles=[r.name for r in u.roles],
-            created_at=u.created_at,
-        )
-        for u in users
-    ]
+    return [_user_payload(u) for u in result.scalars().all()]
+
+
+@router.post("/users", response_model=AuthUserResponse, status_code=201)
+async def create_user(
+    data: UserAdminCreate,
+    _admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from app.services.auth_service import AuthService
+
+    service = AuthService(db)
+    if await service.get_user_by_username(data.username):
+        raise HTTPException(status_code=400, detail="Username already registered")
+    if await service.get_user_by_email(str(data.email).lower()):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    role = (data.role or "user").strip().lower()
+    if role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="Role must be admin or user")
+    user = await service.create_user(
+        UserCreate(
+            email=data.email,
+            username=data.username,
+            password=data.password,
+            full_name=data.full_name,
+        ),
+        role_name=role,
+        approved=True,
+    )
+    return _user_payload(user)
 
 
 @router.patch("/users/{user_id}")
@@ -119,8 +150,19 @@ async def update_user(
         user.email = data.email
     if data.full_name is not None:
         user.full_name = data.full_name
-    if data.is_active is not None:
+    if data.access_status is not None:
+        status_name = data.access_status.strip().lower()
+        if status_name not in ("pending", "approved", "restricted"):
+            raise HTTPException(status_code=400, detail="Status must be pending, approved, or restricted")
+        if user.id == admin.id and status_name != "approved":
+            raise HTTPException(status_code=400, detail="You cannot restrict your own account")
+        user.access_status = status_name
+        user.is_active = status_name == "approved"
+    elif data.is_active is not None:
+        if user.id == admin.id and not data.is_active:
+            raise HTTPException(status_code=400, detail="You cannot restrict your own account")
         user.is_active = data.is_active
+        user.access_status = "approved" if data.is_active else "restricted"
     if data.role is not None:
         name = data.role.strip().lower()
         if name not in ("admin", "user"):
@@ -147,6 +189,8 @@ async def update_user(
         "id": updated.id,
         "roles": [r.name for r in updated.roles],
         "is_superuser": updated.is_superuser,
+        "is_active": updated.is_active,
+        "access_status": updated.portal_status(),
     }
 
 
