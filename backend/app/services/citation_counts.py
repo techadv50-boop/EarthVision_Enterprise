@@ -37,6 +37,12 @@ def normalize_doi(value: Optional[str]) -> Optional[str]:
         return None
     doi = DOI_PREFIX_RE.sub("", value.strip())
     doi = re.sub(r"^doi:\s*", "", doi, flags=re.I).strip().strip("/")
+    # Collapse a repeated registrant prefix: 10.33411/10.33411/ijist/...
+    while True:
+        match = re.match(r"^(10\.\d+)/\1/(.*)$", doi, flags=re.I)
+        if not match:
+            break
+        doi = f"{match.group(1)}/{match.group(2)}"
     return doi or None
 
 
@@ -139,8 +145,23 @@ def _prefer_row(existing: dict, incoming: dict) -> dict:
     return out
 
 
+def _row_quality(row: dict) -> tuple:
+    """Lower is better: published DOI over preprint, clean DOI over doubled prefix."""
+    doi = (row.get("doi") or "").lower()
+    preprint = 1 if re.search(r"10\.21203/|/rs\.3\.rs-", doi) else 0
+    doubled = 1 if re.match(r"^(10\.\d+)/\1/", doi) else 0
+    filled = sum(1 for field in ("authors", "year", "venue") if row.get(field))
+    return (preprint, doubled, -filled)
+
+
+def _choose_row(existing: dict, incoming: dict) -> dict:
+    if _row_quality(incoming) < _row_quality(existing):
+        return _prefer_row(incoming, existing)
+    return _prefer_row(existing, incoming)
+
+
 def dedupe_citing_works(rows: list[dict], *, source: Optional[str] = None) -> list[dict]:
-    """Keep one row per DOI, or per normalized title when a row has no DOI."""
+    """Keep one row per DOI, then one row per normalized title (preprint vs published)."""
     by_doi: dict[str, dict] = {}
     by_title: dict[str, dict] = {}
     untitled: list[dict] = []
@@ -159,17 +180,28 @@ def dedupe_citing_works(rows: list[dict], *, source: Optional[str] = None) -> li
         row["title"] = title
         if doi:
             key = doi.lower()
-            by_doi[key] = _prefer_row(by_doi[key], row) if key in by_doi else row
+            by_doi[key] = _choose_row(by_doi[key], row) if key in by_doi else row
             continue
         nt = _norm_title(title)
         if not nt:
             untitled.append(row)
             continue
-        by_title[nt] = _prefer_row(by_title[nt], row) if nt in by_title else row
+        by_title[nt] = _choose_row(by_title[nt], row) if nt in by_title else row
 
     doi_titles = {_norm_title(item.get("title")) for item in by_doi.values()}
     leftover = [item for item in by_title.values() if _norm_title(item.get("title")) not in doi_titles]
-    out = list(by_doi.values()) + leftover + untitled
+    by_same_title: dict[str, dict] = {}
+    no_title: list[dict] = []
+    for item in list(by_doi.values()) + leftover:
+        nt = _norm_title(item.get("title"))
+        if not nt:
+            no_title.append(item)
+            continue
+        if nt in by_same_title:
+            by_same_title[nt] = _choose_row(by_same_title[nt], item)
+        else:
+            by_same_title[nt] = item
+    out = list(by_same_title.values()) + no_title + untitled
 
     def _sort_key(item: dict) -> tuple:
         year = item.get("year") or 0
