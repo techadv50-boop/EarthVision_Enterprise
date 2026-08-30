@@ -28,6 +28,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_superuser: bool
     roles: list[str] = []
+    access_status: str = "approved"
     created_at: datetime
 
     model_config = {"from_attributes": True}

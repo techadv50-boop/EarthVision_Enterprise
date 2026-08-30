@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Globe, Loader2 } from 'lucide-react';
 import { authApi } from '@/services/api';
-import { useAuthStore } from '@/store/authStore';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
@@ -10,13 +9,13 @@ export default function RegisterPage() {
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login } = useAuthStore();
-  const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setInfo('');
     setLoading(true);
     try {
       await authApi.register({
@@ -25,8 +24,8 @@ export default function RegisterPage() {
         password,
         full_name: fullName || undefined,
       });
-      await login(username, password);
-      navigate('/manuscripts');
+      setInfo('Request submitted. An admin must approve your account before you can sign in.');
+      setPassword('');
     } catch (err: unknown) {
       const detail =
         err && typeof err === 'object' && 'response' in err
@@ -45,8 +44,8 @@ export default function RegisterPage() {
       <div className="relative panel p-8 w-full max-w-md">
         <div className="text-center mb-8">
           <Globe className="w-16 h-16 text-earth-400 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold">Create account</h1>
-          <p className="text-gray-500 mt-2">Citation Assistant · user role</p>
+          <h1 className="text-2xl font-bold">Request access</h1>
+          <p className="text-gray-500 mt-2">An admin must approve your account</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -92,13 +91,14 @@ export default function RegisterPage() {
           </div>
 
           {error && <p className="text-red-400 text-sm">{error}</p>}
+          {info && <p className="text-earth-400 text-sm">{info}</p>}
 
           <button
             type="submit"
             disabled={loading}
             className="btn-primary w-full flex items-center justify-center gap-2"
           >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create Account'}
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Submit for approval'}
           </button>
         </form>
 

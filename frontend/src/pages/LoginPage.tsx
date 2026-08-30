@@ -24,8 +24,16 @@ export default function LoginPage() {
       await login(username, password);
       const signedIn = useAuthStore.getState().user;
       navigate(isCitationAdmin(signedIn) ? '/' : '/manuscripts');
-    } catch {
-      setError('Invalid credentials. Use citation@xdgen.com / pak123');
+    } catch (err: unknown) {
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      setError(
+        typeof detail === 'string'
+          ? detail
+          : 'Invalid credentials. Use citation@xdgen.com / pak123',
+      );
     }
   };
 
