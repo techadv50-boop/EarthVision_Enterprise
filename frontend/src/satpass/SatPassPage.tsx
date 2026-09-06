@@ -81,14 +81,10 @@ export default function SatPassPage() {
   const [showUsers, setShowUsers] = useState(false);
 
   const navigate = useNavigate();
+  // ProtectedRoute already loads the current user; here we only read it.
   const user = useAuthStore((s) => s.user);
-  const fetchUser = useAuthStore((s) => s.fetchUser);
   const logout = useAuthStore((s) => s.logout);
   const admin = isCitationAdmin(user);
-
-  useEffect(() => {
-    void fetchUser();
-  }, [fetchUser]);
 
   const handleStates = useCallback((s: Record<number, SatState>) => setStates(s), []);
 
