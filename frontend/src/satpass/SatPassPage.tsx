@@ -24,6 +24,8 @@ const PRESETS: { name: string; q: string }[] = [
   { name: 'Sentinel-2A', q: '40697' },
 ];
 
+const DEFAULT_SWATH_KM = 60;
+
 function toTracked(s: SavedSatellite, color: string): TrackedSat {
   return {
     id: s.id,
@@ -32,8 +34,22 @@ function toTracked(s: SavedSatellite, color: string): TrackedSat {
     line2: s.tle_line2,
     color: s.color || color,
     visible: true,
+    swathKm: DEFAULT_SWATH_KM,
     noradId: s.norad_id,
   };
+}
+
+/** Parse a pasted TLE block (optional name line + the two element lines). */
+function parseTleBlock(text: string): { name: string; line1: string; line2: string } | null {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const l1 = lines.find((l) => l.startsWith('1 '));
+  const l2 = lines.find((l) => l.startsWith('2 '));
+  if (!l1 || !l2) return null;
+  const nameLine = lines.find((l) => !l.startsWith('1 ') && !l.startsWith('2 '));
+  return { name: nameLine || 'Custom satellite', line1: l1, line2: l2 };
 }
 
 export default function SatPassPage() {
@@ -47,9 +63,8 @@ export default function SatPassPage() {
   const [error, setError] = useState('');
 
   const [showPaste, setShowPaste] = useState(false);
-  const [pName, setPName] = useState('');
-  const [pLine1, setPLine1] = useState('');
-  const [pLine2, setPLine2] = useState('');
+  const [tleText, setTleText] = useState('');
+  const [showVisibility, setShowVisibility] = useState(false);
 
   const handleStates = useCallback((s: Record<number, SatState>) => setStates(s), []);
 
@@ -120,20 +135,33 @@ export default function SatPassPage() {
   const toggle = (id: number) =>
     setSats((prev) => prev.map((s) => (s.id === id ? { ...s, visible: !s.visible } : s)));
 
+  const setSwath = (id: number, swathKm: number) =>
+    setSats((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, swathKm: Math.max(1, swathKm || 1) } : s)),
+    );
+
   const submitPaste = async (e: React.FormEvent) => {
     e.preventDefault();
-    const ok = await addFromTle(pName || 'Custom satellite', pLine1, pLine2);
+    const parsed = parseTleBlock(tleText);
+    if (!parsed) {
+      setError('Paste a valid TLE — a line starting with "1 " and one starting with "2 ".');
+      return;
+    }
+    const ok = await addFromTle(parsed.name, parsed.line1, parsed.line2);
     if (ok) {
-      setPName('');
-      setPLine1('');
-      setPLine2('');
+      setTleText('');
       setShowPaste(false);
     }
   };
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-black text-gray-100">
-      <SatPassGlobe sats={sats} onStates={handleStates} focusId={focusId} />
+      <SatPassGlobe
+        sats={sats}
+        onStates={handleStates}
+        focusId={focusId}
+        showVisibility={showVisibility}
+      />
 
       {/* Control panel */}
       <div className="absolute top-0 left-0 z-10 flex h-full w-[360px] max-w-[92vw] flex-col border-r border-white/10 bg-gray-950/85 backdrop-blur">
@@ -185,36 +213,27 @@ export default function SatPassPage() {
 
             <button
               onClick={() => setShowPaste((v) => !v)}
-              className="mt-2 text-[11px] text-cyan-400 hover:underline"
+              className="mt-2 inline-flex items-center gap-1 rounded bg-white/5 px-2.5 py-1 text-[11px] text-cyan-300 ring-1 ring-cyan-500/40 hover:bg-white/10"
             >
-              {showPaste ? 'Cancel manual TLE' : 'Or paste a raw TLE'}
+              <Plus className="h-3.5 w-3.5" /> {showPaste ? 'Close TLE input' : 'Add by TLE'}
             </button>
 
             {showPaste && (
               <form onSubmit={submitPaste} className="mt-2 space-y-2">
-                <input
-                  value={pName}
-                  onChange={(e) => setPName(e.target.value)}
-                  placeholder="Satellite name"
-                  className="w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10 focus:ring-cyan-500"
-                />
-                <input
-                  value={pLine1}
-                  onChange={(e) => setPLine1(e.target.value)}
-                  placeholder="TLE line 1"
-                  className="w-full rounded bg-gray-900 px-2 py-1.5 font-mono text-[11px] outline-none ring-1 ring-white/10 focus:ring-cyan-500"
-                />
-                <input
-                  value={pLine2}
-                  onChange={(e) => setPLine2(e.target.value)}
-                  placeholder="TLE line 2"
-                  className="w-full rounded bg-gray-900 px-2 py-1.5 font-mono text-[11px] outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                <textarea
+                  value={tleText}
+                  onChange={(e) => setTleText(e.target.value)}
+                  rows={3}
+                  placeholder={
+                    'Paste a full TLE, e.g.\nISS (ZARYA)\n1 25544U ...\n2 25544 ...'
+                  }
+                  className="w-full rounded bg-gray-900 px-2 py-1.5 font-mono text-[11px] leading-tight outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                 />
                 <button
                   type="submit"
                   className="inline-flex items-center gap-1 rounded bg-cyan-600 px-3 py-1.5 text-sm font-medium hover:bg-cyan-500"
                 >
-                  <Plus className="h-4 w-4" /> Add
+                  <Plus className="h-4 w-4" /> Add satellite
                 </button>
               </form>
             )}
@@ -251,9 +270,20 @@ export default function SatPassPage() {
 
           {/* Tracked list */}
           <div>
-            <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-400">
-              Tracked ({sats.length})
-            </label>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-xs font-medium uppercase tracking-wide text-gray-400">
+                Tracked ({sats.length})
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                <input
+                  type="checkbox"
+                  checked={showVisibility}
+                  onChange={() => setShowVisibility((v) => !v)}
+                  className="h-3.5 w-3.5 accent-cyan-500"
+                />
+                Visibility circle
+              </label>
+            </div>
             {sats.length === 0 && (
               <p className="text-xs text-gray-500">
                 Nothing yet — search for a satellite or tap a preset above.
@@ -303,6 +333,17 @@ export default function SatPassPage() {
                         <span title="Speed (km/s)">SPD {st.speedKmS.toFixed(2)}</span>
                       </div>
                     )}
+                    <div className="mt-1 flex items-center gap-1.5 pl-6 text-[11px] text-gray-400">
+                      <span title="Imaging swath width">Swath</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={s.swathKm}
+                        onChange={(e) => setSwath(s.id, Number(e.target.value))}
+                        className="w-16 rounded bg-gray-900 px-1.5 py-0.5 text-[11px] text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                      />
+                      <span>km</span>
+                    </div>
                   </div>
                 );
               })}

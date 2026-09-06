@@ -11,6 +11,7 @@ export interface TrackedSat {
   line2: string;
   color: string;
   visible: boolean;
+  swathKm: number;
   noradId?: number | null;
 }
 
@@ -18,17 +19,21 @@ interface Props {
   sats: TrackedSat[];
   onStates?: (states: Record<number, SatState>) => void;
   focusId?: number | null;
+  /** Also draw the large radio line-of-sight (visibility) circle. */
+  showVisibility?: boolean;
 }
 
 interface SatRuntime {
   satrec: SatRec;
   color: Cesium.Color;
   state: SatState | null;
+  swathKm: number;
   entities: Cesium.Entity[];
+  visEntity: Cesium.Entity | null;
   trackEntities: Cesium.Entity[];
 }
 
-export default function SatPassGlobe({ sats, onStates, focusId }: Props) {
+export default function SatPassGlobe({ sats, onStates, focusId, showVisibility = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const runtimeRef = useRef<Map<number, SatRuntime>>(new Map());
@@ -53,6 +58,8 @@ export default function SatPassGlobe({ sats, onStates, focusId }: Props) {
 
     const viewer = new Cesium.Viewer(containerRef.current, {
       baseLayer,
+      // Default to a simple flat 2D map; the scene-mode picker can switch to 3D.
+      sceneMode: Cesium.SceneMode.SCENE2D,
       animation: true,
       timeline: true,
       baseLayerPicker: false,
@@ -65,12 +72,13 @@ export default function SatPassGlobe({ sats, onStates, focusId }: Props) {
       selectionIndicator: false,
     });
 
-    viewer.scene.globe.enableLighting = true;
-    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = true;
+    viewer.scene.globe.enableLighting = false;
+    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
     viewer.clock.shouldAnimate = true;
     viewer.clock.multiplier = 1;
+    // Frame the whole world (works in both 2D and 3D).
     viewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(0, 10, 30_000_000),
+      destination: Cesium.Rectangle.fromDegrees(-180, -80, 180, 80),
     });
 
     const onTick = () => {
@@ -117,6 +125,7 @@ export default function SatPassGlobe({ sats, onStates, focusId }: Props) {
       if (!wanted.has(id)) {
         rt.entities.forEach((e) => viewer.entities.remove(e));
         rt.trackEntities.forEach((e) => viewer.entities.remove(e));
+        if (rt.visEntity) viewer.entities.remove(rt.visEntity);
         runtime.delete(id);
       }
     });
@@ -132,11 +141,23 @@ export default function SatPassGlobe({ sats, onStates, focusId }: Props) {
         } catch {
           continue;
         }
-        rt = { satrec, color, state: null, entities: [], trackEntities: [] };
+        rt = {
+          satrec,
+          color,
+          state: null,
+          swathKm: sat.swathKm,
+          entities: [],
+          visEntity: null,
+          trackEntities: [],
+        };
         const date = Cesium.JulianDate.toDate(viewer.clock.currentTime);
         rt.state = getState(satrec, date);
 
         const runtimeRt = rt;
+        const subPosition = new Cesium.CallbackPositionProperty(() => {
+          const s = runtimeRt.state;
+          return s ? Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 0) : undefined;
+        }, false);
         // Satellite position (above the surface).
         const satEntity = viewer.entities.add({
           position: new Cesium.CallbackPositionProperty(() => {
@@ -169,18 +190,39 @@ export default function SatPassGlobe({ sats, onStates, focusId }: Props) {
           },
         });
 
-        // Sub-satellite point (where it is focusing on Earth) + footprint circle.
-        const footprintEntity = viewer.entities.add({
-          position: new Cesium.CallbackPositionProperty(() => {
-            const s = runtimeRt.state;
-            return s ? Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 0) : undefined;
-          }, false),
+        // Sub-satellite point: where the satellite is focusing on Earth.
+        const subEntity = viewer.entities.add({
+          position: subPosition,
           point: {
             pixelSize: 6,
             color: Cesium.Color.YELLOW,
             outlineColor: Cesium.Color.BLACK,
             outlineWidth: 1,
           },
+        });
+
+        // Imaging swath: a small circle sized by the (editable) swath width.
+        const swathEntity = viewer.entities.add({
+          position: subPosition,
+          ellipse: {
+            semiMajorAxis: new Cesium.CallbackProperty(
+              () => (runtimeRt.swathKm * 1000) / 2,
+              false,
+            ),
+            semiMinorAxis: new Cesium.CallbackProperty(
+              () => (runtimeRt.swathKm * 1000) / 2,
+              false,
+            ),
+            material: color.withAlpha(0.35),
+            outline: true,
+            outlineColor: color.withAlpha(0.9),
+            height: 0,
+          },
+        });
+
+        // Optional radio line-of-sight (visibility) circle — large.
+        const visEntity = viewer.entities.add({
+          position: subPosition,
           ellipse: {
             semiMajorAxis: new Cesium.CallbackProperty(
               () => (runtimeRt.state ? footprintRadiusMeters(runtimeRt.state.altKm) : 0),
@@ -190,25 +232,28 @@ export default function SatPassGlobe({ sats, onStates, focusId }: Props) {
               () => (runtimeRt.state ? footprintRadiusMeters(runtimeRt.state.altKm) : 0),
               false,
             ),
-            material: color.withAlpha(0.18),
+            material: color.withAlpha(0.08),
             outline: true,
-            outlineColor: color.withAlpha(0.8),
+            outlineColor: color.withAlpha(0.4),
             height: 0,
           },
         });
 
-        rt.entities = [satEntity, footprintEntity];
+        rt.entities = [satEntity, subEntity, swathEntity];
+        rt.visEntity = visEntity;
         refreshTrack(viewer, rt, date);
         runtime.set(sat.id, rt);
       } else {
         rt.color = color;
       }
 
+      rt.swathKm = sat.swathKm;
       const show = sat.visible;
       rt.entities.forEach((e) => (e.show = show));
       rt.trackEntities.forEach((e) => (e.show = show));
+      if (rt.visEntity) rt.visEntity.show = show && showVisibility;
     }
-  }, [sats]);
+  }, [sats, showVisibility]);
 
   // Fly to a satellite when requested.
   useEffect(() => {
