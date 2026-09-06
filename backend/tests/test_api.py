@@ -9,7 +9,7 @@ async def test_health_check(client):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert "EarthVision" in data["app"]
+    assert "SatPass" in data["app"]
 
 
 @pytest.mark.asyncio
@@ -28,7 +28,7 @@ async def test_login(client):
 async def test_operator_login_and_master_reset(client):
     login = await client.post(
         "/api/v1/auth/login",
-        json={"username": "citation@xdgen.com", "password": "pak123"},
+        json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
     )
     assert login.status_code == 200, login.text
     assert "access_token" in login.json()
@@ -36,7 +36,7 @@ async def test_operator_login_and_master_reset(client):
     bad = await client.post(
         "/api/v1/auth/reset-password",
         json={
-            "email": "citation@xdgen.com",
+            "email": "operator@satpass.xdgen.com",
             "master_password": "wrong",
             "new_password": "newpass1",
         },
@@ -46,7 +46,7 @@ async def test_operator_login_and_master_reset(client):
     reset = await client.post(
         "/api/v1/auth/reset-password",
         json={
-            "email": "citation@xdgen.com",
+            "email": "operator@satpass.xdgen.com",
             "master_password": "NTZHSS",
             "new_password": "newpass1",
         },
@@ -55,20 +55,20 @@ async def test_operator_login_and_master_reset(client):
 
     old = await client.post(
         "/api/v1/auth/login",
-        json={"username": "citation@xdgen.com", "password": "pak123"},
+        json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
     )
     assert old.status_code == 401
 
     fresh = await client.post(
         "/api/v1/auth/login",
-        json={"username": "citation@xdgen.com", "password": "newpass1"},
+        json={"username": "operator@satpass.xdgen.com", "password": "newpass1"},
     )
     assert fresh.status_code == 200
 
     restore = await client.post(
         "/api/v1/auth/reset-password",
         json={
-            "email": "citation@xdgen.com",
+            "email": "operator@satpass.xdgen.com",
             "master_password": "NTZHSS",
             "new_password": "pak123",
         },
@@ -106,7 +106,7 @@ async def test_user_role_cannot_list_journals_but_can_open_manuscripts(client):
 
     operator = await client.post(
         "/api/v1/auth/login",
-        json={"username": "citation@xdgen.com", "password": "pak123"},
+        json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
     )
     admin_headers = _bearer(operator)
     uid = registered.json()["id"]
@@ -137,7 +137,7 @@ async def test_user_role_cannot_list_journals_but_can_open_manuscripts(client):
 async def test_admin_assigns_user_and_admin_roles(client):
     operator = await client.post(
         "/api/v1/auth/login",
-        json={"username": "citation@xdgen.com", "password": "pak123"},
+        json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
     )
     admin_headers = _bearer(operator)
     journals = await client.get("/api/v1/journals", headers=admin_headers)
@@ -198,7 +198,7 @@ async def test_admin_assigns_user_and_admin_roles(client):
 async def test_admin_creates_user_and_can_restrict_access(client):
     operator = await client.post(
         "/api/v1/auth/login",
-        json={"username": "citation@xdgen.com", "password": "pak123"},
+        json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
     )
     admin_headers = _bearer(operator)
     created = await client.post(

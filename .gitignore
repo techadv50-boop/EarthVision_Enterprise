@@ -54,5 +54,7 @@ Thumbs.db
 
 # SQLite / local DBs
 *.db
+*.db-shm
+*.db-wal
 earthvision.db
 

@@ -55,18 +55,18 @@ App: http://localhost:5173
 
 | User | Password | Role |
 |------|----------|------|
-| citation@xdgen.com | pak123 | Operator (dashboard) |
+| operator@satpass.xdgen.com | pak123 | Operator (dashboard) |
 | Master reset | NTZHSS | Resets the operator password |
 | admin | Admin@123456 | Administrator |
 | demo | Demo@123456 | Analyst |
 
-Production host: **https://citation.xdgen.com** (Cloudflare Tunnel on a VPS). Apex `xdgen.com` can stay your main site. See `docs/HOSTING.md`.
+Production host: **https://satpass.xdgen.com** (Cloudflare Tunnel on a VPS). Apex `xdgen.com` can stay your main site. See `docs/HOSTING.md`.
 
 ### Docker
 
 ```bash
 docker compose up -d
-# On a VPS, also start the Cloudflare tunnel (citation.xdgen.com):
+# On a VPS, also start the Cloudflare tunnel (satpass.xdgen.com):
 # docker compose --profile tunnel up -d
 ```
 

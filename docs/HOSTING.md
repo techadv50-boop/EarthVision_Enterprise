@@ -1,13 +1,13 @@
-# Host citation.xdgen.com on a VPS with Cloudflare Tunnel
+# Host satpass.xdgen.com on a VPS with Cloudflare Tunnel
 
-The Citation Assistant is meant to be reached at **https://citation.xdgen.com**. Keep **https://xdgen.com** as your main website. The VPS does not need a public IP or opened HTTP ports: Cloudflare Tunnel (`cloudflared`) dials out to Cloudflare, which serves the app.
+SatPass is meant to be reached at **https://satpass.xdgen.com**. Keep **https://xdgen.com** as your main website. The VPS does not need a public IP or opened HTTP ports: Cloudflare Tunnel (`cloudflared`) dials out to Cloudflare, which serves the app.
 
 ## Login
 
 | | |
 |---|---|
-| URL | https://citation.xdgen.com |
-| Email | `citation@xdgen.com` |
+| URL | https://satpass.xdgen.com |
+| Email | `operator@satpass.xdgen.com` |
 | Password | `pak123` |
 | Master reset password | `NTZHSS` |
 
@@ -19,13 +19,13 @@ On the login page, **Forgot password? Use master reset** accepts `NTZHSS` plus a
 2. Zero Trust → **Networks** → **Tunnels** → **Create a tunnel** (Cloudflared).
 3. Copy the **tunnel token**.
 4. Add a public hostname for this app:
-   - **Subdomain**: `citation`
+   - **Subdomain**: `satpass`
    - **Domain**: `xdgen.com`
    - **Type**: HTTP
    - **URL**: `nginx:80` (Docker) or `localhost:8080` if nginx is published on the host
-5. Leave apex `xdgen.com` pointed at your main website (Pages, origin, or a different tunnel hostname). Do not route `xdgen.com` to this stack unless you want the citation app to replace the main site.
+5. Leave apex `xdgen.com` pointed at your main website (Pages, origin, or a different tunnel hostname). Do not route `xdgen.com` to this stack unless you want SatPass to replace the main site.
 
-Cloudflare creates the `citation` DNS CNAME automatically when you save the public hostname.
+Cloudflare creates the `satpass` DNS CNAME automatically when you save the public hostname.
 
 ## 2. VPS
 
@@ -51,11 +51,11 @@ Put the tunnel token in `.env`:
 ```env
 CLOUDFLARE_TUNNEL_TOKEN=eyJ...your-token...
 SECRET_KEY=generate-a-long-random-string-at-least-32-characters
-OPERATOR_EMAIL=citation@xdgen.com
+OPERATOR_EMAIL=operator@satpass.xdgen.com
 OPERATOR_PASSWORD=pak123
 MASTER_RESET_PASSWORD=NTZHSS
-CORS_ORIGINS=["https://citation.xdgen.com","https://xdgen.com","https://www.xdgen.com"]
-PUBLIC_HOST=citation.xdgen.com
+CORS_ORIGINS=["https://satpass.xdgen.com"]
+PUBLIC_HOST=satpass.xdgen.com
 ```
 
 Start the stack **with the tunnel profile**:
@@ -72,8 +72,8 @@ docker compose ps
 docker compose logs -f cloudflared
 ```
 
-Visit https://citation.xdgen.com and sign in with `citation@xdgen.com` / `pak123`.
+Visit https://satpass.xdgen.com and sign in with `operator@satpass.xdgen.com` / `pak123`.
 
 ## SSL
 
-Cloudflare terminates HTTPS for `citation.xdgen.com`. Keep the tunnel service as **HTTP** to nginx; you do not need Let's Encrypt on the VPS.
+Cloudflare terminates HTTPS for `satpass.xdgen.com`. Keep the tunnel service as **HTTP** to nginx; you do not need Let's Encrypt on the VPS.
