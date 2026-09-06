@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Satellite, Search, Plus, Trash2, Crosshair, Loader2, X } from 'lucide-react';
 import { satelliteApi, type SavedSatellite, type TleResult } from '@/services/api';
-import SatPassGlobe, { type TrackedSat } from './SatPassGlobe';
+import SatPassMap, { type TrackedSat } from './SatPassMap';
 import type { SatState } from './orbit';
 
 const PALETTE = [
@@ -156,7 +156,7 @@ export default function SatPassPage() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-black text-gray-100">
-      <SatPassGlobe
+      <SatPassMap
         sats={sats}
         onStates={handleStates}
         focusId={focusId}
