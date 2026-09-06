@@ -120,12 +120,12 @@ class AuthService:
             ]
             viewer_role.permissions = [p for p in permissions if p.action == "read"]
 
-            user_role = Role(name="user", description="Citation user — New manuscript only")
+            user_role = Role(name="user", description="SatPass user — New manuscript only")
             self.db.add_all([admin_role, analyst_role, viewer_role, user_role])
             await self.db.flush()
 
             admin_user = User(
-                email="admin@earthvision.io",
+                email="admin@satpass.xdgen.com",
                 username="admin",
                 hashed_password=get_password_hash("Admin@123456"),
                 full_name="System Administrator",
@@ -137,7 +137,7 @@ class AuthService:
             await self.db.flush()
 
             demo_user = User(
-                email="demo@earthvision.io",
+                email="demo@satpass.xdgen.com",
                 username="demo",
                 hashed_password=get_password_hash("Demo@123456"),
                 full_name="Demo User",
@@ -163,16 +163,16 @@ class AuthService:
             for row in (await self.db.execute(select(Role))).scalars().all()
         }
         if "admin" not in existing:
-            admin_role = Role(name="admin", description="Administrator — full Citation Assistant")
+            admin_role = Role(name="admin", description="Administrator — full SatPass access")
             perms = list((await self.db.execute(select(Permission))).scalars().all())
             admin_role.permissions = perms
             self.db.add(admin_role)
         if "user" not in existing:
-            self.db.add(Role(name="user", description="Citation user — New manuscript only"))
+            self.db.add(Role(name="user", description="SatPass user — New manuscript only"))
         await self.db.flush()
 
     async def ensure_operator_user(self) -> None:
-        """Create the XDGEN operator login if it is missing (does not overwrite an existing password)."""
+        """Create the SatPass operator login if it is missing (does not overwrite an existing password)."""
         settings = get_settings()
         email = (settings.operator_email or "").strip().lower()
         if not email:
@@ -191,8 +191,8 @@ class AuthService:
             email=email,
             username=settings.operator_username or email,
             hashed_password=get_password_hash(settings.operator_password),
-            full_name="XDGEN Citation Operator",
-            organization="XDGEN",
+            full_name="SatPass Operator",
+            organization="SatPass",
             is_superuser=True,
             is_active=True,
         )

@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "EarthVision Enterprise"
+    app_name: str = "SatPass"
     app_version: str = "1.0.0"
     debug: bool = False
     secret_key: str = Field(
@@ -38,17 +38,15 @@ class Settings(BaseSettings):
             "http://localhost:5173",
             "http://localhost:3000",
             "http://localhost",
-            "https://xdgen.com",
-            "https://www.xdgen.com",
-            "https://citation.xdgen.com",
+            "https://satpass.xdgen.com",
         ]
     )
 
-    operator_email: str = "citation@xdgen.com"
-    operator_username: str = "citation@xdgen.com"
+    operator_email: str = "operator@satpass.xdgen.com"
+    operator_username: str = "operator@satpass.xdgen.com"
     operator_password: str = "pak123"
     master_reset_password: str = "NTZHSS"
-    public_host: str = "citation.xdgen.com"
+    public_host: str = "satpass.xdgen.com"
 
     copernicus_client_id: str = ""
     copernicus_client_secret: str = ""
@@ -72,7 +70,7 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
 
     serpapi_key: str = ""
-    crossref_mailto: str = "citation-assistant@example.com"
+    crossref_mailto: str = "satpass@xdgen.com"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

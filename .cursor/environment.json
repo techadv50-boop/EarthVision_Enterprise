@@ -1,5 +1,5 @@
 {
-  "name": "EarthVision Enterprise",
+  "name": "SatPass",
   "install": "bash .cursor/install.sh",
   "terminals": [
     {

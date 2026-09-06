@@ -14,8 +14,8 @@ export default function AppLayout() {
         <Link to={home} className="flex items-center gap-3">
           <BookOpen className="w-6 h-6 text-earth-400" />
           <div>
-            <h1 className="text-sm font-bold tracking-wide">Citation Assistant</h1>
-            <p className="text-xs text-gray-500">IJIST archive · house citations</p>
+            <h1 className="text-sm font-bold tracking-wide">SatPass</h1>
+            <p className="text-xs text-gray-500">satpass.xdgen.com</p>
           </div>
         </Link>
         <nav className="flex items-center gap-4 text-sm">

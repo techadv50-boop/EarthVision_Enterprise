@@ -1,4 +1,4 @@
-"""EarthVision Enterprise - FastAPI Application Entry Point."""
+"""SatPass - FastAPI Application Entry Point."""
 
 from contextlib import asynccontextmanager
 
@@ -18,7 +18,7 @@ logger = get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting EarthVision Enterprise...")
+    logger.info("Starting SatPass...")
     await init_db()
 
     async with AsyncSessionLocal() as session:
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Database initialized and seeded")
     yield
-    logger.info("Shutting down EarthVision Enterprise...")
+    logger.info("Shutting down SatPass...")
 
 
 settings = get_settings()

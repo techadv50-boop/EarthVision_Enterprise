@@ -16,7 +16,7 @@ export default function Header() {
       <div className="flex items-center gap-3">
         <Globe className="w-6 h-6 text-earth-400" />
         <div>
-          <h1 className="text-sm font-bold tracking-wide">EarthVision Enterprise</h1>
+          <h1 className="text-sm font-bold tracking-wide">SatPass</h1>
           <p className="text-xs text-gray-500">Earth Observation Platform</p>
         </div>
       </div>

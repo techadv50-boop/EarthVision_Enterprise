@@ -70,7 +70,7 @@ export default function ManuscriptsPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">New manuscript</h2>
       <p className="text-gray-400 mb-4 max-w-3xl">
-        Upload a Word (.docx) manuscript. Citation Assistant reads only from the
+        Upload a Word (.docx) manuscript. SatPass reads only from the
         Introduction through the end of Materials and Methods. It suggests at most ten
         house citations from articles already stored across your journals — never from
         the open web — and writes them into the same Word file as tracked Accept/Reject
@@ -99,7 +99,7 @@ export default function ManuscriptsPage() {
           }}
         />
         <p className="text-xs text-gray-500">
-          Choose a .docx file. Suggestions come only from the Citation Assistant archive.
+          Choose a .docx file. Suggestions come only from the SatPass archive.
         </p>
       </form>
       {msg && <p className="text-earth-400 text-sm mt-2">{msg}</p>}

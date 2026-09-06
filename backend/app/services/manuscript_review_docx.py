@@ -24,8 +24,8 @@ CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 OFFICE_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
-AUTHOR = "Citation Assistant"
-INITIALS = "CA"
+AUTHOR = "SatPass"
+INITIALS = "SP"
 
 
 def w(tag: str) -> str:
@@ -359,7 +359,7 @@ def _append_comment(root: etree._Element, cid: int, stamp: str, *, sug: dict[str
     if fields["title"]:
         heading += f": {fields['title']}"
     reason = (sug.get("reason") or "").strip() or (
-        "This paragraph matches an article already stored in the Citation Assistant archive."
+        "This paragraph matches an article already stored in the SatPass archive."
     )
     citation = (sug.get("house_citation") or "").strip()
     _add_text_paragraph(comment, heading, bold=True)

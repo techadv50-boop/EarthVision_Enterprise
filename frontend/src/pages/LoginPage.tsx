@@ -5,7 +5,7 @@ import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import { authApi } from '@/services/api';
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('citation@xdgen.com');
+  const [username, setUsername] = useState('operator@satpass.xdgen.com');
   const [password, setPassword] = useState('pak123');
   const [masterPassword, setMasterPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -32,7 +32,7 @@ export default function LoginPage() {
       setError(
         typeof detail === 'string'
           ? detail
-          : 'Invalid credentials. Use citation@xdgen.com / pak123',
+          : 'Invalid credentials. Use operator@satpass.xdgen.com / pak123',
       );
     }
   };
@@ -63,8 +63,8 @@ export default function LoginPage() {
       <div className="relative panel p-8 w-full max-w-md">
         <div className="text-center mb-8">
           <BookOpen className="w-16 h-16 text-earth-400 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold">Citation Assistant</h1>
-          <p className="text-gray-500 mt-2">citation.xdgen.com · IJIST archive</p>
+          <h1 className="text-2xl font-bold">SatPass</h1>
+          <p className="text-gray-500 mt-2">satpass.xdgen.com</p>
         </div>
 
         {!showReset ? (

@@ -52,7 +52,7 @@ from app.services.manuscript_export import assign_citations
 from app.services.manuscript_review_docx import build_review_docx
 from app.services.manuscript_text import extract_docx_paragraphs, extract_manuscript_text, suffix_for
 
-router = APIRouter(tags=["Citation Assistant"])
+router = APIRouter(tags=["SatPass"])
 
 Db = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
