@@ -12,8 +12,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import get_current_user
 from app.database.session import get_db
 from app.models.satellite import Satellite
+from app.models.user import User
 from app.schemas.satellite import SatelliteCreate, SatelliteResponse, TleResult
 
 router = APIRouter(prefix="/satellites", tags=["SatPass"])
@@ -56,6 +58,7 @@ def _parse_tle_text(text: str) -> list[TleResult]:
 
 @router.get("/fetch", response_model=list[TleResult])
 async def fetch_tle(
+    _user: Annotated[User, Depends(get_current_user)],
     q: str = Query(min_length=1, description="Satellite name or NORAD catalog number"),
 ):
     """Look up current TLE(s) from Celestrak by NORAD id (digits) or name."""
@@ -84,7 +87,10 @@ async def fetch_tle(
 
 
 @router.get("", response_model=list[SatelliteResponse])
-async def list_satellites(db: Annotated[AsyncSession, Depends(get_db)]):
+async def list_satellites(
+    _user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     rows = await db.execute(select(Satellite).order_by(Satellite.created_at))
     return list(rows.scalars().all())
 
@@ -92,6 +98,7 @@ async def list_satellites(db: Annotated[AsyncSession, Depends(get_db)]):
 @router.post("", response_model=SatelliteResponse, status_code=201)
 async def add_satellite(
     payload: SatelliteCreate,
+    _user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     norad = payload.norad_id or _norad_from_line1(payload.line1)
@@ -111,6 +118,7 @@ async def add_satellite(
 @router.delete("/{satellite_id}", status_code=204)
 async def delete_satellite(
     satellite_id: int,
+    _user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     row = await db.get(Satellite, satellite_id)

@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Satellite, Search, Plus, Trash2, Crosshair, Loader2, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import {
+  Satellite,
+  Search,
+  Plus,
+  Trash2,
+  Crosshair,
+  Loader2,
+  X,
+  Users,
+  LogOut,
+} from 'lucide-react';
 import { satelliteApi, type SavedSatellite, type TleResult } from '@/services/api';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import SatPassMap, { type TrackedSat } from './SatPassMap';
+import SatPassUsersModal from './SatPassUsersModal';
 import type { SatState } from './orbit';
 
 const PALETTE = [
@@ -65,6 +78,17 @@ export default function SatPassPage() {
   const [showPaste, setShowPaste] = useState(false);
   const [tleText, setTleText] = useState('');
   const [showVisibility, setShowVisibility] = useState(false);
+  const [showUsers, setShowUsers] = useState(false);
+
+  const navigate = useNavigate();
+  const user = useAuthStore((s) => s.user);
+  const fetchUser = useAuthStore((s) => s.fetchUser);
+  const logout = useAuthStore((s) => s.logout);
+  const admin = isCitationAdmin(user);
+
+  useEffect(() => {
+    void fetchUser();
+  }, [fetchUser]);
 
   const handleStates = useCallback((s: Record<number, SatState>) => setStates(s), []);
 
@@ -155,23 +179,44 @@ export default function SatPassPage() {
   };
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-black text-gray-100">
-      <SatPassMap
-        sats={sats}
-        onStates={handleStates}
-        focusId={focusId}
-        showVisibility={showVisibility}
-      />
-
-      {/* Control panel */}
-      <div className="absolute top-0 left-0 z-10 flex h-full w-[360px] max-w-[92vw] flex-col border-r border-white/10 bg-gray-950/85 backdrop-blur">
+    <div className="flex h-screen w-screen overflow-hidden bg-black text-gray-100">
+      {/* Control panel (sidebar) */}
+      <aside className="flex h-full w-[360px] max-w-[92vw] shrink-0 flex-col border-r border-white/10 bg-gray-950">
         <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
           <Satellite className="h-6 w-6 text-cyan-400" />
-          <div>
+          <div className="min-w-0 flex-1">
             <h1 className="text-base font-bold tracking-wide">SatPass</h1>
-            <p className="text-[11px] text-gray-500">satpass.xdgen.com · live satellite tracker</p>
+            <p className="truncate text-[11px] text-gray-500">
+              satpass.xdgen.com · live satellite tracker
+            </p>
           </div>
+          {admin && (
+            <button
+              onClick={() => setShowUsers(true)}
+              title="Manage user access"
+              className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-cyan-400"
+            >
+              <Users className="h-4 w-4" />
+            </button>
+          )}
+          <button
+            onClick={() => {
+              logout();
+              navigate('/login');
+            }}
+            title={user ? `Sign out ${user.username}` : 'Sign out'}
+            className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-red-400"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
+
+        {user && (
+          <div className="border-b border-white/10 px-4 py-1.5 text-[11px] text-gray-500">
+            Signed in as <span className="text-gray-300">{user.full_name || user.username}</span>
+            {admin ? ' · admin' : ' · user'}
+          </div>
+        )}
 
         <div className="space-y-4 overflow-y-auto px-4 py-4">
           {/* Add by search */}
@@ -354,7 +399,19 @@ export default function SatPassPage() {
         <div className="mt-auto border-t border-white/10 px-4 py-2 text-[10px] text-gray-600">
           Orbits propagated with SGP4 · TLEs from Celestrak
         </div>
+      </aside>
+
+      {/* Map play area */}
+      <div className="relative flex-1">
+        <SatPassMap
+          sats={sats}
+          onStates={handleStates}
+          focusId={focusId}
+          showVisibility={showVisibility}
+        />
       </div>
+
+      {showUsers && <SatPassUsersModal onClose={() => setShowUsers(false)} />}
     </div>
   );
 }

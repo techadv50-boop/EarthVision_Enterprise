@@ -67,7 +67,14 @@ export default function App() {
       }
     >
       <Routes>
-        <Route path="/" element={<SatPassPage />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <SatPassPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/billing/success" element={<BillingSuccessPage />} />
