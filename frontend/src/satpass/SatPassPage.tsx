@@ -1,0 +1,319 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Satellite, Search, Plus, Trash2, Crosshair, Loader2, X } from 'lucide-react';
+import { satelliteApi, type SavedSatellite, type TleResult } from '@/services/api';
+import SatPassGlobe, { type TrackedSat } from './SatPassGlobe';
+import type { SatState } from './orbit';
+
+const PALETTE = [
+  '#22d3ee',
+  '#f472b6',
+  '#a3e635',
+  '#fbbf24',
+  '#60a5fa',
+  '#f87171',
+  '#c084fc',
+  '#34d399',
+];
+
+const PRESETS: { name: string; q: string }[] = [
+  { name: 'ISS (ZARYA)', q: '25544' },
+  { name: 'PRSS-1', q: '43530' },
+  { name: 'Hubble (HST)', q: '20580' },
+  { name: 'NOAA-19', q: '33591' },
+  { name: 'Landsat-9', q: '49260' },
+  { name: 'Sentinel-2A', q: '40697' },
+];
+
+function toTracked(s: SavedSatellite, color: string): TrackedSat {
+  return {
+    id: s.id,
+    name: s.name,
+    line1: s.tle_line1,
+    line2: s.tle_line2,
+    color: s.color || color,
+    visible: true,
+    noradId: s.norad_id,
+  };
+}
+
+export default function SatPassPage() {
+  const [sats, setSats] = useState<TrackedSat[]>([]);
+  const [states, setStates] = useState<Record<number, SatState>>({});
+  const [focusId, setFocusId] = useState<number | null>(null);
+
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<TleResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState('');
+
+  const [showPaste, setShowPaste] = useState(false);
+  const [pName, setPName] = useState('');
+  const [pLine1, setPLine1] = useState('');
+  const [pLine2, setPLine2] = useState('');
+
+  const handleStates = useCallback((s: Record<number, SatState>) => setStates(s), []);
+
+  const nextColor = useMemo(() => {
+    const used = new Set(sats.map((s) => s.color));
+    return PALETTE.find((c) => !used.has(c)) ?? PALETTE[sats.length % PALETTE.length];
+  }, [sats]);
+
+  useEffect(() => {
+    satelliteApi
+      .list()
+      .then(({ data }) => setSats(data.map((s, i) => toTracked(s, PALETTE[i % PALETTE.length]))))
+      .catch(() => undefined);
+  }, []);
+
+  const addFromTle = async (name: string, line1: string, line2: string, noradId?: number | null) => {
+    setError('');
+    const color = nextColor;
+    try {
+      const { data } = await satelliteApi.add({ name, line1, line2, norad_id: noradId, color });
+      setSats((prev) => [...prev, toTracked(data, color)]);
+      return true;
+    } catch {
+      setError('Could not add satellite (check the TLE lines).');
+      return false;
+    }
+  };
+
+  const runSearch = async (q: string) => {
+    const term = q.trim();
+    if (!term) return;
+    setSearching(true);
+    setError('');
+    setResults([]);
+    try {
+      const { data } = await satelliteApi.fetch(term);
+      setResults(data.slice(0, 12));
+      if (data.length === 0) setError(`No satellite found for "${term}".`);
+    } catch {
+      setError(`No satellite found for "${term}".`);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const addPreset = async (q: string) => {
+    setSearching(true);
+    setError('');
+    try {
+      const { data } = await satelliteApi.fetch(q);
+      if (data[0]) await addFromTle(data[0].name, data[0].line1, data[0].line2, data[0].norad_id);
+    } catch {
+      setError('Lookup failed. Try again.');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const remove = async (id: number) => {
+    setSats((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await satelliteApi.remove(id);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const toggle = (id: number) =>
+    setSats((prev) => prev.map((s) => (s.id === id ? { ...s, visible: !s.visible } : s)));
+
+  const submitPaste = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const ok = await addFromTle(pName || 'Custom satellite', pLine1, pLine2);
+    if (ok) {
+      setPName('');
+      setPLine1('');
+      setPLine2('');
+      setShowPaste(false);
+    }
+  };
+
+  return (
+    <div className="relative h-screen w-screen overflow-hidden bg-black text-gray-100">
+      <SatPassGlobe sats={sats} onStates={handleStates} focusId={focusId} />
+
+      {/* Control panel */}
+      <div className="absolute top-0 left-0 z-10 flex h-full w-[360px] max-w-[92vw] flex-col border-r border-white/10 bg-gray-950/85 backdrop-blur">
+        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+          <Satellite className="h-6 w-6 text-cyan-400" />
+          <div>
+            <h1 className="text-base font-bold tracking-wide">SatPass</h1>
+            <p className="text-[11px] text-gray-500">satpass.xdgen.com · live satellite tracker</p>
+          </div>
+        </div>
+
+        <div className="space-y-4 overflow-y-auto px-4 py-4">
+          {/* Add by search */}
+          <div>
+            <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-400">
+              Add satellite
+            </label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-gray-500" />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && runSearch(query)}
+                  placeholder="Name or NORAD id (e.g. ISS, 25544)"
+                  className="w-full rounded bg-gray-900 py-2 pl-8 pr-2 text-sm outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                />
+              </div>
+              <button
+                onClick={() => runSearch(query)}
+                disabled={searching}
+                className="rounded bg-cyan-600 px-3 text-sm font-medium hover:bg-cyan-500 disabled:opacity-50"
+              >
+                {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Find'}
+              </button>
+            </div>
+
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.q}
+                  onClick={() => addPreset(p.q)}
+                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 ring-1 ring-white/10 hover:bg-white/10"
+                >
+                  + {p.name}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={() => setShowPaste((v) => !v)}
+              className="mt-2 text-[11px] text-cyan-400 hover:underline"
+            >
+              {showPaste ? 'Cancel manual TLE' : 'Or paste a raw TLE'}
+            </button>
+
+            {showPaste && (
+              <form onSubmit={submitPaste} className="mt-2 space-y-2">
+                <input
+                  value={pName}
+                  onChange={(e) => setPName(e.target.value)}
+                  placeholder="Satellite name"
+                  className="w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                />
+                <input
+                  value={pLine1}
+                  onChange={(e) => setPLine1(e.target.value)}
+                  placeholder="TLE line 1"
+                  className="w-full rounded bg-gray-900 px-2 py-1.5 font-mono text-[11px] outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                />
+                <input
+                  value={pLine2}
+                  onChange={(e) => setPLine2(e.target.value)}
+                  placeholder="TLE line 2"
+                  className="w-full rounded bg-gray-900 px-2 py-1.5 font-mono text-[11px] outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                />
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1 rounded bg-cyan-600 px-3 py-1.5 text-sm font-medium hover:bg-cyan-500"
+                >
+                  <Plus className="h-4 w-4" /> Add
+                </button>
+              </form>
+            )}
+
+            {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+
+            {/* Search results */}
+            {results.length > 0 && (
+              <div className="mt-2 space-y-1 rounded bg-gray-900/70 p-2 ring-1 ring-white/10">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-gray-400">{results.length} result(s)</span>
+                  <button onClick={() => setResults([])} className="text-gray-500 hover:text-white">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                {results.map((r) => (
+                  <button
+                    key={`${r.norad_id}-${r.name}`}
+                    onClick={async () => {
+                      const ok = await addFromTle(r.name, r.line1, r.line2, r.norad_id);
+                      if (ok) setResults([]);
+                    }}
+                    className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-white/10"
+                  >
+                    <span className="truncate">{r.name}</span>
+                    <span className="ml-2 shrink-0 text-[11px] text-gray-500">
+                      {r.norad_id ?? ''}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Tracked list */}
+          <div>
+            <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-400">
+              Tracked ({sats.length})
+            </label>
+            {sats.length === 0 && (
+              <p className="text-xs text-gray-500">
+                Nothing yet — search for a satellite or tap a preset above.
+              </p>
+            )}
+            <div className="space-y-1.5">
+              {sats.map((s) => {
+                const st = states[s.id];
+                return (
+                  <div
+                    key={s.id}
+                    className="rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={s.visible}
+                        onChange={() => toggle(s.id)}
+                        className="h-4 w-4 accent-cyan-500"
+                        title="Show / hide"
+                      />
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: s.color }}
+                      />
+                      <span className="flex-1 truncate text-sm font-medium">{s.name}</span>
+                      <button
+                        onClick={() => setFocusId(s.id)}
+                        title="Fly to"
+                        className="text-gray-400 hover:text-cyan-400"
+                      >
+                        <Crosshair className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => remove(s.id)}
+                        title="Remove"
+                        className="text-gray-400 hover:text-red-400"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                    {st && (
+                      <div className="mt-1 grid grid-cols-4 gap-1 pl-6 text-[11px] text-gray-400">
+                        <span title="Latitude">LAT {st.lat.toFixed(2)}</span>
+                        <span title="Longitude">LNG {st.lon.toFixed(2)}</span>
+                        <span title="Altitude (km)">ALT {st.altKm.toFixed(0)}</span>
+                        <span title="Speed (km/s)">SPD {st.speedKmS.toFixed(2)}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-auto border-t border-white/10 px-4 py-2 text-[10px] text-gray-600">
+          Orbits propagated with SGP4 · TLEs from Celestrak
+        </div>
+      </div>
+    </div>
+  );
+}

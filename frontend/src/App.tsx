@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import SatPassPage from '@/satpass/SatPassPage';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import AppLayout from '@/components/AppLayout';
@@ -57,6 +58,7 @@ function HomeRoute() {
 export default function App() {
   return (
     <Routes>
+      <Route path="/" element={<SatPassPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/billing/success" element={<BillingSuccessPage />} />
@@ -69,7 +71,7 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<HomeRoute />} />
+        <Route path="/legacy" element={<HomeRoute />} />
         <Route
           path="/journals/:journalId"
           element={
