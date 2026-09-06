@@ -54,6 +54,36 @@ export const authApi = {
     api.post('/auth/reset-password', { email, master_password, new_password }),
 };
 
+export interface TleResult {
+  name: string;
+  norad_id?: number | null;
+  line1: string;
+  line2: string;
+}
+
+export interface SavedSatellite {
+  id: number;
+  name: string;
+  norad_id?: number | null;
+  tle_line1: string;
+  tle_line2: string;
+  color?: string | null;
+  created_at: string;
+}
+
+export const satelliteApi = {
+  fetch: (q: string) => api.get<TleResult[]>('/satellites/fetch', { params: { q } }),
+  list: () => api.get<SavedSatellite[]>('/satellites'),
+  add: (data: {
+    name: string;
+    line1: string;
+    line2: string;
+    norad_id?: number | null;
+    color?: string | null;
+  }) => api.post<SavedSatellite>('/satellites', data),
+  remove: (id: number) => api.delete(`/satellites/${id}`),
+};
+
 export const geoApi = {
   search: (q: string) => api.get('/geo/search', { params: { q } }),
   reverse: (longitude: number, latitude: number) =>

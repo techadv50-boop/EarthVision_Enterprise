@@ -1,20 +1,23 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
-import LoginPage from '@/pages/LoginPage';
-import RegisterPage from '@/pages/RegisterPage';
-import AppLayout from '@/components/AppLayout';
-import DashboardPage from '@/pages/DashboardPage';
-import JournalVolumesPage from '@/pages/JournalVolumesPage';
-import VolumeIssuesPage from '@/pages/VolumeIssuesPage';
-import IssueArticlesPage from '@/pages/IssueArticlesPage';
-import ManuscriptsPage from '@/pages/ManuscriptsPage';
-import ManuscriptReviewPage from '@/pages/ManuscriptReviewPage';
-import ArchiveSearchPage from '@/pages/ArchiveSearchPage';
-import UsersPage from '@/pages/UsersPage';
-import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
-import BillingSuccessPage from '@/pages/BillingSuccessPage';
-import BillingCancelPage from '@/pages/BillingCancelPage';
+import SatPassPage from '@/satpass/SatPassPage';
+
+// Legacy (non-SatPass) pages are code-split so the SatPass landing page stays light.
+const LoginPage = lazy(() => import('@/pages/LoginPage'));
+const RegisterPage = lazy(() => import('@/pages/RegisterPage'));
+const AppLayout = lazy(() => import('@/components/AppLayout'));
+const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
+const JournalVolumesPage = lazy(() => import('@/pages/JournalVolumesPage'));
+const VolumeIssuesPage = lazy(() => import('@/pages/VolumeIssuesPage'));
+const IssueArticlesPage = lazy(() => import('@/pages/IssueArticlesPage'));
+const ManuscriptsPage = lazy(() => import('@/pages/ManuscriptsPage'));
+const ManuscriptReviewPage = lazy(() => import('@/pages/ManuscriptReviewPage'));
+const ArchiveSearchPage = lazy(() => import('@/pages/ArchiveSearchPage'));
+const UsersPage = lazy(() => import('@/pages/UsersPage'));
+const CopernicusCallbackPage = lazy(() => import('@/pages/CopernicusCallbackPage'));
+const BillingSuccessPage = lazy(() => import('@/pages/BillingSuccessPage'));
+const BillingCancelPage = lazy(() => import('@/pages/BillingCancelPage'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, fetchUser, isLoading } = useAuthStore();
@@ -56,64 +59,80 @@ function HomeRoute() {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
-      <Route path="/billing/success" element={<BillingSuccessPage />} />
-      <Route path="/billing/cancel" element={<BillingCancelPage />} />
-      <Route path="/auth/copernicus/callback" element={<CopernicusCallbackPage />} />
-      <Route
-        element={
-          <ProtectedRoute>
-            <AppLayout />
-          </ProtectedRoute>
-        }
-      >
-        <Route path="/" element={<HomeRoute />} />
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-400">
+          Loading…
+        </div>
+      }
+    >
+      <Routes>
         <Route
-          path="/journals/:journalId"
+          path="/"
           element={
-            <AdminRoute>
-              <JournalVolumesPage />
-            </AdminRoute>
+            <ProtectedRoute>
+              <SatPassPage />
+            </ProtectedRoute>
           }
         />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/billing/success" element={<BillingSuccessPage />} />
+        <Route path="/billing/cancel" element={<BillingCancelPage />} />
+        <Route path="/auth/copernicus/callback" element={<CopernicusCallbackPage />} />
         <Route
-          path="/journals/:journalId/volumes/:volume"
           element={
-            <AdminRoute>
-              <VolumeIssuesPage />
-            </AdminRoute>
+            <ProtectedRoute>
+              <AppLayout />
+            </ProtectedRoute>
           }
-        />
-        <Route
-          path="/journals/:journalId/volumes/:volume/issues/:issueNumber"
-          element={
-            <AdminRoute>
-              <IssueArticlesPage />
-            </AdminRoute>
-          }
-        />
-        <Route path="/manuscripts" element={<ManuscriptsPage />} />
-        <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
-        <Route
-          path="/archive"
-          element={
-            <AdminRoute>
-              <ArchiveSearchPage />
-            </AdminRoute>
-          }
-        />
-        <Route
-          path="/users"
-          element={
-            <AdminRoute>
-              <UsersPage />
-            </AdminRoute>
-          }
-        />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        >
+          <Route path="/legacy" element={<HomeRoute />} />
+          <Route
+            path="/journals/:journalId"
+            element={
+              <AdminRoute>
+                <JournalVolumesPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/journals/:journalId/volumes/:volume"
+            element={
+              <AdminRoute>
+                <VolumeIssuesPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/journals/:journalId/volumes/:volume/issues/:issueNumber"
+            element={
+              <AdminRoute>
+                <IssueArticlesPage />
+              </AdminRoute>
+            }
+          />
+          <Route path="/manuscripts" element={<ManuscriptsPage />} />
+          <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
+          <Route
+            path="/archive"
+            element={
+              <AdminRoute>
+                <ArchiveSearchPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/users"
+            element={
+              <AdminRoute>
+                <UsersPage />
+              </AdminRoute>
+            }
+          />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
