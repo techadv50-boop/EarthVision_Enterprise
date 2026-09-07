@@ -153,3 +153,56 @@ def test_auth_failure_is_mapped():
     assert "wrong username or password" in str(mapped)
     assert "zhzh@192.168.18.18" in str(mapped)
     assert "wrong-pass" not in str(mapped)
+
+
+def test_sudo_uses_password_on_stdin_not_argv(monkeypatch):
+    class SudoFake(FakeParamiko):
+        def exec_command(self, command, timeout=None):
+            self.commands.append(command)
+            needs_n = " -n " in f" {command} "
+            code = 1 if needs_n else 0
+            stderr = b"sudo: a password is required\n" if needs_n else b""
+            stdout = b"" if needs_n else b'{"ok":true}'
+
+            class Chan:
+                def recv_exit_status(self):
+                    return code
+
+                def shutdown_write(self):
+                    return None
+
+            stdin = _FakeStdin(Chan())
+            original = stdin.write
+
+            def write(data: str) -> int:
+                self.last_stdin = data
+                return original(data)
+
+            stdin.write = write  # type: ignore[method-assign]
+            return stdin, _FakeStdout(stdout, Chan()), _FakeChannelFile(stderr)
+
+    fake = SudoFake()
+    monkeypatch.setattr(SSHClient, "_connect_paramiko", lambda self: fake)
+    cfg = AppConfig(
+        ssh_username="zhzh",
+        ssh_private_key_path="",
+        remote_prepare_script="/usr/local/lib/serverbackup/prepare-backup.sh",
+    )
+    client = SSHClient(cfg, password="super-secret")
+    result = client.run_script(cfg.remote_prepare_script, {"action": "check"})
+    assert result.ok
+    joined = " ".join(fake.commands)
+    assert "super-secret" not in joined
+    assert "sudo -S" in joined
+    assert getattr(fake, "last_stdin", "").startswith("super-secret\n")
+    assert '"action":"check"' in fake.last_stdin
+    assert client._sudo_needs_password is True
+
+
+def test_bundled_ubuntu_scripts_exist():
+    from app.ssh.client import UBUNTU_HELPER_FILES, bundled_ubuntu_scripts
+
+    root = bundled_ubuntu_scripts()
+    assert root.is_dir()
+    for name in UBUNTU_HELPER_FILES:
+        assert (root / name).is_file(), name

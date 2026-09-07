@@ -106,7 +106,8 @@ class BackupEngine:
                 "wrong username or password",
                 "authentication failed",
                 "permission denied",
-                "auth fail",
+                "password is required",
+                "a terminal is required",
             )
         )
 
@@ -183,6 +184,11 @@ class BackupEngine:
             results["details"].append("SSH login: OK" if login.ok else f"SSH login failed: {login.stderr}")
             if not login.ok:
                 return results
+            helpers = self.ssh.ensure_remote_scripts()
+            if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
+                results["details"].append("Installed Ubuntu backup helpers")
+            elif not helpers.ok:
+                results["details"].append(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
             check = self.ssh.run_script(
                 self.config.remote_prepare_script,
                 self._payload("check"),
@@ -194,10 +200,20 @@ class BackupEngine:
             results["check"] = parsed
             if check.ok:
                 results["details"].append("Backup script: OK")
+            elif SSHClient._sudo_password_required(check):
+                results["details"].append(
+                    check.stderr.strip()
+                    or "SSH login succeeded, but sudo needs the Ubuntu password."
+                )
+            elif SSHClient._script_missing(check):
+                results["details"].append(
+                    check.stderr.strip()
+                    or "Backup helpers are not installed on Ubuntu."
+                )
             else:
                 results["details"].append(
                     check.stderr.strip()
-                    or "Backup script could not be executed. Run ubuntu-backup-setup.sh on the server."
+                    or "Backup script could not be executed."
                 )
         except SSHError as exc:
             results["details"].append(str(exc))
@@ -232,6 +248,14 @@ class BackupEngine:
             note("SSH", False, str(exc))
             self.progress.write(status="failed", error=str(exc))
             return report
+        helpers = self.ssh.ensure_remote_scripts()
+        if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
+            note("Ubuntu helpers", True, "installed")
+        elif not helpers.ok:
+            note("Ubuntu helpers", False, helpers.stderr.strip())
+            report["ok"] = False
+            self.progress.write(status="failed", error=helpers.stderr.strip())
+            return report
         result = self.ssh.run_script(
             self.config.remote_prepare_script,
             self._payload("dry-run"),
@@ -251,10 +275,9 @@ class BackupEngine:
         return report
 
     def _stream_backup(self, archive_path: Path) -> int:
-        stdin_data = json.dumps(self._payload("backup")).encode("utf-8")
-        process = self.ssh.popen(
-            ["sudo", "-n", self.config.remote_prepare_script],
-            stdin_bytes=stdin_data,
+        process = self.ssh.popen_script(
+            self.config.remote_prepare_script,
+            self._payload("backup"),
         )
 
         def on_progress(written: int, speed: float) -> None:
@@ -342,6 +365,11 @@ class BackupEngine:
 
             self._retry("SSH connectivity", _login)
             self.progress.add_step("Connected", True, self.config.server_ip)
+            helpers = self.ssh.ensure_remote_scripts()
+            if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
+                self.progress.add_step("Ubuntu helpers", True, "installed")
+            elif not helpers.ok:
+                raise BackupError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
 
             self.progress.write(phase="remote-check", message="Checking Ubuntu disk space and services…")
 

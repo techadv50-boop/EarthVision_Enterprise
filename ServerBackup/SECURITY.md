@@ -1,6 +1,6 @@
 # Server Backup security
 
-Version 1.3.1
+Version 1.3.2
 
 ## Principles
 
@@ -24,7 +24,7 @@ The GUI must never display private key contents.
 
 ## SSH
 
-Key-only backups use the system OpenSSH client (`ssh` / `scp`) in BatchMode with an argv list. Password logins use Paramiko so Windows can type the Ubuntu password without OpenSSH ASKPASS. The password is held in memory only and is never written to disk or argv.
+Key-only backups use the system OpenSSH client (`ssh` / `scp`) in BatchMode with an argv list. Password logins use Paramiko so Windows can type the Ubuntu password without OpenSSH ASKPASS. The same in-memory password is reused for `sudo` when Ubuntu asks for it (`sudo -S`); it is never written to disk or argv. Restricted sudoers remains optional for scheduled key-only backups.
 
 Remote work is limited to allowlisted actions handled by:
 

@@ -2,7 +2,7 @@
 
 Windows desktop application for backing up a live Ubuntu web server (Nginx, MariaDB, OJS, and configurable extra paths).
 
-**Version 1.3.1**
+**Version 1.3.2**
 
 Primary action: **BACKUP NOW**. Automatic scheduling is **OFF by default**. Both methods use the same backup engine.
 
@@ -120,7 +120,7 @@ Defaults:
 | Retention | 5 successful backups |
 | Automatic backup | OFF |
 
-The SSH setting is the **path** to a private key file on the Windows PC, or you can enter the Ubuntu password when the app asks. Password logins use Paramiko (Windows OpenSSH cannot type a password). The password is kept in memory only and is never written to config or logs.
+The SSH setting is the **path** to a private key file on the Windows PC, or you can enter the Ubuntu password when the app asks. Password logins use Paramiko (Windows OpenSSH cannot type a password). The same password is reused for `sudo` when Ubuntu asks for it. The password is kept in memory only and is never written to config or logs.
 
 ## Backup layout
 

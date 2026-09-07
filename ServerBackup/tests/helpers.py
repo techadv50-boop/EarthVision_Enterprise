@@ -82,6 +82,10 @@ class FakeSSH:
             return SSHResult(0, "ok", "")
         return SSHResult(255, "", "Permission denied")
 
+    def ensure_remote_scripts(self) -> SSHResult:
+        self.calls.append("ensure_scripts")
+        return SSHResult(0, "", "already installed")
+
     def run_script(self, script_path: str, payload, *, timeout=None, use_sudo: bool = True) -> SSHResult:
         action = payload.get("action")
         self.calls.append(action)
