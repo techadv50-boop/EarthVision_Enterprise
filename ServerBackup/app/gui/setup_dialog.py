@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.config.schema import AppConfig
-from app.gui.folders import drive_label, pick_backup_folder, pick_ssh_key
+from app.gui.folders import create_and_fill_ssh_key, drive_label, pick_backup_folder, pick_ssh_key
+from app.ssh.keys import default_private_key_path
 from app.utils.disk import backup_folder_for_drive, list_backup_drives
 
 
@@ -74,8 +75,8 @@ class SetupDialog(QDialog):
         title.setObjectName("title")
         layout.addWidget(title)
         help_text = QLabel(
-            "The dashboard is read-only. Choose the Windows drive or folder for backups, "
-            "then pick your SSH private key file. Automatic backup stays OFF. "
+            "The dashboard is read-only. Choose the Windows drive, then click Create SSH key "
+            "(or Browse key). There is no password field. Automatic backup stays OFF. "
             "Nginx, PHP-FPM, and MariaDB are not contacted by this step."
         )
         help_text.setWordWrap(True)
@@ -100,12 +101,15 @@ class SetupDialog(QDialog):
 
         key_row = QHBoxLayout()
         self.ssh_key = QLineEdit()
-        self.ssh_key.setPlaceholderText(r"C:\Users\YourName\.ssh\id_ed25519")
+        self.ssh_key.setPlaceholderText(str(default_private_key_path()))
         self.ssh_key.setClearButtonEnabled(True)
         browse_key = QPushButton("Browse key…")
         browse_key.clicked.connect(self._browse_key)
+        create_key = QPushButton("Create SSH key")
+        create_key.clicked.connect(self._create_key)
         key_row.addWidget(self.ssh_key)
         key_row.addWidget(browse_key)
+        key_row.addWidget(create_key)
         form.addRow("SSH private key", key_row)
 
         self.server_ip = QLineEdit()
@@ -133,8 +137,10 @@ class SetupDialog(QDialog):
     def _load(self, config: AppConfig) -> None:
         self.destination.setText(config.backup_destination)
         self.ssh_key.setText(config.ssh_private_key_path)
+        if not self.ssh_key.text().strip() and default_private_key_path().is_file():
+            self.ssh_key.setText(str(default_private_key_path()))
         self.server_ip.setText(config.server_ip)
-        self.ssh_username.setText(config.ssh_username)
+        self.ssh_username.setText(config.ssh_username or "zhzh")
         self.ssh_port.setValue(int(config.ssh_port))
 
     def _fill_drives(self) -> None:
@@ -170,6 +176,14 @@ class SetupDialog(QDialog):
         if chosen:
             self.ssh_key.setText(chosen)
 
+    def _create_key(self) -> None:
+        create_and_fill_ssh_key(
+            self,
+            self.ssh_key,
+            self.ssh_username.text().strip() or "zhzh",
+            self.server_ip.text().strip() or "192.168.18.18",
+        )
+
     def _accept(self) -> None:
         dest = self.destination.text().strip()
         if not dest:
@@ -183,7 +197,7 @@ class SetupDialog(QDialog):
             skip = QMessageBox.question(
                 self,
                 "SSH private key",
-                "No SSH private key was selected. You can add it later in Settings.\n\nContinue?",
+                "No SSH private key was selected. Click Create SSH key, or Continue without a key and add it later in Settings.",
             )
             if skip != QMessageBox.StandardButton.Yes:
                 return

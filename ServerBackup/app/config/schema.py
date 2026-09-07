@@ -18,7 +18,7 @@ SYSTEM_DATABASES = frozenset(
 @dataclass
 class AppConfig:
     server_ip: str = "192.168.18.18"
-    ssh_username: str = "zhz"
+    ssh_username: str = "zhzh"
     ssh_port: int = 22
     ssh_private_key_path: str = ""
     backup_destination: str = r"G:\ServerBackups"
@@ -70,6 +70,8 @@ class AppConfig:
         cfg.retry_count = max(1, int(cfg.retry_count))
         cfg.retry_delay_seconds = max(1, int(cfg.retry_delay_seconds))
         cfg.ssh_port = int(cfg.ssh_port)
+        if str(cfg.ssh_username).strip() == "zhz":
+            cfg.ssh_username = "zhzh"
         cfg.compression_level = min(9, max(1, int(cfg.compression_level)))
         cfg.security_audit_timeout = max(30, int(cfg.security_audit_timeout))
         cfg.website_directories = [str(p) for p in cfg.website_directories]

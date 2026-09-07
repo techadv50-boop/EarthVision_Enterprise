@@ -34,6 +34,8 @@ a = Analysis(
         "app.gui.security_page",
         "app.gui.styles",
         "app.gui.widgets",
+        "app.ssh.client",
+        "app.ssh.keys",
         "app.engine.backup_engine",
         "app.serversec.engine",
         "app.restore.restore_engine",

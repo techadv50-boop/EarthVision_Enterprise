@@ -2,7 +2,7 @@
 
 Windows desktop application for backing up a live Ubuntu web server (Nginx, MariaDB, OJS, and configurable extra paths).
 
-**Version 1.2.0**
+**Version 1.2.1**
 
 Primary action: **BACKUP NOW**. Automatic scheduling is **OFF by default**. Both methods use the same backup engine.
 
@@ -91,7 +91,7 @@ This Cloud/development environment must **not** be used to change production aut
 
 ```bash
 sudo bash ubuntu-backup-setup.sh
-sudo bash ubuntu-backup-setup.sh --install-scripts --sudoers --ssh-user zhz
+sudo bash ubuntu-backup-setup.sh --install-scripts --sudoers --ssh-user zhzh
 ```
 
 `--create-user` and `--mysql-user` are optional. The sudoers rule allows **only**:
@@ -114,13 +114,13 @@ Defaults:
 | Setting | Default |
 | --- | --- |
 | Server | `192.168.18.18` |
-| SSH user | `zhz` |
+| SSH user | `zhzh` |
 | Destination | `G:\ServerBackups` |
 | Logs | `C:\ServerBackup\Logs` |
 | Retention | 5 successful backups |
 | Automatic backup | OFF |
 
-The SSH setting is the **path** to a private key file. The application never displays or logs key contents.
+The SSH setting is the **path** to a private key file on the Windows PC. Click **Create SSH key** if the file does not exist yet. The application never displays or logs key contents, and it never stores the Ubuntu password.
 
 ## Backup layout
 

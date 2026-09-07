@@ -9,7 +9,7 @@ from tests.helpers import make_config
 def test_default_config_values():
     cfg = AppConfig()
     assert cfg.server_ip == "192.168.18.18"
-    assert cfg.ssh_username == "zhz"
+    assert cfg.ssh_username == "zhzh"
     assert cfg.retention_count == 5
     assert cfg.automatic_backup is False
     assert cfg.setup_completed is False

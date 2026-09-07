@@ -21,10 +21,11 @@ from PySide6.QtWidgets import (
 from app.config.schema import AppConfig, SYSTEM_DATABASES
 from app.config.store import save_config
 from app.database.discover import discover_databases
-from app.gui.folders import pick_backup_folder, pick_existing_folder, pick_ssh_key
+from app.gui.folders import create_and_fill_ssh_key, pick_backup_folder, pick_existing_folder, pick_ssh_key
 from app.gui.setup_dialog import DrivePickerDialog
 from app.scheduler.tasks import disable_schedule, enable_schedule
 from app.ssh.client import SSHError
+from app.ssh.keys import default_private_key_path
 
 
 def _editable(widget: QLineEdit, placeholder: str = "") -> QLineEdit:
@@ -60,15 +61,18 @@ class SettingsPage(QWidget):
         layout.addWidget(hint)
         form = QFormLayout()
         self.server_ip = _editable(QLineEdit(), "192.168.18.18")
-        self.ssh_username = _editable(QLineEdit(), "zhz")
+        self.ssh_username = _editable(QLineEdit(), "zhzh")
         self.ssh_port = QSpinBox()
         self.ssh_port.setRange(1, 65535)
-        self.ssh_key = _editable(QLineEdit(), r"C:\Users\YourName\.ssh\id_ed25519")
+        self.ssh_key = _editable(QLineEdit(), str(default_private_key_path()))
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse_key)
+        create_key = QPushButton("Create SSH key")
+        create_key.clicked.connect(self._create_key)
         key_row = QHBoxLayout()
         key_row.addWidget(self.ssh_key)
         key_row.addWidget(browse)
+        key_row.addWidget(create_key)
         self.destination = _editable(QLineEdit(), r"G:\ServerBackups")
         dest_row = QHBoxLayout()
         dest_row.addWidget(self.destination)
@@ -179,6 +183,8 @@ class SettingsPage(QWidget):
         self.ssh_username.setText(config.ssh_username)
         self.ssh_port.setValue(config.ssh_port)
         self.ssh_key.setText(config.ssh_private_key_path)
+        if not self.ssh_key.text().strip() and default_private_key_path().is_file():
+            self.ssh_key.setText(str(default_private_key_path()))
         self.destination.setText(config.backup_destination)
         self.log_directory.setText(config.log_directory)
         self.retention.setValue(config.retention_count)
@@ -255,6 +261,14 @@ class SettingsPage(QWidget):
         path = pick_ssh_key(self, self.ssh_key.text().strip())
         if path:
             self.ssh_key.setText(path)
+
+    def _create_key(self) -> None:
+        create_and_fill_ssh_key(
+            self,
+            self.ssh_key,
+            self.ssh_username.text().strip() or "zhzh",
+            self.server_ip.text().strip() or "192.168.18.18",
+        )
 
     def _browse_destination(self) -> None:
         path = pick_backup_folder(self, self.destination.text().strip())

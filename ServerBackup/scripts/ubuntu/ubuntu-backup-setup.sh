@@ -9,7 +9,7 @@ DO_SUDOERS=0
 DO_MYSQL_USER=0
 INSTALL_SCRIPTS=0
 BACKUP_USER="${BACKUP_USER:-serverbackup}"
-SSH_USER="${SUDO_USER:-${USER:-zhz}}"
+SSH_USER="${SUDO_USER:-${USER:-zhzh}}"
 
 usage() {
   cat <<'EOF'
