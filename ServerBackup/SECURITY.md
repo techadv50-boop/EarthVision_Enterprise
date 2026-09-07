@@ -1,6 +1,6 @@
 # Server Backup security
 
-Version 1.0.0
+Version 1.1.0
 
 ## Principles
 
@@ -30,6 +30,7 @@ Remote work is limited to allowlisted actions handled by:
 
 - `/usr/local/lib/serverbackup/prepare-backup.sh`
 - `/usr/local/lib/serverbackup/restore-backup.sh`
+- `/usr/local/lib/serverbackup/security-audit.sh` (read-only audit by default; token hash files only under `/etc/serverbackup/`)
 
 JSON payloads are passed on stdin. Unix paths are validated (absolute, no `..`, no shell metacharacters).
 
@@ -56,6 +57,16 @@ Restore is a separate confirmed flow. The operator must type `RESTORE`. Safety c
 ## Logging
 
 Logs are written to `C:\ServerBackup\Logs\backup-YYYY-MM-DD.log` (configurable). A redacting formatter strips password/token/private-key patterns.
+
+## Three-layer on-demand audit
+
+Security scanning is **not continuous**. **SECURITY CHECK** collects a scoped snapshot (configured website/OJS/Nginx/SSH/php/letsencrypt trees plus host metadata), stores it on the Windows PC, compares it with the previous trusted snapshot, and writes a report.
+
+Workflow: AUDIT → SNAPSHOT → COMPARE → CLASSIFY → REPORT. Applying host firewall or `sshd` changes is **not** done automatically. Rollback restores only application-managed security state (token hashes under `/etc/serverbackup/` and the local trusted pointer), not production websites.
+
+Modes: LOW, **BALANCED** (default), HIGH, CRITICAL. Higher modes hash more files but still skip cache trees and never walk `/`.
+
+Credential rotation generates a cryptographically secure application token, shows it once, stores only a hash, and keeps the previous hash until verification so the administrator is not locked out.
 
 ## Threat notes
 

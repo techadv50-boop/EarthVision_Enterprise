@@ -119,6 +119,9 @@ class SettingsPage(QWidget):
         form.addRow("Schedule type", self.schedule_type)
         form.addRow("Schedule time (HH:MM)", self.schedule_time)
         form.addRow("Weekly day", self.schedule_weekday)
+        self.security_mode = QComboBox()
+        self.security_mode.addItems(["LOW", "BALANCED", "HIGH", "CRITICAL"])
+        form.addRow("Security mode (default BALANCED, audit-only)", self.security_mode)
         layout.addLayout(form)
         save = QPushButton("Save settings")
         save.setObjectName("primary")
@@ -152,6 +155,7 @@ class SettingsPage(QWidget):
         self.schedule_type.setCurrentText(config.schedule_type)
         self.schedule_time.setText(config.schedule_time)
         self.schedule_weekday.setCurrentText(config.schedule_weekday)
+        self.security_mode.setCurrentText(config.security_mode)
 
     def current_config(self) -> AppConfig:
         cfg = self._config or AppConfig()
@@ -181,6 +185,7 @@ class SettingsPage(QWidget):
         cfg.schedule_type = self.schedule_type.currentText()
         cfg.schedule_time = self.schedule_time.text().strip()
         cfg.schedule_weekday = self.schedule_weekday.currentText()
+        cfg.security_mode = self.security_mode.currentText()
         return cfg
 
     def _fill_databases(self, selected: list[str]) -> None:

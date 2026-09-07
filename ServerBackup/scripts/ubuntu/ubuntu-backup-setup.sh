@@ -107,6 +107,8 @@ if [[ "$INSTALL_SCRIPTS" -eq 1 ]]; then
   install -m 0755 "$SRC/prepare_backup.py" "$DEST/prepare_backup.py"
   install -m 0755 "$SRC/restore-backup.sh" "$DEST/restore-backup.sh"
   install -m 0755 "$SRC/restore_backup.py" "$DEST/restore_backup.py"
+  install -m 0755 "$SRC/security-audit.sh" "$DEST/security-audit.sh"
+  install -m 0755 "$SRC/security_audit.py" "$DEST/security_audit.py"
   echo "Installed scripts to $DEST"
 fi
 
@@ -142,6 +144,7 @@ if [[ "$DO_SUDOERS" -eq 1 ]]; then
 # Restricted Server Backup sudoers. Never use NOPASSWD: ALL.
 ${SSH_USER} ALL=(root) NOPASSWD: /usr/local/lib/serverbackup/prepare-backup.sh
 ${SSH_USER} ALL=(root) NOPASSWD: /usr/local/lib/serverbackup/restore-backup.sh
+${SSH_USER} ALL=(root) NOPASSWD: /usr/local/lib/serverbackup/security-audit.sh
 EOF
   if visudo -c -f "$TMP"; then
     install -m 0440 "$TMP" "$FILE"

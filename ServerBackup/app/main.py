@@ -38,6 +38,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-connection", action="store_true")
     parser.add_argument("--discover-databases", action="store_true")
     parser.add_argument("--verify", metavar="ARCHIVE")
+    parser.add_argument("--security-check", action="store_true", help="On-demand three-layer security audit")
+    parser.add_argument("--accept-trusted", action="store_true", help="Record the new security snapshot as trusted")
     parser.add_argument("--cancel", action="store_true", help="Request cancellation of a running backup")
     parser.add_argument("--mode", choices=["manual", "scheduled"], default="manual")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.json")
@@ -70,6 +72,19 @@ def main(argv: list[str] | None = None) -> int:
 
         verify_archive(args.verify)
         print(sha256_file(args.verify))
+        return 0
+    if args.security_check:
+        from app.serversec.engine import SecurityEngine, SecurityError
+
+        engine = SecurityEngine(config)
+        try:
+            report = engine.audit(accept_trusted=args.accept_trusted)
+        except SecurityError as exc:
+            print(str(exc))
+            return 6
+        print(f"SECURITY CHECK COMPLETE overall={report.get('overall')}")
+        print(f"ID: {report.get('id')}")
+        print(f"Mode: {report.get('security_mode')}")
         return 0
     if args.dry_run:
         engine = BackupEngine(config, mode=args.mode)

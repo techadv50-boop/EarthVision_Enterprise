@@ -12,6 +12,7 @@ def test_default_config_values():
     assert cfg.ssh_username == "zhz"
     assert cfg.retention_count == 5
     assert cfg.automatic_backup is False
+    assert cfg.security_mode == "BALANCED"
     assert cfg.retry_count == 3
     assert "/var/www/journal.50sea.com" in cfg.website_directories
     assert cfg.ojs_private_files == "/var/www/ojs-files"

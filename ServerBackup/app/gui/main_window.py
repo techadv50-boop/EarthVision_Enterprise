@@ -28,6 +28,7 @@ from app.engine.status import collect_dashboard_status, progress_path
 from app.gui.history_page import HistoryPage
 from app.gui.logs_page import LogsPage
 from app.gui.restore_page import RestorePage
+from app.gui.security_page import SecurityPage
 from app.gui.settings_page import SettingsPage
 from app.gui.styles import STYLESHEET
 from app.gui.widgets import Card
@@ -55,6 +56,8 @@ class DashboardPage(QWidget):
         layout.addWidget(self.backup_card)
         layout.addWidget(self.storage_card)
         layout.addWidget(self.schedule_card)
+        self.security_card = Card("SERVER SECURITY")
+        layout.addWidget(self.security_card)
         self.status_label = QLabel("Ready.")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -91,6 +94,26 @@ class DashboardPage(QWidget):
         wrap = QWidget()
         wrap.setLayout(grid)
         layout.addWidget(wrap)
+        security_label = QLabel("SERVER SECURITY")
+        security_label.setStyleSheet("font-weight: 700; color: #10233a;")
+        layout.addWidget(security_label)
+        sec_grid = QHBoxLayout()
+        check_btn = QPushButton("SECURITY CHECK")
+        check_btn.clicked.connect(self._window.security_check)
+        sec_grid.addWidget(check_btn)
+        for label, tab in [
+            ("ROTATE SECURITY CREDENTIALS", "rotate"),
+            ("VIEW SERVER CHANGES", "changes"),
+            ("VIEW SECURITY REPORT", "report"),
+            ("SECURITY HISTORY", "history"),
+            ("ROLLBACK SECURITY CHANGES", "rollback"),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, name=tab: self._window.show_security(name))
+            sec_grid.addWidget(button)
+        sec_wrap = QWidget()
+        sec_wrap.setLayout(sec_grid)
+        layout.addWidget(sec_wrap)
         layout.addStretch()
 
     def render(self, status: dict, ssh_state: tuple[str, str] | None = None) -> None:
@@ -123,6 +146,16 @@ class DashboardPage(QWidget):
             [
                 ("Automatic Backup:", str(status.get("automatic_backup") or "OFF")),
                 ("Next Automatic Backup:", str(status.get("next_automatic_backup") or "—")),
+            ]
+        )
+        self.security_card.set_rows(
+            [
+                ("Mode:", str(status.get("security_mode") or "BALANCED")),
+                ("Last Security Check:", str(status.get("last_security_check") or "NEVER RUN")),
+                ("Overall:", str(status.get("security_overall") or "NEVER RUN")),
+                ("Layer 1 Entry:", str(status.get("security_layer1") or "—")),
+                ("Layer 2 Access:", str(status.get("security_layer2") or "—")),
+                ("Layer 3 Integrity:", str(status.get("security_layer3") or "—")),
             ]
         )
         progress = status.get("progress") or {}
@@ -172,11 +205,13 @@ class MainWindow(QMainWindow):
         self.history_page = HistoryPage()
         self.logs_page = LogsPage()
         self.restore_page = RestorePage()
+        self.security_page = SecurityPage()
         self.stack.addWidget(self.dashboard)
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.logs_page)
         self.stack.addWidget(self.restore_page)
+        self.stack.addWidget(self.security_page)
         layout.addWidget(self.stack)
         back = QPushButton("Back to dashboard")
         back.clicked.connect(self.show_dashboard)
@@ -208,6 +243,15 @@ class MainWindow(QMainWindow):
     def show_restore(self) -> None:
         self.restore_page.reload(self.config)
         self.stack.setCurrentWidget(self.restore_page)
+
+    def show_security(self, tab: str = "check") -> None:
+        self.security_page.reload(self.config)
+        self.security_page.show_tab(tab)
+        self.stack.setCurrentWidget(self.security_page)
+
+    def security_check(self) -> None:
+        self.show_security("check")
+        self.security_page._run_check()
 
     def open_restore(self, location: str) -> None:
         self.restore_page.reload(self.config, selected=location)

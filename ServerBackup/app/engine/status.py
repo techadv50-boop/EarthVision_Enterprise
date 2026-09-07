@@ -59,4 +59,25 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
         "progress": progress,
         "destination": str(dest),
         "drive_error": drive.error,
+        **_security_status(config),
+    }
+
+
+def _security_status(config: AppConfig) -> dict[str, Any]:
+    try:
+        from app.serversec.snapshot import SecurityStore
+
+        store = SecurityStore(config.security_store)
+        latest = store.latest_id()
+        report = store.load_report(latest) if latest else None
+    except Exception:
+        latest = None
+        report = None
+    return {
+        "security_mode": config.security_mode,
+        "last_security_check": (report or {}).get("timestamp") or latest or "NEVER RUN",
+        "security_overall": (report or {}).get("overall") or "NEVER RUN",
+        "security_layer1": (report or {}).get("layer1") or "—",
+        "security_layer2": (report or {}).get("layer2") or "—",
+        "security_layer3": (report or {}).get("layer3") or "—",
     }

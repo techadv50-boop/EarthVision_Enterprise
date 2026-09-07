@@ -27,5 +27,9 @@
   "schedule_time": "02:00",
   "schedule_weekday": "Sunday",
   "remote_prepare_script": "/usr/local/lib/serverbackup/prepare-backup.sh",
-  "remote_restore_script": "/usr/local/lib/serverbackup/restore-backup.sh"
+  "remote_restore_script": "/usr/local/lib/serverbackup/restore-backup.sh",
+  "remote_security_script": "/usr/local/lib/serverbackup/security-audit.sh",
+  "security_store": "C:\\ServerBackup\\Security",
+  "security_mode": "BALANCED",
+  "security_audit_timeout": 180
 }

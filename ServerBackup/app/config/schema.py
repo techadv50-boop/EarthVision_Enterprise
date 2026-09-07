@@ -48,8 +48,12 @@ class AppConfig:
     schedule_weekday: str = "Sunday"
     remote_prepare_script: str = "/usr/local/lib/serverbackup/prepare-backup.sh"
     remote_restore_script: str = "/usr/local/lib/serverbackup/restore-backup.sh"
+    remote_security_script: str = "/usr/local/lib/serverbackup/security-audit.sh"
+    security_store: str = r"C:\ServerBackup\Security"
+    security_mode: str = "BALANCED"
     ssh_connect_timeout: int = 20
     transfer_timeout: int = 6 * 60 * 60
+    security_audit_timeout: int = 180
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,10 +70,15 @@ class AppConfig:
         cfg.retry_delay_seconds = max(1, int(cfg.retry_delay_seconds))
         cfg.ssh_port = int(cfg.ssh_port)
         cfg.compression_level = min(9, max(1, int(cfg.compression_level)))
+        cfg.security_audit_timeout = max(30, int(cfg.security_audit_timeout))
         cfg.website_directories = [str(p) for p in cfg.website_directories]
         cfg.extra_directories = [str(p) for p in cfg.extra_directories]
         cfg.selected_databases = [str(p) for p in cfg.selected_databases]
         cfg.automatic_backup = bool(cfg.automatic_backup)
+        mode = str(cfg.security_mode or "BALANCED").upper()
+        if mode not in {"LOW", "BALANCED", "HIGH", "CRITICAL"}:
+            mode = "BALANCED"
+        cfg.security_mode = mode
         return cfg
 
     def databases_for_backup(self) -> list[str]:

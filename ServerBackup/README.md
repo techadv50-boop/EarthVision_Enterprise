@@ -2,7 +2,7 @@
 
 Windows desktop application for backing up a live Ubuntu web server (Nginx, MariaDB, OJS, and configurable extra paths).
 
-**Version 1.0.0**
+**Version 1.1.0**
 
 Primary action: **BACKUP NOW**. Automatic scheduling is **OFF by default**. Both methods use the same backup engine.
 
@@ -16,6 +16,20 @@ This application is independent of Cursor after installation.
 - Never deletes an existing successful backup because a new backup started
 - Marks SUCCESS only after transfer, archive integrity, and SHA-256 complete
 - Failed, cancelled, and incomplete backups do not count toward retention
+
+## Server security (on-demand)
+
+A dedicated **SERVER SECURITY** section audits the Ubuntu host when you click **SECURITY CHECK**. It does not run in the background and does not change the backup/restore workflow.
+
+Three layers:
+
+1. Entry — firewall, SSH, listening ports, brute-force signals  
+2. Access — users, sudoers, authorized-key fingerprints  
+3. Integrity — scoped metadata/hashes for websites, OJS files, Nginx, and selected configs  
+
+Default mode is **BALANCED** (audit only). The checker does not copy production trees, does not hash the entire disk, and does not stop Nginx, PHP-FPM, or MariaDB. Detected changes are classified; nothing is quarantined or overwritten automatically.
+
+Credential rotation applies only to the application security token. MariaDB, OJS, website, PHP, SMTP, and API secrets are never rotated by this app.
 
 ## Requirements (Windows backup PC)
 
@@ -55,6 +69,8 @@ python -m app.main --dry-run
 python -m app.main --test-connection
 python -m app.main --discover-databases
 python -m app.main --cancel
+python -m app.main --security-check
+
 ```
 
 ## Build ServerBackup.exe

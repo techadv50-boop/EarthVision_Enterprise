@@ -14,6 +14,9 @@ REMOTE_ACTIONS = frozenset(
         "restore-nginx",
         "nginx-test",
         "safety-dump",
+        "security-audit",
+        "security-rotate-token",
+        "security-rollback",
     }
 )
 
