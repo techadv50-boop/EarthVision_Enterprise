@@ -64,7 +64,7 @@ On a Windows machine (or the Windows GitHub Actions job):
 ```powershell
 cd ServerBackup
 pip install -r requirements.txt
-pyinstaller --noconfirm build\serverbackup.spec
+pyinstaller --noconfirm serverbackup.spec
 ```
 
 The packaged app is `dist\ServerBackup.exe`. End users do not need Python.
