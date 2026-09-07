@@ -102,6 +102,42 @@ def test_insufficient_disk_space(tmp_path: Path):
         assert "Insufficient disk space" in str(exc)
 
 
+def test_ssh_auth_failure_is_not_retried(tmp_path: Path, monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("app.engine.backup_engine.time.sleep", lambda seconds: sleeps.append(seconds))
+    cfg = make_config(tmp_path, retry_count=3, retry_delay_seconds=30)
+    engine = BackupEngine(cfg, ssh=FakeSSH(login_ok=False), mode="manual")
+    engine.transfer_fn = lambda path: 1
+    try:
+        engine.run()
+        assert False, "should fail SSH login"
+    except BackupError as exc:
+        assert "Permission denied" in str(exc)
+    assert sleeps == []
+
+
+def test_temporary_ssh_error_is_retried(tmp_path: Path, monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("app.engine.backup_engine.time.sleep", lambda seconds: sleeps.append(seconds))
+    cfg = make_config(tmp_path, retry_count=3, retry_delay_seconds=7)
+
+    class FlakySSH(FakeSSH):
+        def test_login(self):
+            self.calls.append("login")
+            if self.calls.count("login") < 3:
+                from app.ssh.client import SSHError
+
+                raise SSHError("Cannot reach 192.168.18.18 port 22")
+            return super().test_login()
+
+    engine = BackupEngine(cfg, ssh=FlakySSH(), mode="manual")
+    engine.transfer_fn = lambda path: make_valid_archive(path, databases=cfg.selected_databases).stat().st_size
+    engine.backup_id = "2026-09-07_010000"
+    info = engine.run()
+    assert info["status"] == "SUCCESS"
+    assert sleeps == [7, 7]
+
+
 def test_redaction_in_logs(tmp_path: Path):
     from app.security.redact import redact_secrets
 

@@ -83,13 +83,32 @@ class BackupEngine:
             except Exception as exc:  # noqa: BLE001 — retry temporary network/SSH errors
                 last_error = exc
                 self.logger.warning(f"{label} failed on attempt {attempt}: {exc}")
+                if self._is_auth_failure(exc):
+                    self.progress.write(status="failed", message=str(exc), error=str(exc))
+                    raise
                 if attempt < attempts:
                     self.progress.write(
-                        message=f"{label} failed, retrying in {delay}s (attempt {attempt}/{attempts})"
+                        message=(
+                            f"{label} failed: {exc}. Retrying in {delay}s "
+                            f"(attempt {attempt}/{attempts})"
+                        )
                     )
                     time.sleep(delay)
         assert last_error is not None
         raise last_error
+
+    @staticmethod
+    def _is_auth_failure(exc: BaseException) -> bool:
+        text = str(exc).lower()
+        return any(
+            token in text
+            for token in (
+                "wrong username or password",
+                "authentication failed",
+                "permission denied",
+                "auth fail",
+            )
+        )
 
     def _validate_config_paths(self) -> None:
         for directory in self.config.website_directories:

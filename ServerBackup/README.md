@@ -2,7 +2,7 @@
 
 Windows desktop application for backing up a live Ubuntu web server (Nginx, MariaDB, OJS, and configurable extra paths).
 
-**Version 1.3.0**
+**Version 1.3.1**
 
 Primary action: **BACKUP NOW**. Automatic scheduling is **OFF by default**. Both methods use the same backup engine.
 
@@ -34,7 +34,7 @@ Credential rotation applies only to the application security token. MariaDB, OJS
 ## Requirements (Windows backup PC)
 
 - Windows 10/11
-- OpenSSH Client (`ssh`, `scp`)
+- OpenSSH Client (`ssh`, `scp`) for key-only login. Password login is built into `ServerBackup.exe`.
 - Backup disk, typically `G:\` with destination `G:\ServerBackups`
 - Python 3.12+ only if running from source (not required for `ServerBackup.exe`)
 
@@ -120,7 +120,7 @@ Defaults:
 | Retention | 5 successful backups |
 | Automatic backup | OFF |
 
-The SSH setting is the **path** to a private key file on the Windows PC, or you can enter the Ubuntu password when the app asks. The password is kept in memory only and is never written to config or logs.
+The SSH setting is the **path** to a private key file on the Windows PC, or you can enter the Ubuntu password when the app asks. Password logins use Paramiko (Windows OpenSSH cannot type a password). The password is kept in memory only and is never written to config or logs.
 
 ## Backup layout
 

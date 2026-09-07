@@ -255,19 +255,27 @@ class MainWindow(QMainWindow):
     def _ssh_client(self) -> SSHClient:
         return SSHClient(self.config, password=self._ssh_password or None)
 
+    def _has_usable_key(self) -> bool:
+        key = (self.config.ssh_private_key_path or "").strip()
+        if not key:
+            return False
+        return Path(os.path.expandvars(os.path.expanduser(key))).is_file()
+
     def ensure_password(self) -> bool:
         if self._ssh_password:
+            return True
+        if self._has_usable_key():
             return True
         entered = prompt_ubuntu_password(self, self.config.ssh_username, self.config.server_ip)
         if entered is None:
             return False
         self._ssh_password = entered
-        key = (self.config.ssh_private_key_path or "").strip()
-        if not self._ssh_password and not key:
+        if not self._ssh_password:
             QMessageBox.warning(
                 self,
                 "Ubuntu password",
-                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}.",
+                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}, "
+                "or click Create SSH key first.",
             )
             return False
         return True
@@ -385,11 +393,12 @@ class MainWindow(QMainWindow):
         if entered is None:
             return
         self._ssh_password = entered
-        if not self._ssh_password and not (self.config.ssh_private_key_path or "").strip():
+        if not self._ssh_password and not self._has_usable_key():
             QMessageBox.warning(
                 self,
                 "Ubuntu password",
-                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}.",
+                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}, "
+                "or click Create SSH key first.",
             )
             return
         engine = BackupEngine(self.config, ssh=self._ssh_client())
@@ -400,10 +409,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "TEST CONNECTION", str(exc))
             self.refresh()
             return
-        ok = result.get("login") and result.get("script")
+        ok = bool(result.get("login") and result.get("script"))
         self._ssh_state = ("CONNECTED" if result.get("reachable") else "DISCONNECTED", "OK" if ok else "FAILED")
-        details = "\n".join(result.get("details") or [])
-        QMessageBox.information(self, "TEST CONNECTION", details or str(result))
+        details = "\n".join(result.get("details") or []) or str(result)
+        if ok:
+            QMessageBox.information(self, "TEST CONNECTION", details)
+        else:
+            QMessageBox.critical(self, "TEST CONNECTION", details)
         self.refresh()
 
     def dry_run(self) -> None:

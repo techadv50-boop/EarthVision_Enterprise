@@ -1,6 +1,6 @@
 # Server Backup security
 
-Version 1.3.0
+Version 1.3.1
 
 ## Principles
 
@@ -24,7 +24,7 @@ The GUI must never display private key contents.
 
 ## SSH
 
-Backups use the system OpenSSH client (`ssh` / `scp`) in BatchMode with an argv list.
+Key-only backups use the system OpenSSH client (`ssh` / `scp`) in BatchMode with an argv list. Password logins use Paramiko so Windows can type the Ubuntu password without OpenSSH ASKPASS. The password is held in memory only and is never written to disk or argv.
 
 Remote work is limited to allowlisted actions handled by:
 
@@ -71,5 +71,5 @@ Credential rotation generates a cryptographically secure application token, show
 ## Threat notes
 
 - Mapped network drives named `G:` may be unavailable to Task Scheduler when nobody is logged on. Prefer a local disk.
-- Closing the GUI does not stop a backup: BACKUP NOW starts a detached process using the same CLI engine.
+- Password-authenticated **BACKUP NOW** runs inside the GUI so the Ubuntu password never goes to disk. Keep the window open until the backup finishes. Key-only scheduled backups can still run from Task Scheduler.
 - This tool cannot protect backups stored only on the production server. Copies live on the Windows disk.

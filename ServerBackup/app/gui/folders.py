@@ -73,8 +73,8 @@ def create_and_fill_ssh_key(parent: QWidget | None, field: QLineEdit, username: 
         f"{created} on this Windows PC.\n\n"
         f"Private key (this app uses this file):\n{info['private']}\n\n"
         f"Public key (this file goes on Ubuntu user {user}):\n{public}\n\n"
-        "There is no password box in this app. Run this once in Windows PowerShell. "
-        "That command will ask for the Ubuntu password:\n\n"
+        "If Ubuntu does not allow password SSH, run this once in Windows PowerShell. "
+        "That command will ask for the Ubuntu password and install this public key:\n\n"
         f"{command}",
     )
 
