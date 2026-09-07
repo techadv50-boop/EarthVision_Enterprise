@@ -18,12 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.config.schema import AppConfig
-from app.config.store import default_config_path, save_config
+from app.config.store import save_config
 from app.serversec.credentials import proposed_rotation, rotate_local_token
 from app.serversec.engine import SecurityEngine, SecurityError
 from app.serversec.snapshot import SecurityStore
 from app.ssh.client import SSHError
-from app.utils.process import spawn_detached
 
 
 class SecurityPage(QWidget):
@@ -239,16 +238,26 @@ class SecurityPage(QWidget):
             )
             return
         save_config(self._config)
-        from pathlib import Path
+        from app.gui.password import prompt_ubuntu_password
+        from app.ssh.client import SSHClient
+        import threading
 
-        spawn_detached(
-            ["--security-check", "--config", str(default_config_path())],
-            cwd=Path(__file__).resolve().parents[2],
-        )
+        password = prompt_ubuntu_password(self, self._config.ssh_username, self._config.server_ip)
+        if password is None:
+            return
+        config = self._config
+
+        def work() -> None:
+            try:
+                SecurityEngine(config, ssh=SSHClient(config, password=password or None)).audit()
+            except (SecurityError, SSHError, OSError):
+                return
+
+        threading.Thread(target=work, daemon=True).start()
         QMessageBox.information(
             self,
             "SECURITY CHECK",
-            "On-demand audit started in the background. Refresh this page after it finishes. "
+            "On-demand audit started. Refresh this page after it finishes. "
             "No production files will be modified.",
         )
 

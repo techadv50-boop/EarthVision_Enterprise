@@ -75,8 +75,8 @@ class SetupDialog(QDialog):
         title.setObjectName("title")
         layout.addWidget(title)
         help_text = QLabel(
-            "The dashboard is read-only. Choose the Windows drive, then click Create SSH key "
-            "(or Browse key). There is no password field. Automatic backup stays OFF. "
+            "Choose the backup drive, then enter the Ubuntu SSH password for zhzh. "
+            "The password is not saved. Automatic backup stays OFF. "
             "Nginx, PHP-FPM, and MariaDB are not contacted by this step."
         )
         help_text.setWordWrap(True)
@@ -118,9 +118,14 @@ class SetupDialog(QDialog):
         self.ssh_username.setClearButtonEnabled(True)
         self.ssh_port = QSpinBox()
         self.ssh_port.setRange(1, 65535)
+        self.ssh_password = QLineEdit()
+        self.ssh_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ssh_password.setPlaceholderText("Ubuntu SSH password (not saved)")
+        self.ssh_password.setClearButtonEnabled(True)
         form.addRow("Ubuntu server IP", self.server_ip)
         form.addRow("SSH username", self.ssh_username)
         form.addRow("SSH port", self.ssh_port)
+        form.addRow("Ubuntu password", self.ssh_password)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox()
@@ -193,15 +198,17 @@ class SetupDialog(QDialog):
         if key and not Path(os_expand(key)).is_file():
             QMessageBox.warning(self, "SSH private key", f"Key file not found:\n{key}")
             return
-        if not key:
-            skip = QMessageBox.question(
+        if not key and not self.ssh_password.text():
+            QMessageBox.warning(
                 self,
-                "SSH private key",
-                "No SSH private key was selected. Click Create SSH key, or Continue without a key and add it later in Settings.",
+                "Ubuntu login",
+                "Enter the Ubuntu password, or click Create SSH key.",
             )
-            if skip != QMessageBox.StandardButton.Yes:
-                return
+            return
         self.accept()
+
+    def ubuntu_password(self) -> str:
+        return self.ssh_password.text()
 
     def apply_to(self, config: AppConfig) -> AppConfig:
         config.backup_destination = self.destination.text().strip()

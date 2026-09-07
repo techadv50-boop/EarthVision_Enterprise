@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -233,39 +232,11 @@ class BackupEngine:
         return report
 
     def _stream_backup(self, archive_path: Path) -> int:
-        import shutil as sh
-
-        ssh_bin = sh.which("ssh")
-        if not ssh_bin:
-            raise BackupError("OpenSSH ssh client was not found on PATH.")
-        args = [
-            ssh_bin,
-            "-p",
-            str(self.config.ssh_port),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            f"ConnectTimeout={self.config.ssh_connect_timeout}",
-            "-o",
-            "IdentitiesOnly=yes",
-        ]
-        key = (self.config.ssh_private_key_path or "").strip()
-        if key:
-            args.extend(["-i", str(Path(key).expanduser())])
-        args.append(f"{self.config.ssh_username}@{self.config.server_ip}")
-        args.extend(["--", "sudo", "-n", self.config.remote_prepare_script])
         stdin_data = json.dumps(self._payload("backup")).encode("utf-8")
-        process = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        process = self.ssh.popen(
+            ["sudo", "-n", self.config.remote_prepare_script],
+            stdin_bytes=stdin_data,
         )
-        assert process.stdin is not None
-        process.stdin.write(stdin_data)
-        process.stdin.close()
 
         def on_progress(written: int, speed: float) -> None:
             self.progress.write(

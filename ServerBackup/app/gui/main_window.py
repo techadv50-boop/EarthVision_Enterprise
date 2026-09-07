@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
@@ -24,10 +25,11 @@ from app import __app_name__, __version__
 from app.backup.lock import BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
-from app.config.store import default_config_path, load_config, save_config
+from app.config.store import save_config
 from app.engine.status import collect_dashboard_status, progress_path
 from app.gui.history_page import HistoryPage
 from app.gui.logs_page import LogsPage
+from app.gui.password import prompt_ubuntu_password
 from app.gui.restore_page import RestorePage
 from app.gui.security_page import SecurityPage
 from app.gui.settings_page import SettingsPage
@@ -37,7 +39,6 @@ from app.gui.widgets import Card
 from app.ssh.client import SSHClient, SSHError
 from app.utils.disk import needs_setup
 from app.utils.format import format_bytes, format_duration
-from app.utils.process import spawn_detached
 
 
 class DashboardPage(QWidget):
@@ -217,9 +218,10 @@ class DashboardPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, ssh_password: str = "") -> None:
         super().__init__()
         self.config = config
+        self._ssh_password = ssh_password or ""
         self._ssh_state = ("UNKNOWN", "UNKNOWN")
         self.setWindowTitle(f"{__app_name__}  {__version__}")
         self.resize(1100, 780)
@@ -249,6 +251,26 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
         self.refresh()
+
+    def _ssh_client(self) -> SSHClient:
+        return SSHClient(self.config, password=self._ssh_password or None)
+
+    def ensure_password(self) -> bool:
+        if self._ssh_password:
+            return True
+        entered = prompt_ubuntu_password(self, self.config.ssh_username, self.config.server_ip)
+        if entered is None:
+            return False
+        self._ssh_password = entered
+        key = (self.config.ssh_private_key_path or "").strip()
+        if not self._ssh_password and not key:
+            QMessageBox.warning(
+                self,
+                "Ubuntu password",
+                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}.",
+            )
+            return False
+        return True
 
     def show_dashboard(self) -> None:
         self.stack.setCurrentWidget(self.dashboard)
@@ -334,16 +356,22 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is not start:
             return
-        save_config(self.config)
-        try:
-            spawn_detached(
-                ["--backup", "--mode", "manual", "--config", str(default_config_path())],
-                cwd=Path(__file__).resolve().parents[2],
-            )
-        except OSError as exc:
-            QMessageBox.critical(self, "BACKUP NOW", str(exc))
+        if not self.ensure_password():
             return
-        self.statusBar().showMessage("Backup started in a background process.")
+        save_config(self.config)
+        config = self.config
+        password = self._ssh_password
+
+        def work() -> None:
+            from app.engine.backup_engine import BackupEngine, BackupError
+
+            try:
+                BackupEngine(config, ssh=SSHClient(config, password=password or None), mode="manual").run()
+            except (BackupError, SSHError, OSError) as exc:
+                ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.statusBar().showMessage("Backup started.")
 
     def cancel_backup(self) -> None:
         ProgressReporter(progress_path()).request_cancel()
@@ -352,7 +380,19 @@ class MainWindow(QMainWindow):
     def test_connection(self) -> None:
         from app.engine.backup_engine import BackupEngine
 
-        engine = BackupEngine(self.config)
+        self.config = self.settings_page.current_config()
+        entered = prompt_ubuntu_password(self, self.config.ssh_username, self.config.server_ip)
+        if entered is None:
+            return
+        self._ssh_password = entered
+        if not self._ssh_password and not (self.config.ssh_private_key_path or "").strip():
+            QMessageBox.warning(
+                self,
+                "Ubuntu password",
+                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}.",
+            )
+            return
+        engine = BackupEngine(self.config, ssh=self._ssh_client())
         try:
             result = engine.test_connection()
         except SSHError as exc:
@@ -367,15 +407,22 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def dry_run(self) -> None:
-        save_config(self.config)
-        try:
-            spawn_detached(
-                ["--dry-run", "--config", str(default_config_path())],
-                cwd=Path(__file__).resolve().parents[2],
-            )
-        except OSError as exc:
-            QMessageBox.critical(self, "DRY RUN", str(exc))
+        self.config = self.settings_page.current_config()
+        if not self.ensure_password():
             return
+        save_config(self.config)
+        config = self.config
+        password = self._ssh_password
+
+        def work() -> None:
+            from app.engine.backup_engine import BackupEngine
+
+            try:
+                BackupEngine(config, ssh=SSHClient(config, password=password or None)).dry_run()
+            except (SSHError, OSError) as exc:
+                ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
+
+        threading.Thread(target=work, daemon=True).start()
         self.statusBar().showMessage("Dry run started.")
 
     def test_integrity(self) -> None:
@@ -405,16 +452,18 @@ def run_gui(config: AppConfig) -> int:
     app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
     app.setStyleSheet(STYLESHEET)
+    ssh_password = ""
     if needs_setup(config):
         dialog = SetupDialog(config)
         if dialog.exec():
             config = dialog.apply_to(config)
+            ssh_password = dialog.ubuntu_password()
             save_config(config)
             try:
                 Path(config.backup_destination).mkdir(parents=True, exist_ok=True)
             except OSError:
                 pass
-    window = MainWindow(config)
+    window = MainWindow(config, ssh_password=ssh_password)
     window.show()
     if needs_setup(config):
         window.choose_backup_drive()

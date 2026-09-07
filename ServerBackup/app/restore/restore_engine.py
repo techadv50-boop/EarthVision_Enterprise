@@ -106,31 +106,9 @@ class RestoreEngine:
         return parsed or {"ok": True, "message": result.stdout.strip()}
 
     def _upload(self, local: Path, remote: str) -> None:
-        import shutil
-        import subprocess
-
-        scp = shutil.which("scp")
-        if not scp:
-            raise RestoreError("OpenSSH scp client was not found on PATH.")
-        args = [
-            scp,
-            "-P",
-            str(self.config.ssh_port),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "IdentitiesOnly=yes",
-        ]
-        key = (self.config.ssh_private_key_path or "").strip()
-        if key:
-            args.extend(["-i", str(Path(key).expanduser())])
-        args.append(str(local))
-        args.append(f"{self.config.ssh_username}@{self.config.server_ip}:{remote}")
-        completed = subprocess.run(args, capture_output=True, text=True, check=False)
-        if completed.returncode != 0:
-            raise RestoreError(completed.stderr.strip() or "Failed to upload backup archive for restore.")
+        result = self.ssh.scp_upload(local, remote)
+        if not result.ok:
+            raise RestoreError(result.stderr.strip() or "Failed to upload backup archive for restore.")
 
 
 def warning_text(kind: str) -> str:

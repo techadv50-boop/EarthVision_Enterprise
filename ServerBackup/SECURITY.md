@@ -1,6 +1,6 @@
 # Server Backup security
 
-Version 1.2.1
+Version 1.3.0
 
 ## Principles
 
@@ -17,7 +17,7 @@ Version 1.2.1
 | Secret | Where it lives | What the Windows app stores |
 | --- | --- | --- |
 | SSH private key | File chosen by the administrator (typically `%USERPROFILE%\.ssh\`) | Path only |
-| Ubuntu account password | Not used (key authentication) | Nothing |
+| Ubuntu account password | Typed in the GUI when connecting; held in memory only | Nothing (never saved) |
 | MariaDB password | `/etc/serverbackup/my.cnf` on Ubuntu, mode `600` | Nothing |
 
 The GUI must never display private key contents.

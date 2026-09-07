@@ -48,7 +48,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list[:1] == ["--askpass"]:
+        from app.ssh.askpass import write_password
+
+        return write_password()
+    args = _parser().parse_args(args_list)
     if args.version:
         print(f"{__app_name__} Version {__version__}")
         return 0

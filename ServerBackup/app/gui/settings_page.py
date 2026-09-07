@@ -304,9 +304,15 @@ class SettingsPage(QWidget):
             widget.takeItem(widget.row(item))
 
     def _discover(self) -> None:
+        from app.gui.password import prompt_ubuntu_password
+        from app.ssh.client import SSHClient
+
         cfg = self.current_config()
+        password = prompt_ubuntu_password(self, cfg.ssh_username, cfg.server_ip)
+        if password is None:
+            return
         try:
-            rows = discover_databases(cfg)
+            rows = discover_databases(cfg, client=SSHClient(cfg, password=password or None))
         except SSHError as exc:
             QMessageBox.warning(self, "Discover databases", str(exc))
             return
