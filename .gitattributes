@@ -1,0 +1,3 @@
+# Ubuntu helpers must stay LF even when the Windows checkout uses CRLF.
+ServerBackup/scripts/ubuntu/*.sh text eol=lf
+ServerBackup/scripts/ubuntu/*.py text eol=lf

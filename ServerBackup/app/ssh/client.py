@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -34,6 +35,11 @@ def bundled_ubuntu_scripts() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / "scripts" / "ubuntu"  # type: ignore[attr-defined]
     return Path(__file__).resolve().parents[2] / "scripts" / "ubuntu"
+
+
+def unix_text_bytes(data: bytes) -> bytes:
+    """Force LF endings so Windows-built helpers do not ship bash\\r shebangs."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 class SSHError(RuntimeError):
@@ -243,7 +249,7 @@ class SSHClient:
         askpass = f"/tmp/serverbackup-sudo-{token}.askpass"
         self._write_remote_file(pwfile, (self.password + "\n").encode("utf-8"), 0o600)
         script = f"#!/bin/sh\nexec cat -- {shlex.quote(pwfile)}\n"
-        self._write_remote_file(askpass, script.encode("utf-8"), 0o700)
+        self._write_remote_file(askpass, unix_text_bytes(script.encode("utf-8")), 0o700)
         self._sudo_pwfile = pwfile
         self._sudo_askpass = askpass
 
@@ -442,6 +448,19 @@ class SSHClient:
             self._redact(completed.stderr or ""),
         )
 
+    def _upload_unix_text(self, local: Path, remote: str) -> SSHResult:
+        data = unix_text_bytes(local.read_bytes())
+        handle, tmp_name = tempfile.mkstemp(prefix="serverbackup-unix-")
+        try:
+            with os.fdopen(handle, "wb") as tmp:
+                tmp.write(data)
+            return self.scp_upload(Path(tmp_name), remote)
+        finally:
+            try:
+                os.remove(tmp_name)
+            except OSError:
+                pass
+
     def _run_sudo(
         self,
         remote_command: list[str],
@@ -501,7 +520,7 @@ class SSHClient:
         if not mkdir.ok:
             return SSHResult(mkdir.returncode, mkdir.stdout, mkdir.stderr or "Could not create /tmp staging directory.")
         for name in UBUNTU_HELPER_FILES:
-            uploaded = self.scp_upload(source / name, f"{REMOTE_HELPER_STAGING}/{name}")
+            uploaded = self._upload_unix_text(source / name, f"{REMOTE_HELPER_STAGING}/{name}")
             if not uploaded.ok:
                 return SSHResult(uploaded.returncode, uploaded.stdout, uploaded.stderr or f"Failed to upload {name}.")
         mkdir_dest = self._run_sudo(["mkdir", "-p", REMOTE_HELPER_DIR], timeout=60)
