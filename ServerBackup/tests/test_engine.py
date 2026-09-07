@@ -166,3 +166,21 @@ def test_test_connection_sends_check_to_installed_helper(tmp_path: Path):
     assert ssh.script_path == "/usr/local/lib/serverbackup/prepare-backup.sh"
     assert ssh.payload["action"] == "check"
     assert "backup" != ssh.payload["action"]
+
+
+def test_dry_run_closes_ssh_session(tmp_path: Path):
+    class TrackingSSH(FakeSSH):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    cfg = make_config(tmp_path)
+    ssh = TrackingSSH()
+    result = BackupEngine(cfg, ssh=ssh).dry_run()
+    assert result["ok"] is True
+    assert ssh.closed is True
+    assert "dry-run" in ssh.calls
+    assert "backup" not in ssh.calls

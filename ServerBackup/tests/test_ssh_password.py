@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 
 from app.config.schema import AppConfig
 from app.ssh.client import SSHClient
@@ -104,6 +105,7 @@ class FakeParamiko:
 
                     def sendall(self, data):
                         self._sent += data
+                        parent.sent = getattr(parent, "sent", b"") + data
 
                     def shutdown_write(self):
                         return None
@@ -235,6 +237,95 @@ def test_sudo_askpass_keeps_json_stdin_separate(monkeypatch):
     assert "super-secret" not in fake.helper_stdin
     client.close()
     assert fake.removed
+
+
+def test_backup_now_stream_with_password_uses_paramiko_not_openssh(monkeypatch, tmp_path):
+    fake = FakeParamiko()
+    monkeypatch.setattr(SSHClient, "_connect_paramiko", lambda self: fake)
+
+    def no_openssh_popen(*args, **kwargs):
+        raise AssertionError(f"BACKUP NOW must not spawn OpenSSH: {args!r}")
+
+    monkeypatch.setattr("app.ssh.client.subprocess.Popen", no_openssh_popen)
+    cfg = AppConfig(
+        ssh_username="zhzh",
+        ssh_private_key_path="",
+        remote_prepare_script="/usr/local/lib/serverbackup/prepare-backup.sh",
+        backup_destination=str(tmp_path / "ServerBackups"),
+        log_directory=str(tmp_path / "logs"),
+        min_free_disk_gb=0.001,
+        retry_count=1,
+    )
+    Path(cfg.backup_destination).mkdir(parents=True, exist_ok=True)
+    Path(cfg.log_directory).mkdir(parents=True, exist_ok=True)
+    client = SSHClient(cfg, password="super-secret")
+    assert client.uses_paramiko() is True
+    assert client.transport_name() == "paramiko"
+    from app.engine.backup_engine import BackupEngine
+
+    written = BackupEngine(cfg, ssh=client)._stream_backup(tmp_path / "archive.tar.gz")
+    assert written == len(b"archive-bytes")
+    joined = " ".join(fake.commands)
+    assert "sudo -A" in joined
+    assert "prepare-backup.sh" in joined
+    assert "sudo -S" not in joined
+    sent = getattr(fake, "sent", b"")
+    assert b'"action":"backup"' in sent
+    assert b"super-secret" not in sent
+
+
+def test_key_only_popen_script_uses_openssh(monkeypatch):
+    from io import BytesIO as _BytesIO
+
+    monkeypatch.setattr("app.ssh.client.shutil.which", lambda _name: "/usr/bin/ssh")
+    captured: dict = {}
+
+    class FakeProc:
+        def __init__(self) -> None:
+            self.stdin = _BytesIO()
+            self.stdout = _BytesIO(b"archive-bytes")
+            self.stderr = _BytesIO(b"")
+            self.returncode = 0
+
+        def wait(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = list(args)
+        return FakeProc()
+
+    monkeypatch.setattr("app.ssh.client.subprocess.Popen", fake_popen)
+    cfg = AppConfig(
+        ssh_username="zhzh",
+        ssh_private_key_path="",
+        remote_prepare_script="/usr/local/lib/serverbackup/prepare-backup.sh",
+    )
+    client = SSHClient(cfg)
+    assert client.uses_paramiko() is False
+    assert client.transport_name() == "openssh"
+    client.popen_script(cfg.remote_prepare_script, {"action": "backup"})
+    assert captured["args"][0] == "/usr/bin/ssh"
+    assert "BatchMode=yes" in captured["args"]
+
+
+def test_gui_backup_now_passes_in_memory_password_to_same_ssh_client():
+    import inspect
+
+    from app.gui.main_window import MainWindow
+
+    backup_src = inspect.getsource(MainWindow.confirm_backup)
+    dry_src = inspect.getsource(MainWindow.dry_run)
+    test_src = inspect.getsource(MainWindow.test_connection)
+    assert "SSHClient(config, password=password or None)" in backup_src
+    assert "mode=\"manual\"" in backup_src.replace("'", '"') or "mode='manual'" in backup_src
+    assert ".run()" in backup_src
+    assert "SSHClient(config, password=password or None)" in dry_src
+    assert ".dry_run()" in dry_src
+    assert "ssh=self._ssh_client()" in test_src
+    assert "engine.test_connection()" in test_src
 
 
 def test_bundled_ubuntu_scripts_exist():

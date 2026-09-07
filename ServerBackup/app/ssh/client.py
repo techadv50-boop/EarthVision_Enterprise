@@ -123,6 +123,13 @@ class SSHClient:
     def _use_password(self) -> bool:
         return bool(self.password)
 
+    def uses_paramiko(self) -> bool:
+        """Password logins use Paramiko. Key-only logins use OpenSSH BatchMode."""
+        return self._use_password() and self._runner is subprocess.run
+
+    def transport_name(self) -> str:
+        return "paramiko" if self.uses_paramiko() else "openssh"
+
     def _base_ssh_args(self, binary: str | None = None) -> list[str]:
         args = [
             binary or self._ssh_bin(),
@@ -310,7 +317,7 @@ class SSHClient:
     ) -> SSHResult:
         if not remote_command:
             raise SSHError("Remote command is empty.")
-        if self._use_password() and self._runner is subprocess.run:
+        if self.uses_paramiko():
             return self._run_paramiko(remote_command, stdin_data=stdin_data, timeout=timeout)
         args = self._base_ssh_args()
         if extra_ssh:
@@ -376,7 +383,7 @@ class SSHClient:
         return SSHResult(code, self._redact(out), self._redact(err))
 
     def popen(self, remote_command: list[str], *, stdin_bytes: bytes | None = None) -> Any:
-        if self._use_password() and self._runner is subprocess.run:
+        if self.uses_paramiko():
             client = self._connect_paramiko()
             transport = client.get_transport()
             if transport is None:
@@ -403,7 +410,7 @@ class SSHClient:
         return process
 
     def scp_upload(self, local: Path, remote: str) -> SSHResult:
-        if self._use_password() and self._runner is subprocess.run:
+        if self.uses_paramiko():
             try:
                 client = self._connect_paramiko()
                 sftp = client.open_sftp()

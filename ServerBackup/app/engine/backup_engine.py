@@ -226,57 +226,66 @@ class BackupEngine:
 
     def dry_run(self) -> dict[str, Any]:
         self.progress.write(status="running", phase="dry-run", backup_id=self.backup_id, message="Dry run…")
+        self.logger.info(
+            f"Dry run SSH transport={getattr(self.ssh, 'transport_name', lambda: 'unknown')()} "
+            f"user={self.config.ssh_username} host={self.config.server_ip}"
+        )
         report: dict[str, Any] = {"ok": False, "checks": []}
 
         def note(name: str, ok: bool, detail: str = "") -> None:
             report["checks"].append({"name": name, "ok": ok, "detail": detail})
             self.progress.add_step(name, ok, detail)
 
-        drive = drive_status(self.config.backup_destination)
-        note("G: / backup drive", drive.exists, drive.error or f"{drive.free_gb:.1f} GB free")
-        if drive.exists:
-            enough = drive.free_gb >= self.config.min_free_disk_gb
-            note("Windows free space", enough, f"{drive.free_gb:.1f} GB free")
         try:
-            self._validate_config_paths()
-            note("Configuration paths", True)
-        except PathValidationError as exc:
-            note("Configuration paths", False, str(exc))
-            report["ok"] = False
-            self.progress.write(status="failed", error=str(exc))
+            drive = drive_status(self.config.backup_destination)
+            note("G: / backup drive", drive.exists, drive.error or f"{drive.free_gb:.1f} GB free")
+            if drive.exists:
+                enough = drive.free_gb >= self.config.min_free_disk_gb
+                note("Windows free space", enough, f"{drive.free_gb:.1f} GB free")
+            try:
+                self._validate_config_paths()
+                note("Configuration paths", True)
+            except PathValidationError as exc:
+                note("Configuration paths", False, str(exc))
+                report["ok"] = False
+                self.progress.write(status="failed", error=str(exc))
+                return report
+            try:
+                login = self.ssh.test_login()
+                note("SSH", login.ok, login.stderr.strip() if not login.ok else "OK")
+            except SSHError as exc:
+                note("SSH", False, str(exc))
+                self.progress.write(status="failed", error=str(exc))
+                return report
+            helpers = self.ssh.ensure_remote_scripts()
+            if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
+                note("Ubuntu helpers", True, "installed")
+            elif not helpers.ok:
+                note("Ubuntu helpers", False, helpers.stderr.strip())
+                report["ok"] = False
+                self.progress.write(status="failed", error=helpers.stderr.strip())
+                return report
+            result = self.ssh.run_script(
+                self.config.remote_prepare_script,
+                self._payload("dry-run"),
+                timeout=120,
+            )
+            parsed = self._parse_json_result(result.stdout)
+            note("Ubuntu dry-run", result.ok, result.stderr.strip() if not result.ok else "OK")
+            for check in parsed.get("checks") or []:
+                if isinstance(check, dict):
+                    note(str(check.get("name")), bool(check.get("ok")), str(check.get("detail") or ""))
+            report["ok"] = all(item["ok"] for item in report["checks"])
+            report["remote"] = parsed
+            self.progress.write(
+                status="success" if report["ok"] else "failed",
+                message="Dry run complete" if report["ok"] else "Dry run found problems",
+            )
             return report
-        try:
-            login = self.ssh.test_login()
-            note("SSH", login.ok, login.stderr.strip() if not login.ok else "OK")
-        except SSHError as exc:
-            note("SSH", False, str(exc))
-            self.progress.write(status="failed", error=str(exc))
-            return report
-        helpers = self.ssh.ensure_remote_scripts()
-        if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
-            note("Ubuntu helpers", True, "installed")
-        elif not helpers.ok:
-            note("Ubuntu helpers", False, helpers.stderr.strip())
-            report["ok"] = False
-            self.progress.write(status="failed", error=helpers.stderr.strip())
-            return report
-        result = self.ssh.run_script(
-            self.config.remote_prepare_script,
-            self._payload("dry-run"),
-            timeout=120,
-        )
-        parsed = self._parse_json_result(result.stdout)
-        note("Ubuntu dry-run", result.ok, result.stderr.strip() if not result.ok else "OK")
-        for check in parsed.get("checks") or []:
-            if isinstance(check, dict):
-                note(str(check.get("name")), bool(check.get("ok")), str(check.get("detail") or ""))
-        report["ok"] = all(item["ok"] for item in report["checks"])
-        report["remote"] = parsed
-        self.progress.write(
-            status="success" if report["ok"] else "failed",
-            message="Dry run complete" if report["ok"] else "Dry run found problems",
-        )
-        return report
+        finally:
+            closer = getattr(self.ssh, "close", None)
+            if callable(closer):
+                closer()
 
     def _stream_backup(self, archive_path: Path) -> int:
         process = self.ssh.popen_script(
@@ -361,6 +370,10 @@ class BackupEngine:
             self.incomplete_dir.mkdir(parents=True, exist_ok=True)
 
             self.progress.write(phase="ssh", message="Connecting to Ubuntu…")
+            self.logger.info(
+                f"BACKUP NOW SSH transport={getattr(self.ssh, 'transport_name', lambda: 'unknown')()} "
+                f"user={self.config.ssh_username} host={self.config.server_ip}"
+            )
 
             def _login() -> None:
                 result = self.ssh.test_login()
