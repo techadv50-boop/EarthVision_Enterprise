@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -30,9 +31,11 @@ from app.gui.logs_page import LogsPage
 from app.gui.restore_page import RestorePage
 from app.gui.security_page import SecurityPage
 from app.gui.settings_page import SettingsPage
+from app.gui.setup_dialog import DrivePickerDialog, SetupDialog
 from app.gui.styles import STYLESHEET
 from app.gui.widgets import Card
 from app.ssh.client import SSHClient, SSHError
+from app.utils.disk import needs_setup
 from app.utils.format import format_bytes, format_duration
 from app.utils.process import spawn_detached
 
@@ -41,13 +44,35 @@ class DashboardPage(QWidget):
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
         self._window = window
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
         title = QLabel(f"{__app_name__}")
         title.setObjectName("title")
-        subtitle = QLabel(f"Version {__version__}  ·  Primary action: BACKUP NOW  ·  Automatic backup is OFF by default")
+        subtitle = QLabel(
+            f"Version {__version__}  ·  Primary action: BACKUP NOW  ·  Automatic backup is OFF by default"
+        )
         subtitle.setObjectName("subtitle")
+        readonly = QLabel(
+            "This dashboard is read-only. Click EDIT SETTINGS or CHOOSE BACKUP DRIVE to change values."
+        )
+        readonly.setObjectName("subtitle")
+        readonly.setWordWrap(True)
         layout.addWidget(title)
         layout.addWidget(subtitle)
+        layout.addWidget(readonly)
+        setup_row = QHBoxLayout()
+        edit_settings = QPushButton("EDIT SETTINGS")
+        edit_settings.setObjectName("primary")
+        edit_settings.clicked.connect(self._window.show_settings)
+        choose_drive = QPushButton("CHOOSE BACKUP DRIVE")
+        choose_drive.clicked.connect(self._window.choose_backup_drive)
+        setup_row.addWidget(edit_settings)
+        setup_row.addWidget(choose_drive)
+        layout.addLayout(setup_row)
         self.server_card = Card("SERVER STATUS")
         self.backup_card = Card("BACKUP STATUS")
         self.storage_card = Card("STORAGE")
@@ -115,6 +140,8 @@ class DashboardPage(QWidget):
         sec_wrap.setLayout(sec_grid)
         layout.addWidget(sec_wrap)
         layout.addStretch()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
 
     def render(self, status: dict, ssh_state: tuple[str, str] | None = None) -> None:
         connection, ssh = ssh_state or (status.get("connection") or "UNKNOWN", status.get("ssh") or "UNKNOWN")
@@ -231,6 +258,27 @@ class MainWindow(QMainWindow):
         self.config = self.settings_page.current_config()
         self.settings_page.load_config(self.config)
         self.stack.setCurrentWidget(self.settings_page)
+        self.settings_page.server_ip.setFocus()
+
+    def choose_backup_drive(self) -> None:
+        self.config = self.settings_page.current_config()
+        dialog = DrivePickerDialog(self.config.backup_destination, self)
+        if not dialog.exec() or not dialog.selected:
+            return
+        self.config.backup_destination = dialog.selected
+        self.config.setup_completed = True
+        self.settings_page.load_config(self.config)
+        save_config(self.config)
+        try:
+            Path(self.config.backup_destination).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Backup folder", str(exc))
+        self.refresh()
+        QMessageBox.information(
+            self,
+            "Backup folder",
+            f"Backups will be saved to:\n{self.config.backup_destination}",
+        )
 
     def show_history(self) -> None:
         self.history_page.reload(self.config)
@@ -258,6 +306,9 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.restore_page)
 
     def refresh(self) -> None:
+        if self.stack.currentWidget() is self.settings_page:
+            self.config = self.settings_page.current_config()
+            return
         self.config = self.settings_page.current_config()
         status = collect_dashboard_status(self.config)
         status["connection"] = self._ssh_state[0]
@@ -352,7 +403,19 @@ def run_gui(config: AppConfig) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(__app_name__)
     app.setApplicationVersion(__version__)
+    app.setStyle("Fusion")
     app.setStyleSheet(STYLESHEET)
+    if needs_setup(config):
+        dialog = SetupDialog(config)
+        if dialog.exec():
+            config = dialog.apply_to(config)
+            save_config(config)
+            try:
+                Path(config.backup_destination).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
     window = MainWindow(config)
     window.show()
+    if needs_setup(config):
+        window.choose_backup_drive()
     return app.exec()

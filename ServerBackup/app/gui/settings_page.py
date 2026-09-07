@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QFileDialog,
+    QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -14,9 +12,8 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
-    QDoubleSpinBox,
-    QComboBox,
     QVBoxLayout,
     QWidget,
 )
@@ -24,32 +21,69 @@ from PySide6.QtWidgets import (
 from app.config.schema import AppConfig, SYSTEM_DATABASES
 from app.config.store import save_config
 from app.database.discover import discover_databases
+from app.gui.folders import pick_backup_folder, pick_existing_folder, pick_ssh_key
+from app.gui.setup_dialog import DrivePickerDialog
 from app.scheduler.tasks import disable_schedule, enable_schedule
 from app.ssh.client import SSHError
+
+
+def _editable(widget: QLineEdit, placeholder: str = "") -> QLineEdit:
+    widget.setReadOnly(False)
+    widget.setEnabled(True)
+    widget.setClearButtonEnabled(True)
+    widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    if placeholder:
+        widget.setPlaceholderText(placeholder)
+    return widget
 
 
 class SettingsPage(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._config: AppConfig | None = None
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
         heading = QLabel("Settings")
         heading.setObjectName("title")
         layout.addWidget(heading)
+        hint = QLabel(
+            "Type in the boxes below, or use Browse / Choose drive. "
+            "The dashboard is read-only. Click Save settings when finished."
+        )
+        hint.setObjectName("subtitle")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         form = QFormLayout()
-        self.server_ip = QLineEdit()
-        self.ssh_username = QLineEdit()
+        self.server_ip = _editable(QLineEdit(), "192.168.18.18")
+        self.ssh_username = _editable(QLineEdit(), "zhz")
         self.ssh_port = QSpinBox()
         self.ssh_port.setRange(1, 65535)
-        self.ssh_key = QLineEdit()
-        self.ssh_key.setPlaceholderText("Path to private key file (contents are never displayed)")
+        self.ssh_key = _editable(QLineEdit(), r"C:\Users\YourName\.ssh\id_ed25519")
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse_key)
         key_row = QHBoxLayout()
         key_row.addWidget(self.ssh_key)
         key_row.addWidget(browse)
-        self.destination = QLineEdit()
-        self.log_directory = QLineEdit()
+        self.destination = _editable(QLineEdit(), r"G:\ServerBackups")
+        dest_row = QHBoxLayout()
+        dest_row.addWidget(self.destination)
+        dest_browse = QPushButton("Browse folder…")
+        dest_browse.clicked.connect(self._browse_destination)
+        dest_drive = QPushButton("Choose drive…")
+        dest_drive.clicked.connect(self._choose_drive)
+        dest_row.addWidget(dest_browse)
+        dest_row.addWidget(dest_drive)
+        self.log_directory = _editable(QLineEdit(), r"C:\ServerBackup\Logs")
+        log_row = QHBoxLayout()
+        log_row.addWidget(self.log_directory)
+        log_browse = QPushButton("Browse…")
+        log_browse.clicked.connect(self._browse_logs)
+        log_row.addWidget(log_browse)
         self.retention = QSpinBox()
         self.retention.setRange(1, 100)
         self.retry_count = QSpinBox()
@@ -63,9 +97,9 @@ class SettingsPage(QWidget):
         self.compression = QSpinBox()
         self.compression.setRange(1, 9)
         self.websites = QListWidget()
-        self.ojs = QLineEdit()
-        self.nginx = QLineEdit()
+        self.websites.setMinimumHeight(90)
         self.extra = QListWidget()
+        self.extra.setMinimumHeight(70)
         self.databases = QListWidget()
         self.databases.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.log_retention = QSpinBox()
@@ -73,7 +107,7 @@ class SettingsPage(QWidget):
         self.automatic = QCheckBox("Automatic Backup (OFF by default)")
         self.schedule_type = QComboBox()
         self.schedule_type.addItems(["daily", "weekly", "custom"])
-        self.schedule_time = QLineEdit()
+        self.schedule_time = _editable(QLineEdit(), "02:00")
         self.schedule_weekday = QComboBox()
         self.schedule_weekday.addItems(
             ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -82,8 +116,8 @@ class SettingsPage(QWidget):
         form.addRow("SSH username", self.ssh_username)
         form.addRow("SSH port", self.ssh_port)
         form.addRow("SSH private key path", key_row)
-        form.addRow("Backup destination", self.destination)
-        form.addRow("Log directory", self.log_directory)
+        form.addRow("Backup destination", dest_row)
+        form.addRow("Log directory", log_row)
         form.addRow("Retention count", self.retention)
         form.addRow("Retry count", self.retry_count)
         form.addRow("Retry delay (seconds)", self.retry_delay)
@@ -91,25 +125,33 @@ class SettingsPage(QWidget):
         form.addRow("Minimum Ubuntu temp space (GB)", self.min_remote)
         form.addRow("Compression level", self.compression)
         form.addRow("Website directories", self.websites)
+        self.website_input = _editable(QLineEdit(), "/var/www/example.com")
         website_btns = QHBoxLayout()
-        add_site = QPushButton("Add website path")
-        add_site.clicked.connect(lambda: self._add_item(self.websites, "Website path"))
+        website_btns.addWidget(self.website_input)
+        add_site = QPushButton("Add path")
+        add_site.clicked.connect(lambda: self._add_typed(self.website_input, self.websites))
+        self.website_input.returnPressed.connect(lambda: self._add_typed(self.website_input, self.websites))
         remove_site = QPushButton("Remove selected")
         remove_site.clicked.connect(lambda: self._remove_selected(self.websites))
         website_btns.addWidget(add_site)
         website_btns.addWidget(remove_site)
-        form.addRow("", website_btns)
+        form.addRow("Add website path", website_btns)
+        self.ojs = _editable(QLineEdit(), "/var/www/ojs-files")
         form.addRow("OJS private-files directory", self.ojs)
+        self.nginx = _editable(QLineEdit(), "/etc/nginx")
         form.addRow("Nginx directory", self.nginx)
         form.addRow("Additional directories", self.extra)
+        self.extra_input = _editable(QLineEdit(), "/absolute/unix/path")
         extra_btns = QHBoxLayout()
-        add_extra = QPushButton("Add additional path")
-        add_extra.clicked.connect(lambda: self._add_item(self.extra, "Additional Unix path"))
+        extra_btns.addWidget(self.extra_input)
+        add_extra = QPushButton("Add path")
+        add_extra.clicked.connect(lambda: self._add_typed(self.extra_input, self.extra))
+        self.extra_input.returnPressed.connect(lambda: self._add_typed(self.extra_input, self.extra))
         remove_extra = QPushButton("Remove selected")
         remove_extra.clicked.connect(lambda: self._remove_selected(self.extra))
         extra_btns.addWidget(add_extra)
         extra_btns.addWidget(remove_extra)
-        form.addRow("", extra_btns)
+        form.addRow("Add additional path", extra_btns)
         form.addRow("Selected databases", self.databases)
         discover = QPushButton("DISCOVER DATABASES")
         discover.clicked.connect(self._discover)
@@ -128,6 +170,8 @@ class SettingsPage(QWidget):
         save.clicked.connect(self._save)
         layout.addWidget(save, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addStretch()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
 
     def load_config(self, config: AppConfig) -> None:
         self._config = config
@@ -186,6 +230,8 @@ class SettingsPage(QWidget):
         cfg.schedule_time = self.schedule_time.text().strip()
         cfg.schedule_weekday = self.schedule_weekday.currentText()
         cfg.security_mode = self.security_mode.currentText()
+        if cfg.backup_destination:
+            cfg.setup_completed = True
         return cfg
 
     def _fill_databases(self, selected: list[str]) -> None:
@@ -206,9 +252,31 @@ class SettingsPage(QWidget):
         self.databases.addItem(item)
 
     def _browse_key(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select SSH private key", str(Path.home() / ".ssh"))
+        path = pick_ssh_key(self, self.ssh_key.text().strip())
         if path:
             self.ssh_key.setText(path)
+
+    def _browse_destination(self) -> None:
+        path = pick_backup_folder(self, self.destination.text().strip())
+        if path:
+            self.destination.setText(path)
+
+    def _choose_drive(self) -> None:
+        dialog = DrivePickerDialog(self.destination.text().strip(), self)
+        if dialog.exec() and dialog.selected:
+            self.destination.setText(dialog.selected)
+
+    def _browse_logs(self) -> None:
+        path = pick_existing_folder(self, self.log_directory.text().strip(), "Select log folder")
+        if path:
+            self.log_directory.setText(path)
+
+    def _add_typed(self, source: QLineEdit, widget: QListWidget) -> None:
+        text = source.text().strip()
+        if not text:
+            return
+        widget.addItem(text)
+        source.clear()
 
     def _add_item(self, widget: QListWidget, title: str) -> None:
         from PySide6.QtWidgets import QInputDialog

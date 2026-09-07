@@ -26,6 +26,8 @@ a = Analysis(
         "app.gui",
         "app.gui.main_window",
         "app.gui.settings_page",
+        "app.gui.setup_dialog",
+        "app.gui.folders",
         "app.gui.history_page",
         "app.gui.logs_page",
         "app.gui.restore_page",

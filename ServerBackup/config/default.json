@@ -31,5 +31,6 @@
   "remote_security_script": "/usr/local/lib/serverbackup/security-audit.sh",
   "security_store": "C:\\ServerBackup\\Security",
   "security_mode": "BALANCED",
+  "setup_completed": false,
   "security_audit_timeout": 180
 }

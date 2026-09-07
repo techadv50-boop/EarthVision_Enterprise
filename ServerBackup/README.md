@@ -2,7 +2,7 @@
 
 Windows desktop application for backing up a live Ubuntu web server (Nginx, MariaDB, OJS, and configurable extra paths).
 
-**Version 1.1.0**
+**Version 1.2.0**
 
 Primary action: **BACKUP NOW**. Automatic scheduling is **OFF by default**. Both methods use the same backup engine.
 
@@ -104,6 +104,8 @@ Never `NOPASSWD: ALL`.
 Place an SSH public key for the Windows backup PC in the Ubuntu account's `authorized_keys`. MariaDB credentials stay on Ubuntu in `/etc/serverbackup/my.cnf` (mode 600).
 
 ## Windows configuration
+
+On first launch the app **prompts you to select the backup drive**. You can also click **CHOOSE BACKUP DRIVE** or **EDIT SETTINGS** on the dashboard. Dashboard status cards are read-only.
 
 Settings are stored in `%APPDATA%\ServerBackup\config.json`.
 

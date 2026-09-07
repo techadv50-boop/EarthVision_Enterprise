@@ -1,9 +1,12 @@
 STYLESHEET = """
-QMainWindow, QWidget {
+QMainWindow, QDialog {
     background: #f4f6f8;
     color: #1c2430;
     font-family: "Segoe UI", "Ubuntu", sans-serif;
     font-size: 13px;
+}
+QLabel {
+    color: #1c2430;
 }
 QLabel#title {
     font-size: 22px;
@@ -23,6 +26,7 @@ QPushButton {
     border-radius: 6px;
     padding: 8px 14px;
     background: #ffffff;
+    color: #1c2430;
 }
 QPushButton:hover {
     background: #eef3f8;
@@ -47,11 +51,20 @@ QPushButton#danger {
 QPushButton#danger:hover {
     background: #912018;
 }
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QListWidget {
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QListWidget {
     border: 1px solid #c5d0dc;
     border-radius: 6px;
     padding: 6px 8px;
     background: #ffffff;
+    color: #1c2430;
+    selection-background-color: #1b7f4e;
+    selection-color: #ffffff;
+}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QTextEdit:focus {
+    border: 1px solid #1b7f4e;
+}
+QLineEdit:read-only {
+    background: #eef3f8;
 }
 QProgressBar {
     border: 1px solid #c5d0dc;
@@ -67,6 +80,7 @@ QTableWidget {
     background: #ffffff;
     border: 1px solid #d9e1ea;
     gridline-color: #e6edf3;
+    color: #1c2430;
 }
 QHeaderView::section {
     background: #eef3f8;
@@ -77,5 +91,9 @@ QHeaderView::section {
 QStatusBar {
     background: #10233a;
     color: #ffffff;
+}
+QScrollArea {
+    border: none;
+    background: #f4f6f8;
 }
 """

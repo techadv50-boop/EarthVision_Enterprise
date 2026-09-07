@@ -51,6 +51,7 @@ class AppConfig:
     remote_security_script: str = "/usr/local/lib/serverbackup/security-audit.sh"
     security_store: str = r"C:\ServerBackup\Security"
     security_mode: str = "BALANCED"
+    setup_completed: bool = False
     ssh_connect_timeout: int = 20
     transfer_timeout: int = 6 * 60 * 60
     security_audit_timeout: int = 180
@@ -75,6 +76,7 @@ class AppConfig:
         cfg.extra_directories = [str(p) for p in cfg.extra_directories]
         cfg.selected_databases = [str(p) for p in cfg.selected_databases]
         cfg.automatic_backup = bool(cfg.automatic_backup)
+        cfg.setup_completed = bool(cfg.setup_completed)
         mode = str(cfg.security_mode or "BALANCED").upper()
         if mode not in {"LOW", "BALANCED", "HIGH", "CRITICAL"}:
             mode = "BALANCED"
