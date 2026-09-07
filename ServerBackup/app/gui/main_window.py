@@ -139,7 +139,7 @@ class DashboardPage(QWidget):
             self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(100 if progress.get("status") == "success" else 0)
+            self.progress_bar.setValue(0)
         speed = int(progress.get("speed_bps") or 0)
         eta = progress.get("eta_seconds")
         sha = progress.get("sha256")

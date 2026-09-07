@@ -13,9 +13,9 @@ class ProgressReporter:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data: dict[str, Any] = {
-            "status": "running",
-            "phase": "starting",
-            "message": "Starting…",
+            "status": "idle",
+            "phase": "idle",
+            "message": "Ready.",
             "steps": [],
             "bytes_done": 0,
             "bytes_total": 0,
