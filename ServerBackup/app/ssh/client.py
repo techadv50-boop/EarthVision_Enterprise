@@ -385,6 +385,15 @@ class SSHClient:
             self._redact(completed.stderr or ""),
         )
 
+    def _cache_sudo(self) -> SSHResult:
+        if not self.password:
+            return SSHResult(1, "", "sudo password is not available")
+        return self.run(
+            ["sudo", "-S", "-p", "", "-v"],
+            stdin_data=f"{self.password}\n",
+            timeout=self.config.ssh_connect_timeout,
+        )
+
     def _run_sudo(
         self,
         remote_command: list[str],
@@ -392,33 +401,21 @@ class SSHClient:
         stdin_data: str = "",
         timeout: int | None = None,
     ) -> SSHResult:
-        feed = bool(self._sudo_needs_password and self.password)
-        result = self.run(
-            self._sudo_argv(remote_command, feed_password=feed),
-            stdin_data=self._stdin_with_sudo(stdin_data, feed_password=feed),
-            timeout=timeout,
-        )
-        if result.ok:
-            self._sudo_needs_password = feed
+        n_argv = self._sudo_argv(remote_command, feed_password=False)
+        result = self.run(n_argv, stdin_data=stdin_data, timeout=timeout)
+        if result.ok or not self._sudo_password_required(result) or not self.password:
             return result
-        if self.password and (self._sudo_needs_password is not True) and self._sudo_password_required(result):
-            self._sudo_needs_password = True
-            result = self.run(
-                self._sudo_argv(remote_command, feed_password=True),
-                stdin_data=self._stdin_with_sudo(stdin_data, feed_password=True),
-                timeout=timeout,
+        cached = self._cache_sudo()
+        if not cached.ok:
+            return SSHResult(
+                cached.returncode,
+                cached.stdout,
+                "SSH login succeeded, but sudo rejected the Ubuntu password. "
+                "Use the same password zhzh uses for sudo, or on the server run: "
+                "sudo bash ubuntu-backup-setup.sh --install-scripts --sudoers --ssh-user zhzh",
             )
-            if result.ok:
-                return result
-            if self._sudo_password_required(result):
-                return SSHResult(
-                    result.returncode,
-                    result.stdout,
-                    "SSH login succeeded, but sudo rejected the Ubuntu password. "
-                    "Use the same password zhzh uses for sudo, or on the server run: "
-                    "sudo bash ubuntu-backup-setup.sh --install-scripts --sudoers --ssh-user zhzh",
-                )
-        return result
+        self._sudo_needs_password = False
+        return self.run(n_argv, stdin_data=stdin_data, timeout=timeout)
 
     def run_script(
         self,
@@ -443,16 +440,52 @@ class SSHClient:
         if not is_allowed_remote_action(action):
             raise SSHError(f"Remote action is not allowlisted: {action!r}")
         body = json.dumps(payload, separators=(",", ":"))
-        feed = bool(self._sudo_needs_password and self.password)
-        remote = self._sudo_argv([script_path], feed_password=feed)
-        stdin_bytes = self._stdin_with_sudo(body, feed_password=feed).encode("utf-8")
-        return self.popen(remote, stdin_bytes=stdin_bytes)
+        probe = self.run(["sudo", "-n", "true"], timeout=self.config.ssh_connect_timeout)
+        if self.password and self._sudo_password_required(probe):
+            cached = self._cache_sudo()
+            if not cached.ok:
+                raise SSHError(cached.stderr.strip() or "sudo rejected the Ubuntu password.")
+        remote = self._sudo_argv([script_path], feed_password=False)
+        return self.popen(remote, stdin_bytes=body.encode("utf-8"))
 
     def ensure_remote_scripts(self) -> SSHResult:
-        probe = self.run(["test", "-x", self.config.remote_prepare_script], timeout=self.config.ssh_connect_timeout)
-        if probe.ok:
-            return SSHResult(0, "", "already installed")
         source = bundled_ubuntu_scripts()
+        missing = [name for name in UBUNTU_HELPER_FILES if not (source / name).is_file()]
+        if missing:
+            raise SSHError(f"Windows helper scripts are missing: {', '.join(missing)}")
+        mkdir = self.run(["mkdir", "-p", REMOTE_HELPER_STAGING], timeout=self.config.ssh_connect_timeout)
+        if not mkdir.ok:
+            return SSHResult(mkdir.returncode, mkdir.stdout, mkdir.stderr or "Could not create /tmp staging directory.")
+        for name in UBUNTU_HELPER_FILES:
+            uploaded = self.scp_upload(source / name, f"{REMOTE_HELPER_STAGING}/{name}")
+            if not uploaded.ok:
+                return SSHResult(uploaded.returncode, uploaded.stdout, uploaded.stderr or f"Failed to upload {name}.")
+        mkdir_dest = self._run_sudo(["mkdir", "-p", REMOTE_HELPER_DIR], timeout=60)
+        if not mkdir_dest.ok:
+            return SSHResult(
+                mkdir_dest.returncode,
+                mkdir_dest.stdout,
+                mkdir_dest.stderr
+                or "Could not create /usr/local/lib/serverbackup. SSH login is OK; sudo could not create the directory.",
+            )
+        for name in UBUNTU_HELPER_FILES:
+            installed = self._run_sudo(
+                [
+                    "install",
+                    "-m",
+                    "0755",
+                    f"{REMOTE_HELPER_STAGING}/{name}",
+                    f"{REMOTE_HELPER_DIR}/{name}",
+                ],
+                timeout=60,
+            )
+            if not installed.ok:
+                return SSHResult(
+                    installed.returncode,
+                    installed.stdout,
+                    installed.stderr or f"Could not install {name} on Ubuntu.",
+                )
+        return SSHResult(0, "", "installed Ubuntu backup helpers")
         missing = [name for name in UBUNTU_HELPER_FILES if not (source / name).is_file()]
         if missing:
             raise SSHError(f"Windows helper scripts are missing: {', '.join(missing)}")

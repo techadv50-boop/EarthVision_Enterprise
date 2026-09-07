@@ -155,14 +155,31 @@ def test_auth_failure_is_mapped():
     assert "wrong-pass" not in str(mapped)
 
 
-def test_sudo_uses_password_on_stdin_not_argv(monkeypatch):
+def test_sudo_caches_password_then_sends_json_only(monkeypatch):
     class SudoFake(FakeParamiko):
+        def __init__(self) -> None:
+            super().__init__()
+            self.validated = False
+            self.last_stdin = ""
+            self.helper_stdin = ""
+
         def exec_command(self, command, timeout=None):
             self.commands.append(command)
-            needs_n = " -n " in f" {command} "
-            code = 1 if needs_n else 0
-            stderr = b"sudo: a password is required\n" if needs_n else b""
-            stdout = b"" if needs_n else b'{"ok":true}'
+            is_validate = command.rstrip().endswith(" -v") or " -v" in command.split("''")[-1]
+            is_n = " -n " in f" {command} "
+            if is_validate:
+                self.validated = True
+                code = 0
+                stderr = b""
+                stdout = b""
+            elif is_n and not self.validated:
+                code = 1
+                stderr = b"sudo: a password is required\n"
+                stdout = b""
+            else:
+                code = 0
+                stderr = b""
+                stdout = b'{"ok":true,"hostname":"ubuntu"}'
 
             class Chan:
                 def recv_exit_status(self):
@@ -176,6 +193,8 @@ def test_sudo_uses_password_on_stdin_not_argv(monkeypatch):
 
             def write(data: str) -> int:
                 self.last_stdin = data
+                if is_n and self.validated:
+                    self.helper_stdin = data
                 return original(data)
 
             stdin.write = write  # type: ignore[method-assign]
@@ -194,9 +213,10 @@ def test_sudo_uses_password_on_stdin_not_argv(monkeypatch):
     joined = " ".join(fake.commands)
     assert "super-secret" not in joined
     assert "sudo -S" in joined
-    assert getattr(fake, "last_stdin", "").startswith("super-secret\n")
-    assert '"action":"check"' in fake.last_stdin
-    assert client._sudo_needs_password is True
+    assert "sudo -n" in joined
+    assert fake.helper_stdin.startswith("{")
+    assert '"action":"check"' in fake.helper_stdin
+    assert not fake.helper_stdin.startswith("super-secret")
 
 
 def test_bundled_ubuntu_scripts_exist():

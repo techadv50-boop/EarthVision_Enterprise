@@ -144,3 +144,25 @@ def test_redaction_in_logs(tmp_path: Path):
     text = redact_secrets("password=supersecret token=abc -----BEGIN OPENSSH PRIVATE KEY-----abc-----END OPENSSH PRIVATE KEY-----")
     assert "supersecret" not in text
     assert "PRIVATE KEY" not in text or "[REDACTED]" in text
+
+
+def test_test_connection_sends_check_to_installed_helper(tmp_path: Path):
+    class RecordingSSH(FakeSSH):
+        def __init__(self) -> None:
+            super().__init__()
+            self.script_path = ""
+            self.payload = {}
+
+        def run_script(self, script_path: str, payload, *, timeout=None, use_sudo: bool = True):
+            self.script_path = script_path
+            self.payload = dict(payload)
+            return super().run_script(script_path, payload, timeout=timeout, use_sudo=use_sudo)
+
+    cfg = make_config(tmp_path)
+    ssh = RecordingSSH()
+    result = BackupEngine(cfg, ssh=ssh).test_connection()
+    assert result["login"] is True
+    assert result["script"] is True
+    assert ssh.script_path == "/usr/local/lib/serverbackup/prepare-backup.sh"
+    assert ssh.payload["action"] == "check"
+    assert "backup" != ssh.payload["action"]
