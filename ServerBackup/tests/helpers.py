@@ -112,3 +112,6 @@ class FakeSSH:
                 "",
             )
         return SSHResult(0, "{}", "")
+
+    def close(self) -> None:
+        return None

@@ -50,10 +50,40 @@ class FakeParamiko:
 
     def open_sftp(self):
         client = self
+        store = getattr(self, "remote_files", {})
+        self.remote_files = store
+        self.removed = getattr(self, "removed", [])
+
+        class _RemoteFile:
+            def __init__(self, path: str) -> None:
+                self.path = path
+                self.buf = BytesIO()
+
+            def write(self, data):
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+                self.buf.write(data)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                store[self.path] = self.buf.getvalue()
 
         class SFTP:
             def put(self, local, remote):
                 client.uploads.append((local, remote))
+
+            def open(self, remote, mode="r"):
+                return _RemoteFile(remote)
+
+            def chmod(self, remote, mode):
+                client.modes = getattr(client, "modes", {})
+                client.modes[remote] = mode
+
+            def remove(self, remote):
+                client.removed.append(remote)
+                store.pop(remote, None)
 
             def close(self):
                 return None
@@ -155,35 +185,20 @@ def test_auth_failure_is_mapped():
     assert "wrong-pass" not in str(mapped)
 
 
-def test_sudo_caches_password_then_sends_json_only(monkeypatch):
+def test_sudo_askpass_keeps_json_stdin_separate(monkeypatch):
     class SudoFake(FakeParamiko):
         def __init__(self) -> None:
             super().__init__()
-            self.validated = False
             self.last_stdin = ""
             self.helper_stdin = ""
 
         def exec_command(self, command, timeout=None):
             self.commands.append(command)
-            is_validate = command.rstrip().endswith(" -v") or " -v" in command.split("''")[-1]
-            is_n = " -n " in f" {command} "
-            if is_validate:
-                self.validated = True
-                code = 0
-                stderr = b""
-                stdout = b""
-            elif is_n and not self.validated:
-                code = 1
-                stderr = b"sudo: a password is required\n"
-                stdout = b""
-            else:
-                code = 0
-                stderr = b""
-                stdout = b'{"ok":true,"hostname":"ubuntu"}'
+            stdout = b'{"ok":true,"hostname":"ubuntu"}' if "prepare-backup.sh" in command else b""
 
             class Chan:
                 def recv_exit_status(self):
-                    return code
+                    return 0
 
                 def shutdown_write(self):
                     return None
@@ -193,12 +208,12 @@ def test_sudo_caches_password_then_sends_json_only(monkeypatch):
 
             def write(data: str) -> int:
                 self.last_stdin = data
-                if is_n and self.validated:
+                if "prepare-backup.sh" in command:
                     self.helper_stdin = data
                 return original(data)
 
             stdin.write = write  # type: ignore[method-assign]
-            return stdin, _FakeStdout(stdout, Chan()), _FakeChannelFile(stderr)
+            return stdin, _FakeStdout(stdout, Chan()), _FakeChannelFile(b"")
 
     fake = SudoFake()
     monkeypatch.setattr(SSHClient, "_connect_paramiko", lambda self: fake)
@@ -212,11 +227,14 @@ def test_sudo_caches_password_then_sends_json_only(monkeypatch):
     assert result.ok
     joined = " ".join(fake.commands)
     assert "super-secret" not in joined
-    assert "sudo -S" in joined
-    assert "sudo -n" in joined
+    assert "sudo -A" in joined
+    assert "SUDO_ASKPASS=" in joined
+    assert "sudo -S" not in joined
     assert fake.helper_stdin.startswith("{")
     assert '"action":"check"' in fake.helper_stdin
-    assert not fake.helper_stdin.startswith("super-secret")
+    assert "super-secret" not in fake.helper_stdin
+    client.close()
+    assert fake.removed
 
 
 def test_bundled_ubuntu_scripts_exist():

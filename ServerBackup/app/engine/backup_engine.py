@@ -218,6 +218,10 @@ class BackupEngine:
         except SSHError as exc:
             results["details"].append(str(exc))
             self.logger.error(f"Connection test failed: {exc}")
+        finally:
+            closer = getattr(self.ssh, "close", None)
+            if callable(closer):
+                closer()
         return results
 
     def dry_run(self) -> dict[str, Any]:
@@ -500,5 +504,8 @@ class BackupEngine:
                 info["finish_time"] = datetime.now().isoformat(timespec="seconds")
                 info["duration_seconds"] = int((datetime.now() - self._started).total_seconds())
             self.lock.release()
+            closer = getattr(self.ssh, "close", None)
+            if callable(closer):
+                closer()
             self.logger.info(f"Backup finished status={info['status']}")
             self.logger.close()

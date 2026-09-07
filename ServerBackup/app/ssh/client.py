@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -89,7 +90,8 @@ class SSHClient:
         self._runner = runner or subprocess.run
         self.password = password or None
         self._paramiko: Any = None
-        self._sudo_needs_password: bool | None = None
+        self._sudo_askpass: str | None = None
+        self._sudo_pwfile: str | None = None
 
     def _ssh_bin(self) -> str:
         found = shutil.which("ssh")
@@ -197,12 +199,67 @@ class SSHClient:
             return ["sudo", "-S", "-p", "", *remote_command]
         return ["sudo", "-n", *remote_command]
 
-    def _stdin_with_sudo(self, body: str, *, feed_password: bool) -> str:
-        if feed_password and self.password:
-            if "\n" in self.password or "\r" in self.password:
-                raise SSHError("The Ubuntu password cannot contain a newline.")
-            return f"{self.password}\n{body}"
-        return body
+    def _sudo_askpass_argv(self, remote_command: list[str]) -> list[str]:
+        if not self._sudo_askpass:
+            raise SSHError("sudo askpass helper is not prepared.")
+        return [
+            "env",
+            f"SUDO_ASKPASS={self._sudo_askpass}",
+            "sudo",
+            "-A",
+            "-p",
+            "",
+            *remote_command,
+        ]
+
+    def _write_remote_file(self, remote: str, data: bytes, mode: int) -> None:
+        client = self._connect_paramiko()
+        sftp = client.open_sftp()
+        try:
+            with sftp.open(remote, "wb") as handle:
+                handle.write(data)
+            sftp.chmod(remote, mode)
+        finally:
+            sftp.close()
+
+    def _remove_remote_file(self, remote: str) -> None:
+        try:
+            client = self._connect_paramiko()
+            sftp = client.open_sftp()
+            try:
+                sftp.remove(remote)
+            finally:
+                sftp.close()
+        except Exception:
+            return
+
+    def _ensure_sudo_askpass(self) -> None:
+        if self._sudo_askpass and self._sudo_pwfile:
+            return
+        if not self.password:
+            raise SSHError("sudo password is not available")
+        token = secrets.token_hex(8)
+        pwfile = f"/tmp/serverbackup-sudo-{token}.pw"
+        askpass = f"/tmp/serverbackup-sudo-{token}.askpass"
+        self._write_remote_file(pwfile, (self.password + "\n").encode("utf-8"), 0o600)
+        script = f"#!/bin/sh\nexec cat -- {shlex.quote(pwfile)}\n"
+        self._write_remote_file(askpass, script.encode("utf-8"), 0o700)
+        self._sudo_pwfile = pwfile
+        self._sudo_askpass = askpass
+
+    def close(self) -> None:
+        if self._sudo_pwfile:
+            self._remove_remote_file(self._sudo_pwfile)
+        if self._sudo_askpass:
+            self._remove_remote_file(self._sudo_askpass)
+        self._sudo_pwfile = None
+        self._sudo_askpass = None
+        if self._paramiko is not None:
+            try:
+                self._paramiko.close()
+            except Exception:
+                pass
+            self._paramiko = None
 
     def _connect_paramiko(self) -> Any:
         if self._paramiko is not None:
@@ -385,15 +442,6 @@ class SSHClient:
             self._redact(completed.stderr or ""),
         )
 
-    def _cache_sudo(self) -> SSHResult:
-        if not self.password:
-            return SSHResult(1, "", "sudo password is not available")
-        return self.run(
-            ["sudo", "-S", "-p", "", "-v"],
-            stdin_data=f"{self.password}\n",
-            timeout=self.config.ssh_connect_timeout,
-        )
-
     def _run_sudo(
         self,
         remote_command: list[str],
@@ -401,21 +449,18 @@ class SSHClient:
         stdin_data: str = "",
         timeout: int | None = None,
     ) -> SSHResult:
-        n_argv = self._sudo_argv(remote_command, feed_password=False)
-        result = self.run(n_argv, stdin_data=stdin_data, timeout=timeout)
-        if result.ok or not self._sudo_password_required(result) or not self.password:
-            return result
-        cached = self._cache_sudo()
-        if not cached.ok:
-            return SSHResult(
-                cached.returncode,
-                cached.stdout,
-                "SSH login succeeded, but sudo rejected the Ubuntu password. "
-                "Use the same password zhzh uses for sudo, or on the server run: "
-                "sudo bash ubuntu-backup-setup.sh --install-scripts --sudoers --ssh-user zhzh",
+        if self.password:
+            self._ensure_sudo_askpass()
+            return self.run(
+                self._sudo_askpass_argv(remote_command),
+                stdin_data=stdin_data,
+                timeout=timeout,
             )
-        self._sudo_needs_password = False
-        return self.run(n_argv, stdin_data=stdin_data, timeout=timeout)
+        return self.run(
+            self._sudo_argv(remote_command, feed_password=False),
+            stdin_data=stdin_data,
+            timeout=timeout,
+        )
 
     def run_script(
         self,
@@ -440,52 +485,15 @@ class SSHClient:
         if not is_allowed_remote_action(action):
             raise SSHError(f"Remote action is not allowlisted: {action!r}")
         body = json.dumps(payload, separators=(",", ":"))
-        probe = self.run(["sudo", "-n", "true"], timeout=self.config.ssh_connect_timeout)
-        if self.password and self._sudo_password_required(probe):
-            cached = self._cache_sudo()
-            if not cached.ok:
-                raise SSHError(cached.stderr.strip() or "sudo rejected the Ubuntu password.")
-        remote = self._sudo_argv([script_path], feed_password=False)
+        if self.password:
+            self._ensure_sudo_askpass()
+            remote = self._sudo_askpass_argv([script_path])
+        else:
+            remote = self._sudo_argv([script_path], feed_password=False)
         return self.popen(remote, stdin_bytes=body.encode("utf-8"))
 
     def ensure_remote_scripts(self) -> SSHResult:
         source = bundled_ubuntu_scripts()
-        missing = [name for name in UBUNTU_HELPER_FILES if not (source / name).is_file()]
-        if missing:
-            raise SSHError(f"Windows helper scripts are missing: {', '.join(missing)}")
-        mkdir = self.run(["mkdir", "-p", REMOTE_HELPER_STAGING], timeout=self.config.ssh_connect_timeout)
-        if not mkdir.ok:
-            return SSHResult(mkdir.returncode, mkdir.stdout, mkdir.stderr or "Could not create /tmp staging directory.")
-        for name in UBUNTU_HELPER_FILES:
-            uploaded = self.scp_upload(source / name, f"{REMOTE_HELPER_STAGING}/{name}")
-            if not uploaded.ok:
-                return SSHResult(uploaded.returncode, uploaded.stdout, uploaded.stderr or f"Failed to upload {name}.")
-        mkdir_dest = self._run_sudo(["mkdir", "-p", REMOTE_HELPER_DIR], timeout=60)
-        if not mkdir_dest.ok:
-            return SSHResult(
-                mkdir_dest.returncode,
-                mkdir_dest.stdout,
-                mkdir_dest.stderr
-                or "Could not create /usr/local/lib/serverbackup. SSH login is OK; sudo could not create the directory.",
-            )
-        for name in UBUNTU_HELPER_FILES:
-            installed = self._run_sudo(
-                [
-                    "install",
-                    "-m",
-                    "0755",
-                    f"{REMOTE_HELPER_STAGING}/{name}",
-                    f"{REMOTE_HELPER_DIR}/{name}",
-                ],
-                timeout=60,
-            )
-            if not installed.ok:
-                return SSHResult(
-                    installed.returncode,
-                    installed.stdout,
-                    installed.stderr or f"Could not install {name} on Ubuntu.",
-                )
-        return SSHResult(0, "", "installed Ubuntu backup helpers")
         missing = [name for name in UBUNTU_HELPER_FILES if not (source / name).is_file()]
         if missing:
             raise SSHError(f"Windows helper scripts are missing: {', '.join(missing)}")
