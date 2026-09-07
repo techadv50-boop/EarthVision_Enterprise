@@ -1,0 +1,31 @@
+{
+  "server_ip": "192.168.18.18",
+  "ssh_username": "zhz",
+  "ssh_port": 22,
+  "ssh_private_key_path": "",
+  "backup_destination": "G:\\ServerBackups",
+  "log_directory": "C:\\ServerBackup\\Logs",
+  "retention_count": 5,
+  "retry_count": 3,
+  "retry_delay_seconds": 30,
+  "min_free_disk_gb": 20.0,
+  "min_remote_free_disk_gb": 5.0,
+  "compression_level": 6,
+  "website_directories": [
+    "/var/www/journal.50sea.com",
+    "/var/www/journal.xdgen.com",
+    "/var/www/xdgen.com"
+  ],
+  "ojs_private_files": "/var/www/ojs-files",
+  "nginx_directory": "/etc/nginx",
+  "extra_directories": [],
+  "selected_databases": [],
+  "exclude_system_databases": true,
+  "log_retention_days": 90,
+  "automatic_backup": false,
+  "schedule_type": "daily",
+  "schedule_time": "02:00",
+  "schedule_weekday": "Sunday",
+  "remote_prepare_script": "/usr/local/lib/serverbackup/prepare-backup.sh",
+  "remote_restore_script": "/usr/local/lib/serverbackup/restore-backup.sh"
+}

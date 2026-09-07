@@ -1,0 +1,42 @@
+name: Server Backup
+
+on:
+  push:
+    paths:
+      - "ServerBackup/**"
+      - ".github/workflows/serverbackup.yml"
+  pull_request:
+    paths:
+      - "ServerBackup/**"
+      - ".github/workflows/serverbackup.yml"
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run engine tests
+        working-directory: ServerBackup
+        run: |
+          pip install pytest
+          pytest tests -v
+
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install and build ServerBackup.exe
+        working-directory: ServerBackup
+        run: |
+          pip install -r requirements.txt
+          pyinstaller --noconfirm build/serverbackup.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ServerBackup-exe
+          path: ServerBackup/dist/ServerBackup.exe
