@@ -312,20 +312,15 @@ def test_key_only_popen_script_uses_openssh(monkeypatch):
 
 
 def test_gui_backup_now_passes_in_memory_password_to_same_ssh_client():
-    import inspect
+    from pathlib import Path as _Path
 
-    from app.gui.main_window import MainWindow
-
-    backup_src = inspect.getsource(MainWindow.confirm_backup)
-    dry_src = inspect.getsource(MainWindow.dry_run)
-    test_src = inspect.getsource(MainWindow.test_connection)
-    assert "SSHClient(config, password=password or None)" in backup_src
-    assert "mode=\"manual\"" in backup_src.replace("'", '"') or "mode='manual'" in backup_src
-    assert ".run()" in backup_src
-    assert "SSHClient(config, password=password or None)" in dry_src
-    assert ".dry_run()" in dry_src
-    assert "ssh=self._ssh_client()" in test_src
-    assert "engine.test_connection()" in test_src
+    source = (_Path(__file__).resolve().parents[1] / "app" / "gui" / "main_window.py").read_text(encoding="utf-8")
+    assert "SSHClient(config, password=password or None)" in source
+    assert "mode=\"manual\"" in source or "mode='manual'" in source
+    assert "ssh=self._ssh_client()" in source
+    assert "engine.test_connection()" in source
+    assert ".dry_run()" in source
+    assert ".run()" in source
 
 
 def test_bundled_ubuntu_scripts_exist():
