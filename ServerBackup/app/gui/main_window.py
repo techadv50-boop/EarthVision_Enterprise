@@ -26,7 +26,7 @@ from app.backup.lock import BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
 from app.config.store import save_config
-from app.engine.status import collect_dashboard_status, progress_path
+from app.engine.status import clear_stale_progress, collect_dashboard_status, live_dashboard_message, progress_path
 from app.gui.history_page import HistoryPage
 from app.gui.logs_page import LogsPage
 from app.gui.password import prompt_ubuntu_password
@@ -190,30 +190,33 @@ class DashboardPage(QWidget):
         running = bool(status.get("backup_running"))
         self.cancel_button.setVisible(running)
         self.backup_button.setEnabled(not running)
-        message = progress.get("message") or ("BACKUP IN PROGRESS" if running else "Ready.")
+        message = status.get("live_message") or live_dashboard_message(progress, running=running)
         self.status_label.setText(message)
         done = int(progress.get("bytes_done") or 0)
         total = int(progress.get("bytes_total") or 0)
-        if total > 0:
+        progress_status = str(progress.get("status") or "idle").lower()
+        show_details = running or progress_status == "success"
+        if total > 0 and show_details:
             self.progress_bar.setValue(min(100, int(done * 100 / total)))
         elif running:
             self.progress_bar.setRange(0, 0)
         else:
             self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
-        speed = int(progress.get("speed_bps") or 0)
-        eta = progress.get("eta_seconds")
-        sha = progress.get("sha256")
+            self.progress_bar.setValue(100 if progress_status == "success" else 0)
         bits = []
-        if speed:
-            bits.append(f"Speed: {format_bytes(speed)}/s")
-        if eta:
-            bits.append(f"Estimated remaining: {format_duration(eta)}")
-        if sha:
-            bits.append(f"SHA-256: {sha}")
-        steps = progress.get("steps") or []
-        if steps:
-            bits.append(" | ".join(f"{'✓' if s.get('ok') else '•'} {s.get('label')}" for s in steps[-6:]))
+        if show_details:
+            speed = int(progress.get("speed_bps") or 0)
+            eta = progress.get("eta_seconds")
+            sha = progress.get("sha256")
+            if speed:
+                bits.append(f"Speed: {format_bytes(speed)}/s")
+            if eta:
+                bits.append(f"Estimated remaining: {format_duration(eta)}")
+            if sha:
+                bits.append(f"SHA-256: {sha}")
+            steps = progress.get("steps") or []
+            if steps:
+                bits.append(" | ".join(f"{'✓' if s.get('ok') else '•'} {s.get('label')}" for s in steps[-6:]))
         self.speed_label.setText("\n".join(bits))
 
 
@@ -336,6 +339,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.restore_page)
 
     def refresh(self) -> None:
+        """Reload local dashboard files. This never opens an SSH connection."""
         if self.stack.currentWidget() is self.settings_page:
             self.config = self.settings_page.current_config()
             return
@@ -413,6 +417,7 @@ class MainWindow(QMainWindow):
         self._ssh_state = ("CONNECTED" if result.get("reachable") else "DISCONNECTED", "OK" if ok else "FAILED")
         details = "\n".join(result.get("details") or []) or str(result)
         if ok:
+            clear_stale_progress(self.config)
             QMessageBox.information(self, "TEST CONNECTION", details)
         else:
             QMessageBox.critical(self, "TEST CONNECTION", details)
