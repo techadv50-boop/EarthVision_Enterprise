@@ -398,6 +398,7 @@ def format_dry_run_report(
     database_inventory: list[dict[str, Any]] | None = None,
     inactive_hostnames: list[dict[str, Any]] | None = None,
     gate: dict[str, Any] | None = None,
+    database_account: dict[str, Any] | None = None,
 ) -> str:
     """Human-readable DRY RUN summary. Never mutates master or HEAD."""
     changed_dbs = list(changed_dbs or [])
@@ -431,6 +432,7 @@ def format_dry_run_report(
             database_inventory=database_inventory,
             inactive_hostnames=inactive_hostnames,
             gate=gate,
+            database_account=database_account,
         )
     else:
         websites = [item["root"] for item in sources if item.get("category") == "website"]
@@ -630,6 +632,7 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         database_inventory=list(discovery.get("database_inventory") or []),
         inactive_hostnames=list(discovery.get("inactive_hostnames") or []),
         gate=discovery.get("backup_gate") or assess_backup_gate(applications, list(discovery.get("database_inventory") or [])),
+        database_account=discovery.get("database_account") or {},
     )
     try:
         dest = Path(config.backup_destination)

@@ -79,6 +79,7 @@ def discover_applications(
                     ],
                     "database_inventory": list(parsed.get("database_inventory") or []),
                     "inactive_hostnames": list(parsed.get("inactive_hostnames") or []),
+                    "database_account": parsed.get("database_account") or {},
                 },
             )
         return parsed

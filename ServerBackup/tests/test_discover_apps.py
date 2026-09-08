@@ -810,7 +810,7 @@ def test_unassociated_database_is_visible_and_requires_review():
             "hostname": "ubuntu",
         }
     )
-    unassociated = report.split("UNASSOCIATED DATABASES", 1)[1].split("HOSTNAME ALIASES", 1)[0]
+    unassociated = report.split("UNASSOCIATED DATABASES", 1)[1].split("EXCLUDED DATABASES", 1)[0]
     assert "xdgen_db" in unassociated
     assert "REQUIRES REVIEW" in unassociated
     assert "no application association discovered" in unassociated
@@ -851,7 +851,7 @@ def test_empty_database_is_excluded_but_still_listed():
     discovered = report.split("DISCOVERED DATABASES", 1)[1].split("UNASSOCIATED DATABASES", 1)[0]
     assert "empty_db" in discovered
     assert "UNUSED/EMPTY DATABASE — EXCLUDED" in discovered
-    unassociated = report.split("UNASSOCIATED DATABASES", 1)[1].split("HOSTNAME ALIASES", 1)[0]
+    unassociated = report.split("UNASSOCIATED DATABASES", 1)[1].split("EXCLUDED DATABASES", 1)[0]
     assert "empty_db" not in unassociated
     gate = assess_backup_gate([], inventory)
     assert gate["databases_discovered"] == 1
@@ -1024,4 +1024,172 @@ def test_empty_unassociated_database_does_not_block_backup_after_approval(tmp_pa
         ),
     ).run()
     assert info["status"] == "SUCCESS"
+
+
+def test_zero_row_unreferenced_database_is_unused_legacy():
+    import discover_audit as audit
+
+    inventory = audit.build_database_inventory(
+        ["legacy_db"],
+        [{"application_id": "php:/var/www/xdgen.com", "root": "/var/www/xdgen.com"}],
+        details={
+            "legacy_db": {
+                "table_count": 2,
+                "size_bytes": 16384,
+                "row_count": 0,
+                "tables": [{"name": "old_sessions", "rows": 0}, {"name": "tmp", "rows": 0}],
+            }
+        },
+    )
+    assert inventory[0]["status"] == "EXCLUDED — UNUSED/LEGACY"
+    assert "leftover schema" in inventory[0]["reason"]
+    report = format_discovery_report(
+        {
+            "applications": [],
+            "database_inventory": inventory,
+            "databases": {"mariadb": ["legacy_db"]},
+            "nginx_ok": True,
+            "hostname": "ubuntu",
+        }
+    )
+    assert "EXCLUDED DATABASES" in report
+    assert "legacy_db" in report.split("EXCLUDED DATABASES", 1)[1]
+    assert "EXCLUDED — UNUSED/LEGACY" in report
+    gate = assess_backup_gate([], inventory)
+    assert gate["databases_unresolved"] == 0
+    assert gate["block_complete_backup"] is False
+
+
+def test_unreferenced_database_with_rows_stays_requires_review():
+    import discover_audit as audit
+
+    inventory = audit.build_database_inventory(
+        ["legacy_db"],
+        [{"application_id": "php:/var/www/xdgen.com", "root": "/var/www/xdgen.com"}],
+        details={
+            "legacy_db": {
+                "table_count": 3,
+                "size_bytes": 1_000_000,
+                "row_count": 120,
+                "tables": [
+                    {"name": "wp_posts", "rows": 80},
+                    {"name": "wp_users", "rows": 40},
+                ],
+                "identifying_hints": ["wp_posts", "wp_users"],
+            }
+        },
+    )
+    assert inventory[0]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    assert "120 rows" in inventory[0]["reason"]
+    assert "wp_posts" in inventory[0]["reason"]
+    gate = assess_backup_gate(
+        [{"application_id": "php:/var/www/xdgen.com", "included": True, "status": "READY"}],
+        inventory,
+    )
+    assert gate["databases_unresolved"] == 1
+    assert gate["block_complete_backup"] is True
+
+
+def test_mysql_account_report_omits_password(tmp_path: Path):
+    import discover_audit as audit
+
+    cnf = tmp_path / "my.cnf"
+    cnf.write_text("[client]\nuser=root\npassword=supersecret\n", encoding="utf-8")
+    info = audit.configured_mysql_user(str(cnf))
+    assert info["configured_user"] == "root"
+    assert "supersecret" not in str(info)
+
+    class _Result:
+        def __init__(self, stdout: str, returncode: int = 0) -> None:
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def run(cmd, timeout=15):
+        joined = " ".join(cmd)
+        if "CURRENT_USER" in joined:
+            return _Result("root@localhost\troot@localhost\n")
+        if "SHOW GRANTS" in joined:
+            return _Result("GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` IDENTIFIED BY 'supersecret'\n")
+        return _Result("")
+
+    account = audit.mariadb_account_info(run, lambda: [], cnf_path=str(cnf))
+    blob = str(account)
+    assert account["using_root"] is True
+    assert account["configured_user"] == "root"
+    assert account["current_user"] == "root@localhost"
+    assert "supersecret" not in blob
+    assert "***" in blob or "IDENTIFIED BY" not in blob
+    report = format_discovery_report(
+        {
+            "applications": [],
+            "database_inventory": [],
+            "database_account": account,
+            "nginx_ok": True,
+            "hostname": "ubuntu",
+        }
+    )
+    assert "DATABASE ACCOUNT" in report
+    assert "using root: yes" in report
+    assert "supersecret" not in report
+    assert "least-privilege" in report.lower() or "least-privilege later" in report
+
+
+def test_php_file_reference_associates_database(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    Path(remote["xdgen.com"], "config.php").write_text("<?php $dbname = 'xdgen_db';\n", encoding="utf-8")
+    cfg = master_config(tmp_path, remote)
+    ssh = LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])
+    result = discover_applications(cfg, ssh=ssh, persist=True)
+    by_name = {row["name"]: row for row in result.get("database_inventory") or []}
+    assert by_name["xdgen_db"]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert "xdgen.com" in by_name["xdgen_db"]["application_id"]
+
+
+def test_legacy_zero_row_database_does_not_block_backup(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    details = {
+        "legacy_db": {
+            "table_count": 1,
+            "size_bytes": 16,
+            "row_count": 0,
+            "tables": [{"name": "old", "rows": 0}],
+        }
+    }
+    ssh = LocalMasterSSH(tmp_path / "remote", extra_mariadb=["legacy_db"], extra_mariadb_details=details)
+    enable_backup(cfg, ssh)
+    info = BackupEngine(
+        cfg,
+        ssh=LocalMasterSSH(tmp_path / "remote", extra_mariadb=["legacy_db"], extra_mariadb_details=details),
+    ).run()
+    assert info["status"] == "SUCCESS"
+
+
+def test_inspect_database_contents_is_read_only_counts():
+    import discover_audit as audit
+
+    calls: list[str] = []
+
+    class _Result:
+        def __init__(self, stdout: str, returncode: int = 0) -> None:
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def run(cmd, timeout=15):
+        joined = " ".join(cmd)
+        calls.append(joined)
+        if "information_schema.tables" in joined:
+            return _Result("users\tInnoDB\t5\t4096\t\n")
+        if "COUNT(*)" in joined:
+            return _Result("5\n")
+        if "information_schema.columns" in joined:
+            return _Result("users\tid\nusers\temail\n")
+        return _Result("")
+
+    inspected = audit.inspect_database_contents(run, lambda: [], "app_db")
+    assert inspected["row_count"] == 5
+    assert inspected["tables"][0]["name"] == "users"
+    assert any("COUNT(*)" in item for item in calls)
+    assert not any("SELECT *" in item.upper().replace(" ", "") and "COUNT" not in item.upper() for item in calls)
+    assert not any("DELETE" in item.upper() or "DROP" in item.upper() or "UPDATE" in item.upper() for item in calls)
 

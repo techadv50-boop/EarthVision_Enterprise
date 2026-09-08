@@ -59,6 +59,34 @@ SKIP_DIR_NAMES = {
     "wp-content",
     "__pycache__",
 }
+EXTRA_SEARCH_ROOTS = (
+    "/opt",
+    "/etc/systemd/system",
+    "/etc/cron.d",
+    "/etc/mysql",
+    "/etc/nginx",
+    "/root",
+)
+MYSQL_CNF = "/etc/serverbackup/my.cnf"
+LEAST_PRIVILEGE_NOTE = (
+    "Discovery and dump already use --defaults-extra-file=/etc/serverbackup/my.cnf. "
+    "A dedicated least-privilege account (SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS) "
+    "is already created by ubuntu-backup-setup.sh --mysql-user. Switching my.cnf user= off root "
+    "does not require application code changes. Credentials were not modified."
+)
+IDENTIFYING_TABLE_HINTS = (
+    "wp_posts",
+    "wp_users",
+    "wp_options",
+    "wp_comments",
+    "submissions",
+    "publications",
+    "journal_settings",
+    "users",
+    "sessions",
+    "orders",
+    "customers",
+)
 
 
 def parse_generic_database_name(text: str) -> str | None:
@@ -137,6 +165,176 @@ def mariadb_schema_details(run: Callable, mysql_defaults: Callable, names: list[
     return out
 
 
+def configured_mysql_user(cnf_path: str = MYSQL_CNF) -> dict[str, Any]:
+    """Read only the client user= line. Never returns the password."""
+    path = Path(cnf_path)
+    info = {"path": cnf_path, "file_present": path.is_file(), "configured_user": ""}
+    if not path.is_file():
+        return info
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return info
+    in_client = True
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_client = stripped.lower() in {"[client]", "[mysql]"}
+            continue
+        if not in_client or not stripped or stripped.startswith(("#", ";")):
+            continue
+        if stripped.lower().startswith("password"):
+            continue
+        if stripped.lower().startswith("user"):
+            _, _, value = stripped.partition("=")
+            info["configured_user"] = value.strip().strip("\"'")
+            break
+    return info
+
+
+def mariadb_account_info(run: Callable, mysql_defaults: Callable, *, cnf_path: str = MYSQL_CNF) -> dict[str, Any]:
+    """Who discovery/dump actually connect as. No passwords."""
+    configured = configured_mysql_user(cnf_path)
+    current_user = ""
+    session_user = ""
+    try:
+        result = run(
+            [
+                "mysql",
+                *mysql_defaults(),
+                "--batch",
+                "--skip-column-names",
+                "-e",
+                "SELECT CURRENT_USER(), USER()",
+            ],
+            timeout=15,
+        )
+        if result.returncode == 0:
+            parts = (result.stdout or "").strip().split("\t")
+            current_user = parts[0].strip() if parts else ""
+            session_user = parts[1].strip() if len(parts) > 1 else ""
+    except Exception:
+        pass
+    grants = _backup_account_grants(run, mysql_defaults)
+    configured_user = configured.get("configured_user") or ""
+    using_root = any(
+        str(item).split("@")[0].lower() == "root"
+        for item in (configured_user, current_user, session_user)
+        if item
+    )
+    source = configured["path"] if configured.get("file_present") else "(no /etc/serverbackup/my.cnf; mysql client defaults / unix_socket)"
+    return {
+        "configured_user": configured_user or "(not set in my.cnf)",
+        "current_user": current_user,
+        "session_user": session_user,
+        "source": source,
+        "file_present": bool(configured.get("file_present")),
+        "using_root": using_root,
+        "grants": grants,
+        "least_privilege": LEAST_PRIVILEGE_NOTE,
+        "defaults_extra_file": configured["path"] if configured.get("file_present") else "",
+    }
+
+
+def inspect_database_contents(
+    run: Callable,
+    mysql_defaults: Callable,
+    name: str,
+    *,
+    table_limit: int = 40,
+) -> dict[str, Any]:
+    """Read-only table/row inventory. Does not SELECT application row contents."""
+    safe = "".join(ch for ch in name if ch.isalnum() or ch == "_")
+    if not safe or safe != name:
+        return {"tables": [], "row_count": 0, "column_names": [], "identifying_hints": []}
+    sql = (
+        "SELECT table_name, engine, table_rows, "
+        "COALESCE(data_length + index_length, 0), table_comment "
+        "FROM information_schema.tables "
+        f"WHERE table_schema = '{safe}' AND table_type = 'BASE TABLE' "
+        "ORDER BY table_name"
+    )
+    tables: list[dict[str, Any]] = []
+    try:
+        result = run(
+            ["mysql", *mysql_defaults(), "--batch", "--skip-column-names", "--raw", "-e", sql],
+            timeout=20,
+        )
+    except Exception:
+        return {"tables": [], "row_count": None, "column_names": [], "identifying_hints": []}
+    if result.returncode != 0:
+        return {"tables": [], "row_count": None, "column_names": [], "identifying_hints": []}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("\t")
+        if not parts or not parts[0].strip():
+            continue
+        tables.append(
+            {
+                "name": parts[0].strip(),
+                "engine": parts[1].strip() if len(parts) > 1 else "",
+                "estimated_rows": _safe_int(parts[2] if len(parts) > 2 else 0),
+                "size_bytes": _safe_int(parts[3] if len(parts) > 3 else 0),
+                "comment": (parts[4].strip() if len(parts) > 4 else "")[:120],
+                "rows": None,
+            }
+        )
+        if len(tables) >= table_limit:
+            break
+    exact_total = 0
+    exact_ok = True
+    for table in tables:
+        tname = "".join(ch for ch in str(table["name"]) if ch.isalnum() or ch == "_")
+        if tname != table["name"]:
+            exact_ok = False
+            continue
+        try:
+            counted = run(
+                [
+                    "mysql",
+                    *mysql_defaults(),
+                    "--batch",
+                    "--skip-column-names",
+                    "-e",
+                    f"SELECT COUNT(*) FROM `{safe}`.`{tname}`",
+                ],
+                timeout=15,
+            )
+        except Exception:
+            exact_ok = False
+            continue
+        if counted.returncode != 0:
+            exact_ok = False
+            continue
+        table["rows"] = _safe_int((counted.stdout or "").strip())
+        exact_total += int(table["rows"] or 0)
+    columns: list[str] = []
+    try:
+        col_sql = (
+            "SELECT table_name, column_name FROM information_schema.columns "
+            f"WHERE table_schema = '{safe}' ORDER BY table_name, ordinal_position"
+        )
+        col_result = run(
+            ["mysql", *mysql_defaults(), "--batch", "--skip-column-names", "-e", col_sql],
+            timeout=15,
+        )
+        if col_result.returncode == 0:
+            for line in (col_result.stdout or "").splitlines()[:80]:
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    columns.append(f"{parts[0].strip()}.{parts[1].strip()}")
+    except Exception:
+        pass
+    names = [str(item.get("name") or "") for item in tables]
+    hints = [hint for hint in IDENTIFYING_TABLE_HINTS if any(hint.lower() in n.lower() for n in names)]
+    return {
+        "tables": tables,
+        "row_count": exact_total if exact_ok else None,
+        "column_names": columns,
+        "identifying_hints": hints,
+        "table_names": names,
+    }
+
+
 def _backup_account_grants(run: Callable, mysql_defaults: Callable) -> list[str]:
     try:
         result = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", "-e", "SHOW GRANTS"], timeout=20)
@@ -146,14 +344,17 @@ def _backup_account_grants(run: Callable, mysql_defaults: Callable) -> list[str]
         return []
     lines = []
     for raw in (result.stdout or "").splitlines():
-        text = SECRET_LINE.sub("***", raw.strip())
-        text = re.sub(r"IDENTIFIED BY\s+'[^']*'", "IDENTIFIED BY '***'", text, flags=re.IGNORECASE)
+        text = raw.strip()
+        text = re.sub(r"IDENTIFIED BY\s+(PASSWORD\s+)?('[^']*'|\"[^\"]*\"|\S+)", "IDENTIFIED BY '***'", text, flags=re.IGNORECASE)
+        text = re.sub(r"(password|passwd)\s*=\s*\S+", "password=***", text, flags=re.IGNORECASE)
+        if SECRET_LINE.search(text) and "GRANT" not in text.upper():
+            text = SECRET_LINE.sub("***", text)
         if text:
             lines.append(text)
     return lines
 
 
-def collect_config_texts(root: str, *, limit: int = 40) -> dict[str, str]:
+def collect_config_texts(root: str, *, limit: int = 80) -> dict[str, str]:
     texts: dict[str, str] = {}
     base = Path(root)
     if not root or not base.is_dir():
@@ -166,7 +367,10 @@ def collect_config_texts(root: str, *, limit: int = 40) -> dict[str, str]:
             dirnames[:] = []
             continue
         for filename in filenames:
-            if filename not in CONFIG_FILENAMES:
+            is_config = filename in CONFIG_FILENAMES
+            is_php = filename.endswith(".php") and len(depth) <= 2
+            is_unit = filename.endswith(".service") or filename.endswith(".env")
+            if not (is_config or is_php or is_unit):
                 continue
             path = Path(dirpath) / filename
             rel = str(path)
@@ -180,17 +384,45 @@ def collect_config_texts(root: str, *, limit: int = 40) -> dict[str, str]:
     return texts
 
 
+def docker_database_texts(containers: list[dict[str, Any]] | None) -> dict[str, str]:
+    texts: dict[str, str] = {}
+    for inspect in containers or []:
+        config = inspect.get("Config") or {}
+        name = str(inspect.get("Name") or inspect.get("Id") or "container").lstrip("/")
+        env_lines = []
+        for item in config.get("Env") or []:
+            text = str(item)
+            if any(
+                text.startswith(prefix)
+                for prefix in (
+                    "MYSQL_DATABASE=",
+                    "MARIADB_DATABASE=",
+                    "MYSQL_DATABASE",
+                    "POSTGRES_DB=",
+                )
+            ):
+                env_lines.append(text)
+        if env_lines:
+            texts[f"docker:{name}"] = "\n".join(env_lines)
+    return texts
+
+
 def find_database_references(
     names: Iterable[str],
     search_roots: Iterable[str],
     *,
     extra_texts: dict[str, str] | None = None,
+    extra_roots: Iterable[str] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     """Locate database names in application/config files. File paths only; no secrets."""
     wanted = [n for n in names if n and n not in SYSTEM_DATABASES]
     hits: dict[str, list[dict[str, str]]] = {name: [] for name in wanted}
     texts = dict(extra_texts or {})
-    for root in search_roots:
+    roots = [str(root) for root in search_roots if root]
+    for root in extra_roots if extra_roots is not None else EXTRA_SEARCH_ROOTS:
+        if root and root not in roots:
+            roots.append(str(root))
+    for root in roots:
         if not root:
             continue
         texts.update(collect_config_texts(root))
@@ -199,8 +431,74 @@ def find_database_references(
             continue
         for name in wanted:
             if re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", body or ""):
-                hits[name].append({"path": path, "kind": Path(path).name})
+                hits[name].append({"path": path, "kind": Path(path).name or path})
     return hits
+
+
+def _row_count(meta: dict[str, Any]) -> int | None:
+    if meta.get("row_count") is not None:
+        try:
+            return int(meta.get("row_count"))
+        except (TypeError, ValueError):
+            return None
+    tables = meta.get("tables") or []
+    if not tables:
+        return None
+    total = 0
+    known = False
+    for table in tables:
+        if table.get("rows") is None:
+            continue
+        known = True
+        total += _safe_int(table.get("rows"))
+    return total if known else None
+
+
+def finalize_database_verdict(row: dict[str, Any]) -> dict[str, Any]:
+    """Classify unassociated databases. Never silently omit them."""
+    status = str(row.get("status") or "")
+    if row.get("system") or status.startswith("ASSOCIATED") or "UNUSED/EMPTY" in status:
+        return row
+    refs = list(row.get("references") or [])
+    app_id = str(row.get("application_id") or "")
+    rows = _row_count(row)
+    table_count = row.get("table_count")
+    if app_id:
+        row["status"] = "ASSOCIATED WITH APPLICATION"
+        row["reason"] = f"referenced by {app_id}"
+        return row
+    if table_count == 0:
+        row["status"] = "UNUSED/EMPTY DATABASE — EXCLUDED"
+        row["reason"] = "zero tables; shown for review, not silently omitted"
+        return row
+    if not refs and rows == 0:
+        names = ", ".join(str(t.get("name") or "") for t in (row.get("tables") or [])[:12]) or "(none)"
+        row["status"] = "EXCLUDED — UNUSED/LEGACY"
+        row["reason"] = (
+            "no application, Docker, or config reference; table row counts are zero; "
+            f"leftover schema only ({names})"
+        )
+        return row
+    table_list = ", ".join(str(t.get("name") or "") for t in (row.get("tables") or [])[:12])
+    hints = ", ".join(str(h) for h in (row.get("identifying_hints") or [])[:8])
+    extra = ""
+    if table_list:
+        extra += f" tables: {table_list}."
+    if hints:
+        extra += f" identifying table hints: {hints}."
+    if rows is None:
+        extra += " row counts were not available; not marked unused."
+    elif rows:
+        extra += f" contains {rows} rows of data."
+    if refs:
+        paths = ", ".join(str(item.get("path") or "") for item in refs if item.get("path"))
+        extra += f" orphan config references (not under an active application): {paths}."
+        row["status"] = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+        row["reason"] = "referenced outside active applications;" + extra
+        return row
+    row["status"] = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    row["reason"] = "no application association discovered;" + extra
+    return row
 
 
 def build_database_inventory(
@@ -213,12 +511,15 @@ def build_database_inventory(
     details = details or {}
     references = references or {}
     associated_by_app: dict[str, str] = {}
+    app_roots: list[tuple[str, str]] = []
     for app in applications:
-        dname = str(app.get("database_name") or "").strip()
-        if not dname:
-            continue
         ident = str(app.get("application_id") or app.get("hostname") or "")
-        associated_by_app.setdefault(dname, ident)
+        root = str(app.get("root") or "").rstrip("/")
+        if root and ident:
+            app_roots.append((root, ident))
+        dname = str(app.get("database_name") or "").strip()
+        if dname:
+            associated_by_app.setdefault(dname, ident)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for name in names:
@@ -229,45 +530,60 @@ def build_database_inventory(
         meta = dict(details.get(name) or {})
         refs = list(references.get(name) or [])
         app_id = associated_by_app.get(name) or ""
+        app_refs: list[dict[str, str]] = []
+        orphan_refs: list[dict[str, str]] = []
         if not app_id:
             for ref in refs:
                 path = str(ref.get("path") or "")
-                for app in applications:
-                    root = str(app.get("root") or "").rstrip("/")
-                    if root and (path == root or path.startswith(root + "/")):
-                        app_id = str(app.get("application_id") or "")
-                        break
-                if app_id:
-                    break
+                matched = ""
+                if path.startswith("docker:"):
+                    for app in applications:
+                        if str(app.get("database_name") or "") == name:
+                            matched = str(app.get("application_id") or "")
+                            break
+                else:
+                    for root, ident in app_roots:
+                        if root and (path == root or path.startswith(root + "/")):
+                            matched = ident
+                            break
+                if matched:
+                    app_id = app_id or matched
+                    app_refs.append(ref)
+                else:
+                    orphan_refs.append(ref)
+            refs = (app_refs + orphan_refs) if app_id else orphan_refs
         table_count = meta.get("table_count")
+        row = {
+            "name": name,
+            "type": "MariaDB",
+            "system": system,
+            "size_bytes": _safe_int(meta.get("size_bytes")),
+            "table_count": table_count if table_count is not None else None,
+            "row_count": meta.get("row_count"),
+            "created": meta.get("created") or "",
+            "updated": meta.get("updated") or "",
+            "grants": list(meta.get("grants") or []),
+            "references": refs,
+            "tables": list(meta.get("tables") or []),
+            "column_names": list(meta.get("column_names") or []),
+            "identifying_hints": list(meta.get("identifying_hints") or []),
+            "application_id": app_id,
+            "status": "",
+            "reason": "",
+        }
         if system:
-            status = "SYSTEM DATABASE — EXCLUDED"
-            reason = "MariaDB system schema"
+            row["status"] = "SYSTEM DATABASE — EXCLUDED"
+            row["reason"] = "MariaDB system schema"
         elif app_id:
-            status = "ASSOCIATED WITH APPLICATION"
-            reason = f"referenced by {app_id}"
+            row["status"] = "ASSOCIATED WITH APPLICATION"
+            row["reason"] = f"referenced by {app_id}"
         elif table_count == 0:
-            status = "UNUSED/EMPTY DATABASE — EXCLUDED"
-            reason = "zero tables; shown for review, not silently omitted"
+            row["status"] = "UNUSED/EMPTY DATABASE — EXCLUDED"
+            row["reason"] = "zero tables; shown for review, not silently omitted"
         else:
-            status = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
-            reason = "no application association discovered"
-        rows.append(
-            {
-                "name": name,
-                "type": "MariaDB",
-                "system": system,
-                "size_bytes": _safe_int(meta.get("size_bytes")),
-                "table_count": table_count if table_count is not None else None,
-                "created": meta.get("created") or "",
-                "updated": meta.get("updated") or "",
-                "grants": list(meta.get("grants") or []),
-                "references": refs,
-                "application_id": app_id,
-                "status": status,
-                "reason": reason,
-            }
-        )
+            row["status"] = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+            row["reason"] = "no application association discovered"
+        rows.append(finalize_database_verdict(row))
     return rows
 
 

@@ -73,12 +73,14 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "REMOVED APPLICATIONS" in text
     assert "NOT ACTIVE IN CURRENT SERVER CONFIGURATION" in text
     assert "BACKUP GATE" in text
+    assert "DATABASE ACCOUNT" in text
+    assert "configured user:" in text
     assert "BLOCK COMPLETE BACKUP" in text
     assert "Applications pending:" in text
     assert "Databases unresolved:" in text
     assert "xdgen_db" in text
     assert "REQUIRES REVIEW" in text
-    unassociated = text.split("UNASSOCIATED DATABASES", 1)[1].split("HOSTNAME ALIASES", 1)[0]
+    unassociated = text.split("UNASSOCIATED DATABASES", 1)[1].split("EXCLUDED DATABASES", 1)[0]
     assert "xdgen_db" in unassociated
     assert "REQUIRES REVIEW" in unassociated
     discovered_hosts = text.split("DISCOVERED HOSTNAMES", 1)[1].split("DISCOVERED APPLICATIONS", 1)[0]

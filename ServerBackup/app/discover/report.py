@@ -77,6 +77,7 @@ def format_application_sections(
     database_inventory: list[dict[str, Any]] | None = None,
     inactive_hostnames: list[dict[str, Any]] | None = None,
     gate: dict[str, Any] | None = None,
+    database_account: dict[str, Any] | None = None,
 ) -> list[str]:
     apps = list(applications or [])
     live = [a for a in apps if a.get("change") != "removed"]
@@ -155,6 +156,11 @@ def format_application_sections(
         for row in inventory
         if not row.get("system") and "UNASSOCIATED" in str(row.get("status") or "")
     ]
+    excluded_db_rows = [
+        row
+        for row in inventory
+        if not row.get("system") and "EXCLUDED" in str(row.get("status") or "")
+    ]
     lines.extend(["", "DISCOVERED DATABASES"])
     if inventory:
         lines.append("  MariaDB:")
@@ -165,10 +171,16 @@ def format_application_sections(
             lines.append(f"    {row.get('name')}{pointer}")
             if row.get("table_count") is not None:
                 lines.append(f"      tables: {row.get('table_count')}  size_bytes: {row.get('size_bytes') or 0}")
+            if row.get("row_count") is not None:
+                lines.append(f"      rows: {row.get('row_count')}")
+            if row.get("tables"):
+                table_names = ", ".join(str(item.get("name") or item) for item in row.get("tables") or [] if item)
+                if table_names:
+                    lines.append(f"      table_names: {table_names}")
+            if row.get("identifying_hints"):
+                lines.append(f"      identifying hints: {', '.join(str(h) for h in row.get('identifying_hints') or [])}")
             if row.get("created") or row.get("updated"):
                 lines.append(f"      created: {row.get('created') or '—'}  updated: {row.get('updated') or '—'}")
-            if row.get("grants"):
-                lines.append(f"      backup-account grants: {'; '.join(str(g) for g in row.get('grants') or [])}")
             if row.get("references"):
                 paths = ", ".join(str(item.get("path") or "") for item in row.get("references") or [] if item.get("path"))
                 if paths:
@@ -197,8 +209,38 @@ def format_application_sections(
             lines.append(f"    reason: {row.get('reason') or 'no application association discovered'}")
             if row.get("table_count") is not None:
                 lines.append(f"    tables: {row.get('table_count')}  size_bytes: {row.get('size_bytes') or 0}")
+            if row.get("row_count") is not None:
+                lines.append(f"    rows: {row.get('row_count')}")
+            if row.get("tables"):
+                table_names = ", ".join(str(item.get("name") or item) for item in row.get("tables") or [] if item)
+                if table_names:
+                    lines.append(f"    table_names: {table_names}")
     else:
         lines.append("  (none)")
+    lines.extend(["", "EXCLUDED DATABASES"])
+    if excluded_db_rows:
+        for row in excluded_db_rows:
+            lines.append(f"  {row.get('name')}")
+            lines.append(f"    status: {row.get('status')}")
+            lines.append(f"    reason: {row.get('reason') or 'excluded'}")
+    else:
+        lines.append("  (none)")
+    account = database_account or {}
+    lines.extend(["", "DATABASE ACCOUNT"])
+    if account:
+        lines.append(f"  configured user: {account.get('configured_user') or '—'}")
+        lines.append(f"  current_user(): {account.get('current_user') or '—'}")
+        if account.get("session_user"):
+            lines.append(f"  USER(): {account.get('session_user')}")
+        lines.append(f"  source: {account.get('source') or '—'}")
+        lines.append(f"  using root: {'yes' if account.get('using_root') else 'no'}")
+        if account.get("grants"):
+            lines.append(f"  grants: {'; '.join(str(g) for g in account.get('grants') or [])}")
+        if account.get("least_privilege"):
+            lines.append(f"  least-privilege later: {account.get('least_privilege')}")
+        lines.append("  Passwords are not shown. Credentials were not changed.")
+    else:
+        lines.append("  (not probed)")
 
     lines.extend(["", "HOSTNAME ALIASES"])
     aliased = [app for app in live if len(_hostnames(app)) > 1]
@@ -335,6 +377,7 @@ def format_discovery_report(result: dict[str, Any]) -> str:
             database_inventory=result.get("database_inventory"),
             inactive_hostnames=result.get("inactive_hostnames"),
             gate=result.get("backup_gate"),
+            database_account=result.get("database_account"),
         ),
     ]
     if result.get("errors"):

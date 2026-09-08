@@ -19,7 +19,10 @@ from urllib.parse import urlparse
 
 from discover_audit import (
     build_database_inventory,
+    docker_database_texts,
     find_database_references,
+    inspect_database_contents,
+    mariadb_account_info,
     mariadb_schema_details,
     parse_generic_database_from_texts,
     scan_inactive_hostnames,
@@ -1313,16 +1316,44 @@ def discover_applications(payload: dict | None = None, *, run=None, mysql_defaul
         except Exception as exc:  # noqa: BLE001
             errors.append(f"MariaDB schema details skipped: {exc}")
     search_roots = [str(app.get("root") or "") for app in apps if app.get("root")]
-    search_roots.extend(["/opt"])
+    extra_texts = dict(extra_config_texts or {})
+    extra_texts.update(docker_database_texts(docker_containers))
     try:
         references = find_database_references(
             mariadb,
             search_roots,
-            extra_texts=extra_config_texts,
+            extra_texts=extra_texts,
         )
     except Exception as exc:  # noqa: BLE001
         errors.append(f"database reference search skipped: {exc}")
         references = {}
+    if mariadb and details_override is None and run is not None:
+        unassociated_names = [
+            name
+            for name in mariadb
+            if name not in {"information_schema", "performance_schema", "mysql", "sys"}
+            and not any(str(app.get("database_name") or "") == name for app in apps)
+            and not (references.get(name) and any(
+                str(app.get("root") or "") and str(item.get("path") or "").startswith(str(app.get("root") or ""))
+                for app in apps
+                for item in (references.get(name) or [])
+            ))
+        ]
+        for name in unassociated_names:
+            try:
+                inspected = inspect_database_contents(run, mysql_defaults, name)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"MariaDB inspect skipped for a database: {exc}")
+                continue
+            details.setdefault(name, {})
+            details[name].update(inspected)
+            if inspected.get("tables") and details[name].get("table_count") in {None, 0}:
+                details[name]["table_count"] = len(inspected.get("tables") or [])
+    account: dict[str, Any] = {}
+    try:
+        account = mariadb_account_info(run, mysql_defaults) if run is not None else {}
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"MariaDB account probe skipped: {exc}")
     database_inventory = build_database_inventory(
         mariadb,
         apps,
@@ -1376,6 +1407,7 @@ def discover_applications(payload: dict | None = None, *, run=None, mysql_defaul
         "parsed_hostnames": parsed_hostnames(servers),
         "inactive_hostnames": inactive_hostnames,
         "database_inventory": database_inventory,
+        "database_account": account,
         "databases": {
             "mariadb": mariadb,
             "postgresql": postgres,

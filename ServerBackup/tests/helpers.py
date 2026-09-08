@@ -334,6 +334,16 @@ class FakeSSH:
                     ],
                 }
             ],
+            "database_account": {
+                "configured_user": "root",
+                "current_user": "root@localhost",
+                "session_user": "root@localhost",
+                "source": "/etc/serverbackup/my.cnf",
+                "file_present": True,
+                "using_root": True,
+                "grants": ["GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost`"],
+                "least_privilege": "A dedicated least-privilege backup account can replace root by updating /etc/serverbackup/my.cnf user=; credentials were not changed.",
+            },
             "errors": [],
         }
 
@@ -570,8 +580,14 @@ class LocalMasterSSH(FakeSSH):
             )
             details[name].update(meta)
         extra_texts = dict(self.extra_config_files)
+        extra_texts.update(audit.docker_database_texts(docker))
         search_roots = [str(app.get("root") or "") for app in apps if app.get("root")]
-        references = audit.find_database_references(mariadb, search_roots, extra_texts=extra_texts)
+        references = audit.find_database_references(
+            mariadb,
+            search_roots,
+            extra_texts=extra_texts,
+            extra_roots=(),
+        )
         inventory = audit.build_database_inventory(mariadb, apps, details=details, references=references)
         by_id = {str(app.get("application_id") or ""): app for app in apps}
         for row in inventory:
@@ -596,6 +612,15 @@ class LocalMasterSSH(FakeSSH):
                 extra_files=self.extra_scan_files,
             ),
             "database_inventory": inventory,
+            "database_account": {
+                "configured_user": "backup",
+                "current_user": "backup@localhost",
+                "source": "/etc/serverbackup/my.cnf",
+                "file_present": True,
+                "using_root": False,
+                "grants": ["GRANT SELECT ON *.* TO 'backup'@'localhost'"],
+                "least_privilege": "least-privilege backup account in use",
+            },
             "databases": {"mariadb": mariadb, "postgresql": postgres},
             "errors": [],
         }
