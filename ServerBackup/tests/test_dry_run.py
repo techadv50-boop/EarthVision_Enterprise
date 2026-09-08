@@ -6,6 +6,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.engine.backup_engine import BackupCancelled, BackupEngine, BackupError
 from app.engine.status import collect_dashboard_status
@@ -233,14 +235,20 @@ def test_dry_run_does_not_require_prior_test_connection():
     source = Path(__file__).resolve().parents[1] / "app" / "gui" / "main_window.py"
     text = source.read_text(encoding="utf-8")
     dry_run_fn = text.split("def dry_run(self)", 1)[1].split("def _on_dry_run_finished", 1)[0]
+    finished = text.split("def _on_dry_run_finished", 1)[1].split("def test_integrity", 1)[0]
     assert "test_connection" not in dry_run_fn
     assert "_ssh_state" not in dry_run_fn
     assert "ensure_password" in dry_run_fn
     assert "_dry_run_finished.emit" in dry_run_fn
     assert "except" in dry_run_fn and "Exception" in dry_run_fn
+    assert "_dry_run_finished = Signal(bool, str)" in text
+    assert "QueuedConnection" in text
+    assert "QMessageBox.information" in finished
+    assert "QMessageBox.critical" in finished
 
 
 def test_gui_dry_run_surfaces_result_and_worker_exceptions(tmp_path: Path, monkeypatch):
+    pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication, QMessageBox
 
