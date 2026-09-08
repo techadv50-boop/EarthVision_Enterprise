@@ -297,8 +297,8 @@ def test_new_and_removed_sites(tmp_path: Path):
     ]
     rows = apply_policy(current, dest)
     hosts = {row["hostname"]: row for row in rows}
-    assert hosts["b.example.com"]["status"] == "NEW SITE DETECTED"
-    assert hosts["a.example.com"]["status"] == "SITE REMOVED / REQUIRES REVIEW"
+    assert hosts["b.example.com"]["status"] == "NEW SITE DETECTED — REQUIRES APPROVAL"
+    assert hosts["a.example.com"]["status"] == "SITE REMOVED — REQUIRES REVIEW"
     assert hosts["a.example.com"]["change"] == "removed"
 
 
@@ -316,6 +316,13 @@ def test_invalid_root_and_duplicate_hostname_and_excluded_docker_storage():
     sources = [p for app in apps for p in app.get("source_paths") or []]
     assert all(not str(p).startswith("/var/lib/docker") for p in sources)
     assert all(not str(p).startswith("/var/www/") or p != "/var/www" for p in sources)
+
+
+def test_tmp_scratch_is_excluded_but_nested_app_trees_are_not():
+    assert da.is_excluded_path("/tmp") is True
+    assert da.is_excluded_path("/tmp/server-backup-work-abc/databases") is True
+    assert da.is_excluded_path("/tmp/pytest-of-ubuntu/remote/var/www/journal.50sea.com") is False
+    assert da.is_excluded_path("/var/lib/docker/overlay2/abc") is True
 
 
 def test_database_association_and_secret_redaction():

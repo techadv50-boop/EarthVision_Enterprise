@@ -61,7 +61,16 @@ def is_excluded_path(path: str) -> bool:
     cleaned = (path or "").rstrip("/")
     if not cleaned:
         return True
-    return any(cleaned == prefix or cleaned.startswith(prefix + "/") for prefix in EXCLUDED_PREFIXES)
+    for prefix in EXCLUDED_PREFIXES:
+        if cleaned == prefix:
+            return True
+        if prefix == "/tmp":
+            if cleaned.startswith("/tmp/server-backup-work-"):
+                return True
+            continue
+        if cleaned.startswith(prefix + "/"):
+            return True
+    return False
 
 
 def _strip_comment(line: str) -> str:

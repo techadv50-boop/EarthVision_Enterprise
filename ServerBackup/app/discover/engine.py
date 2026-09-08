@@ -64,7 +64,7 @@ def discover_applications(
         return parsed
     finally:
         closer = getattr(client, "close", None)
-        if callable(closer):
+        if callable(closer) and ssh is None:
             closer()
 
 

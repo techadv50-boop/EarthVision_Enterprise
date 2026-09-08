@@ -73,7 +73,13 @@ class DiscoverPage(QWidget):
             self._rows = list(snap.get("applications") or [])
             self._result = snap
         live = [row for row in self._rows if row.get("change") != "removed"]
-        review = [row for row in self._rows if "REVIEW" in str(row.get("status") or "") or row.get("status") == "NEW SITE DETECTED"]
+        review = [
+            row
+            for row in self._rows
+            if "REVIEW" in str(row.get("status") or "")
+            or "REQUIRES APPROVAL" in str(row.get("status") or "")
+            or "NEW SITE DETECTED" in str(row.get("status") or "")
+        ]
         removed = [row for row in self._rows if row.get("change") == "removed"]
         approved = [row for row in live if row.get("included")]
         self.summary.setText(

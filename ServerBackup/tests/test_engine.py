@@ -278,12 +278,16 @@ def test_dry_run_closes_ssh_session_and_previews_delta(tmp_path: Path):
     assert result["ok"] is True
     assert ssh.closed is True
     assert "dry-run" in ssh.calls
-    assert "discover-ojs" in ssh.calls
+    assert "discover-applications" in ssh.calls
     assert "backup" not in ssh.calls
     assert "hash-files" not in ssh.calls
     assert "stream-objects" not in ssh.calls
     assert "master" in result
     assert "HEAD: unchanged" in (result.get("report_text") or "")
+    assert "sateye.xdgen.com" in (result.get("report_text") or "")
+    assert "citation.xdgen.com" in (result.get("report_text") or "")
+    assert "none configured" not in (result.get("report_text") or "")
+    assert "EXPECTED FULL BASELINE SIZE:" in (result.get("report_text") or "")
     assert not MasterStore(cfg.backup_destination).has_head()
 
 

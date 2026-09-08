@@ -9,10 +9,14 @@ from app.utils.format import format_bytes
 
 def format_discovery_report(result: dict[str, Any]) -> str:
     apps = list(result.get("applications") or [])
-    new = [a for a in apps if a.get("change") == "new" or str(a.get("status") or "").startswith("NEW SITE")]
-    removed = [a for a in apps if a.get("change") == "removed" or "REMOVED" in str(a.get("status") or "")]
+    new = [a for a in apps if a.get("change") == "new" or "NEW SITE DETECTED" in str(a.get("status") or "")]
+    removed = [a for a in apps if a.get("change") == "removed" or "SITE REMOVED" in str(a.get("status") or "")]
     changed = [a for a in apps if a.get("change") not in {"new", "removed", "unchanged", "excluded", None}]
-    review = [a for a in apps if "REVIEW" in str(a.get("status") or "") or a.get("status") == "NEW SITE DETECTED"]
+    review = [
+        a
+        for a in apps
+        if "REVIEW" in str(a.get("status") or "") or "REQUIRES APPROVAL" in str(a.get("status") or "")
+    ]
     approved = [a for a in apps if a.get("included")]
     ojs = [a for a in apps if a.get("type") == "OJS"]
     lines = [
@@ -93,9 +97,10 @@ def format_discovery_report(result: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "Backup engine is unchanged in this discovery build.",
-            "DISCOVER → CLASSIFY → VALIDATE → SHOW USER → APPROVE.",
-            "BACKUP NOW still uses the previous source list until discovery is wired in.",
+            "DISCOVER → CLASSIFY → VALIDATE → SHOW USER → APPROVE → DRY RUN → BACKUP.",
+            "A newly discovered site is not backed up until it is approved.",
+            "Removed sites are kept in the master until you review them.",
+            "BACKUP NOW is not run by discovery or DRY RUN.",
         ]
     )
     return "\n".join(lines)

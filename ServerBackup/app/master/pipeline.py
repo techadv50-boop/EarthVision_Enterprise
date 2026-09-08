@@ -8,6 +8,10 @@ from typing import Any
 import struct
 
 from app import __version__
+from app.config.schema import SYSTEM_DATABASES
+from app.database.discover import discover_databases
+from app.discover.engine import DiscoveryError as ApplicationDiscoveryError
+from app.discover.engine import discover_applications
 from app.master.delta import compute_delta, next_tree_files, promote_unhashed_for_preview
 from app.master.health import HEALTHY, WARNING, assess_health
 from app.master.pack import unpack_to_objects
@@ -17,6 +21,8 @@ from app.ojs.discover import DiscoveryError, is_required_ojs_application, valida
 from app.ssh.client import SSHError
 from app.utils.disk import drive_status
 from app.utils.format import format_bytes
+
+POSTGRES_SYSTEM_DATABASES = frozenset({"template0", "template1", "postgres"})
 
 BLOCKED_PREFIXES = (
     "/var/lib/containerd",
@@ -30,13 +36,20 @@ class PipelineError(RuntimeError):
     pass
 
 
-def _json_script(engine, action: str, extra: dict[str, Any] | None = None, *, timeout: int = 120) -> dict[str, Any]:
+def _json_script(
+    engine,
+    action: str,
+    extra: dict[str, Any] | None = None,
+    *,
+    timeout: int = 120,
+    require_ok: bool = True,
+) -> dict[str, Any]:
     payload = engine._payload(action, extra)
     result = engine.ssh.run_script(engine.config.remote_prepare_script, payload, timeout=timeout)
     parsed = engine._parse_json_result(result.stdout)
     if not result.ok and not parsed:
         raise PipelineError(result.stderr.strip() or result.stdout.strip() or f"{action} failed")
-    if parsed.get("ok") is False:
+    if require_ok and parsed.get("ok") is False:
         raise PipelineError(str(parsed.get("error") or result.stderr.strip() or f"{action} failed"))
     return parsed
 
@@ -82,6 +95,112 @@ def collect_sources(config, ojs_installs: list[dict[str, Any]]) -> list[dict[str
     return sources
 
 
+def collect_sources_from_applications(config, applications: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Filesystem sources from Nginx discovery. Skips excluded/removed/docker-internal paths."""
+    sources: list[dict[str, str]] = []
+    extra = list(config.extra_directories or [])
+    seen: set[str] = set()
+
+    def add(path: str, category: str) -> None:
+        cleaned = (path or "").rstrip("/")
+        if not cleaned or cleaned in seen:
+            return
+        if cleaned.startswith("volume:"):
+            return
+        if _is_blocked(cleaned, extra):
+            return
+        seen.add(cleaned)
+        sources.append({"root": cleaned, "category": category})
+
+    for app in applications:
+        if app.get("change") == "removed" or app.get("excluded"):
+            continue
+        files_dir = str(app.get("ojs_files_dir") or "").rstrip("/")
+        for path in app.get("source_paths") or []:
+            category = "ojs" if files_dir and str(path).rstrip("/") == files_dir else "website"
+            add(str(path), category)
+        if files_dir:
+            add(files_dir, "ojs")
+    nginx = config.nginx_directory
+    if nginx:
+        add(nginx, "nginx")
+    for path in extra:
+        if _is_blocked(path, extra):
+            continue
+        add(path, "extra")
+    return sources
+
+
+def applications_to_ojs(applications: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    installs: list[dict[str, Any]] = []
+    for app in applications:
+        if app.get("type") != "OJS" or app.get("change") == "removed":
+            continue
+        installs.append(
+            {
+                "domain": app.get("hostname"),
+                "application_path": app.get("root"),
+                "files_dir": app.get("ojs_files_dir") or "",
+                "size_bytes": int(app.get("estimated_bytes") or 0),
+                "exists": bool(app.get("ojs_files_dir")),
+            }
+        )
+    return installs
+
+
+def merge_discovered_databases(
+    config,
+    discovery: dict[str, Any],
+    mysql_names: list[str],
+) -> tuple[list[str], list[str]]:
+    mariadb: list[str] = []
+    postgres: list[str] = []
+
+    def add_maria(name: str) -> None:
+        cleaned = str(name or "").strip()
+        if not cleaned:
+            return
+        if config.exclude_system_databases and cleaned in SYSTEM_DATABASES:
+            return
+        if cleaned not in mariadb:
+            mariadb.append(cleaned)
+
+    def add_pg(name: str) -> None:
+        cleaned = str(name or "").strip()
+        if not cleaned:
+            return
+        if cleaned in POSTGRES_SYSTEM_DATABASES:
+            return
+        if cleaned not in postgres:
+            postgres.append(cleaned)
+
+    dbs = discovery.get("databases") if isinstance(discovery.get("databases"), dict) else {}
+    for name in dbs.get("mariadb") or []:
+        add_maria(str(name))
+    for name in dbs.get("postgresql") or []:
+        add_pg(str(name))
+    for name in mysql_names:
+        add_maria(str(name))
+    for app in discovery.get("applications") or []:
+        if app.get("change") == "removed":
+            continue
+        dtype = str(app.get("database_type") or "")
+        dname = str(app.get("database_name") or "")
+        if dtype == "PostgreSQL":
+            add_pg(dname)
+        elif dname:
+            add_maria(dname)
+    return mariadb, postgres
+
+
+def _approval_label(app: dict[str, Any]) -> str:
+    if app.get("excluded") or app.get("status") == "EXCLUDED":
+        return "EXCLUDED"
+    if app.get("included"):
+        return "APPROVED"
+    return str(app.get("status") or "NEW SITE DETECTED — REQUIRES APPROVAL")
+
+
 def _required_roots(sources: list[dict[str, str]]) -> list[str]:
     return [item["root"].rstrip("/") for item in sources]
 
@@ -99,6 +218,24 @@ def _inventory(engine, sources: list[dict[str, str]]) -> list[dict[str, Any]]:
     if parsed.get("ok") is False:
         raise PipelineError("; ".join(parsed.get("errors") or ["inventory failed"]))
     return files
+
+
+def _inventory_preview(engine, sources: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """DRY RUN inventory. Missing optional roots are warnings, not a hard failure."""
+    if not sources:
+        return [], []
+    parsed = _json_script(
+        engine,
+        "inventory",
+        {"sources": sources},
+        timeout=engine.config.transfer_timeout,
+        require_ok=False,
+    )
+    files = parsed.get("files") if isinstance(parsed, dict) else None
+    if not isinstance(files, list):
+        raise PipelineError("Inventory returned no file list.")
+    errors = [str(item) for item in (parsed.get("errors") or [])]
+    return files, errors
 
 
 def _hash_paths(engine, paths: list[str], allowed_roots: list[str]) -> dict[str, str]:
@@ -170,8 +307,8 @@ def _stream_files(engine, store: MasterStore, files: list[dict[str, Any]], allow
     return transferred
 
 
-def _fingerprint_databases(engine) -> dict[str, str]:
-    names = engine.config.databases_for_backup()
+def _fingerprint_databases(engine, names: list[str] | None = None) -> dict[str, str]:
+    names = list(names if names is not None else engine.config.databases_for_backup())
     if not names:
         return {}
     parsed = _json_script(engine, "database-fingerprint", {"databases": names}, timeout=120)
@@ -257,10 +394,18 @@ def format_dry_run_report(
     changed_dbs: list[str] | None = None,
     counts: dict[str, int] | None = None,
     estimated_bytes: int = 0,
+    applications: list[dict[str, Any]] | None = None,
+    postgres_names: list[str] | None = None,
+    db_discovery_error: str = "",
+    full_baseline_bytes: int = 0,
+    inventory_warnings: list[str] | None = None,
 ) -> str:
     """Human-readable DRY RUN summary. Never mutates master or HEAD."""
     changed_dbs = list(changed_dbs or [])
     counts = counts or {}
+    applications = list(applications or [])
+    postgres_names = list(postgres_names or [])
+    inventory_warnings = list(inventory_warnings or [])
     if not has_master:
         master_status = "NO BASELINE"
         mode = "FULL BASELINE PREVIEW"
@@ -277,12 +422,36 @@ def format_dry_run_report(
         f"  {item.get('application_path') or item.get('domain')} -> {item.get('files_dir')}"
         for item in ojs
     ] or ["  (none discovered)"]
-    websites = [item["root"] for item in sources if item.get("category") == "website"]
-    web_lines = [f"  {path}" for path in websites] or ["  (none)"]
+    if applications:
+        live_apps = [app for app in applications if app.get("change") != "removed"]
+        app_lines = []
+        for app in applications:
+            db = ""
+            if app.get("database_type") or app.get("database_name"):
+                db = f"{app.get('database_type') or ''} {app.get('database_name') or ''}".strip()
+            root = app.get("root") or ", ".join(app.get("proxy_pass") or []) or "—"
+            app_lines.append(
+                f"  {app.get('hostname')} | {app.get('type')} | {root} | {db or '—'} | {_approval_label(app)}"
+            )
+        approved = sum(1 for app in live_apps if app.get("included"))
+        excluded = sum(1 for app in live_apps if app.get("excluded") or app.get("status") == "EXCLUDED")
+        pending = len(live_apps) - approved - excluded
+        app_header = [
+            "DISCOVERED APPLICATIONS:",
+            f"  total={len(live_apps)} approved={approved} excluded={excluded} pending_approval={pending}",
+            "  Hostname | Type | Root/proxy | Database | Approval",
+            *app_lines,
+        ]
+    else:
+        websites = [item["root"] for item in sources if item.get("category") == "website"]
+        web_lines = [f"  {path}" for path in websites] or ["  (none)"]
+        app_header = ["WEBSITES:", *web_lines]
     if db_error:
         db_line = f"fingerprint failed: {db_error}"
-    elif not db_names:
-        db_line = "none configured"
+    elif db_discovery_error and not db_names and not postgres_names:
+        db_line = f"discovery failed: {db_discovery_error}"
+    elif not db_names and not postgres_names:
+        db_line = "none discovered"
     elif not has_master:
         db_line = "discovered"
     elif db_result == "UNCHANGED":
@@ -291,24 +460,33 @@ def format_dry_run_report(
         db_line = "changed (" + ", ".join(changed_dbs) + ")"
     else:
         db_line = db_result.lower()
+    db_detail = [
+        f"  MariaDB: {', '.join(db_names) if db_names else '(none discovered)'}",
+        f"  PostgreSQL: {', '.join(postgres_names) if postgres_names else '(none discovered)'}",
+    ]
+    if db_discovery_error and (db_names or postgres_names):
+        db_detail.append(f"  discovery warning: {db_discovery_error}")
     counts_line = (
         f"NEW={counts.get('new', 0)} MODIFIED={counts.get('modified', 0)} "
         f"DELETED={counts.get('deleted', 0)} RENAMED={counts.get('renamed', 0)} "
         f"MOVED={counts.get('moved', 0)}"
     )
+    warning_lines = [f"  {item}" for item in inventory_warnings] if inventory_warnings else []
     return "\n".join(
         [
             f"MASTER STATUS: {master_status}",
             f"MODE: {mode}",
+            *app_header,
             "OJS:",
             *ojs_lines,
-            "WEBSITES:",
-            *web_lines,
             f"DATABASES: {db_line}",
+            *db_detail,
             f"EXPECTED ACTION: {expected}",
+            f"EXPECTED FULL BASELINE SIZE: {format_bytes(full_baseline_bytes or estimated_bytes)}",
             f"ESTIMATED TRANSFER: {format_bytes(estimated_bytes)}",
             "HEAD: unchanged",
             counts_line,
+            *(["INVENTORY WARNINGS:", *warning_lines] if warning_lines else []),
         ]
     )
 
@@ -323,6 +501,147 @@ def _dry_run_stage(engine, token: str, message: str, pct: int) -> None:
         bytes_done=pct,
         bytes_total=100,
     )
+
+
+def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
+    """Server-wide read-only discovery + metadata inventory. Does not write HEAD or run BACKUP NOW."""
+    config = engine.config
+    _dry_run_stage(engine, "DRY_RUN_DISCOVERY_START", "Discovering Nginx applications…", 30)
+    try:
+        discovery = discover_applications(config, ssh=engine.ssh, persist=True)
+    except ApplicationDiscoveryError as exc:
+        engine.logger.error(f"DRY_RUN_ERROR application discovery: {exc}")
+        raise PipelineError(str(exc)) from exc
+    applications = list(discovery.get("applications") or [])
+    if not discovery.get("nginx_ok") and not applications:
+        error = "; ".join(discovery.get("errors") or ["Nginx application discovery failed"])
+        engine.logger.error(f"DRY_RUN_ERROR {error}")
+        raise PipelineError(error)
+    _dry_run_stage(engine, "DRY_RUN_DISCOVERY_COMPLETE", "Application discovery complete.", 40)
+    ojs = applications_to_ojs(applications)
+    for install in ojs:
+        engine.logger.info(
+            f"{install.get('domain')} files_dir={install.get('files_dir')} "
+            f"size={(install.get('size_bytes') or 0) / (1024**3):.1f} GB"
+        )
+    sources = collect_sources_from_applications(config, applications)
+    _dry_run_stage(engine, "DRY_RUN_INVENTORY_START", "Building file inventory…", 50)
+    inventory, inventory_warnings = _inventory_preview(engine, sources)
+    for warning in inventory_warnings:
+        engine.logger.info(f"DRY_RUN_INVENTORY_WARNING {warning}")
+    _dry_run_stage(engine, "DRY_RUN_INVENTORY_COMPLETE", "Inventory complete.", 70)
+    previous = store.load_tree() if store.has_head() else {"files": []}
+    has_master = store.has_head()
+    op_type = "FULL" if not has_master else "INCREMENTAL"
+    engine._check_cancel()
+    hashes = _key_hashes(inventory)
+    _dry_run_stage(engine, "DRY_RUN_DELTA_START", "Comparing inventory to master…", 75)
+    changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
+    promote_unhashed_for_preview(changes)
+    _dry_run_stage(engine, "DRY_RUN_DELTA_COMPLETE", "Delta preview complete.", 85)
+
+    mysql_names: list[str] = []
+    db_discovery_error = ""
+    try:
+        rows = discover_databases(config, client=engine.ssh)
+        mysql_names = [str(row.get("name") or "") for row in rows if isinstance(row, dict)]
+    except Exception as exc:  # noqa: BLE001
+        db_discovery_error = str(exc)
+        engine.logger.error(f"DRY_RUN_ERROR database discovery: {exc}")
+    mariadb_names, postgres_names = merge_discovered_databases(config, discovery, mysql_names)
+
+    db_names = mariadb_names
+    db_result = "SKIPPED"
+    db_error = ""
+    fingerprints: dict[str, str] = {}
+    changed_dbs: list[str] = []
+    if db_names:
+        _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_START", "Fingerprinting MariaDB databases…", 90)
+        try:
+            fingerprints = _fingerprint_databases(engine, db_names)
+            previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
+            for name in db_names:
+                if fingerprints.get(name) != previous_fp.get(name):
+                    changed_dbs.append(name)
+            db_result = "UNCHANGED" if not changed_dbs else "CHANGED"
+            _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_COMPLETE", "Database fingerprint complete.", 95)
+        except Exception as exc:  # noqa: BLE001
+            db_result = "FAILED"
+            db_error = str(exc)
+            engine.logger.error(f"DRY_RUN_ERROR database fingerprint: {exc}")
+            engine.logger.info("DRY_RUN_DB_FINGERPRINT_COMPLETE")
+    elif postgres_names:
+        db_result = "DISCOVERED"
+        _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_START", "PostgreSQL discovered; MariaDB fingerprint skipped.", 90)
+        _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_COMPLETE", "Database discovery complete.", 95)
+    else:
+        db_result = "NONE"
+        _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_START", "No MariaDB databases discovered.", 90)
+        _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_COMPLETE", "Database discovery complete.", 95)
+
+    counts = changes.counts()
+    engine.logger.info(
+        f"Change detection: NEW={counts['new']} MODIFIED={counts['modified']} "
+        f"DELETED={counts['deleted']} RENAMED={counts['renamed']} MOVED={counts['moved']}"
+    )
+    discovered_bytes = int(
+        sum(int(app.get("estimated_bytes") or 0) for app in applications if app.get("change") != "removed")
+    )
+    inventory_bytes = int(sum(int(item.get("size") or 0) for item in inventory))
+    transfer_bytes = int(changes.estimated_transfer_bytes())
+    full_baseline_bytes = max(inventory_bytes, discovered_bytes, transfer_bytes if not has_master else 0)
+    preview_type = (
+        "NO_CHANGE"
+        if has_master and changes.empty and not changed_dbs and not db_error
+        else op_type
+    )
+    report_ok = not db_error
+    report_text = format_dry_run_report(
+        has_master=has_master,
+        generation=store.head_generation(),
+        op_type=preview_type,
+        ojs=ojs,
+        sources=sources,
+        db_names=db_names,
+        db_result=db_result,
+        db_error=db_error,
+        changed_dbs=changed_dbs,
+        counts=counts,
+        estimated_bytes=transfer_bytes,
+        applications=applications,
+        postgres_names=postgres_names,
+        db_discovery_error=db_discovery_error,
+        full_baseline_bytes=full_baseline_bytes,
+        inventory_warnings=inventory_warnings,
+    )
+    report = {
+        "ok": report_ok,
+        "operation": "DRY_RUN",
+        "type": preview_type,
+        "master_exists": has_master,
+        "counts": counts,
+        "estimated_transfer_bytes": transfer_bytes,
+        "full_baseline_bytes": full_baseline_bytes,
+        "database": db_result,
+        "changed_databases": changed_dbs,
+        "databases": {"mariadb": db_names, "postgresql": postgres_names},
+        "applications": applications,
+        "ojs": ojs,
+        "sources": sources,
+        "report_text": report_text,
+        "hashed": False,
+        "head_unchanged": True,
+        "error": db_error or None,
+    }
+    engine.logger.info("DRY_RUN_RESULT")
+    engine.progress.write(
+        status="success" if report_ok else "failed",
+        message="Dry run complete. HEAD unchanged." if report_ok else db_error,
+        dry_run=report,
+        bytes_done=100,
+        bytes_total=100,
+    )
+    return report
 
 
 def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -> dict[str, Any]:
@@ -354,17 +673,13 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
 
     engine._check_cancel()
     if dry_run:
-        _dry_run_stage(engine, "DRY_RUN_DISCOVERY_START", "Discovering OJS files_dir…", 30)
-    else:
-        engine.logger.info("OJS discovery started")
+        return _run_dry_run_preview(engine, store)
+
+    engine.logger.info("OJS discovery started")
     try:
         ojs = _discover_ojs(engine)
     except DiscoveryError as exc:
-        if dry_run:
-            engine.logger.error(f"DRY_RUN_ERROR OJS discovery: {exc}")
         raise PipelineError(str(exc)) from exc
-    if dry_run:
-        _dry_run_stage(engine, "DRY_RUN_DISCOVERY_COMPLETE", "OJS discovery complete.", 40)
     for install in ojs:
         engine.logger.info(
             f"{install.get('domain')} files_dir={install.get('files_dir')} "
@@ -381,28 +696,16 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         raise PipelineError("Required OJS application(s) were not discovered: " + ", ".join(required_missing))
 
     sources = collect_sources(config, ojs)
-    if dry_run:
-        _dry_run_stage(engine, "DRY_RUN_INVENTORY_START", "Building file inventory…", 50)
-    else:
-        engine.progress.write(phase="inventory", message="Building file inventory…")
+    engine.progress.write(phase="inventory", message="Building file inventory…")
     inventory = _inventory(engine, sources)
-    if dry_run:
-        _dry_run_stage(engine, "DRY_RUN_INVENTORY_COMPLETE", "Inventory complete.", 70)
     previous = store.load_tree() if store.has_head() and not rebuild else {"files": []}
     has_master = store.has_head() and not rebuild
     op_type = "FULL" if not has_master or rebuild else "INCREMENTAL"
 
     engine._check_cancel()
     hashes = _key_hashes(inventory)
-    if dry_run:
-        _dry_run_stage(engine, "DRY_RUN_DELTA_START", "Comparing inventory to master…", 75)
     changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
-    if dry_run:
-        # Metadata-only preview. Hashing the live tree (including ~19 GB OJS)
-        # is what made first-run DRY RUN appear frozen at 0%.
-        promote_unhashed_for_preview(changes)
-        _dry_run_stage(engine, "DRY_RUN_DELTA_COMPLETE", "Delta preview complete.", 85)
-    elif changes.hash_candidates:
+    if changes.hash_candidates:
         engine.progress.write(phase="hash", message="Hashing changed file candidates…")
         paths = [_absolute(item) for item in changes.hash_candidates]
         abs_hashes = _hash_paths(engine, paths, _required_roots(sources))
@@ -412,14 +715,10 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
 
     db_names = config.databases_for_backup()
     db_result = "SKIPPED"
-    db_error = ""
     fingerprints: dict[str, str] = {}
     changed_dbs: list[str] = []
     if db_names:
-        if dry_run:
-            _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_START", "Fingerprinting MariaDB databases…", 90)
-        else:
-            engine.progress.write(phase="database", message="Fingerprinting MariaDB databases…")
+        engine.progress.write(phase="database", message="Fingerprinting MariaDB databases…")
         try:
             fingerprints = _fingerprint_databases(engine)
             previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
@@ -427,68 +726,14 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                 if fingerprints.get(name) != previous_fp.get(name):
                     changed_dbs.append(name)
             db_result = "UNCHANGED" if not changed_dbs else "CHANGED"
-            if dry_run:
-                _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_COMPLETE", "Database fingerprint complete.", 95)
         except Exception as exc:  # noqa: BLE001
-            if dry_run:
-                db_result = "FAILED"
-                db_error = str(exc)
-                engine.logger.error(f"DRY_RUN_ERROR database fingerprint: {exc}")
-                engine.logger.info("DRY_RUN_DB_FINGERPRINT_COMPLETE")
-            else:
-                raise PipelineError(f"Database backup failed: {exc}") from exc
+            raise PipelineError(f"Database backup failed: {exc}") from exc
 
     counts = changes.counts()
     engine.logger.info(
         f"Change detection: NEW={counts['new']} MODIFIED={counts['modified']} "
         f"DELETED={counts['deleted']} RENAMED={counts['renamed']} MOVED={counts['moved']}"
     )
-
-    if dry_run:
-        preview_type = (
-            "NO_CHANGE"
-            if has_master and changes.empty and not changed_dbs and not db_error and not rebuild
-            else op_type
-        )
-        report_ok = not db_error
-        report_text = format_dry_run_report(
-            has_master=has_master,
-            generation=store.head_generation(),
-            op_type=preview_type,
-            ojs=ojs,
-            sources=sources,
-            db_names=db_names,
-            db_result=db_result,
-            db_error=db_error,
-            changed_dbs=changed_dbs,
-            counts=counts,
-            estimated_bytes=changes.estimated_transfer_bytes(),
-        )
-        report = {
-            "ok": report_ok,
-            "operation": "DRY_RUN",
-            "type": preview_type,
-            "master_exists": has_master,
-            "counts": counts,
-            "estimated_transfer_bytes": changes.estimated_transfer_bytes(),
-            "database": db_result,
-            "changed_databases": changed_dbs,
-            "ojs": ojs,
-            "sources": sources,
-            "report_text": report_text,
-            "hashed": False,
-            "head_unchanged": True,
-            "error": db_error or None,
-        }
-        engine.logger.info("DRY_RUN_RESULT")
-        engine.progress.write(
-            status="success" if report_ok else "failed",
-            message="Dry run complete. HEAD unchanged." if report_ok else db_error,
-            dry_run=report,
-            bytes_done=100,
-            bytes_total=100,
-        )
-        return report
 
     no_change = has_master and changes.empty and not changed_dbs and not rebuild
     if no_change:

@@ -158,12 +158,14 @@ class BackupEngine:
         helper_keys = {
             "ok",
             "installations",
+            "applications",
             "files",
             "hostname",
             "fingerprints",
             "hashes",
             "dumps",
             "checks",
+            "databases",
             "error",
         }
         while True:

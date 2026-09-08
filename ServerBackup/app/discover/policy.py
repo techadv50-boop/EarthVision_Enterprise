@@ -105,17 +105,12 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
             row["included"] = True
             row["excluded"] = False
             row["change"] = "unchanged" if ident in previous else "new"
-            if ident not in previous:
-                row["status"] = "NEW SITE DETECTED" if row.get("status") == "READY" else row.get("status")
         else:
             row["included"] = False
             row["excluded"] = False
-            if ident in previous:
-                row["change"] = "unchanged"
-            else:
-                row["change"] = "new"
-                if row.get("status") == "READY":
-                    row["status"] = "NEW SITE DETECTED"
+            row["change"] = "unchanged" if ident in previous else "new"
+            if row.get("status") == "READY":
+                row["status"] = "NEW SITE DETECTED — REQUIRES APPROVAL"
         result.append(row)
     previous_map: dict[str, dict[str, Any]] = {}
     for item in snapshot.get("applications") or []:
@@ -130,7 +125,7 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
         if ident in current_ids:
             continue
         removed = dict(prev)
-        removed["status"] = "SITE REMOVED / REQUIRES REVIEW"
+        removed["status"] = "SITE REMOVED — REQUIRES REVIEW"
         removed["change"] = "removed"
         removed["included"] = False
         removed["notes"] = list(removed.get("notes") or []) + [

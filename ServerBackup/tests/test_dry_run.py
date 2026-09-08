@@ -59,6 +59,18 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "EXPECTED ACTION: FULL MASTER BASELINE" in text
     assert "HEAD: unchanged" in text
     assert "DATABASES: discovered" in text
+    assert "none configured" not in text
+    assert "sateye.xdgen.com" in text
+    assert "citation.xdgen.com" in text
+    assert "NEW SITE DETECTED — REQUIRES APPROVAL" in text
+    assert "EXPECTED FULL BASELINE SIZE:" in text
+    assert "APPROVED" in text or "pending_approval=" in text
+    assert "MariaDB:" in text
+    assert "ojs50" in text or "journal" in text
+    assert "PostgreSQL:" in text
+    assert "citation" in text
+    assert "discover-applications" in ssh.calls
+    assert "discover-databases" in ssh.calls
     assert remote["journal.50sea.com"] in text
     assert remote["ojs50"] in text
     log = _log_text(engine)
@@ -101,17 +113,27 @@ def test_existing_master_dry_run_is_incremental_preview_and_does_not_hash(tmp_pa
     assert "HEAD: unchanged" in result["report_text"]
 
 
-def test_existing_master_unchanged_dry_run_is_no_change(tmp_path: Path):
+def test_existing_master_unchanged_files_keep_head_and_still_show_discovery(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     ssh = LocalMasterSSH(tmp_path / "remote")
     result = BackupEngine(cfg, ssh=ssh).dry_run()
+    master = result["master"]
+    text = result["report_text"]
     assert result["ok"] is True
-    assert result["master"]["type"] == "NO_CHANGE"
+    assert master["counts"]["new"] == 0
+    assert master["counts"]["modified"] == 0
+    assert master["counts"]["deleted"] == 0
     assert "hash-files" not in ssh.calls
     assert MasterStore(cfg.backup_destination).head_generation() == 1
-    assert "EXPECTED ACTION: NO_CHANGE" in result["report_text"]
+    assert "HEAD: unchanged" in text
+    assert "sateye.xdgen.com" in text
+    assert "citation.xdgen.com" in text
+    assert "none configured" not in text
+    # BACKUP NOW still only fingerprints selected_databases. Newly discovered
+    # MariaDB names therefore appear on DRY RUN without writing HEAD.
+    assert master["type"] in {"NO_CHANGE", "INCREMENTAL"}
 
 
 def test_dry_run_ssh_failure_is_reported_without_hashing(tmp_path: Path):
@@ -120,6 +142,7 @@ def test_dry_run_ssh_failure_is_reported_without_hashing(tmp_path: Path):
     result = BackupEngine(cfg, ssh=ssh).dry_run()
     assert result["ok"] is False
     assert "Permission denied" in (result.get("report_text") or result.get("error") or "")
+    assert "discover-applications" not in ssh.calls
     assert "discover-ojs" not in ssh.calls
     assert "hash-files" not in ssh.calls
     assert not MasterStore(cfg.backup_destination).has_head()
@@ -298,3 +321,99 @@ def test_gui_dry_run_surfaces_result_and_worker_exceptions(tmp_path: Path, monke
     assert boxes[0][0] == "critical"
     assert "silent-thread-failure" in boxes[0][2]
     window.close()
+
+
+def test_dry_run_discovers_databases_when_selected_list_is_empty(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote, selected_databases=[])
+    ssh = LocalMasterSSH(tmp_path / "remote")
+    result = BackupEngine(cfg, ssh=ssh).dry_run()
+    text = result["report_text"]
+    assert result["ok"] is True
+    assert cfg.databases_for_backup() == []
+    assert "none configured" not in text
+    assert "DATABASES: discovered" in text
+    assert "MariaDB:" in text
+    assert "journal" in text
+    assert "ojs50" in text
+    assert "PostgreSQL:" in text
+    assert "citation" in text
+    assert "sateye.xdgen.com" in text
+    assert "citation.xdgen.com" in text
+    assert "EXPECTED FULL BASELINE SIZE:" in text
+    assert "pending_approval=" in text
+    assert "hash-files" not in ssh.calls
+    assert "dump-databases" not in ssh.calls
+    assert not MasterStore(cfg.backup_destination).has_head()
+
+
+def test_dry_run_does_not_use_hardcoded_website_list(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(
+        tmp_path,
+        remote,
+        website_directories=[remote["xdgen.com"]],
+        selected_databases=[],
+    )
+    result = BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).dry_run()
+    text = result["report_text"]
+    assert "sateye.xdgen.com" in text
+    assert "citation.xdgen.com" in text
+    assert "journal.50sea.com" in text
+    assert "journal.xdgen.com" in text
+    assert "50sea.com" in text
+    assert "NEW SITE DETECTED — REQUIRES APPROVAL" in text
+    assert "none configured" not in text
+
+
+def test_dry_run_removed_site_requires_review_and_keeps_master(tmp_path: Path):
+    from app.discover.policy import save_snapshot, set_approval
+
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
+    store = MasterStore(cfg.backup_destination)
+    assert store.head_generation() == 1
+    save_snapshot(
+        cfg.backup_destination,
+        {
+            "applications": [
+                {
+                    "application_id": "gone.example.com:/var/www/gone",
+                    "hostname": "gone.example.com",
+                    "type": "Static",
+                    "root": "/var/www/gone",
+                    "status": "READY",
+                }
+            ]
+        },
+    )
+    set_approval(cfg.backup_destination, "gone.example.com:/var/www/gone", approved=True)
+    assert store.head_generation() == 1
+    assert store.has_head() is True
+    ssh = LocalMasterSSH(tmp_path / "remote")
+    result = BackupEngine(cfg, ssh=ssh).dry_run()
+    text = result["report_text"]
+    assert "gone.example.com" in text
+    assert "SITE REMOVED — REQUIRES REVIEW" in text
+    assert store.head_generation() == 1
+    assert "hash-files" not in ssh.calls
+
+
+def test_format_dry_run_report_never_says_none_configured_after_empty_discovery():
+    from app.master.pipeline import format_dry_run_report
+
+    text = format_dry_run_report(
+        has_master=False,
+        generation=None,
+        op_type="FULL",
+        ojs=[],
+        sources=[],
+        db_names=[],
+        db_result="NONE",
+        applications=[],
+        postgres_names=[],
+    )
+    assert "none configured" not in text
+    assert "none discovered" in text
+    assert "EXPECTED FULL BASELINE SIZE:" in text

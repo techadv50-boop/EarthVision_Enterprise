@@ -87,11 +87,11 @@ def seed_remote_tree(base: Path) -> dict[str, str]:
     for path in (j50, jxd, xd, sea, ojs50, ojsxd, nginx):
         path.mkdir(parents=True, exist_ok=True)
     (j50 / "config.inc.php").write_text(
-        f"files_dir = {ojs50.as_posix()}\nversion = 3.4.0\n",
+        f"files_dir = {ojs50.as_posix()}\nversion = 3.4.0\n[database]\nname = ojs50\n",
         encoding="utf-8",
     )
     (jxd / "config.inc.php").write_text(
-        f"files_dir = {ojsxd.as_posix()}\nversion = 3.3.0\n",
+        f"files_dir = {ojsxd.as_posix()}\nversion = 3.3.0\n[database]\nname = ojsxd\n",
         encoding="utf-8",
     )
     (j50 / "index.php").write_text("journal50-app\n", encoding="utf-8")
@@ -101,6 +101,10 @@ def seed_remote_tree(base: Path) -> dict[str, str]:
     (ojs50 / "paper.pdf").write_bytes(b"%PDF-50sea")
     (ojsxd / "paper.pdf").write_bytes(b"%PDF-xdgen")
     (nginx / "nginx.conf").write_text("events {}\n", encoding="utf-8")
+    sateye = base / "opt/sateye/frontend"
+    citation = base / "opt/citation/data"
+    sateye.mkdir(parents=True, exist_ok=True)
+    citation.mkdir(parents=True, exist_ok=True)
     return {
         "journal.50sea.com": j50.as_posix(),
         "journal.xdgen.com": jxd.as_posix(),
@@ -109,22 +113,24 @@ def seed_remote_tree(base: Path) -> dict[str, str]:
         "ojs50": ojs50.as_posix(),
         "ojsxd": ojsxd.as_posix(),
         "nginx": nginx.as_posix(),
+        "sateye.xdgen.com": sateye.as_posix(),
+        "citation.xdgen.com": citation.as_posix(),
     }
 
 
 def master_config(tmp_path: Path, remote: dict[str, str], **overrides) -> AppConfig:
-    return make_config(
-        tmp_path,
-        website_directories=[
+    values = {
+        "website_directories": [
             remote["journal.50sea.com"],
             remote["journal.xdgen.com"],
             remote["xdgen.com"],
             remote["50sea.com"],
         ],
-        nginx_directory=remote["nginx"],
-        ojs_private_files=remote["ojsxd"],
-        **overrides,
-    )
+        "nginx_directory": remote["nginx"],
+        "ojs_private_files": remote["ojsxd"],
+    }
+    values.update(overrides)
+    return make_config(tmp_path, **values)
 
 
 class _Proc:
@@ -176,6 +182,90 @@ class FakeSSH:
                 )
         return {"ok": True, "installations": installs, "errors": []}
 
+    def _discover_applications(self) -> dict:
+        def app(
+            hostname: str,
+            app_type: str,
+            root: str = "",
+            **extra,
+        ) -> dict:
+            persist = list(extra.get("persistent_data_paths") or [])
+            sources = list(extra.get("source_paths") or ([root] if root else []) + persist)
+            sources = [p for p in sources if p and not str(p).startswith("volume:")]
+            row = {
+                "application_id": f"{hostname}:{root}" if root else hostname,
+                "hostname": hostname,
+                "type": app_type,
+                "discovery_source": "nginx -T",
+                "root": root,
+                "alias": extra.get("alias") or [],
+                "proxy_pass": extra.get("proxy_pass") or [],
+                "database_type": extra.get("database_type") or "",
+                "database_name": extra.get("database_name") or "",
+                "persistent_data_paths": persist,
+                "source_paths": list(dict.fromkeys(sources)),
+                "docker": extra.get("docker"),
+                "ojs_files_dir": extra.get("ojs_files_dir") or "",
+                "estimated_bytes": extra.get("estimated_bytes", 2048),
+                "status": extra.get("status") or "READY",
+                "notes": extra.get("notes") or [],
+                "included": False,
+                "excluded": False,
+            }
+            return row
+
+        apps = [
+            app(
+                "journal.50sea.com",
+                "OJS",
+                "/var/www/journal.50sea.com",
+                ojs_files_dir="/var/lib/ojs-journal50",
+                database_type="MariaDB",
+                database_name="ojs50",
+                persistent_data_paths=["/var/lib/ojs-journal50"],
+                estimated_bytes=4096,
+            ),
+            app(
+                "journal.xdgen.com",
+                "OJS",
+                "/var/www/journal.xdgen.com",
+                ojs_files_dir="/var/www/ojs-files",
+                database_type="MariaDB",
+                database_name="ojsxd",
+                persistent_data_paths=["/var/www/ojs-files"],
+            ),
+            app("xdgen.com", "Static", "/var/www/xdgen.com"),
+            app("50sea.com", "PHP", "/var/www/50sea.com"),
+            app("sateye.xdgen.com", "Node", "/opt/sateye/frontend"),
+            app(
+                "citation.xdgen.com",
+                "Docker",
+                "",
+                proxy_pass=["http://citation_web:8000"],
+                database_type="PostgreSQL",
+                database_name="citation",
+                persistent_data_paths=["volume:citation_pgdata"],
+                docker={
+                    "compose_project": "citation",
+                    "compose_file": "/opt/citation/docker-compose.yml",
+                    "service": "citation_web",
+                    "container": "citation_web",
+                    "workdir": "/opt/citation",
+                },
+                source_paths=[],
+                estimated_bytes=512,
+            ),
+        ]
+        return {
+            "ok": True,
+            "nginx_ok": True,
+            "hostname": "ubuntu-server",
+            "discovery_source": "nginx -T",
+            "applications": apps,
+            "databases": {"mariadb": ["journal", "ojs50", "ojsxd"], "postgresql": ["citation"]},
+            "errors": [],
+        }
+
     def run_script(self, script_path: str, payload, *, timeout=None, use_sudo: bool = True) -> SSHResult:
         action = payload.get("action")
         self.calls.append(action)
@@ -198,27 +288,13 @@ class FakeSSH:
         if action == "discover-databases":
             return SSHResult(
                 0,
-                json.dumps({"ok": True, "databases": ["journal", "information_schema"]}),
+                json.dumps({"ok": True, "databases": ["journal", "ojs50", "ojsxd", "information_schema"]}),
                 "",
             )
         if action == "discover-ojs":
             return SSHResult(0, json.dumps(self._discover_ojs(payload)), "")
         if action == "discover-applications":
-            return SSHResult(
-                0,
-                json.dumps(
-                    {
-                        "ok": True,
-                        "nginx_ok": True,
-                        "hostname": "ubuntu-server",
-                        "discovery_source": "nginx -T",
-                        "applications": [],
-                        "databases": {"mariadb": ["journal"], "postgresql": []},
-                        "errors": [],
-                    }
-                ),
-                "",
-            )
+            return SSHResult(0, json.dumps(self._discover_applications()), "")
         if action == "inventory":
             return SSHResult(0, json.dumps({"ok": True, "files": [], "errors": []}), "")
         if action == "hash-files":
@@ -258,12 +334,124 @@ class LocalMasterSSH(FakeSSH):
         self.fail_hash = False
         self.uploads: list[tuple[str, str]] = []
 
+    def _local_discover_applications(self) -> dict:
+        import discover_apps as da
+
+        root = self.remote_root
+        www = root / "var/www"
+        lines = ["# configuration file /etc/nginx/nginx.conf:", "http {"]
+        for name in ("journal.50sea.com", "journal.xdgen.com", "xdgen.com", "50sea.com"):
+            child = www / name
+            if not child.is_dir():
+                continue
+            lines.extend(
+                [
+                    f"# configuration file /etc/nginx/sites-enabled/{name}:",
+                    "server {",
+                    "    listen 80;",
+                    f"    server_name {name};",
+                    f"    root {child.as_posix()};",
+                    "}",
+                ]
+            )
+        sateye = root / "opt/sateye/frontend"
+        if sateye.is_dir():
+            lines.extend(
+                [
+                    "# configuration file /etc/nginx/sites-enabled/sateye:",
+                    "server {",
+                    "    listen 80;",
+                    "    server_name sateye.xdgen.com;",
+                    f"    root {sateye.as_posix()};",
+                    "}",
+                ]
+            )
+        citation_data = root / "opt/citation/data"
+        lines.extend(
+            [
+                "# configuration file /etc/nginx/sites-enabled/citation:",
+                "server {",
+                "    listen 80;",
+                "    server_name citation.xdgen.com;",
+                "    location / {",
+                "        proxy_pass http://citation_web:8000;",
+                "    }",
+                "}",
+                "}",
+            ]
+        )
+        docker = [
+            {
+                "Id": "abc123def456",
+                "Name": "/citation_web",
+                "Config": {
+                    "Image": "citation:latest",
+                    "Labels": {
+                        "com.docker.compose.project": "citation",
+                        "com.docker.compose.service": "citation_web",
+                        "com.docker.compose.project.working_dir": str((root / "opt/citation").as_posix()),
+                        "com.docker.compose.project.config_files": str((root / "opt/citation/docker-compose.yml").as_posix()),
+                    },
+                    "Env": ["POSTGRES_DB=citation"],
+                },
+                "HostConfig": {"PortBindings": {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8000"}]}},
+                "Mounts": [
+                    {
+                        "Type": "bind",
+                        "Source": citation_data.as_posix(),
+                        "Destination": "/data",
+                    },
+                    {"Type": "volume", "Name": "citation_pgdata", "Destination": "/var/lib/postgresql/data"},
+                ],
+            }
+        ]
+        servers = da.parse_nginx_t("\n".join(lines))
+        apps = da.applications_from_servers(
+            servers,
+            docker_containers=docker,
+            mariadb=["journal", "ojs50", "ojsxd"],
+        )
+        postgres = sorted(
+            {
+                str(app.get("database_name"))
+                for app in apps
+                if app.get("database_type") == "PostgreSQL" and app.get("database_name")
+            }
+        )
+        return {
+            "ok": True,
+            "nginx_ok": True,
+            "hostname": "ubuntu-test",
+            "discovery_source": "nginx -T",
+            "applications": apps,
+            "databases": {"mariadb": ["journal", "ojs50", "ojsxd"], "postgresql": postgres},
+            "errors": [],
+        }
+
     def run_script(self, script_path: str, payload, *, timeout=None, use_sudo: bool = True) -> SSHResult:
         action = payload.get("action")
         self.calls.append(action)
         if action in {"check", "dry-run", "cleanup", "discover-databases"}:
             return super().run_script(script_path, payload, timeout=timeout, use_sudo=use_sudo)
         import prepare_master
+
+        if action == "discover-applications":
+            if self.fail_discover:
+                return SSHResult(
+                    1,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "discovery failed",
+                            "applications": [],
+                            "errors": ["discovery failed"],
+                            "nginx_ok": False,
+                        }
+                    ),
+                    "discovery failed",
+                )
+            result = self._local_discover_applications()
+            return SSHResult(0 if result.get("ok") else 1, json.dumps(result), result.get("error") or "")
 
         if action == "discover-ojs":
             if self.fail_discover:

@@ -150,7 +150,7 @@ def _discovery_status(config: AppConfig) -> dict[str, Any]:
         "discovered_review": sum(
             1
             for row in apps
-            if "REVIEW" in str(row.get("status") or "") or row.get("status") == "NEW SITE DETECTED"
+            if "REVIEW" in str(row.get("status") or "") or "REQUIRES APPROVAL" in str(row.get("status") or "") or "NEW SITE DETECTED" in str(row.get("status") or "")
         )
         if apps
         else "—",
