@@ -10,10 +10,13 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -43,6 +46,22 @@ from app.utils.disk import needs_setup
 from app.utils.format import format_bytes, format_duration
 
 _LOG = logging.getLogger("serverbackup.gui")
+
+
+def show_scrollable_report(parent, title: str, text: str) -> None:
+    """Show a full DRY RUN / discovery report. QMessageBox truncates long text on Windows."""
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.resize(900, 680)
+    layout = QVBoxLayout(dialog)
+    view = QPlainTextEdit()
+    view.setReadOnly(True)
+    view.setPlainText(text)
+    layout.addWidget(view)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+    buttons.accepted.connect(dialog.accept)
+    layout.addWidget(buttons)
+    dialog.exec()
 
 
 class DashboardPage(QWidget):
@@ -580,7 +599,7 @@ class MainWindow(QMainWindow):
     def _on_dry_run_finished(self, ok: bool, text: str) -> None:
         self.refresh()
         if ok:
-            QMessageBox.information(self, "DRY RUN", text)
+            show_scrollable_report(self, "DRY RUN", text)
             self.statusBar().showMessage("Dry run complete.")
         else:
             QMessageBox.critical(self, "DRY RUN failed", text)

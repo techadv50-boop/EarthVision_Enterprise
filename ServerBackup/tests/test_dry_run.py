@@ -63,9 +63,15 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "sateye.xdgen.com" in text
     assert "citation.xdgen.com" in text
     assert "www.xdgen.com" in text
+    assert "www.50sea.com" in text
     assert "DISCOVERED HOSTNAMES" in text
     assert "DISCOVERED APPLICATIONS" in text
-    assert "OJS FILES_DIR" in text
+    assert "HOSTNAME ALIASES" in text
+    assert "EXCLUDED ROOTS" in text
+    assert "REQUIRES REVIEW" in text
+    saved = Path(cfg.backup_destination) / "dry-run-last.txt"
+    assert saved.is_file()
+    assert "sateye.xdgen.com" in saved.read_text(encoding="utf-8")
     assert "INCLUDED APPLICATIONS" in text
     assert "EXCLUDED APPLICATIONS" in text
     assert "REQUIRES REVIEW" in text
@@ -276,7 +282,8 @@ def test_dry_run_does_not_require_prior_test_connection():
     assert "except" in dry_run_fn and "Exception" in dry_run_fn
     assert "_dry_run_finished = Signal(bool, str)" in text
     assert "QueuedConnection" in text
-    assert "QMessageBox.information" in finished
+    assert "show_scrollable_report" in finished
+    assert "QMessageBox.information" not in finished
     assert "QMessageBox.critical" in finished
 
 
@@ -293,15 +300,14 @@ def test_gui_dry_run_surfaces_result_and_worker_exceptions(tmp_path: Path, monke
     window.timer.stop()
     boxes: list[tuple[str, str, str]] = []
 
-    def fake_info(_parent, title, text):
+    def fake_report(_parent, title, text):
         boxes.append(("info", str(title), str(text)))
-        return QMessageBox.StandardButton.Ok
 
     def fake_critical(_parent, title, text):
         boxes.append(("critical", str(title), str(text)))
         return QMessageBox.StandardButton.Ok
 
-    monkeypatch.setattr(QMessageBox, "information", fake_info)
+    monkeypatch.setattr("app.gui.main_window.show_scrollable_report", fake_report)
     monkeypatch.setattr(QMessageBox, "critical", fake_critical)
 
     monkeypatch.setattr(

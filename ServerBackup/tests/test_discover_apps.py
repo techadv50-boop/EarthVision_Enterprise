@@ -50,7 +50,7 @@ server {
 # configuration file /etc/nginx/sites-enabled/50sea.conf:
 server {
     listen 80;
-    server_name 50sea.com;
+    server_name 50sea.com www.50sea.com;
     root /var/www/50sea.com;
 }
 # configuration file /etc/nginx/sites-enabled/sateye.conf:
@@ -188,6 +188,7 @@ def test_parses_multiple_server_names_and_roots():
     assert "xdgen.com" in names
     assert "www.xdgen.com" in names
     assert "50sea.com" in names
+    assert "www.50sea.com" in names
     assert "sateye.xdgen.com" in names
     assert "citation.xdgen.com" in names
     assert "future-site.example.com" in names
@@ -413,9 +414,10 @@ def test_shared_root_and_database_merges_hostnames():
     sateye = hosts["sateye.xdgen.com"]
     assert sea is sateye
     assert sea["application_id"] == "wordpress:/var/www/50sea.com"
-    assert set(sea["hostnames"]) == {"50sea.com", "sateye.xdgen.com"}
+    assert set(sea["hostnames"]) == {"50sea.com", "www.50sea.com", "sateye.xdgen.com"}
     assert sea["database_name"] == "sea_tedb"
     assert sea["type"] == "WordPress"
+    assert sum(1 for app in _apps() if app.get("root") == "/var/www/50sea.com") == 1
 
 
 def test_same_root_different_database_is_not_merged():
@@ -468,7 +470,11 @@ def test_unused_default_html_is_excluded():
     assert "EXCLUDED APPLICATIONS" in report
     assert "UNUSED DEFAULT ROOT" in report
     assert "DISCOVERED HOSTNAMES" in report
+    assert "DISCOVERED APPLICATIONS" in report
+    assert "HOSTNAME ALIASES" in report
+    assert "EXCLUDED ROOTS" in report
     assert "REQUIRES REVIEW" in report
+    assert "sateye.xdgen.com" in report
 
 
 def is_default_html_root(root: str) -> bool:
@@ -532,3 +538,218 @@ def test_approve_all_skips_unused_default_and_does_not_auto_approve_before_click
     assert html["excluded"] is True
     live = [row for row in after if row.get("change") != "removed" and not row.get("excluded")]
     assert all(row.get("included") for row in live)
+
+
+def _wp_probe(root: str):
+    if root.rstrip("/") == "/var/www/50sea.com":
+        return (
+            {"index.php": True, "wp-config.php": True, "wp-includes": True},
+            {"wp-config.php": "define('DB_NAME', 'sea_tedb');\n"},
+        )
+    if root.rstrip("/") == "/var/www/other":
+        return (
+            {"index.php": True, "wp-config.php": True, "wp-includes": True},
+            {"wp-config.php": "define('DB_NAME', 'other_db');\n"},
+        )
+    return ({"index.html": True}, {})
+
+
+def test_sateye_is_alias_of_50sea_wordpress_not_a_duplicate_backup():
+    hosts = _by_host(_apps())
+    sea = hosts["sateye.xdgen.com"]
+    assert hosts["50sea.com"] is sea
+    assert hosts["www.50sea.com"] is sea
+    assert sea["application_id"] == "wordpress:/var/www/50sea.com"
+    assert sea["database_name"] == "sea_tedb"
+    assert "/var/www/50sea.com" in (sea.get("source_paths") or [sea.get("root")])
+    report = format_discovery_report(
+        {
+            "applications": _apps(),
+            "nginx_ok": True,
+            "hostname": "ubuntu",
+            "nginx_inventory": da.nginx_inventory(da.parse_nginx_t(NGINX_T)),
+            "parsed_hostnames": da.parsed_hostnames(da.parse_nginx_t(NGINX_T)),
+        }
+    )
+    assert "sateye.xdgen.com" in report
+    assert "HOSTNAME ALIASES" in report
+    assert report.split("HOSTNAME ALIASES", 1)[1].split("EXCLUDED ROOTS", 1)[0].count("sateye.xdgen.com") >= 1
+    assert "wordpress:/var/www/50sea.com" in report
+
+
+def test_normalization_does_not_drop_any_nginx_server_name():
+    servers = da.parse_nginx_t(NGINX_T)
+    apps = _apps()
+    found = {name.lower() for app in apps for name in (app.get("hostnames") or [])}
+    for name in da.parsed_hostnames(servers):
+        assert name.lower() in found, f"{name} vanished during normalization"
+
+
+def test_multiline_and_second_server_name_directive_keep_sateye():
+    text = """
+# configuration file /etc/nginx/sites-enabled/50sea.conf:
+server {
+    listen 443 ssl;
+    server_name 50sea.com
+                www.50sea.com;
+    server_name sateye.xdgen.com;
+    root /var/www/50sea.com;
+}
+"""
+    servers = da.parse_nginx_t(text)
+    names = {name for block in servers for name in block["server_name"]}
+    assert names == {"50sea.com", "www.50sea.com", "sateye.xdgen.com"}
+    apps = da.applications_from_servers(servers, probe=_wp_probe, path_exists=lambda _p: True)
+    sea = _by_host(apps)["sateye.xdgen.com"]
+    assert sea is _by_host(apps)["50sea.com"]
+    assert set(sea["hostnames"]) == {"50sea.com", "www.50sea.com", "sateye.xdgen.com"}
+    assert sea["type"] == "WordPress"
+    assert sea["database_name"] == "sea_tedb"
+
+
+def test_http_https_split_does_not_drop_sateye_alias():
+    text = """
+# configuration file /etc/nginx/sites-enabled/50sea.conf:
+server {
+    listen 80;
+    server_name 50sea.com
+                www.50sea.com
+                sateye.xdgen.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name 50sea.com www.50sea.com;
+    root /var/www/50sea.com;
+}
+"""
+    servers = da.parse_nginx_t(text)
+    assert "sateye.xdgen.com" in da.parsed_hostnames(servers)
+    apps = da.applications_from_servers(servers, probe=_wp_probe, path_exists=lambda _p: True)
+    found = {name.lower() for app in apps for name in (app.get("hostnames") or [])}
+    assert "sateye.xdgen.com" in found
+    sea = _by_host(apps)["sateye.xdgen.com"]
+    assert sea["application_id"] == "wordpress:/var/www/50sea.com"
+    assert set(sea["hostnames"]) == {"50sea.com", "www.50sea.com", "sateye.xdgen.com"}
+    assert sum(1 for app in apps if app.get("root") == "/var/www/50sea.com") == 1
+
+
+def test_redirect_only_hostname_becomes_alias_of_redirect_target():
+    text = """
+# configuration file /etc/nginx/sites-enabled/50sea.conf:
+server {
+    listen 443 ssl;
+    server_name 50sea.com www.50sea.com;
+    root /var/www/50sea.com;
+}
+# configuration file /etc/nginx/sites-enabled/sateye.conf:
+server {
+    listen 80;
+    server_name sateye.xdgen.com;
+    return 301 https://50sea.com$request_uri;
+}
+"""
+    servers = da.parse_nginx_t(text)
+    sateye_block = next(block for block in servers if "sateye.xdgen.com" in block["server_name"])
+    assert sateye_block["root"] == ""
+    assert sateye_block["redirect_to"] == "50sea.com"
+    apps = da.applications_from_servers(servers, probe=_wp_probe, path_exists=lambda _p: True)
+    sea = _by_host(apps)["sateye.xdgen.com"]
+    assert sea is _by_host(apps)["50sea.com"]
+    assert sea["database_name"] == "sea_tedb"
+    assert sea["type"] == "WordPress"
+    assert sum(1 for app in apps if "sateye.xdgen.com" in (app.get("hostnames") or [])) == 1
+
+
+def test_redirect_to_unknown_host_is_not_merged_and_requires_review():
+    text = """
+server {
+    listen 80;
+    server_name orphan.example.com;
+    return 301 https://missing.example.net$request_uri;
+}
+server {
+    listen 80;
+    server_name 50sea.com;
+    root /var/www/50sea.com;
+}
+"""
+    servers = da.parse_nginx_t(text)
+    apps = da.applications_from_servers(servers, probe=_wp_probe, path_exists=lambda _p: True)
+    orphan = _by_host(apps)["orphan.example.com"]
+    sea = _by_host(apps)["50sea.com"]
+    assert orphan is not sea
+    assert "orphan.example.com" in (orphan.get("hostnames") or [])
+    assert orphan["status"] == "REQUIRES REVIEW"
+
+
+def test_duplicate_roots_different_hostnames_merge_when_type_and_database_match():
+    servers = [
+        {
+            "server_name": ["50sea.com", "www.50sea.com"],
+            "root": "/var/www/50sea.com",
+            "alias": [],
+            "proxy_pass": [],
+            "source_file": "/etc/nginx/sites-enabled/50sea.conf",
+            "listen": ["443 ssl"],
+            "http": False,
+            "https": True,
+        },
+        {
+            "server_name": ["sateye.xdgen.com"],
+            "root": "/var/www/50sea.com",
+            "alias": [],
+            "proxy_pass": [],
+            "source_file": "/etc/nginx/sites-enabled/sateye.conf",
+            "listen": ["80"],
+            "http": True,
+            "https": False,
+        },
+    ]
+    apps = da.applications_from_servers(servers, probe=_wp_probe, path_exists=lambda _p: True)
+    assert len([app for app in apps if app.get("root") == "/var/www/50sea.com"]) == 1
+    sea = _by_host(apps)["sateye.xdgen.com"]
+    assert set(sea["hostnames"]) == {"50sea.com", "www.50sea.com", "sateye.xdgen.com"}
+    assert sea["database_name"] == "sea_tedb"
+
+
+def test_sateye_stays_separate_when_root_and_database_differ():
+    servers = [
+        {
+            "server_name": ["50sea.com"],
+            "root": "/var/www/50sea.com",
+            "alias": [],
+            "proxy_pass": [],
+            "source_file": "/etc/nginx/a",
+            "listen": ["80"],
+            "http": True,
+            "https": False,
+        },
+        {
+            "server_name": ["sateye.xdgen.com"],
+            "root": "/var/www/other",
+            "alias": [],
+            "proxy_pass": [],
+            "source_file": "/etc/nginx/b",
+            "listen": ["80"],
+            "http": True,
+            "https": False,
+        },
+    ]
+    apps = da.applications_from_servers(servers, probe=_wp_probe, path_exists=lambda _p: True)
+    sea = _by_host(apps)["50sea.com"]
+    sateye = _by_host(apps)["sateye.xdgen.com"]
+    assert sea is not sateye
+    assert sea["database_name"] == "sea_tedb"
+    assert sateye["database_name"] == "other_db"
+    assert "sateye.xdgen.com" not in (sea.get("hostnames") or [])
+    assert "50sea.com" not in (sateye.get("hostnames") or [])
+
+
+def test_nginx_filesystem_alias_is_not_a_separate_application():
+    apps = _by_host(_apps())
+    journal = apps["journal.50sea.com"]
+    assert "/var/lib/ojs-journal50" in (journal.get("alias") or [])
+    assert journal["ojs_files_dir"] == "/var/lib/ojs-journal50"
+    assert all(app.get("root") != "/var/lib/ojs-journal50" for app in _apps())
+

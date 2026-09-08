@@ -27,6 +27,8 @@ WP_DB = re.compile(r"""['"]DB_NAME['"]\s*,\s*['"]([^'"]+)['"]""")
 DEFAULT_OJS_FALLBACK = "/var/www/ojs-files"
 SKIP_HOSTS = {"", "*"}
 CATCHALL_HOSTS = {"", "*", "_", "localhost"}
+REDIRECT_CODES = {"301", "302", "303", "307", "308"}
+SERVER_ONLY = re.compile(r"^server$")
 EXCLUDED_PREFIXES = (
     "/var/lib/docker",
     "/var/lib/containerd",
@@ -98,6 +100,7 @@ def parse_nginx_t(text: str) -> list[dict[str, Any]]:
     server_depth: int | None = None
     buf: list[str] = []
     servers: list[dict[str, Any]] = []
+    pending_server = False
     for raw_line in (text or "").splitlines():
         marker = FILE_MARKER.match(raw_line)
         if marker:
@@ -106,6 +109,17 @@ def parse_nginx_t(text: str) -> list[dict[str, Any]]:
         line = _strip_comment(raw_line).strip()
         if not line:
             continue
+        if server_depth is None and not pending_server and SERVER_ONLY.match(line):
+            pending_server = True
+            continue
+        if pending_server:
+            pending_server = False
+            if line.startswith("{"):
+                line = "server " + line
+            elif not SERVER_OPEN.search(line):
+                depth += line.count("{") - line.count("}")
+                depth = max(depth, 0)
+                continue
         opens = line.count("{")
         closes = line.count("}")
         if server_depth is None and SERVER_OPEN.search(line):
@@ -134,66 +148,183 @@ def parse_nginx_t(text: str) -> list[dict[str, Any]]:
     return servers
 
 
+def _skip_nginx_ws(text: str, index: int) -> int:
+    n = len(text)
+    while index < n:
+        ch = text[index]
+        if ch.isspace():
+            index += 1
+            continue
+        if ch == "#":
+            while index < n and text[index] not in "\n\r":
+                index += 1
+            continue
+        break
+    return index
+
+
+def _read_nginx_header(text: str, index: int) -> tuple[str, int, str]:
+    """Read until `;` or `{` at quote depth 0. Returns (header, index, terminator)."""
+    n = len(text)
+    start = index
+    in_single = False
+    in_double = False
+    while index < n:
+        ch = text[index]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double and ch in ";{":
+            return text[start:index].strip(), index, ch
+        index += 1
+    return text[start:index].strip(), index, ""
+
+
+def _tokenize_nginx(text: str, index: int = 0) -> tuple[list[tuple[str, Any]], int]:
+    """Parse nginx syntax into ('directive', key, value) or ('block', header, children)."""
+    items: list[tuple[str, Any]] = []
+    n = len(text)
+    while True:
+        index = _skip_nginx_ws(text, index)
+        if index >= n:
+            return items, index
+        if text[index] == "}":
+            return items, index + 1
+        header, index, term = _read_nginx_header(text, index)
+        if not header and not term:
+            return items, index
+        if term == ";":
+            key, value = _split_directive(header)
+            if key:
+                items.append(("directive", key, value))
+            index += 1
+            continue
+        if term == "{":
+            children, index = _tokenize_nginx(text, index + 1)
+            items.append(("block", header, children))
+            continue
+        key, value = _split_directive(header)
+        if key:
+            items.append(("directive", key, value))
+        return items, index
+
+
+def _split_directive(header: str) -> tuple[str, str]:
+    parts = (header or "").split(None, 1)
+    if not parts:
+        return "", ""
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def _walk_nginx(
+    items: list[tuple[str, Any]],
+    *,
+    scope: str,
+    listen: list[str],
+    names: list[str],
+    aliases: list[str],
+    proxy_passes: list[str],
+    includes: list[str],
+    locations: list[dict[str, str]],
+    redirects: list[str],
+    server_root: list[str],
+    loc: dict[str, str] | None = None,
+) -> None:
+    loc = loc if loc is not None else {}
+    for kind, key_or_header, extra in items:
+        if kind == "directive":
+            key = str(key_or_header)
+            value = str(extra)
+            cleaned = _unquote(value)
+            if key == "listen":
+                listen.append(value)
+            elif key == "server_name":
+                names.extend(_split_names(value))
+            elif key == "root":
+                if scope == "server" and not server_root[0]:
+                    server_root[0] = cleaned
+                loc["root"] = cleaned
+            elif key == "alias":
+                loc["alias"] = cleaned
+                aliases.append(cleaned)
+            elif key == "proxy_pass":
+                loc["proxy_pass"] = cleaned.rstrip("/")
+                proxy_passes.append(cleaned.rstrip("/"))
+            elif key == "include":
+                includes.append(cleaned)
+            elif key == "return":
+                parts = value.split()
+                if parts and parts[0] in REDIRECT_CODES:
+                    target = _redirect_hostname(value)
+                    if target:
+                        redirects.append(target)
+            elif key == "rewrite" and re.search(r"\b(redirect|permanent)\b", value, re.IGNORECASE):
+                target = _redirect_hostname(value)
+                if target:
+                    redirects.append(target)
+            continue
+        header = str(key_or_header)
+        children = list(extra or [])
+        loc_match = re.match(r"^location\s+(.+)$", header.strip(), re.IGNORECASE)
+        if loc_match:
+            child_loc = {"path": loc_match.group(1).strip()}
+            _walk_nginx(
+                children,
+                scope="location",
+                listen=listen,
+                names=names,
+                aliases=aliases,
+                proxy_passes=proxy_passes,
+                includes=includes,
+                locations=locations,
+                redirects=redirects,
+                server_root=server_root,
+                loc=child_loc,
+            )
+            locations.append(dict(child_loc))
+            continue
+        _walk_nginx(
+            children,
+            scope=scope,
+            listen=listen,
+            names=names,
+            aliases=aliases,
+            proxy_passes=proxy_passes,
+            includes=includes,
+            locations=locations,
+            redirects=redirects,
+            server_root=server_root,
+            loc=loc,
+        )
+
+
 def _parse_server_block(block: str, source_file: str) -> dict[str, Any] | None:
     listen: list[str] = []
     names: list[str] = []
-    root = ""
     aliases: list[str] = []
     proxy_passes: list[str] = []
     includes: list[str] = []
-    ssl = False
     locations: list[dict[str, str]] = []
-    loc_path = ""
-    loc_depth = 0
-    current_loc: dict[str, str] = {}
-    for raw in block.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        opens = line.count("{")
-        closes = line.count("}")
-        loc_match = re.match(r"^location\s+(.+?)\s*\{", line)
-        if loc_match and loc_depth == 0:
-            loc_path = loc_match.group(1).strip()
-            current_loc = {"path": loc_path}
-            loc_depth = max(1, loc_depth + opens - closes)
-            if loc_depth == 0 and current_loc:
-                locations.append(current_loc)
-                current_loc = {}
-            continue
-        if loc_depth > 0:
-            _apply_directive(line, listen, names, current_loc, aliases, proxy_passes, includes)
-            if "ssl" in line.split():
-                ssl = True
-            loc_depth += opens - closes
-            if loc_depth <= 0:
-                if current_loc:
-                    locations.append(current_loc)
-                current_loc = {}
-                loc_depth = 0
-            continue
-        if line.startswith("server {") or line == "server{":
-            continue
-        _apply_directive(line, listen, names, {"root": "", "alias": "", "proxy_pass": ""}, aliases, proxy_passes, includes)
-        match = DIRECTIVE.match(line)
-        if match:
-            key, value = match.group(1), match.group(2).strip()
-            if key == "root" and not root:
-                root = _unquote(value)
-            elif key == "server_name":
-                names.extend(_split_names(value))
-            elif key == "listen":
-                listen.append(value)
-                if "ssl" in value.split():
-                    ssl = True
-            elif key == "alias":
-                aliases.append(_unquote(value))
-            elif key == "proxy_pass":
-                proxy_passes.append(_unquote(value).rstrip("/"))
-            elif key == "include":
-                includes.append(_unquote(value))
-        if "ssl" in line.split() and key_from_line(line) == "listen":
-            ssl = True
+    redirects: list[str] = []
+    server_root = [""]
+    items, _end = _tokenize_nginx(block)
+    body = items
+    if items and items[0][0] == "block" and str(items[0][1]).strip().lower().startswith("server"):
+        body = list(items[0][2] or [])
+    _walk_nginx(
+        body,
+        scope="server",
+        listen=listen,
+        names=names,
+        aliases=aliases,
+        proxy_passes=proxy_passes,
+        includes=includes,
+        locations=locations,
+        redirects=redirects,
+        server_root=server_root,
+    )
+    root = server_root[0]
     if not names and not listen:
         return None
     if not names:
@@ -205,8 +336,8 @@ def _parse_server_block(block: str, source_file: str) -> dict[str, Any] | None:
         root = loc_roots[0]
     aliases = list(dict.fromkeys([*aliases, *loc_alias]))
     proxy_passes = list(dict.fromkeys([*proxy_passes, *loc_proxy]))
+    ssl = any(_is_ssl_listen(item) for item in listen)
     http = any(not _is_ssl_listen(item) for item in listen) or not listen
-    https = ssl or any(_is_ssl_listen(item) for item in listen)
     return {
         "source_file": source_file,
         "server_name": list(dict.fromkeys(names)),
@@ -216,9 +347,10 @@ def _parse_server_block(block: str, source_file: str) -> dict[str, Any] | None:
         "proxy_pass": proxy_passes,
         "include": includes,
         "locations": locations,
+        "redirect_to": redirects[0] if redirects else "",
         "http": http,
-        "https": https,
-        "ssl": https,
+        "https": ssl,
+        "ssl": ssl,
         "default_server": any("default_server" in item.split() for item in listen),
     }
 
@@ -230,7 +362,9 @@ def key_from_line(line: str) -> str:
 
 def _is_ssl_listen(value: str) -> bool:
     parts = value.split()
-    return "ssl" in parts or "443" in parts[0]
+    if not parts:
+        return False
+    return "ssl" in parts or parts[0].split(":")[0] == "443" or parts[0].endswith(":443") or parts[0].endswith("]:443")
 
 
 def _unquote(value: str) -> str:
@@ -241,37 +375,55 @@ def _unquote(value: str) -> str:
 
 
 def _split_names(value: str) -> list[str]:
-    return [item for item in value.split() if item and item not in SKIP_HOSTS]
+    names: list[str] = []
+    for item in value.replace(",", " ").split():
+        cleaned = _unquote(item)
+        if cleaned and cleaned not in SKIP_HOSTS:
+            names.append(cleaned)
+    return names
 
 
-def _apply_directive(
-    line: str,
-    listen: list[str],
-    names: list[str],
-    loc: dict[str, str],
-    aliases: list[str],
-    proxy_passes: list[str],
-    includes: list[str],
-) -> None:
-    match = DIRECTIVE.match(line)
+def _redirect_hostname(value: str) -> str:
+    match = re.search(r"https?://([^/:\s$?#]+)", value or "", re.IGNORECASE)
     if not match:
-        return
-    key, value = match.group(1), match.group(2).strip()
-    cleaned = _unquote(value)
-    if key == "root":
-        loc["root"] = cleaned
-    elif key == "alias":
-        loc["alias"] = cleaned
-        aliases.append(cleaned)
-    elif key == "proxy_pass":
-        loc["proxy_pass"] = cleaned.rstrip("/")
-        proxy_passes.append(cleaned.rstrip("/"))
-    elif key == "include":
-        includes.append(cleaned)
-    elif key == "server_name":
-        names.extend(_split_names(value))
-    elif key == "listen":
-        listen.append(value)
+        return ""
+    host = _unquote(match.group(1)).strip().rstrip(".")
+    if not host or host.startswith("$") or host.lower() in CATCHALL_HOSTS:
+        return ""
+    return host
+
+
+def nginx_inventory(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for block in servers:
+        rows.append(
+            {
+                "source_file": block.get("source_file") or "",
+                "server_name": list(block.get("server_name") or []),
+                "root": block.get("root") or "",
+                "alias": list(block.get("alias") or []),
+                "proxy_pass": list(block.get("proxy_pass") or []),
+                "redirect_to": block.get("redirect_to") or "",
+                "listen": list(block.get("listen") or []),
+                "default_server": bool(block.get("default_server")),
+                "http": bool(block.get("http")),
+                "https": bool(block.get("https")),
+            }
+        )
+    return rows
+
+
+def parsed_hostnames(servers: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for block in servers:
+        for name in block.get("server_name") or []:
+            key = str(name).lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            names.append(str(name))
+    return names
 
 
 def parse_proxy(url: str) -> dict[str, str]:
@@ -635,7 +787,17 @@ def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for key in order:
         rows = groups[key]
-        primary = dict(rows[0])
+        ranked = sorted(
+            rows,
+            key=lambda r: (
+                0 if r.get("unused_default_root") else 1,
+                1 if r.get("database_name") else 0,
+                1 if (r.get("root") or r.get("proxy_pass") or r.get("docker")) else 0,
+                1 if str(r.get("status") or "") == "READY" else 0,
+            ),
+            reverse=True,
+        )
+        primary = dict(ranked[0])
         hostnames: list[str] = []
         notes: list[str] = list(primary.get("notes") or [])
         source_files: list[str] = []
@@ -685,8 +847,28 @@ def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 src = str(row.get("source_file") or "")
                 if src:
                     notes.append(f"Nginx server block: {src}")
+        notes = [note for note in notes if note != "no application root or proxy target"]
+        if (
+            not primary.get("unused_default_root")
+            and (primary.get("root") or primary.get("proxy_pass") or primary.get("docker"))
+            and primary.get("status") == "REQUIRES REVIEW"
+            and not any(
+                token in note
+                for note in notes
+                for token in ("invalid root", "duplicate hostname", "excluded root", "files_dir", "catch-all")
+            )
+        ):
+            primary["status"] = "READY"
+        details: dict[str, Any] = {}
+        for row in rows:
+            for name, meta in (row.get("hostname_details") or {}).items():
+                if name and name not in details:
+                    details[name] = meta
+            if row.get("redirect_to") and not primary.get("redirect_to"):
+                primary["redirect_to"] = row.get("redirect_to")
         primary["hostnames"] = hostnames
         primary["hostname"] = _canonical_hostname(hostnames)
+        primary["hostname_details"] = details
         primary["listen"] = listens or list(primary.get("listen") or [])
         primary["proxy_pass"] = proxies or list(primary.get("proxy_pass") or [])
         primary["alias"] = aliases or list(primary.get("alias") or [])
@@ -713,6 +895,132 @@ def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             note = "duplicate hostname: " + ", ".join(dups)
             if note not in (app.get("notes") or []):
                 app.setdefault("notes", []).append(note)
+    return merged
+
+
+def _has_application_payload(candidate: dict[str, Any]) -> bool:
+    if candidate.get("unused_default_root"):
+        return False
+    return bool(candidate.get("root") or candidate.get("proxy_pass") or candidate.get("docker"))
+
+
+def _attach_ssl_and_redirect_peers(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach redirect-only / HTTP peer vhosts as aliases of the real application.
+
+    Association is from Nginx (shared server_name or return/rewrite target),
+    never from a shared filesystem path alone.
+    """
+    reals = [row for row in candidates if _has_application_payload(row)]
+    by_host: dict[str, list[dict[str, Any]]] = {}
+    for row in reals:
+        for name in row.get("hostnames") or []:
+            by_host.setdefault(str(name).lower(), []).append(row)
+    for row in candidates:
+        if _has_application_payload(row) or row.get("unused_default_root"):
+            continue
+        target: dict[str, Any] | None = None
+        redirect_to = str(row.get("redirect_to") or "").lower()
+        if redirect_to:
+            matches = by_host.get(redirect_to) or []
+            if len(matches) == 1:
+                target = matches[0]
+        if target is None:
+            overlap: list[dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            for name in row.get("hostnames") or []:
+                for match in by_host.get(str(name).lower()) or []:
+                    if id(match) in seen_ids:
+                        continue
+                    seen_ids.add(id(match))
+                    overlap.append(match)
+            if len(overlap) == 1:
+                target = overlap[0]
+        if target is None:
+            continue
+        if row.get("database_name") and target.get("database_name") and row.get("database_name") != target.get("database_name"):
+            continue
+        if row.get("type") not in {"Other", "Static", "", target.get("type")} and row.get("root"):
+            continue
+        row["root"] = target.get("root") or row.get("root")
+        row["type"] = target.get("type")
+        row["database_name"] = target.get("database_name") or row.get("database_name")
+        row["database_type"] = target.get("database_type") or row.get("database_type")
+        row["application_id"] = target.get("application_id")
+        if not row.get("docker"):
+            row["docker"] = target.get("docker")
+        if not row.get("ojs_files_dir"):
+            row["ojs_files_dir"] = target.get("ojs_files_dir")
+        for path in target.get("source_paths") or []:
+            if path and path not in (row.get("source_paths") or []):
+                row.setdefault("source_paths", []).append(path)
+        row.setdefault("notes", []).append(
+            "Nginx hostname alias of "
+            f"{target.get('hostname')} (redirect or HTTP/HTTPS peer; not path-only)."
+        )
+        row["notes"] = [n for n in (row.get("notes") or []) if n != "no application root or proxy target"]
+        if row.get("status") == "REQUIRES REVIEW" and not any(
+            token in note
+            for note in row.get("notes") or []
+            for token in ("invalid root", "duplicate hostname", "excluded root", "files_dir", "catch-all")
+        ):
+            row["status"] = "READY"
+    return candidates
+
+
+def _restore_dropped_hostnames(servers: list[dict[str, Any]], merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalization must not silently drop an active Nginx server_name."""
+    found = {str(name).lower() for app in merged for name in (app.get("hostnames") or [])}
+    for name in parsed_hostnames(servers):
+        if name.lower() in found:
+            continue
+        block = next(
+            (item for item in servers if name in (item.get("server_name") or [])),
+            {},
+        )
+        note = "Hostname present in active Nginx configuration but missing after normalization."
+        merged.append(
+            {
+                "application_id": f"other:{name}",
+                "hostname": name,
+                "hostnames": [name],
+                "hostname_details": {
+                    name: {
+                        "source_file": block.get("source_file") or "",
+                        "root": block.get("root") or "",
+                        "alias": list(block.get("alias") or []),
+                        "proxy_pass": list(block.get("proxy_pass") or []),
+                        "redirect_to": block.get("redirect_to") or "",
+                        "listen": list(block.get("listen") or []),
+                    }
+                },
+                "type": "Other",
+                "discovery_source": "nginx -T",
+                "root": block.get("root") or "",
+                "alias": list(block.get("alias") or []),
+                "proxy_pass": list(block.get("proxy_pass") or []),
+                "redirect_to": block.get("redirect_to") or "",
+                "configuration_paths": [block.get("source_file") or ""],
+                "database_type": "",
+                "database_name": "",
+                "persistent_data_paths": [],
+                "source_paths": [],
+                "docker": None,
+                "ojs_files_dir": "",
+                "http": bool(block.get("http")),
+                "https": bool(block.get("https")),
+                "listen": list(block.get("listen") or []),
+                "default_server": bool(block.get("default_server")),
+                "unused_default_root": False,
+                "source_file": block.get("source_file") or "",
+                "source_files": [block.get("source_file") or ""],
+                "estimated_bytes": 0,
+                "status": "REQUIRES REVIEW",
+                "notes": [note],
+                "included": False,
+                "excluded": False,
+            }
+        )
+        found.add(name.lower())
     return merged
 
 
@@ -867,6 +1175,18 @@ def applications_from_servers(
             if status == "READY":
                 status = "REQUIRES REVIEW"
             notes.append("no application root or proxy target")
+        named = list(dict.fromkeys(names))
+        details = {
+            name: {
+                "source_file": block.get("source_file") or "",
+                "root": root_out,
+                "alias": aliases,
+                "proxy_pass": proxies,
+                "redirect_to": block.get("redirect_to") or "",
+                "listen": list(block.get("listen") or []),
+            }
+            for name in named
+        }
         candidates.append(
             {
                 "application_id": _application_id(
@@ -875,13 +1195,15 @@ def applications_from_servers(
                     docker=docker if docker else None,
                     proxy_passes=proxies,
                 ),
-                "hostname": _canonical_hostname(names),
-                "hostnames": list(dict.fromkeys(names)),
+                "hostname": _canonical_hostname(named),
+                "hostnames": named,
+                "hostname_details": details,
                 "type": app_type,
                 "discovery_source": "nginx -T",
                 "root": root_out,
                 "alias": aliases,
                 "proxy_pass": proxies,
+                "redirect_to": block.get("redirect_to") or "",
                 "configuration_paths": [p for p in config_paths if p],
                 "database_type": db_type,
                 "database_name": db_name,
@@ -910,7 +1232,8 @@ def applications_from_servers(
                 "excluded": bool(unused_default or (is_excluded_path(root) if root else False)),
             }
         )
-    return _merge_candidates(candidates)
+    attached = _attach_ssl_and_redirect_peers(candidates)
+    return _restore_dropped_hostnames(servers, _merge_candidates(attached))
 
 
 def discover_applications(payload: dict | None = None, *, run=None, mysql_defaults=None) -> dict[str, Any]:
@@ -971,6 +1294,8 @@ def discover_applications(payload: dict | None = None, *, run=None, mysql_defaul
         "nginx_ok": nginx_ok,
         "applications": apps,
         "servers": servers,
+        "nginx_inventory": nginx_inventory(servers),
+        "parsed_hostnames": parsed_hostnames(servers),
         "databases": {
             "mariadb": mariadb,
             "postgresql": postgres,

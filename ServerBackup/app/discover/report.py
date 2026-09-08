@@ -21,10 +21,59 @@ def _db_label(app: dict[str, Any]) -> str:
     return "—"
 
 
+def _detail_for(app: dict[str, Any], hostname: str) -> dict[str, Any]:
+    details = app.get("hostname_details") or {}
+    if isinstance(details, dict) and hostname in details and isinstance(details[hostname], dict):
+        return details[hostname]
+    files = app.get("source_files") or []
+    source = str(app.get("source_file") or (files[0] if files else "") or "")
+    return {
+        "source_file": source,
+        "root": app.get("root") or "",
+        "alias": app.get("alias") or [],
+        "proxy_pass": app.get("proxy_pass") or [],
+        "redirect_to": app.get("redirect_to") or "",
+        "listen": app.get("listen") or [],
+    }
+
+
+def _fmt_list(values: Any) -> str:
+    if not values:
+        return "(none)"
+    if isinstance(values, list):
+        return ", ".join(str(item) for item in values if item) or "(none)"
+    return str(values)
+
+
+def _hostname_lines(name: str, app: dict[str, Any]) -> list[str]:
+    meta = _detail_for(app, name)
+    names = _hostnames(app)
+    canonical = str(app.get("hostname") or "")
+    role = "canonical"
+    if len(names) > 1 and name != canonical:
+        role = f"alias of {canonical}"
+    root = meta.get("root") or app.get("root") or "—"
+    lines = [
+        f"  {name}",
+        f"    application: {app.get('application_id') or '—'}",
+        f"    role: {role}",
+        f"    nginx file: {meta.get('source_file') or app.get('source_file') or '—'}",
+        f"    root: {root or '—'}",
+        f"    alias: {_fmt_list(meta.get('alias') or app.get('alias'))}",
+        f"    proxy_pass: {_fmt_list(meta.get('proxy_pass') or app.get('proxy_pass'))}",
+        f"    redirect: {meta.get('redirect_to') or app.get('redirect_to') or '(none)'}",
+        f"    database: {_db_label(app)}",
+        f"    status: {app.get('status') or '—'}",
+    ]
+    return lines
+
+
 def format_application_sections(
     applications: list[dict[str, Any]],
     *,
     databases: dict[str, Any] | None = None,
+    nginx_inventory: list[dict[str, Any]] | None = None,
+    parsed_hostnames: list[str] | None = None,
 ) -> list[str]:
     apps = list(applications or [])
     live = [a for a in apps if a.get("change") != "removed"]
@@ -40,34 +89,37 @@ def format_application_sections(
         if "REVIEW" in str(a.get("status") or "") and "REQUIRES APPROVAL" not in str(a.get("status") or "")
     ]
     ojs = [a for a in live if a.get("type") == "OJS"]
-    lines: list[str] = ["DISCOVERED HOSTNAMES"]
     hosts: list[tuple[str, dict[str, Any]]] = []
+    seen_hosts: set[str] = set()
     for app in live:
         names = _hostnames(app)
         if not names:
             hosts.append((str(app.get("hostname") or "—"), app))
             continue
         for name in names:
+            key = name.lower()
+            if key in seen_hosts:
+                continue
+            seen_hosts.add(key)
             hosts.append((name, app))
+    if parsed_hostnames:
+        by_lower = {name.lower(): app for name, app in hosts}
+        missing = [name for name in parsed_hostnames if name.lower() not in by_lower and name.lower() not in {"", "*"}]
+        for name in missing:
+            hosts.append((name, {"application_id": "MISSING", "status": "REQUIRES REVIEW", "hostname": name, "hostnames": [name]}))
+
+    lines: list[str] = ["DISCOVERED HOSTNAMES"]
     if hosts:
         for name, app in hosts:
-            root = app.get("root") or ", ".join(app.get("proxy_pass") or []) or "—"
-            alias = ""
-            names = _hostnames(app)
-            if len(names) > 1:
-                others = [h for h in names if h != name]
-                alias = f"  alias-of {app.get('application_id')} ({', '.join(others)})"
-            lines.append(f"  {name} -> {root}{alias}")
+            lines.extend(_hostname_lines(name, app))
     else:
         lines.append("  (none)")
-    lines.extend(
-        [
-            "",
-            "DISCOVERED APPLICATIONS",
-            f"  total={len(live)} included={len(included)} excluded={len(excluded)} pending_approval={len(live) - len(included) - len(excluded)}",
-            "  application_id | hostnames | type | root | database | status",
-        ]
+
+    lines.extend(["", "DISCOVERED APPLICATIONS"])
+    lines.append(
+        f"  total={len(live)} included={len(included)} excluded={len(excluded)} pending_approval={len(live) - len(included) - len(excluded)}"
     )
+    lines.append("  application_id | hostnames | type | root | database | status")
     if live:
         for app in live:
             names = ", ".join(_hostnames(app)) or str(app.get("hostname") or "—")
@@ -79,6 +131,52 @@ def format_application_sections(
                 lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
+
+    lines.extend(["", "HOSTNAME ALIASES"])
+    aliased = [app for app in live if len(_hostnames(app)) > 1]
+    if aliased:
+        for app in aliased:
+            names = _hostnames(app)
+            canonical = str(app.get("hostname") or names[0])
+            lines.append(f"  {app.get('application_id')}  canonical={canonical}  database={_db_label(app)}")
+            for name in names:
+                marker = " (canonical)" if name == canonical else ""
+                meta = _detail_for(app, name)
+                src = meta.get("source_file") or app.get("source_file") or "—"
+                lines.append(f"    {name}{marker}")
+                lines.append(f"      nginx file: {src}")
+                lines.append(f"      root: {meta.get('root') or app.get('root') or '—'}")
+                lines.append(f"      alias: {_fmt_list(meta.get('alias') or app.get('alias'))}")
+                lines.append(f"      proxy_pass: {_fmt_list(meta.get('proxy_pass') or app.get('proxy_pass'))}")
+    else:
+        lines.append("  (none)")
+
+    lines.extend(["", "EXCLUDED ROOTS"])
+    excluded_roots = [
+        app
+        for app in live
+        if app.get("excluded") or app.get("unused_default_root") or "EXCLUDED" in str(app.get("status") or "")
+    ]
+    if excluded_roots:
+        for app in excluded_roots:
+            lines.append(f"  {app.get('root') or '—'}  hostnames={', '.join(_hostnames(app)) or '—'}  {app.get('status')}")
+            for note in app.get("notes") or []:
+                lines.append(f"    note: {note}")
+    else:
+        lines.append("  (none)")
+
+    if nginx_inventory:
+        lines.extend(["", "NGINX SERVER BLOCKS"])
+        for block in nginx_inventory:
+            names = ", ".join(str(n) for n in (block.get("server_name") or []) if n) or "—"
+            lines.append(f"  {block.get('source_file') or 'unknown'}")
+            lines.append(f"    server_name: {names}")
+            lines.append(f"    root: {block.get('root') or '—'}")
+            lines.append(f"    alias: {_fmt_list(block.get('alias'))}")
+            lines.append(f"    proxy_pass: {_fmt_list(block.get('proxy_pass'))}")
+            lines.append(f"    redirect: {block.get('redirect_to') or '(none)'}")
+            lines.append(f"    listen: {_fmt_list(block.get('listen'))}")
+
     dbs = databases if isinstance(databases, dict) else {}
     lines.extend(["", "DATABASES"])
     mariadb = list(dbs.get("mariadb") or [])
@@ -137,6 +235,8 @@ def format_application_sections(
     if review:
         for app in review:
             lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
+            for note in app.get("notes") or []:
+                lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
     return lines
@@ -152,7 +252,12 @@ def format_discovery_report(result: dict[str, Any]) -> str:
         f"Source: {result.get('discovery_source') or 'nginx -T'}",
         f"Nginx: {'OK' if result.get('nginx_ok') else 'FAILED'}",
         "",
-        *format_application_sections(apps, databases=result.get("databases")),
+        *format_application_sections(
+            apps,
+            databases=result.get("databases"),
+            nginx_inventory=result.get("nginx_inventory") or result.get("servers"),
+            parsed_hostnames=result.get("parsed_hostnames"),
+        ),
         "",
         "NEW APPLICATIONS",
     ]

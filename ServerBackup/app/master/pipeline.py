@@ -392,6 +392,8 @@ def format_dry_run_report(
     db_discovery_error: str = "",
     full_baseline_bytes: int = 0,
     inventory_warnings: list[str] | None = None,
+    nginx_inventory: list[dict[str, Any]] | None = None,
+    parsed_hostnames: list[str] | None = None,
 ) -> str:
     """Human-readable DRY RUN summary. Never mutates master or HEAD."""
     changed_dbs = list(changed_dbs or [])
@@ -417,7 +419,12 @@ def format_dry_run_report(
     ] or ["  (none discovered)"]
     db_map = {"mariadb": list(db_names or []), "postgresql": list(postgres_names or [])}
     if applications:
-        app_header = format_application_sections(applications, databases=db_map)
+        app_header = format_application_sections(
+            applications,
+            databases=db_map,
+            nginx_inventory=nginx_inventory,
+            parsed_hostnames=parsed_hostnames,
+        )
     else:
         websites = [item["root"] for item in sources if item.get("category") == "website"]
         web_lines = [f"  {path}" for path in websites] or ["  (none)"]
@@ -492,6 +499,18 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         error = "; ".join(discovery.get("errors") or ["Nginx application discovery failed"])
         engine.logger.error(f"DRY_RUN_ERROR {error}")
         raise PipelineError(error)
+    for app in applications:
+        names = [str(n) for n in (app.get("hostnames") or []) if n] or [str(app.get("hostname") or "")]
+        engine.logger.info(
+            "DISCOVERED_APPLICATION "
+            f"{app.get('application_id')} hostnames={','.join(names)} "
+            f"root={app.get('root') or '-'} db={app.get('database_name') or '-'}"
+        )
+        for name in names:
+            if name:
+                engine.logger.info(f"DISCOVERED_HOSTNAME {name} application={app.get('application_id')}")
+    for name in discovery.get("parsed_hostnames") or []:
+        engine.logger.info(f"NGINX_SERVER_NAME {name}")
     _dry_run_stage(engine, "DRY_RUN_DISCOVERY_COMPLETE", "Application discovery complete.", 40)
     ojs = applications_to_ojs(applications)
     for install in ojs:
@@ -588,7 +607,15 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         db_discovery_error=db_discovery_error,
         full_baseline_bytes=full_baseline_bytes,
         inventory_warnings=inventory_warnings,
+        nginx_inventory=list(discovery.get("nginx_inventory") or discovery.get("servers") or []),
+        parsed_hostnames=list(discovery.get("parsed_hostnames") or []),
     )
+    try:
+        dest = Path(config.backup_destination)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "dry-run-last.txt").write_text(report_text, encoding="utf-8")
+    except OSError:
+        pass
     report = {
         "ok": report_ok,
         "operation": "DRY_RUN",

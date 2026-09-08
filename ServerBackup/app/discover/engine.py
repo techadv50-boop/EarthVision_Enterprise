@@ -53,11 +53,16 @@ def discover_applications(
                             "application_id": item.get("application_id"),
                             "hostname": item.get("hostname"),
                             "hostnames": list(item.get("hostnames") or [item.get("hostname")]),
+                            "hostname_details": item.get("hostname_details") or {},
                             "type": item.get("type"),
                             "root": item.get("root"),
                             "status": item.get("status"),
                             "database_type": item.get("database_type"),
                             "database_name": item.get("database_name"),
+                            "source_file": item.get("source_file"),
+                            "alias": list(item.get("alias") or []),
+                            "proxy_pass": list(item.get("proxy_pass") or []),
+                            "redirect_to": item.get("redirect_to") or "",
                         }
                         for item in apps
                         if item.get("change") != "removed"
