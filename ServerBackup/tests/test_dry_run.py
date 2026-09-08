@@ -13,7 +13,7 @@ from app.engine.backup_engine import BackupCancelled, BackupEngine, BackupError
 from app.engine.status import collect_dashboard_status
 from app.master.delta import compute_delta, promote_unhashed_for_preview
 from app.master.store import MasterStore
-from tests.helpers import FakeSSH, LocalMasterSSH, make_config, master_config, seed_remote_tree
+from tests.helpers import FakeSSH, LocalMasterSSH, enable_backup, make_config, master_config, seed_remote_tree
 
 
 def _log_text(engine: BackupEngine) -> str:
@@ -37,7 +37,7 @@ def test_promote_unhashed_first_run_all_new():
 def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
-    ssh = LocalMasterSSH(tmp_path / "remote")
+    ssh = LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])
     engine = BackupEngine(cfg, ssh=ssh)
     result = engine.dry_run()
     master = result["master"]
@@ -60,7 +60,6 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "HEAD: unchanged" in text
     assert "DATABASES: discovered" in text
     assert "none configured" not in text
-    assert "sateye.xdgen.com" in text
     assert "citation.xdgen.com" in text
     assert "www.xdgen.com" in text
     assert "www.50sea.com" in text
@@ -68,10 +67,25 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "DISCOVERED APPLICATIONS" in text
     assert "HOSTNAME ALIASES" in text
     assert "EXCLUDED ROOTS" in text
+    assert "DISCOVERED DATABASES" in text
+    assert "UNASSOCIATED DATABASES" in text
+    assert "NEW APPLICATIONS" in text
+    assert "REMOVED APPLICATIONS" in text
+    assert "NOT ACTIVE IN CURRENT SERVER CONFIGURATION" in text
+    assert "BACKUP GATE" in text
+    assert "BLOCK COMPLETE BACKUP" in text
+    assert "Applications pending:" in text
+    assert "Databases unresolved:" in text
+    assert "xdgen_db" in text
     assert "REQUIRES REVIEW" in text
+    unassociated = text.split("UNASSOCIATED DATABASES", 1)[1].split("HOSTNAME ALIASES", 1)[0]
+    assert "xdgen_db" in unassociated
+    assert "REQUIRES REVIEW" in unassociated
+    discovered_hosts = text.split("DISCOVERED HOSTNAMES", 1)[1].split("DISCOVERED APPLICATIONS", 1)[0]
+    assert "sateye.xdgen.com" not in discovered_hosts
     saved = Path(cfg.backup_destination) / "dry-run-last.txt"
     assert saved.is_file()
-    assert "sateye.xdgen.com" in saved.read_text(encoding="utf-8")
+    assert "xdgen_db" in saved.read_text(encoding="utf-8")
     assert "INCLUDED APPLICATIONS" in text
     assert "EXCLUDED APPLICATIONS" in text
     assert "REQUIRES REVIEW" in text
@@ -112,6 +126,7 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
 def test_existing_master_dry_run_is_incremental_preview_and_does_not_hash(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     store = MasterStore(cfg.backup_destination)
     assert store.head_generation() == 1
@@ -132,6 +147,7 @@ def test_existing_master_dry_run_is_incremental_preview_and_does_not_hash(tmp_pa
 def test_existing_master_unchanged_files_keep_head_and_still_show_discovery(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     ssh = LocalMasterSSH(tmp_path / "remote")
     result = BackupEngine(cfg, ssh=ssh).dry_run()
@@ -144,7 +160,6 @@ def test_existing_master_unchanged_files_keep_head_and_still_show_discovery(tmp_
     assert "hash-files" not in ssh.calls
     assert MasterStore(cfg.backup_destination).head_generation() == 1
     assert "HEAD: unchanged" in text
-    assert "sateye.xdgen.com" in text
     assert "citation.xdgen.com" in text
     assert "none configured" not in text
     # BACKUP NOW still only fingerprints selected_databases. Newly discovered
@@ -354,7 +369,6 @@ def test_dry_run_discovers_databases_when_selected_list_is_empty(tmp_path: Path)
     assert "ojs50" in text
     assert "PostgreSQL:" in text
     assert "citation" in text
-    assert "sateye.xdgen.com" in text
     assert "citation.xdgen.com" in text
     assert "EXPECTED FULL BASELINE SIZE:" in text
     assert "pending_approval=" in text
@@ -373,7 +387,6 @@ def test_dry_run_does_not_use_hardcoded_website_list(tmp_path: Path):
     )
     result = BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).dry_run()
     text = result["report_text"]
-    assert "sateye.xdgen.com" in text
     assert "citation.xdgen.com" in text
     assert "journal.50sea.com" in text
     assert "journal.xdgen.com" in text
@@ -387,6 +400,7 @@ def test_dry_run_removed_site_requires_review_and_keeps_master(tmp_path: Path):
 
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     store = MasterStore(cfg.backup_destination)
     assert store.head_generation() == 1

@@ -12,6 +12,7 @@ from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
 from app.discover.engine import DiscoveryError as ApplicationDiscoveryError
 from app.discover.engine import discover_applications
+from app.discover.gate import assess_backup_gate, backup_gate_error, format_backup_gate
 from app.discover.report import format_application_sections
 from app.master.delta import compute_delta, next_tree_files, promote_unhashed_for_preview
 from app.master.health import HEALTHY, WARNING, assess_health
@@ -394,6 +395,9 @@ def format_dry_run_report(
     inventory_warnings: list[str] | None = None,
     nginx_inventory: list[dict[str, Any]] | None = None,
     parsed_hostnames: list[str] | None = None,
+    database_inventory: list[dict[str, Any]] | None = None,
+    inactive_hostnames: list[dict[str, Any]] | None = None,
+    gate: dict[str, Any] | None = None,
 ) -> str:
     """Human-readable DRY RUN summary. Never mutates master or HEAD."""
     changed_dbs = list(changed_dbs or [])
@@ -424,6 +428,9 @@ def format_dry_run_report(
             databases=db_map,
             nginx_inventory=nginx_inventory,
             parsed_hostnames=parsed_hostnames,
+            database_inventory=database_inventory,
+            inactive_hostnames=inactive_hostnames,
+            gate=gate,
         )
     else:
         websites = [item["root"] for item in sources if item.get("category") == "website"]
@@ -511,6 +518,17 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
                 engine.logger.info(f"DISCOVERED_HOSTNAME {name} application={app.get('application_id')}")
     for name in discovery.get("parsed_hostnames") or []:
         engine.logger.info(f"NGINX_SERVER_NAME {name}")
+    for row in discovery.get("database_inventory") or []:
+        engine.logger.info(
+            "DISCOVERED_DATABASE "
+            f"{row.get('name')} status={row.get('status')} application={row.get('application_id') or '-'}"
+        )
+    for row in discovery.get("inactive_hostnames") or []:
+        engine.logger.info(
+            "INACTIVE_HOSTNAME "
+            f"{row.get('hostname')} verdict={row.get('verdict')}"
+        )
+    engine.logger.info(" ".join(format_backup_gate(discovery.get("backup_gate") or {})))
     _dry_run_stage(engine, "DRY_RUN_DISCOVERY_COMPLETE", "Application discovery complete.", 40)
     ojs = applications_to_ojs(applications)
     for install in ojs:
@@ -609,6 +627,9 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         inventory_warnings=inventory_warnings,
         nginx_inventory=list(discovery.get("nginx_inventory") or discovery.get("servers") or []),
         parsed_hostnames=list(discovery.get("parsed_hostnames") or []),
+        database_inventory=list(discovery.get("database_inventory") or []),
+        inactive_hostnames=list(discovery.get("inactive_hostnames") or []),
+        gate=discovery.get("backup_gate") or assess_backup_gate(applications, list(discovery.get("database_inventory") or [])),
     )
     try:
         dest = Path(config.backup_destination)
@@ -676,6 +697,18 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     engine._check_cancel()
     if dry_run:
         return _run_dry_run_preview(engine, store)
+
+    try:
+        discovery = discover_applications(config, ssh=engine.ssh, persist=True)
+    except ApplicationDiscoveryError as exc:
+        raise PipelineError(str(exc)) from exc
+    gate = discovery.get("backup_gate") or assess_backup_gate(
+        list(discovery.get("applications") or []),
+        list(discovery.get("database_inventory") or []),
+    )
+    engine.logger.info(" ".join(format_backup_gate(gate)))
+    if gate.get("block_complete_backup"):
+        raise PipelineError(backup_gate_error(gate))
 
     engine.logger.info("OJS discovery started")
     try:

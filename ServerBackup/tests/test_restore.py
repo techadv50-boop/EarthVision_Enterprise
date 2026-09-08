@@ -4,7 +4,7 @@ from pathlib import Path
 from app.master.restore import select_tree_files, write_restore_pack
 from app.master.store import MasterStore
 from app.restore.restore_engine import CONFIRMATION_PHRASE, RestoreEngine, RestoreError
-from tests.helpers import LocalMasterSSH, make_config, master_config, seed_remote_tree
+from tests.helpers import LocalMasterSSH, enable_backup, make_config, master_config, seed_remote_tree
 
 
 def test_restore_requires_confirmation(tmp_path):
@@ -34,6 +34,7 @@ def test_master_restore_pack_roundtrip(tmp_path, monkeypatch):
 
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     store = MasterStore(cfg.backup_destination)
     tree = store.load_tree()
@@ -57,6 +58,7 @@ def test_historical_generation_pack_uses_requested_tree(tmp_path):
 
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     Path(remote["xdgen.com"], "index.html").write_text("generation-2\n", encoding="utf-8")
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()

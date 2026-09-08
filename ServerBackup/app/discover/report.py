@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.utils.format import format_bytes
+from app.discover.gate import assess_backup_gate, format_backup_gate
 
 
 def _hostnames(app: dict[str, Any]) -> list[str]:
@@ -74,6 +74,9 @@ def format_application_sections(
     databases: dict[str, Any] | None = None,
     nginx_inventory: list[dict[str, Any]] | None = None,
     parsed_hostnames: list[str] | None = None,
+    database_inventory: list[dict[str, Any]] | None = None,
+    inactive_hostnames: list[dict[str, Any]] | None = None,
+    gate: dict[str, Any] | None = None,
 ) -> list[str]:
     apps = list(applications or [])
     live = [a for a in apps if a.get("change") != "removed"]
@@ -132,6 +135,71 @@ def format_application_sections(
     else:
         lines.append("  (none)")
 
+    inventory = list(database_inventory or [])
+    if not inventory:
+        for name in (databases or {}).get("mariadb") or []:
+            inventory.append({"name": name, "type": "MariaDB", "status": "DISCOVERED", "application_id": "", "reason": ""})
+        for app in live:
+            if app.get("database_name"):
+                dname = str(app.get("database_name"))
+                for row in inventory:
+                    if row.get("name") == dname and not row.get("application_id"):
+                        row["application_id"] = app.get("application_id")
+                        row["status"] = "ASSOCIATED WITH APPLICATION"
+        for row in inventory:
+            if not row.get("application_id") and "ASSOCIATED" not in str(row.get("status") or "") and "EXCLUDED" not in str(row.get("status") or ""):
+                row["status"] = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+                row["reason"] = row.get("reason") or "no application association discovered"
+    unassociated_rows = [
+        row
+        for row in inventory
+        if not row.get("system") and "UNASSOCIATED" in str(row.get("status") or "")
+    ]
+    lines.extend(["", "DISCOVERED DATABASES"])
+    if inventory:
+        lines.append("  MariaDB:")
+        for row in inventory:
+            if row.get("system"):
+                continue
+            pointer = f" -> {row.get('application_id')}" if row.get("application_id") else ""
+            lines.append(f"    {row.get('name')}{pointer}")
+            if row.get("table_count") is not None:
+                lines.append(f"      tables: {row.get('table_count')}  size_bytes: {row.get('size_bytes') or 0}")
+            if row.get("created") or row.get("updated"):
+                lines.append(f"      created: {row.get('created') or '—'}  updated: {row.get('updated') or '—'}")
+            if row.get("grants"):
+                lines.append(f"      backup-account grants: {'; '.join(str(g) for g in row.get('grants') or [])}")
+            if row.get("references"):
+                paths = ", ".join(str(item.get("path") or "") for item in row.get("references") or [] if item.get("path"))
+                if paths:
+                    lines.append(f"      config references: {paths}")
+            lines.append(f"      status: {row.get('status')}")
+        postgres = list((databases or {}).get("postgresql") or [])
+        if not postgres:
+            postgres = sorted(
+                {
+                    str(app.get("database_name"))
+                    for app in live
+                    if app.get("database_type") == "PostgreSQL" and app.get("database_name")
+                }
+            )
+        lines.append(f"  PostgreSQL: {', '.join(postgres) if postgres else '(none discovered)'}")
+        for app in live:
+            if app.get("database_type") == "PostgreSQL" and app.get("database_name"):
+                lines.append(f"    {app.get('database_name')} -> {app.get('application_id')}")
+    else:
+        lines.append("  (none discovered)")
+    lines.extend(["", "UNASSOCIATED DATABASES"])
+    if unassociated_rows:
+        for row in unassociated_rows:
+            lines.append(f"  {row.get('name')}")
+            lines.append(f"    status: {row.get('status')}")
+            lines.append(f"    reason: {row.get('reason') or 'no application association discovered'}")
+            if row.get("table_count") is not None:
+                lines.append(f"    tables: {row.get('table_count')}  size_bytes: {row.get('size_bytes') or 0}")
+    else:
+        lines.append("  (none)")
+
     lines.extend(["", "HOSTNAME ALIASES"])
     aliased = [app for app in live if len(_hostnames(app)) > 1]
     if aliased:
@@ -177,38 +245,19 @@ def format_application_sections(
             lines.append(f"    redirect: {block.get('redirect_to') or '(none)'}")
             lines.append(f"    listen: {_fmt_list(block.get('listen'))}")
 
-    dbs = databases if isinstance(databases, dict) else {}
-    lines.extend(["", "DATABASES"])
-    mariadb = list(dbs.get("mariadb") or [])
-    postgres = list(dbs.get("postgresql") or [])
-    if not mariadb:
-        mariadb = sorted(
-            {
-                str(app.get("database_name"))
-                for app in live
-                if app.get("database_type") == "MariaDB" and app.get("database_name")
-            }
-        )
-    if not postgres:
-        postgres = sorted(
-            {
-                str(app.get("database_name"))
-                for app in live
-                if app.get("database_type") == "PostgreSQL" and app.get("database_name")
-            }
-        )
-    lines.append(f"  MariaDB: {', '.join(mariadb) if mariadb else '(none discovered)'}")
-    for app in live:
-        if app.get("database_type") == "MariaDB" and app.get("database_name"):
-            lines.append(
-                f"    {app.get('database_name')} <- {app.get('application_id')} ({', '.join(_hostnames(app))})"
-            )
-    lines.append(f"  PostgreSQL: {', '.join(postgres) if postgres else '(none discovered)'}")
-    for app in live:
-        if app.get("database_type") == "PostgreSQL" and app.get("database_name"):
-            lines.append(
-                f"    {app.get('database_name')} <- {app.get('application_id')} ({', '.join(_hostnames(app))})"
-            )
+    lines.extend(["", "NOT ACTIVE IN CURRENT SERVER CONFIGURATION"])
+    inactive = list(inactive_hostnames or [])
+    if inactive:
+        for row in inactive:
+            lines.append(f"  {row.get('hostname')}")
+            lines.append(f"    verdict: {row.get('verdict') or 'NOT ACTIVE IN CURRENT SERVER CONFIGURATION'}")
+            for item in row.get("evidence") or []:
+                loc = f" {item.get('file')}" if item.get("file") else ""
+                lines.append(f"    evidence: {item.get('source')}{loc} — {item.get('detail')}")
+                if item.get("root"):
+                    lines.append(f"      configured root: {item.get('root')} (not treated as an active application)")
+    else:
+        lines.append("  (none)")
     lines.extend(["", "OJS FILES_DIR"])
     if ojs:
         for app in ojs:
@@ -231,12 +280,40 @@ def format_application_sections(
                 lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
+    computed_gate = gate or assess_backup_gate(live, inventory)
+    lines.extend(["", *format_backup_gate(computed_gate)])
+    new_apps = [a for a in apps if a.get("change") == "new" or "NEW SITE DETECTED" in str(a.get("status") or "")]
+    removed_apps = [a for a in apps if a.get("change") == "removed" or "SITE REMOVED" in str(a.get("status") or "")]
+    lines.extend(["", "NEW APPLICATIONS"])
+    if new_apps:
+        for app in new_apps:
+            lines.append(
+                f"  NEW SITE DETECTED — REQUIRES APPROVAL  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('type')}  {app.get('root') or ''}"
+            )
+            lines.append(f"    database: {_db_label(app)}")
+            lines.append("    Requires explicit approval before the first backup of this application.")
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "REMOVED APPLICATIONS"])
+    if removed_apps:
+        for app in removed_apps:
+            lines.append(f"  Previously discovered: {app.get('application_id')} ({', '.join(_hostnames(app))})")
+            lines.append("  No longer detected in active Nginx configuration.")
+            lines.append("  Master data is NOT deleted. Review before removing from the backup set.")
+    else:
+        lines.append("  (none)")
     lines.extend(["", "REQUIRES REVIEW"])
+    review_lines: list[str] = []
     if review:
         for app in review:
-            lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
+            review_lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
             for note in app.get("notes") or []:
-                lines.append(f"    note: {note}")
+                review_lines.append(f"    note: {note}")
+    for row in unassociated_rows:
+        review_lines.append(f"  database {row.get('name')}  {row.get('status')}")
+        review_lines.append(f"    reason: {row.get('reason') or 'no application association discovered'}")
+    if review_lines:
+        lines.extend(review_lines)
     else:
         lines.append("  (none)")
     return lines
@@ -244,8 +321,6 @@ def format_application_sections(
 
 def format_discovery_report(result: dict[str, Any]) -> str:
     apps = list(result.get("applications") or [])
-    new = [a for a in apps if a.get("change") == "new" or "NEW SITE DETECTED" in str(a.get("status") or "")]
-    removed = [a for a in apps if a.get("change") == "removed" or "SITE REMOVED" in str(a.get("status") or "")]
     lines = [
         "DISCOVERY REPORT",
         f"Host: {result.get('hostname') or 'unknown'}",
@@ -257,28 +332,11 @@ def format_discovery_report(result: dict[str, Any]) -> str:
             databases=result.get("databases"),
             nginx_inventory=result.get("nginx_inventory") or result.get("servers"),
             parsed_hostnames=result.get("parsed_hostnames"),
+            database_inventory=result.get("database_inventory"),
+            inactive_hostnames=result.get("inactive_hostnames"),
+            gate=result.get("backup_gate"),
         ),
-        "",
-        "NEW APPLICATIONS",
     ]
-    if new:
-        for app in new:
-            lines.append(
-                f"  NEW SITE DETECTED  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('type')}  {app.get('root') or ''}"
-            )
-            lines.append(f"    database: {_db_label(app)}")
-            lines.append(f"    estimated size: {format_bytes(int(app.get('estimated_bytes') or 0))}")
-            lines.append("    Requires explicit approval before the first backup of this application.")
-    else:
-        lines.append("  (none)")
-    lines.extend(["", "REMOVED APPLICATIONS"])
-    if removed:
-        for app in removed:
-            lines.append(f"  Previously discovered: {app.get('application_id')} ({', '.join(_hostnames(app))})")
-            lines.append("  No longer detected in active Nginx configuration.")
-            lines.append("  Master data is NOT deleted. Review before removing from the backup set.")
-    else:
-        lines.append("  (none)")
     if result.get("errors"):
         lines.extend(["", "ERRORS / WARNINGS"])
         lines.extend(f"  {item}" for item in result["errors"])

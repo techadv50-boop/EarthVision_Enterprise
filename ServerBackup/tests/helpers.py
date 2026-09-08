@@ -138,6 +138,16 @@ def master_config(tmp_path: Path, remote: dict[str, str], **overrides) -> AppCon
     return make_config(tmp_path, **values)
 
 
+def enable_backup(cfg: AppConfig, ssh) -> dict:
+    """Approve discovered applications so BACKUP NOW tests can pass the completeness gate."""
+    from app.discover.engine import discover_applications
+    from app.discover.policy import approve_all_applications
+
+    result = discover_applications(cfg, ssh=ssh, persist=True)
+    approve_all_applications(cfg.backup_destination, list(result.get("applications") or []))
+    return result
+
+
 class _Proc:
     def __init__(self, data: bytes, returncode: int = 0) -> None:
         self.stdout = io.BytesIO(data)
@@ -254,7 +264,7 @@ class FakeSSH:
                 "50sea.com",
                 "WordPress",
                 "/var/www/50sea.com",
-                hostnames=["50sea.com", "www.50sea.com", "sateye.xdgen.com"],
+                hostnames=["50sea.com", "www.50sea.com"],
                 database_type="MariaDB",
                 database_name="sea_tedb",
             ),
@@ -293,7 +303,37 @@ class FakeSSH:
             "hostname": "ubuntu-server",
             "discovery_source": "nginx -T",
             "applications": apps,
-            "databases": {"mariadb": ["journal", "ojs50", "ojsxd", "sea_tedb"], "postgresql": ["citation"]},
+            "databases": {"mariadb": ["journal", "ojs50", "ojsxd", "sea_tedb", "xdgen_db"], "postgresql": ["citation"]},
+            "database_inventory": [
+                {"name": "journal", "type": "MariaDB", "application_id": "ojs:/var/www/journal.50sea.com", "status": "ASSOCIATED WITH APPLICATION", "system": False},
+                {"name": "ojs50", "type": "MariaDB", "application_id": "ojs:/var/www/journal.50sea.com", "status": "ASSOCIATED WITH APPLICATION", "system": False},
+                {"name": "ojsxd", "type": "MariaDB", "application_id": "ojs:/var/www/journal.xdgen.com", "status": "ASSOCIATED WITH APPLICATION", "system": False},
+                {"name": "sea_tedb", "type": "MariaDB", "application_id": "wordpress:/var/www/50sea.com", "status": "ASSOCIATED WITH APPLICATION", "system": False},
+                {
+                    "name": "xdgen_db",
+                    "type": "MariaDB",
+                    "application_id": "",
+                    "status": "UNASSOCIATED DATABASE — REQUIRES REVIEW",
+                    "reason": "no application association discovered",
+                    "system": False,
+                    "table_count": 3,
+                    "size_bytes": 4096,
+                },
+            ],
+            "inactive_hostnames": [
+                {
+                    "hostname": "sateye.xdgen.com",
+                    "in_active_nginx": False,
+                    "verdict": "NOT ACTIVE IN CURRENT SERVER CONFIGURATION",
+                    "evidence": [
+                        {
+                            "source": "previous-discovery",
+                            "file": "",
+                            "detail": "seen in a previous discovery snapshot; not in active nginx -T or scanned configs",
+                        }
+                    ],
+                }
+            ],
             "errors": [],
         }
 
@@ -319,7 +359,7 @@ class FakeSSH:
         if action == "discover-databases":
             return SSHResult(
                 0,
-                json.dumps({"ok": True, "databases": ["journal", "ojs50", "ojsxd", "sea_tedb", "information_schema"]}),
+                json.dumps({"ok": True, "databases": ["journal", "ojs50", "ojsxd", "sea_tedb", "xdgen_db", "information_schema"]}),
                 "",
             )
         if action == "discover-ojs":
@@ -354,9 +394,25 @@ class FakeSSH:
 class LocalMasterSSH(FakeSSH):
     """Runs discover/inventory/hash/stream against a local Unix tree."""
 
-    def __init__(self, remote_root: Path, **kwargs) -> None:
+    def __init__(
+        self,
+        remote_root: Path,
+        extra_mariadb: list[str] | None = None,
+        extra_nginx_sites: list[tuple[str, str]] | None = None,
+        extra_nginx_text: str = "",
+        extra_scan_files: dict[str, str] | None = None,
+        extra_config_files: dict[str, str] | None = None,
+        extra_mariadb_details: dict | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.remote_root = Path(remote_root)
+        self.extra_mariadb = list(extra_mariadb or [])
+        self.extra_nginx_sites = list(extra_nginx_sites or [])
+        self.extra_nginx_text = extra_nginx_text
+        self.extra_scan_files = dict(extra_scan_files or {})
+        self.extra_config_files = dict(extra_config_files or {})
+        self.extra_mariadb_details = dict(extra_mariadb_details or {})
         self.db_fingerprint = "fp-journal-1"
         self.fail_database = False
         self.fail_discover = False
@@ -364,6 +420,7 @@ class LocalMasterSSH(FakeSSH):
         self.corrupt_stream = False
         self.fail_hash = False
         self.uploads: list[tuple[str, str]] = []
+        self._previous_hostnames: list[str] = []
 
     def _local_discover_applications(self) -> dict:
         import discover_apps as da
@@ -407,12 +464,6 @@ class LocalMasterSSH(FakeSSH):
                     "    server_name 50sea.com www.50sea.com;",
                     f"    root {sea.as_posix()};",
                     "}",
-                    "# configuration file /etc/nginx/sites-enabled/sateye:",
-                    "server {",
-                    "    listen 80;",
-                    "    server_name sateye.xdgen.com;",
-                    f"    root {sea.as_posix()};",
-                    "}",
                 ]
             )
         html = www / "html"
@@ -428,6 +479,19 @@ class LocalMasterSSH(FakeSSH):
                     "}",
                 ]
             )
+        for hostname, site_root in self.extra_nginx_sites:
+            lines.extend(
+                [
+                    f"# configuration file /etc/nginx/sites-enabled/{hostname}:",
+                    "server {",
+                    "    listen 80;",
+                    f"    server_name {hostname};",
+                    f"    root {site_root};",
+                    "}",
+                ]
+            )
+        if self.extra_nginx_text:
+            lines.append(self.extra_nginx_text)
         citation_data = root / "opt/citation/data"
         lines.extend(
             [
@@ -467,11 +531,17 @@ class LocalMasterSSH(FakeSSH):
                 ],
             }
         ]
+        mariadb = ["ojs50", "ojsxd", "sea_tedb", *self.extra_mariadb]
+        for name in self.extra_mariadb_details:
+            if name not in mariadb:
+                mariadb.append(name)
+        import discover_audit as audit
+
         servers = da.parse_nginx_t("\n".join(lines))
         apps = da.applications_from_servers(
             servers,
             docker_containers=docker,
-            mariadb=["journal", "ojs50", "ojsxd", "sea_tedb"],
+            mariadb=mariadb,
         )
         postgres = sorted(
             {
@@ -480,6 +550,37 @@ class LocalMasterSSH(FakeSSH):
                 if app.get("database_type") == "PostgreSQL" and app.get("database_name")
             }
         )
+        details = {
+            name: {
+                "size_bytes": 1024,
+                "table_count": 4,
+                "created": "",
+                "updated": "",
+                "grants": ["GRANT SELECT ON *.* TO 'backup'@'localhost'"],
+            }
+            for name in mariadb
+        }
+        for name in self.extra_mariadb:
+            details[name]["table_count"] = 2
+            details[name]["size_bytes"] = 4096
+        for name, meta in self.extra_mariadb_details.items():
+            details.setdefault(
+                name,
+                {"size_bytes": 0, "table_count": 0, "created": "", "updated": "", "grants": []},
+            )
+            details[name].update(meta)
+        extra_texts = dict(self.extra_config_files)
+        search_roots = [str(app.get("root") or "") for app in apps if app.get("root")]
+        references = audit.find_database_references(mariadb, search_roots, extra_texts=extra_texts)
+        inventory = audit.build_database_inventory(mariadb, apps, details=details, references=references)
+        by_id = {str(app.get("application_id") or ""): app for app in apps}
+        for row in inventory:
+            ident = str(row.get("application_id") or "")
+            app = by_id.get(ident)
+            if app and row.get("name") and not app.get("database_name") and str(row.get("status") or "").startswith("ASSOCIATED"):
+                app["database_name"] = row["name"]
+                app["database_type"] = "MariaDB"
+        previous = list(getattr(self, "_previous_hostnames", []) or [])
         return {
             "ok": True,
             "nginx_ok": True,
@@ -488,7 +589,14 @@ class LocalMasterSSH(FakeSSH):
             "applications": apps,
             "nginx_inventory": da.nginx_inventory(servers),
             "parsed_hostnames": da.parsed_hostnames(servers),
-            "databases": {"mariadb": ["journal", "ojs50", "ojsxd", "sea_tedb"], "postgresql": postgres},
+            "inactive_hostnames": audit.scan_inactive_hostnames(
+                da.parsed_hostnames(servers),
+                previous_hostnames=previous,
+                parse_nginx_t=da.parse_nginx_t,
+                extra_files=self.extra_scan_files,
+            ),
+            "database_inventory": inventory,
+            "databases": {"mariadb": mariadb, "postgresql": postgres},
             "errors": [],
         }
 
@@ -514,6 +622,7 @@ class LocalMasterSSH(FakeSSH):
                     ),
                     "discovery failed",
                 )
+            self._previous_hostnames = list(payload.get("previous_hostnames") or [])
             result = self._local_discover_applications()
             return SSHResult(0 if result.get("ok") else 1, json.dumps(result), result.get("error") or "")
 

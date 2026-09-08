@@ -5,10 +5,13 @@ import sys
 from pathlib import Path
 
 from app.discover.engine import discover_applications
+from app.discover.gate import assess_backup_gate
 from app.discover.policy import apply_policy, approve_all_applications, save_snapshot, set_approval
 from app.discover.report import format_discovery_report
+from app.engine.backup_engine import BackupEngine, BackupError
+from app.master.store import MasterStore
 from app.security.allowlist import is_allowed_remote_action
-from tests.helpers import FakeSSH, UBUNTU_SCRIPTS, make_config
+from tests.helpers import FakeSSH, UBUNTU_SCRIPTS, make_config, LocalMasterSSH, seed_remote_tree, master_config, enable_backup
 
 if str(UBUNTU_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(UBUNTU_SCRIPTS))
@@ -367,8 +370,12 @@ def test_future_site_is_discovered_without_hardcoded_list():
     assert "future-site.example.com" in hosts
     assert "sateye.xdgen.com" in hosts
     source = (Path(__file__).resolve().parents[1] / "scripts" / "ubuntu" / "discover_apps.py").read_text(encoding="utf-8")
+    audit = (Path(__file__).resolve().parents[1] / "scripts" / "ubuntu" / "discover_audit.py").read_text(encoding="utf-8")
     assert "future-site.example.com" not in source
     assert "sateye.xdgen.com" not in source
+    assert "sateye.xdgen.com" not in audit
+    assert "xdgen_db" not in source
+    assert "xdgen_db" not in audit
 
 
 def test_helper_allows_discover_applications():
@@ -752,4 +759,269 @@ def test_nginx_filesystem_alias_is_not_a_separate_application():
     assert "/var/lib/ojs-journal50" in (journal.get("alias") or [])
     assert journal["ojs_files_dir"] == "/var/lib/ojs-journal50"
     assert all(app.get("root") != "/var/lib/ojs-journal50" for app in _apps())
+
+
+def test_unassociated_database_is_visible_and_requires_review():
+    import discover_audit as audit
+
+    apps = [
+        {
+            "application_id": "wordpress:/var/www/50sea.com",
+            "root": "/var/www/50sea.com",
+            "database_name": "sea_tedb",
+        },
+        {
+            "application_id": "php:/var/www/xdgen.com",
+            "root": "/var/www/xdgen.com",
+            "database_name": "",
+        },
+    ]
+    inventory = audit.build_database_inventory(
+        ["sea_tedb", "xdgen_db", "information_schema"],
+        apps,
+        details={
+            "sea_tedb": {"table_count": 12, "size_bytes": 4096},
+            "xdgen_db": {"table_count": 3, "size_bytes": 2048},
+            "information_schema": {"table_count": 1, "size_bytes": 0},
+        },
+    )
+    by_name = {row["name"]: row for row in inventory}
+    assert by_name["sea_tedb"]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert by_name["xdgen_db"]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    assert by_name["xdgen_db"]["application_id"] == ""
+    assert by_name["information_schema"]["status"] == "SYSTEM DATABASE — EXCLUDED"
+    report = format_discovery_report(
+        {
+            "applications": [
+                {
+                    "application_id": "wordpress:/var/www/50sea.com",
+                    "hostname": "50sea.com",
+                    "hostnames": ["50sea.com", "www.50sea.com"],
+                    "type": "WordPress",
+                    "root": "/var/www/50sea.com",
+                    "database_type": "MariaDB",
+                    "database_name": "sea_tedb",
+                    "status": "NEW SITE DETECTED — REQUIRES APPROVAL",
+                }
+            ],
+            "database_inventory": inventory,
+            "databases": {"mariadb": ["sea_tedb", "xdgen_db"], "postgresql": []},
+            "nginx_ok": True,
+            "hostname": "ubuntu",
+        }
+    )
+    unassociated = report.split("UNASSOCIATED DATABASES", 1)[1].split("HOSTNAME ALIASES", 1)[0]
+    assert "xdgen_db" in unassociated
+    assert "REQUIRES REVIEW" in unassociated
+    assert "no application association discovered" in unassociated
+    assert "database xdgen_db" in report.split("REQUIRES REVIEW", 1)[1]
+    gate = assess_backup_gate(
+        [
+            {
+                "application_id": "wordpress:/var/www/50sea.com",
+                "included": True,
+                "status": "READY",
+            }
+        ],
+        inventory,
+    )
+    assert gate["databases_unresolved"] == 1
+    assert gate["unresolved_database_names"] == ["xdgen_db"]
+    assert gate["block_complete_backup"] is True
+
+
+def test_empty_database_is_excluded_but_still_listed():
+    import discover_audit as audit
+
+    inventory = audit.build_database_inventory(
+        ["empty_db"],
+        [{"application_id": "php:/var/www/xdgen.com", "root": "/var/www/xdgen.com"}],
+        details={"empty_db": {"table_count": 0, "size_bytes": 0}},
+    )
+    assert inventory[0]["status"] == "UNUSED/EMPTY DATABASE — EXCLUDED"
+    report = format_discovery_report(
+        {
+            "applications": [],
+            "database_inventory": inventory,
+            "databases": {"mariadb": ["empty_db"]},
+            "nginx_ok": True,
+            "hostname": "ubuntu",
+        }
+    )
+    discovered = report.split("DISCOVERED DATABASES", 1)[1].split("UNASSOCIATED DATABASES", 1)[0]
+    assert "empty_db" in discovered
+    assert "UNUSED/EMPTY DATABASE — EXCLUDED" in discovered
+    unassociated = report.split("UNASSOCIATED DATABASES", 1)[1].split("HOSTNAME ALIASES", 1)[0]
+    assert "empty_db" not in unassociated
+    gate = assess_backup_gate([], inventory)
+    assert gate["databases_discovered"] == 1
+    assert gate["databases_unresolved"] == 0
+    assert gate["block_complete_backup"] is False
+
+
+def test_config_reference_associates_unassociated_database():
+    import discover_audit as audit
+
+    apps = [
+        {
+            "application_id": "php:/var/www/xdgen.com",
+            "root": "/var/www/xdgen.com",
+            "database_name": "",
+        }
+    ]
+    references = {
+        "xdgen_db": [{"path": "/var/www/xdgen.com/.env", "kind": ".env"}],
+    }
+    inventory = audit.build_database_inventory(
+        ["xdgen_db"],
+        apps,
+        details={"xdgen_db": {"table_count": 4, "size_bytes": 1024}},
+        references=references,
+    )
+    assert inventory[0]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert inventory[0]["application_id"] == "php:/var/www/xdgen.com"
+
+
+def test_env_file_on_disk_associates_database(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    Path(remote["xdgen.com"], ".env").write_text("DB_NAME=xdgen_db\n", encoding="utf-8")
+    cfg = master_config(tmp_path, remote)
+    ssh = LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])
+    result = discover_applications(cfg, ssh=ssh, persist=True)
+    by_name = {row["name"]: row for row in result.get("database_inventory") or []}
+    assert by_name["xdgen_db"]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert "xdgen.com" in by_name["xdgen_db"]["application_id"]
+    xdgen = next(app for app in result["applications"] if app.get("root") == remote["xdgen.com"])
+    assert xdgen.get("database_name") == "xdgen_db"
+    gate = result.get("backup_gate") or {}
+    assert "xdgen_db" not in (gate.get("unresolved_database_names") or [])
+
+
+def test_inactive_hostname_in_sites_available_is_not_an_application(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    leftover = (
+        "server {\n"
+        "    listen 80;\n"
+        "    server_name sateye.xdgen.com;\n"
+        f"    root {remote['50sea.com']};\n"
+        "}\n"
+    )
+    ssh = LocalMasterSSH(
+        tmp_path / "remote",
+        extra_scan_files={"/etc/nginx/sites-available/sateye.conf": leftover},
+    )
+    result = discover_applications(cfg, ssh=ssh, persist=True)
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "sateye.xdgen.com" not in hosts
+    inactive = {row["hostname"]: row for row in result.get("inactive_hostnames") or []}
+    assert "sateye.xdgen.com" in inactive
+    assert inactive["sateye.xdgen.com"]["verdict"] == "NOT ACTIVE IN CURRENT SERVER CONFIGURATION"
+    assert any("sites-available" in str(item.get("source") or "") for item in inactive["sateye.xdgen.com"]["evidence"])
+    report = result["report_text"]
+    not_active = report.split("NOT ACTIVE IN CURRENT SERVER CONFIGURATION", 1)[1].split("OJS FILES_DIR", 1)[0]
+    assert "sateye.xdgen.com" in not_active
+    discovered_hosts = report.split("DISCOVERED HOSTNAMES", 1)[1].split("DISCOVERED APPLICATIONS", 1)[0]
+    assert "sateye.xdgen.com" not in discovered_hosts
+
+
+def test_inactive_hostname_from_previous_snapshot_is_not_added(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    save_snapshot(
+        cfg.backup_destination,
+        {
+            "applications": [
+                {
+                    "application_id": "wordpress:/var/www/50sea.com",
+                    "hostname": "50sea.com",
+                    "hostnames": ["50sea.com", "www.50sea.com", "sateye.xdgen.com"],
+                    "type": "WordPress",
+                    "root": remote["50sea.com"],
+                }
+            ]
+        },
+    )
+    result = discover_applications(cfg, ssh=LocalMasterSSH(tmp_path / "remote"), persist=True)
+    hosts = {name for app in result["applications"] if app.get("change") != "removed" for name in (app.get("hostnames") or [])}
+    assert "sateye.xdgen.com" not in hosts
+    inactive = {row["hostname"] for row in result.get("inactive_hostnames") or []}
+    assert "sateye.xdgen.com" in inactive
+    report = result["report_text"]
+    assert "NOT ACTIVE IN CURRENT SERVER CONFIGURATION" in report
+    assert "sateye.xdgen.com" in report.split("NOT ACTIVE IN CURRENT SERVER CONFIGURATION", 1)[1]
+
+
+def test_active_nginx_hostname_is_still_an_alias_when_present():
+    hosts = _by_host(_apps())
+    assert hosts["sateye.xdgen.com"] is hosts["50sea.com"]
+
+
+def test_future_nginx_site_requires_approval_without_default_json(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    newsite = Path(tmp_path / "remote" / "var/www/newsite.example.com")
+    newsite.mkdir(parents=True, exist_ok=True)
+    (newsite / "index.html").write_text("new\n", encoding="utf-8")
+    cfg = master_config(tmp_path, remote)
+    ssh = LocalMasterSSH(
+        tmp_path / "remote",
+        extra_nginx_sites=[("newsite.example.com", newsite.as_posix())],
+    )
+    result = discover_applications(cfg, ssh=ssh, persist=True)
+    found = next(app for app in result["applications"] if "newsite.example.com" in (app.get("hostnames") or []))
+    assert "NEW SITE DETECTED — REQUIRES APPROVAL" in str(found.get("status") or "")
+    assert found.get("included") is False
+    default_json = (Path(__file__).resolve().parents[1] / "config" / "default.json").read_text(encoding="utf-8")
+    assert "newsite.example.com" not in default_json
+    assert "NEW SITE DETECTED — REQUIRES APPROVAL" in result["report_text"]
+    assert "NEW APPLICATIONS" in result["report_text"]
+
+
+def test_backup_now_blocked_when_applications_pending(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    try:
+        BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
+        assert False, "pending applications must block BACKUP NOW"
+    except BackupError as exc:
+        text = str(exc)
+        assert "BLOCK COMPLETE BACKUP" in text
+        assert "Applications pending:" in text
+    assert not MasterStore(cfg.backup_destination).has_head()
+
+
+def test_backup_now_blocked_when_unassociated_database_after_approval(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    ssh = LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])
+    enable_backup(cfg, ssh)
+    try:
+        BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])).run()
+        assert False, "unassociated database must block COMPLETE backup"
+    except BackupError as exc:
+        text = str(exc)
+        assert "BLOCK COMPLETE BACKUP" in text
+        assert "xdgen_db" in text
+        assert "Databases unresolved:" in text
+    assert not MasterStore(cfg.backup_destination).has_head()
+
+
+def test_empty_unassociated_database_does_not_block_backup_after_approval(tmp_path: Path):
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    ssh = LocalMasterSSH(
+        tmp_path / "remote",
+        extra_mariadb=["empty_db"],
+        extra_mariadb_details={"empty_db": {"table_count": 0, "size_bytes": 0}},
+    )
+    enable_backup(cfg, ssh)
+    info = BackupEngine(
+        cfg,
+        ssh=LocalMasterSSH(
+            tmp_path / "remote",
+            extra_mariadb=["empty_db"],
+            extra_mariadb_details={"empty_db": {"table_count": 0, "size_bytes": 0}},
+        ),
+    ).run()
+    assert info["status"] == "SUCCESS"
 

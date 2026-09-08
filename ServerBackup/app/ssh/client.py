@@ -24,6 +24,7 @@ UBUNTU_HELPER_FILES = (
     "prepare_backup.py",
     "prepare_master.py",
     "discover_apps.py",
+    "discover_audit.py",
     "restore-backup.sh",
     "restore_backup.py",
     "restore_master.py",

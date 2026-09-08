@@ -7,6 +7,7 @@ from app.master.store import MasterStore
 from tests.helpers import (
     FakeSSH,
     LocalMasterSSH,
+    enable_backup,
     make_config,
     master_config,
     seed_remote_tree,
@@ -32,6 +33,7 @@ def test_first_run_creates_full_master_baseline_and_keeps_legacy_archives(tmp_pa
     cfg = master_config(tmp_path, remote)
     dest = Path(cfg.backup_destination)
     ids = _seed_five(dest)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     engine = BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote"), mode="manual")
     info = engine.run()
     assert info["status"] == "SUCCESS"
@@ -51,6 +53,7 @@ def test_second_run_with_no_file_or_db_change_is_no_change(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
     ssh = LocalMasterSSH(tmp_path / "remote")
+    enable_backup(cfg, ssh)
     first = BackupEngine(cfg, ssh=ssh, mode="manual").run()
     assert first["type"] == "FULL"
     second = BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote"), mode="manual").run()
@@ -61,11 +64,14 @@ def test_second_run_with_no_file_or_db_change_is_no_change(tmp_path: Path):
 def test_incremental_new_modified_deleted_renamed_moved(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     site = Path(remote["xdgen.com"])
     (site / "index.html").write_text("changed\n", encoding="utf-8")
     (site / "brand-new.txt").write_text("new\n", encoding="utf-8")
-    (site / "index.html").replace(site / "home.html")  # delete index, add home - different content now
+    (site / "home.html").write_text("changed\n", encoding="utf-8")
+    # Keep index.html so Nginx classification stays Static; deleting it
+    # would mint a new other:<root> application_id and block BACKUP NOW.
     # restore a rename of ojs file
     ojs = Path(remote["ojsxd"])
     (ojs / "paper.pdf").replace(ojs / "renamed.pdf")
@@ -83,6 +89,7 @@ def test_database_unchanged_skips_dump(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
     ssh1 = LocalMasterSSH(tmp_path / "remote")
+    enable_backup(cfg, ssh1)
     BackupEngine(cfg, ssh=ssh1).run()
     ssh2 = LocalMasterSSH(tmp_path / "remote")
     ssh2.db_fingerprint = "fp-journal-1"
@@ -94,6 +101,7 @@ def test_database_unchanged_skips_dump(tmp_path: Path):
 def test_database_changed_dumps_and_advances_head(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     ssh = LocalMasterSSH(tmp_path / "remote")
     ssh.db_fingerprint = "fp-journal-2"
@@ -107,6 +115,7 @@ def test_database_changed_dumps_and_advances_head(tmp_path: Path):
 def test_database_failure_does_not_advance_head(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     ssh = LocalMasterSSH(tmp_path / "remote")
     ssh.db_fingerprint = "fp-changed"
@@ -122,6 +131,7 @@ def test_database_failure_does_not_advance_head(tmp_path: Path):
 def test_interrupted_transfer_does_not_advance_head(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     ssh = LocalMasterSSH(tmp_path / "remote")
     ssh.truncate_stream = True
     try:
@@ -135,6 +145,7 @@ def test_interrupted_transfer_does_not_advance_head(tmp_path: Path):
 def test_corrupt_object_stream_does_not_advance_head(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     ssh = LocalMasterSSH(tmp_path / "remote")
     ssh.corrupt_stream = True
     try:
@@ -148,6 +159,7 @@ def test_corrupt_object_stream_does_not_advance_head(tmp_path: Path):
 def test_failed_hash_does_not_advance_head(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     ssh = LocalMasterSSH(tmp_path / "remote")
     ssh.fail_hash = True
     try:
@@ -227,6 +239,7 @@ def test_temporary_ssh_error_is_retried(tmp_path: Path, monkeypatch):
                 raise SSHError("Cannot reach 192.168.18.18 port 22")
             return super().test_login()
 
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     engine = BackupEngine(cfg, ssh=FlakySSH(tmp_path / "remote"), mode="manual")
     info = engine.run()
     assert info["status"] == "SUCCESS"
@@ -285,6 +298,7 @@ def test_dry_run_closes_ssh_session_and_previews_delta(tmp_path: Path):
     assert "master" in result
     assert "HEAD: unchanged" in (result.get("report_text") or "")
     assert "sateye.xdgen.com" in (result.get("report_text") or "")
+    assert "NOT ACTIVE IN CURRENT SERVER CONFIGURATION" in (result.get("report_text") or "")
     assert "citation.xdgen.com" in (result.get("report_text") or "")
     assert "none configured" not in (result.get("report_text") or "")
     assert "EXPECTED FULL BASELINE SIZE:" in (result.get("report_text") or "")
@@ -294,6 +308,7 @@ def test_dry_run_closes_ssh_session_and_previews_delta(tmp_path: Path):
 def test_rebuild_master_replaces_head_after_verification(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     Path(remote["xdgen.com"], "extra.txt").write_text("x\n", encoding="utf-8")
     info = BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).rebuild_master()
@@ -306,18 +321,18 @@ def test_engine_never_calls_apply_retention(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("app.backup.retention.apply_retention", lambda *a, **k: called.append(True))
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
     BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
     assert called == []
 
 
 def test_missing_ojs_files_dir_fails_backup(tmp_path: Path):
-    remote = seed_remote_tree(tmp_path / "remote")
-    Path(remote["ojs50"]).rmdir() if False else None
-    # Remove files_dir directory
     import shutil
 
-    shutil.rmtree(remote["ojs50"])
+    remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
+    shutil.rmtree(remote["ojs50"])
     try:
         BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote")).run()
         assert False

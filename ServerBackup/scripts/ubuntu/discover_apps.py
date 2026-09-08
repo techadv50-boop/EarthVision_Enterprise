@@ -17,6 +17,14 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from discover_audit import (
+    build_database_inventory,
+    find_database_references,
+    mariadb_schema_details,
+    parse_generic_database_from_texts,
+    scan_inactive_hostnames,
+)
+
 UNSAFE = set(";&|`$<>\\\n\r")
 FILE_MARKER = re.compile(r"^# configuration file (.+):\s*$")
 SERVER_OPEN = re.compile(r"\bserver\s*\{")
@@ -567,11 +575,20 @@ def _probe_root(root: str) -> tuple[dict[str, bool], dict[str, str]]:
         "docker-compose.yml",
         "docker-compose.yaml",
         "compose.yaml",
+        ".env",
+        ".env.local",
+        ".env.production",
+        "config.php",
+        "database.php",
+        "settings.php",
     )
     for name in names:
         path = base / name
         files[name] = path.is_file()
-        if files[name] and name.endswith((".php", ".txt", ".toml", ".json", ".yml", ".yaml")):
+        if files[name] and (
+            name.startswith(".env")
+            or name.endswith((".php", ".txt", ".toml", ".json", ".yml", ".yaml"))
+        ):
             try:
                 texts[name] = path.read_text(encoding="utf-8", errors="replace")[:20000]
             except OSError:
@@ -1089,6 +1106,11 @@ def applications_from_servers(
         elif app_type == "WordPress":
             db_name = parse_wp_database_name(texts.get("wp-config.php") or "") or ""
             db_type = "MariaDB" if db_name else ""
+        if not db_name:
+            generic = parse_generic_database_from_texts(texts)
+            if generic:
+                db_name = generic
+                db_type = db_type or "MariaDB"
         if docker:
             if docker.get("postgres_db"):
                 db_type = "PostgreSQL"
@@ -1237,8 +1259,12 @@ def applications_from_servers(
 
 
 def discover_applications(payload: dict | None = None, *, run=None, mysql_defaults=None) -> dict[str, Any]:
-    """Collect a read-only inventory. payload is unused except for future flags."""
-    del payload
+    """Collect a read-only inventory. payload may include previous_hostnames."""
+    payload = payload if isinstance(payload, dict) else {}
+    previous_hostnames = [str(n) for n in (payload.get("previous_hostnames") or []) if n]
+    extra_scan_files = payload.get("hostname_scan_files") if isinstance(payload.get("hostname_scan_files"), dict) else None
+    extra_config_texts = payload.get("config_texts") if isinstance(payload.get("config_texts"), dict) else None
+    details_override = payload.get("database_details") if isinstance(payload.get("database_details"), dict) else None
     errors: list[str] = []
     nginx_text = ""
     nginx_ok = False
@@ -1280,6 +1306,58 @@ def discover_applications(payload: dict | None = None, *, run=None, mysql_defaul
         docker_containers=docker_containers,
         mariadb=mariadb,
     )
+    details: dict[str, dict[str, Any]] = dict(details_override or {})
+    if mariadb and details_override is None:
+        try:
+            details = mariadb_schema_details(run, mysql_defaults, mariadb)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"MariaDB schema details skipped: {exc}")
+    search_roots = [str(app.get("root") or "") for app in apps if app.get("root")]
+    search_roots.extend(["/opt"])
+    try:
+        references = find_database_references(
+            mariadb,
+            search_roots,
+            extra_texts=extra_config_texts,
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"database reference search skipped: {exc}")
+        references = {}
+    database_inventory = build_database_inventory(
+        mariadb,
+        apps,
+        details=details,
+        references=references,
+    )
+    by_id = {str(app.get("application_id") or ""): app for app in apps}
+    for row in database_inventory:
+        ident = str(row.get("application_id") or "")
+        app = by_id.get(ident)
+        if app and row.get("name") and not app.get("database_name") and str(row.get("status") or "").startswith("ASSOCIATED"):
+            app["database_name"] = row["name"]
+            app["database_type"] = "MariaDB"
+    docker_hosts: list[str] = []
+    for inspect in docker_containers:
+        config = inspect.get("Config") or {}
+        labels = config.get("Labels") or {}
+        for key, value in {**labels, **{}}.items():
+            text = str(value or "")
+            if "VIRTUAL_HOST" in str(key).upper() or "hostname" in str(key).lower():
+                docker_hosts.extend(part.strip() for part in text.replace(",", " ").split() if "." in part)
+        for item in config.get("Env") or []:
+            if str(item).startswith("VIRTUAL_HOST="):
+                docker_hosts.extend(part.strip() for part in str(item).split("=", 1)[1].replace(",", " ").split() if "." in part)
+    try:
+        inactive_hostnames = scan_inactive_hostnames(
+            parsed_hostnames(servers),
+            previous_hostnames=previous_hostnames,
+            parse_nginx_t=parse_nginx_t,
+            extra_files=extra_scan_files,
+            docker_hint_hostnames=docker_hosts,
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"inactive hostname scan skipped: {exc}")
+        inactive_hostnames = []
     postgres = sorted(
         {
             str(app.get("database_name"))
@@ -1296,6 +1374,8 @@ def discover_applications(payload: dict | None = None, *, run=None, mysql_defaul
         "servers": servers,
         "nginx_inventory": nginx_inventory(servers),
         "parsed_hostnames": parsed_hostnames(servers),
+        "inactive_hostnames": inactive_hostnames,
+        "database_inventory": database_inventory,
         "databases": {
             "mariadb": mariadb,
             "postgresql": postgres,
