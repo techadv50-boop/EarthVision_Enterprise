@@ -65,6 +65,20 @@ def clear_stale_progress(config: AppConfig) -> bool:
     return True
 
 
+def format_discovery_count(value: Any, *, zero_as_dash: bool = False) -> str:
+    """Render dashboard discovery counts. 0 must not become an em dash except when requested."""
+    if value is None or value == "":
+        return "—"
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        return text if text else "—"
+    if zero_as_dash and number == 0:
+        return "—"
+    return str(number)
+
+
 def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
     dest = Path(config.backup_destination)
     drive = drive_status(dest)
@@ -136,25 +150,34 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
 
 
 def _discovery_status(config: AppConfig) -> dict[str, Any]:
+    snap: dict[str, Any] = {}
+    apps: list[dict[str, Any]] = []
     try:
+        from app.discover.gate import assess_backup_gate
         from app.discover.policy import apply_policy, load_snapshot
 
         snap = load_snapshot(config.backup_destination)
         apps = apply_policy(list(snap.get("applications") or []), config.backup_destination)
     except Exception:
-        apps = []
-    live = [row for row in apps if row.get("change") != "removed"]
+        return {
+            "discovered_total": None,
+            "discovered_approved": None,
+            "discovered_review": None,
+            "discovered_removed": None,
+        }
+    if not apps:
+        return {
+            "discovered_total": None,
+            "discovered_approved": None,
+            "discovered_review": None,
+            "discovered_removed": None,
+        }
+    gate = assess_backup_gate(apps, list(snap.get("database_inventory") or []))
     return {
-        "discovered_total": len(live) if apps else "—",
-        "discovered_approved": sum(1 for row in live if row.get("included")) if apps else "—",
-        "discovered_review": sum(
-            1
-            for row in apps
-            if "REVIEW" in str(row.get("status") or "") or "REQUIRES APPROVAL" in str(row.get("status") or "") or "NEW SITE DETECTED" in str(row.get("status") or "")
-        )
-        if apps
-        else "—",
-        "discovered_removed": sum(1 for row in apps if row.get("change") == "removed") if apps else "—",
+        "discovered_total": gate.get("applications_discovered", 0),
+        "discovered_approved": gate.get("applications_approved", 0),
+        "discovered_review": gate.get("applications_pending", 0),
+        "discovered_removed": sum(1 for row in apps if row.get("change") == "removed"),
     }
 
 

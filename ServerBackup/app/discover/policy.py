@@ -101,17 +101,30 @@ def _policy_record(stored: dict[str, Any], app: dict[str, Any]) -> dict[str, Any
     return {}
 
 
+def is_auto_excluded(app: dict[str, Any]) -> bool:
+    status = str(app.get("status") or "")
+    return bool(
+        app.get("excluded")
+        or app.get("unused_default_root")
+        or app.get("change") == "excluded"
+        or "UNUSED DEFAULT ROOT" in status
+        or (status.startswith("EXCLUDED") and "REQUIRES APPROVAL" not in status)
+    )
+
+
 def approve_all_applications(
     destination: str | Path,
     applications: list[dict[str, Any]],
+    *,
+    include_unused_default: bool = False,
 ) -> list[str]:
-    """Approve discovered applications. Skips auto-excluded and removed rows."""
+    """Approve discovered applications. Skips unused default roots unless explicitly overridden."""
     approved_ids: list[str] = []
     for app in applications:
         if app.get("change") == "removed":
             continue
-        status = str(app.get("status") or "")
-        if app.get("excluded") or "UNUSED DEFAULT ROOT" in status or app.get("unused_default_root"):
+        auto_excluded = is_auto_excluded(app)
+        if auto_excluded and not include_unused_default:
             continue
         ident = str(app.get("application_id") or app.get("hostname") or "")
         if not ident:
@@ -119,6 +132,34 @@ def approve_all_applications(
         set_approval(destination, ident, approved=True, excluded=False)
         approved_ids.append(ident)
     return approved_ids
+
+
+def snapshot_application_row(item: dict[str, Any]) -> dict[str, Any]:
+    """Persist enough discovery fields for the approval UI without a live SSH round-trip."""
+    return {
+        "application_id": item.get("application_id"),
+        "hostname": item.get("hostname"),
+        "hostnames": list(item.get("hostnames") or [item.get("hostname")]),
+        "hostname_details": item.get("hostname_details") or {},
+        "type": item.get("type"),
+        "root": item.get("root"),
+        "status": item.get("status"),
+        "database_type": item.get("database_type"),
+        "database_name": item.get("database_name"),
+        "source_file": item.get("source_file"),
+        "alias": list(item.get("alias") or []),
+        "proxy_pass": list(item.get("proxy_pass") or []),
+        "redirect_to": item.get("redirect_to") or "",
+        "ojs_files_dir": item.get("ojs_files_dir") or "",
+        "unused_default_root": bool(item.get("unused_default_root")),
+        "excluded": bool(item.get("excluded")),
+        "included": bool(item.get("included")),
+        "notes": list(item.get("notes") or []),
+        "estimated_bytes": int(item.get("estimated_bytes") or 0),
+        "source_paths": list(item.get("source_paths") or []),
+        "persistent_data_paths": list(item.get("persistent_data_paths") or []),
+        "change": item.get("change") or "",
+    }
 
 
 def apply_policy(applications: list[dict[str, Any]], destination: str | Path) -> list[dict[str, Any]]:
@@ -165,6 +206,11 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
                 row["included"] = True
                 row["excluded"] = False
                 row["change"] = "unchanged" if ident in previous else "new"
+                status = str(row.get("status") or "")
+                if "NEW SITE DETECTED" in status or (
+                    "REQUIRES APPROVAL" in status and "HOSTNAME" not in status and "REVIEW" not in status
+                ):
+                    row["status"] = "READY"
         else:
             row["included"] = False
             row["excluded"] = False

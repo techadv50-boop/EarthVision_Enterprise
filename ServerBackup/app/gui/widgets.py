@@ -19,7 +19,9 @@ class Card(QFrame):
         while self.body.count():
             item = self.body.takeAt(0)
             widget = item.widget()
-            if widget:
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
         for index, (label, value) in enumerate(rows):
             key = QLabel(label)

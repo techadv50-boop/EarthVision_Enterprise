@@ -30,7 +30,13 @@ from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
 from app.config.store import save_config
-from app.engine.status import clear_stale_progress, collect_dashboard_status, live_dashboard_message, progress_path
+from app.engine.status import (
+    clear_stale_progress,
+    collect_dashboard_status,
+    format_discovery_count,
+    live_dashboard_message,
+    progress_path,
+)
 from app.gui.discover_page import DiscoverPage
 from app.gui.history_page import HistoryPage
 from app.gui.logs_page import LogsPage
@@ -106,6 +112,10 @@ class DashboardPage(QWidget):
         layout.addWidget(self.server_card)
         layout.addWidget(self.master_card)
         layout.addWidget(self.apps_card)
+        self.review_apps_button = QPushButton("REVIEW / APPROVE APPLICATIONS")
+        self.review_apps_button.setObjectName("primary")
+        self.review_apps_button.clicked.connect(self._window.show_discover)
+        layout.addWidget(self.review_apps_button)
         layout.addWidget(self.backup_card)
         layout.addWidget(self.storage_card)
         layout.addWidget(self.schedule_card)
@@ -196,10 +206,13 @@ class DashboardPage(QWidget):
         )
         self.apps_card.set_rows(
             [
-                ("Total discovered:", str(status.get("discovered_total") or "—")),
-                ("Approved:", str(status.get("discovered_approved") or "—")),
-                ("Needs review:", str(status.get("discovered_review") or "—")),
-                ("Removed since last run:", str(status.get("discovered_removed") or "—")),
+                ("Total discovered:", format_discovery_count(status.get("discovered_total"))),
+                ("Approved:", format_discovery_count(status.get("discovered_approved"))),
+                ("Needs review:", format_discovery_count(status.get("discovered_review"))),
+                (
+                    "Removed since last run:",
+                    format_discovery_count(status.get("discovered_removed"), zero_as_dash=True),
+                ),
             ]
         )
         self.backup_card.set_rows(
@@ -307,7 +320,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{__app_name__} Version {__version__}")
         self._dry_run_finished.connect(self._on_dry_run_finished, Qt.ConnectionType.QueuedConnection)
         self._discover_finished.connect(self._on_discover_finished, Qt.ConnectionType.QueuedConnection)
-        self.discover_page.discover_btn.clicked.connect(self.discover_server)
+        self.discover_page.rediscover_requested.connect(self.discover_server)
+        self.discover_page.cancelled.connect(self.show_dashboard)
+        self.discover_page.approved.connect(self._on_applications_approved)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
@@ -385,6 +400,7 @@ class MainWindow(QMainWindow):
 
     def show_discover(self) -> None:
         self.discover_page.reload(self.config)
+        self.discover_page.set_busy(False)
         self.stack.setCurrentWidget(self.discover_page)
 
     def discover_server(self) -> None:
@@ -395,6 +411,7 @@ class MainWindow(QMainWindow):
         config = self.config
         password = self._ssh_password
         self.show_discover()
+        self.discover_page.set_busy(True, "Discovering Nginx applications…")
 
         def work() -> None:
             from app.discover.engine import DiscoveryError, discover_applications
@@ -415,15 +432,27 @@ class MainWindow(QMainWindow):
 
     def _on_discover_finished(self, ok: bool, text: str) -> None:
         result = getattr(self, "_last_discovery", None)
+        self.discover_page.set_busy(False)
         if ok and isinstance(result, dict):
             self.discover_page.reload(self.config, result)
+            self.stack.setCurrentWidget(self.discover_page)
         self.refresh()
         if ok:
-            QMessageBox.information(self, "DISCOVERY REPORT", text)
-            self.statusBar().showMessage("Discovery complete.")
+            self.statusBar().showMessage(
+                "Discovery complete. Approve applications on this page. BACKUP NOW was not started."
+            )
         else:
             QMessageBox.critical(self, "DISCOVER SERVER failed", text)
             self.statusBar().showMessage("Discovery failed.")
+
+    def _on_applications_approved(self, count: int) -> None:
+        self.show_dashboard()
+        QMessageBox.information(
+            self,
+            "APPLICATIONS APPROVED",
+            f"Approved {count} application(s).\n\n"
+            "Dashboard counts are updated. BACKUP NOW was not started.",
+        )
 
     def show_security(self, tab: str = "check") -> None:
         self.security_page.reload(self.config)
