@@ -12,6 +12,7 @@ from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
 from app.discover.engine import DiscoveryError as ApplicationDiscoveryError
 from app.discover.engine import discover_applications
+from app.discover.report import format_application_sections
 from app.master.delta import compute_delta, next_tree_files, promote_unhashed_for_preview
 from app.master.health import HEALTHY, WARNING, assess_health
 from app.master.pack import unpack_to_objects
@@ -138,7 +139,7 @@ def applications_to_ojs(applications: list[dict[str, Any]]) -> list[dict[str, An
             continue
         installs.append(
             {
-                "domain": app.get("hostname"),
+                "domain": (app.get("hostnames") or [app.get("hostname")])[0] if (app.get("hostnames") or app.get("hostname")) else app.get("hostname"),
                 "application_path": app.get("root"),
                 "files_dir": app.get("ojs_files_dir") or "",
                 "size_bytes": int(app.get("estimated_bytes") or 0),
@@ -191,14 +192,6 @@ def merge_discovered_databases(
         elif dname:
             add_maria(dname)
     return mariadb, postgres
-
-
-def _approval_label(app: dict[str, Any]) -> str:
-    if app.get("excluded") or app.get("status") == "EXCLUDED":
-        return "EXCLUDED"
-    if app.get("included"):
-        return "APPROVED"
-    return str(app.get("status") or "NEW SITE DETECTED — REQUIRES APPROVAL")
 
 
 def _required_roots(sources: list[dict[str, str]]) -> list[str]:
@@ -422,26 +415,9 @@ def format_dry_run_report(
         f"  {item.get('application_path') or item.get('domain')} -> {item.get('files_dir')}"
         for item in ojs
     ] or ["  (none discovered)"]
+    db_map = {"mariadb": list(db_names or []), "postgresql": list(postgres_names or [])}
     if applications:
-        live_apps = [app for app in applications if app.get("change") != "removed"]
-        app_lines = []
-        for app in applications:
-            db = ""
-            if app.get("database_type") or app.get("database_name"):
-                db = f"{app.get('database_type') or ''} {app.get('database_name') or ''}".strip()
-            root = app.get("root") or ", ".join(app.get("proxy_pass") or []) or "—"
-            app_lines.append(
-                f"  {app.get('hostname')} | {app.get('type')} | {root} | {db or '—'} | {_approval_label(app)}"
-            )
-        approved = sum(1 for app in live_apps if app.get("included"))
-        excluded = sum(1 for app in live_apps if app.get("excluded") or app.get("status") == "EXCLUDED")
-        pending = len(live_apps) - approved - excluded
-        app_header = [
-            "DISCOVERED APPLICATIONS:",
-            f"  total={len(live_apps)} approved={approved} excluded={excluded} pending_approval={pending}",
-            "  Hostname | Type | Root/proxy | Database | Approval",
-            *app_lines,
-        ]
+        app_header = format_application_sections(applications, databases=db_map)
     else:
         websites = [item["root"] for item in sources if item.get("category") == "website"]
         web_lines = [f"  {path}" for path in websites] or ["  (none)"]
@@ -477,10 +453,9 @@ def format_dry_run_report(
             f"MASTER STATUS: {master_status}",
             f"MODE: {mode}",
             *app_header,
-            "OJS:",
-            *ojs_lines,
+            *(["OJS FILES_DIR:", *ojs_lines] if not applications else []),
             f"DATABASES: {db_line}",
-            *db_detail,
+            *(db_detail if not applications else []),
             f"EXPECTED ACTION: {expected}",
             f"EXPECTED FULL BASELINE SIZE: {format_bytes(full_baseline_bytes or estimated_bytes)}",
             f"ESTIMATED TRANSFER: {format_bytes(estimated_bytes)}",

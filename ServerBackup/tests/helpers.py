@@ -98,6 +98,10 @@ def seed_remote_tree(base: Path) -> dict[str, str]:
     (jxd / "index.php").write_text("journalxd-app\n", encoding="utf-8")
     (xd / "index.html").write_text("xdgen\n", encoding="utf-8")
     (sea / "index.html").write_text("50sea\n", encoding="utf-8")
+    (sea / "wp-config.php").write_text("define('DB_NAME', 'sea_tedb');\n", encoding="utf-8")
+    html = base / "var/www/html"
+    html.mkdir(parents=True, exist_ok=True)
+    (html / "index.nginx-debian.html").write_text("nginx default\n", encoding="utf-8")
     (ojs50 / "paper.pdf").write_bytes(b"%PDF-50sea")
     (ojsxd / "paper.pdf").write_bytes(b"%PDF-xdgen")
     (nginx / "nginx.conf").write_text("events {}\n", encoding="utf-8")
@@ -115,6 +119,7 @@ def seed_remote_tree(base: Path) -> dict[str, str]:
         "nginx": nginx.as_posix(),
         "sateye.xdgen.com": sateye.as_posix(),
         "citation.xdgen.com": citation.as_posix(),
+        "html": html.as_posix(),
     }
 
 
@@ -192,9 +197,13 @@ class FakeSSH:
             persist = list(extra.get("persistent_data_paths") or [])
             sources = list(extra.get("source_paths") or ([root] if root else []) + persist)
             sources = [p for p in sources if p and not str(p).startswith("volume:")]
+            hostnames = list(extra.get("hostnames") or [hostname])
+            slug = app_type.lower().replace(" ", "-").replace("/", "-")
+            ident = extra.get("application_id") or (f"{slug}:{root}" if root else hostname)
             row = {
-                "application_id": f"{hostname}:{root}" if root else hostname,
+                "application_id": ident,
                 "hostname": hostname,
+                "hostnames": hostnames,
                 "type": app_type,
                 "discovery_source": "nginx -T",
                 "root": root,
@@ -210,7 +219,8 @@ class FakeSSH:
                 "status": extra.get("status") or "READY",
                 "notes": extra.get("notes") or [],
                 "included": False,
-                "excluded": False,
+                "excluded": bool(extra.get("excluded")),
+                "unused_default_root": bool(extra.get("unused_default_root")),
             }
             return row
 
@@ -234,9 +244,30 @@ class FakeSSH:
                 database_name="ojsxd",
                 persistent_data_paths=["/var/www/ojs-files"],
             ),
-            app("xdgen.com", "Static", "/var/www/xdgen.com"),
-            app("50sea.com", "PHP", "/var/www/50sea.com"),
-            app("sateye.xdgen.com", "Node", "/opt/sateye/frontend"),
+            app(
+                "xdgen.com",
+                "Static",
+                "/var/www/xdgen.com",
+                hostnames=["xdgen.com", "www.xdgen.com"],
+            ),
+            app(
+                "50sea.com",
+                "WordPress",
+                "/var/www/50sea.com",
+                hostnames=["50sea.com", "sateye.xdgen.com"],
+                database_type="MariaDB",
+                database_name="sea_tedb",
+            ),
+            app(
+                "_",
+                "Other",
+                "/var/www/html",
+                hostnames=["_"],
+                status="EXCLUDED — UNUSED DEFAULT ROOT",
+                excluded=True,
+                unused_default_root=True,
+                estimated_bytes=64,
+            ),
             app(
                 "citation.xdgen.com",
                 "Docker",
@@ -262,7 +293,7 @@ class FakeSSH:
             "hostname": "ubuntu-server",
             "discovery_source": "nginx -T",
             "applications": apps,
-            "databases": {"mariadb": ["journal", "ojs50", "ojsxd"], "postgresql": ["citation"]},
+            "databases": {"mariadb": ["journal", "ojs50", "ojsxd", "sea_tedb"], "postgresql": ["citation"]},
             "errors": [],
         }
 
@@ -288,7 +319,7 @@ class FakeSSH:
         if action == "discover-databases":
             return SSHResult(
                 0,
-                json.dumps({"ok": True, "databases": ["journal", "ojs50", "ojsxd", "information_schema"]}),
+                json.dumps({"ok": True, "databases": ["journal", "ojs50", "ojsxd", "sea_tedb", "information_schema"]}),
                 "",
             )
         if action == "discover-ojs":
@@ -340,7 +371,7 @@ class LocalMasterSSH(FakeSSH):
         root = self.remote_root
         www = root / "var/www"
         lines = ["# configuration file /etc/nginx/nginx.conf:", "http {"]
-        for name in ("journal.50sea.com", "journal.xdgen.com", "xdgen.com", "50sea.com"):
+        for name in ("journal.50sea.com", "journal.xdgen.com"):
             child = www / name
             if not child.is_dir():
                 continue
@@ -354,15 +385,46 @@ class LocalMasterSSH(FakeSSH):
                     "}",
                 ]
             )
-        sateye = root / "opt/sateye/frontend"
-        if sateye.is_dir():
+        xdgen = www / "xdgen.com"
+        if xdgen.is_dir():
             lines.extend(
                 [
+                    "# configuration file /etc/nginx/sites-enabled/xdgen.com:",
+                    "server {",
+                    "    listen 80;",
+                    "    server_name xdgen.com www.xdgen.com;",
+                    f"    root {xdgen.as_posix()};",
+                    "}",
+                ]
+            )
+        sea = www / "50sea.com"
+        if sea.is_dir():
+            lines.extend(
+                [
+                    "# configuration file /etc/nginx/sites-enabled/50sea.com:",
+                    "server {",
+                    "    listen 80;",
+                    "    server_name 50sea.com;",
+                    f"    root {sea.as_posix()};",
+                    "}",
                     "# configuration file /etc/nginx/sites-enabled/sateye:",
                     "server {",
                     "    listen 80;",
                     "    server_name sateye.xdgen.com;",
-                    f"    root {sateye.as_posix()};",
+                    f"    root {sea.as_posix()};",
+                    "}",
+                ]
+            )
+        html = www / "html"
+        if html.is_dir():
+            lines.extend(
+                [
+                    "# configuration file /etc/nginx/sites-enabled/default:",
+                    "server {",
+                    "    listen 80 default_server;",
+                    "    listen [::]:80 default_server;",
+                    "    server_name _;",
+                    f"    root {html.as_posix()};",
                     "}",
                 ]
             )
@@ -409,7 +471,7 @@ class LocalMasterSSH(FakeSSH):
         apps = da.applications_from_servers(
             servers,
             docker_containers=docker,
-            mariadb=["journal", "ojs50", "ojsxd"],
+            mariadb=["journal", "ojs50", "ojsxd", "sea_tedb"],
         )
         postgres = sorted(
             {
@@ -424,7 +486,7 @@ class LocalMasterSSH(FakeSSH):
             "hostname": "ubuntu-test",
             "discovery_source": "nginx -T",
             "applications": apps,
-            "databases": {"mariadb": ["journal", "ojs50", "ojsxd"], "postgresql": postgres},
+            "databases": {"mariadb": ["journal", "ojs50", "ojsxd", "sea_tedb"], "postgresql": postgres},
             "errors": [],
         }
 

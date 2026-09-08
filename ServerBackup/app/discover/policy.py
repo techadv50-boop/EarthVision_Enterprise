@@ -80,13 +80,59 @@ def set_approval(destination: str | Path, application_id: str, *, approved: bool
     return row
 
 
+def _hostnames(app: dict[str, Any]) -> list[str]:
+    names = [str(n) for n in (app.get("hostnames") or []) if n]
+    primary = str(app.get("hostname") or "")
+    if primary and primary not in names:
+        names.insert(0, primary)
+    return names
+
+
+def _policy_record(stored: dict[str, Any], app: dict[str, Any]) -> dict[str, Any]:
+    ident = str(app.get("application_id") or "")
+    if ident and ident in stored:
+        return dict(stored.get(ident) or {})
+    for host in _hostnames(app):
+        if host in stored:
+            return dict(stored.get(host) or {})
+        old = f"{host}:{str(app.get('root') or '').rstrip('/')}"
+        if old in stored:
+            return dict(stored.get(old) or {})
+    return {}
+
+
+def approve_all_applications(
+    destination: str | Path,
+    applications: list[dict[str, Any]],
+) -> list[str]:
+    """Approve discovered applications. Skips auto-excluded and removed rows."""
+    approved_ids: list[str] = []
+    for app in applications:
+        if app.get("change") == "removed":
+            continue
+        status = str(app.get("status") or "")
+        if app.get("excluded") or "UNUSED DEFAULT ROOT" in status or app.get("unused_default_root"):
+            continue
+        ident = str(app.get("application_id") or app.get("hostname") or "")
+        if not ident:
+            continue
+        set_approval(destination, ident, approved=True, excluded=False)
+        approved_ids.append(ident)
+    return approved_ids
+
+
 def apply_policy(applications: list[dict[str, Any]], destination: str | Path) -> list[dict[str, Any]]:
     policy = load_policy(destination)
     snapshot = load_snapshot(destination)
+    previous_apps = [item for item in (snapshot.get("applications") or []) if isinstance(item, dict)]
     previous = {
         str(item.get("application_id") or item.get("hostname"))
-        for item in (snapshot.get("applications") or [])
-        if isinstance(item, dict)
+        for item in previous_apps
+        if item.get("application_id") or item.get("hostname")
+    }
+    previous_hosts = {
+        str(item.get("application_id") or ""): set(_hostnames(item))
+        for item in previous_apps
     }
     stored = policy.get("applications") or {}
     result = []
@@ -95,22 +141,44 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
         row = dict(app)
         ident = str(row.get("application_id") or row.get("hostname") or "")
         current_ids.add(ident)
-        rec = stored.get(ident) or stored.get(str(row.get("hostname") or "")) or {}
-        if rec.get("excluded"):
-            row["status"] = "EXCLUDED"
+        rec = _policy_record(stored, row)
+        auto_excluded = bool(row.get("excluded") or row.get("unused_default_root") or "UNUSED DEFAULT ROOT" in str(row.get("status") or ""))
+        prev_hosts = previous_hosts.get(ident) or set()
+        current_hosts = set(_hostnames(row))
+        new_hosts = sorted(current_hosts - prev_hosts) if ident in previous else []
+        if rec.get("excluded") or auto_excluded:
+            if "UNUSED DEFAULT ROOT" not in str(row.get("status") or ""):
+                row["status"] = "EXCLUDED — UNUSED DEFAULT ROOT" if row.get("unused_default_root") else "EXCLUDED"
             row["included"] = False
             row["excluded"] = True
             row["change"] = "excluded"
         elif rec.get("approved"):
-            row["included"] = True
-            row["excluded"] = False
-            row["change"] = "unchanged" if ident in previous else "new"
+            if new_hosts:
+                row["included"] = False
+                row["excluded"] = False
+                row["change"] = "new_hostname"
+                row["status"] = "NEW HOSTNAME DETECTED — REQUIRES APPROVAL"
+                row["notes"] = list(row.get("notes") or []) + [
+                    "New hostname alias(es): " + ", ".join(new_hosts)
+                ]
+            else:
+                row["included"] = True
+                row["excluded"] = False
+                row["change"] = "unchanged" if ident in previous else "new"
         else:
             row["included"] = False
             row["excluded"] = False
-            row["change"] = "unchanged" if ident in previous else "new"
-            if row.get("status") == "READY":
-                row["status"] = "NEW SITE DETECTED — REQUIRES APPROVAL"
+            if ident in previous and new_hosts:
+                row["change"] = "new_hostname"
+                if row.get("status") == "READY":
+                    row["status"] = "NEW HOSTNAME DETECTED — REQUIRES APPROVAL"
+                row["notes"] = list(row.get("notes") or []) + [
+                    "New hostname alias(es): " + ", ".join(new_hosts)
+                ]
+            else:
+                row["change"] = "unchanged" if ident in previous else "new"
+                if row.get("status") == "READY":
+                    row["status"] = "NEW SITE DETECTED — REQUIRES APPROVAL"
         result.append(row)
     previous_map: dict[str, dict[str, Any]] = {}
     for item in snapshot.get("applications") or []:

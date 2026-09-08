@@ -14,9 +14,17 @@ from PySide6.QtWidgets import (
 )
 
 from app.config.schema import AppConfig
-from app.discover.policy import load_snapshot, set_approval
+from app.discover.policy import approve_all_applications, load_snapshot, set_approval
 from app.discover.report import format_discovery_report
 from app.utils.format import format_bytes
+
+
+def _hostnames(row: dict) -> list[str]:
+    names = [str(n) for n in (row.get("hostnames") or []) if n]
+    primary = str(row.get("hostname") or "")
+    if primary and primary not in names:
+        names.insert(0, primary)
+    return names
 
 
 class DiscoverPage(QWidget):
@@ -30,14 +38,14 @@ class DiscoverPage(QWidget):
         heading.setObjectName("title")
         layout.addWidget(heading)
         self.summary = QLabel(
-            "Automatic Nginx discovery. New sites require approval before they join the backup set."
+            "Automatic Nginx discovery. New applications and new hostname aliases require approval."
         )
         self.summary.setObjectName("subtitle")
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Hostname", "Type", "Root", "Database", "Persistent Data", "Status"]
+            ["Hostnames", "Type", "Root", "Database", "application_id", "Status"]
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -47,10 +55,12 @@ class DiscoverPage(QWidget):
         self.discover_btn = QPushButton("DISCOVER SERVER")
         self.discover_btn.setObjectName("primary")
         approve = QPushButton("APPROVE SELECTED")
+        approve_all = QPushButton("APPROVE ALL DISCOVERED APPLICATIONS")
         exclude = QPushButton("EXCLUDE SELECTED")
         report = QPushButton("VIEW REPORT")
         buttons.addWidget(self.discover_btn)
         buttons.addWidget(approve)
+        buttons.addWidget(approve_all)
         buttons.addWidget(exclude)
         buttons.addWidget(report)
         buttons.addStretch()
@@ -60,6 +70,7 @@ class DiscoverPage(QWidget):
         self.report.setPlaceholderText("Run DISCOVER SERVER to inventory active Nginx sites.")
         layout.addWidget(self.report)
         approve.clicked.connect(self._approve)
+        approve_all.clicked.connect(self._approve_all)
         exclude.clicked.connect(self._exclude)
         report.clicked.connect(self._show_report)
 
@@ -79,6 +90,7 @@ class DiscoverPage(QWidget):
             if "REVIEW" in str(row.get("status") or "")
             or "REQUIRES APPROVAL" in str(row.get("status") or "")
             or "NEW SITE DETECTED" in str(row.get("status") or "")
+            or "NEW HOSTNAME DETECTED" in str(row.get("status") or "")
         ]
         removed = [row for row in self._rows if row.get("change") == "removed"]
         approved = [row for row in live if row.get("included")]
@@ -93,13 +105,12 @@ class DiscoverPage(QWidget):
             db = ""
             if row.get("database_type") or row.get("database_name"):
                 db = f"{row.get('database_type') or ''} {row.get('database_name') or ''}".strip()
-            persist = ", ".join(row.get("persistent_data_paths") or [])
             values = [
-                str(row.get("hostname") or ""),
+                ", ".join(_hostnames(row)),
                 str(row.get("type") or ""),
                 str(row.get("root") or ""),
                 db,
-                persist,
+                str(row.get("application_id") or ""),
                 str(row.get("status") or ""),
             ]
             for col, value in enumerate(values):
@@ -134,7 +145,10 @@ class DiscoverPage(QWidget):
         set_approval(self._config.backup_destination, ident, approved=approved, excluded=excluded)
         row["included"] = approved and not excluded
         row["excluded"] = excluded
-        row["status"] = "EXCLUDED" if excluded else "READY"
+        if excluded:
+            row["status"] = "EXCLUDED — UNUSED DEFAULT ROOT" if row.get("unused_default_root") else "EXCLUDED"
+        else:
+            row["status"] = "READY"
         row["change"] = "excluded" if excluded else "unchanged"
         self.reload(self._config, {"applications": self._rows, "report_text": self.report.toPlainText()})
         action = "excluded from" if excluded else "approved for"
@@ -144,8 +158,51 @@ class DiscoverPage(QWidget):
         QMessageBox.information(
             self,
             "DISCOVER SERVER",
-            f"{row.get('hostname')} {action} the backup set.{extra}\n\n"
-            "BACKUP NOW is not changed in this discovery build.",
+            f"{ident} ({', '.join(_hostnames(row))}) {action} the backup set.{extra}\n\n"
+            "BACKUP NOW is not run by this approval.",
+        )
+
+    def _approve_all(self) -> None:
+        if not self._config:
+            return
+        pending = [
+            row
+            for row in self._rows
+            if row.get("change") != "removed"
+            and not row.get("excluded")
+            and not row.get("unused_default_root")
+            and "UNUSED DEFAULT ROOT" not in str(row.get("status") or "")
+            and not row.get("included")
+        ]
+        if not pending:
+            QMessageBox.information(self, "DISCOVER SERVER", "There are no applications waiting for approval.")
+            return
+        names = "\n".join(
+            f"  {row.get('application_id')}  ({', '.join(_hostnames(row))})" for row in pending
+        )
+        answer = QMessageBox.question(
+            self,
+            "APPROVE ALL DISCOVERED APPLICATIONS",
+            "Approve these applications for backup?\n\n"
+            f"{names}\n\n"
+            "Unused default roots stay excluded. BACKUP NOW is not run.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        approve_all_applications(self._config.backup_destination, self._rows)
+        ids = {str(row.get("application_id") or "") for row in pending}
+        for row in self._rows:
+            if str(row.get("application_id") or "") in ids:
+                row["included"] = True
+                row["excluded"] = False
+                row["status"] = "READY"
+                row["change"] = "unchanged"
+        self.reload(self._config, {"applications": self._rows, "report_text": format_discovery_report({"applications": self._rows})})
+        QMessageBox.information(
+            self,
+            "DISCOVER SERVER",
+            f"Approved {len(pending)} application(s). Unused default roots were not approved.\n\n"
+            "BACKUP NOW is not run by this approval.",
         )
 
     def _show_report(self) -> None:

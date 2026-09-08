@@ -62,7 +62,17 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "none configured" not in text
     assert "sateye.xdgen.com" in text
     assert "citation.xdgen.com" in text
+    assert "www.xdgen.com" in text
+    assert "DISCOVERED HOSTNAMES" in text
+    assert "DISCOVERED APPLICATIONS" in text
+    assert "OJS FILES_DIR" in text
+    assert "INCLUDED APPLICATIONS" in text
+    assert "EXCLUDED APPLICATIONS" in text
+    assert "REQUIRES REVIEW" in text
     assert "NEW SITE DETECTED — REQUIRES APPROVAL" in text
+    assert "approved=0" in text or "INCLUDED APPLICATIONS" in text
+    assert "sea_tedb" in text
+    assert "UNUSED DEFAULT ROOT" in text
     assert "EXPECTED FULL BASELINE SIZE:" in text
     assert "APPROVED" in text or "pending_approval=" in text
     assert "MariaDB:" in text

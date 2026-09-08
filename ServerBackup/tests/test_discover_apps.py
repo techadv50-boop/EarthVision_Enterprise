@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from app.discover.engine import discover_applications
-from app.discover.policy import apply_policy, save_snapshot, set_approval
+from app.discover.policy import apply_policy, approve_all_applications, save_snapshot, set_approval
 from app.discover.report import format_discovery_report
 from app.security.allowlist import is_allowed_remote_action
 from tests.helpers import FakeSSH, UBUNTU_SCRIPTS, make_config
@@ -57,7 +57,14 @@ server {
 server {
     listen 80;
     server_name sateye.xdgen.com;
-    root /opt/sateye/frontend;
+    root /var/www/50sea.com;
+}
+# configuration file /etc/nginx/sites-enabled/default:
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    root /var/www/html;
 }
 # configuration file /etc/nginx/sites-enabled/citation.conf:
 server {
@@ -113,8 +120,11 @@ def _probe(root: str):
             {"config.inc.php": "files_dir = /var/www/ojs-files\n[database]\nname = ojsxd\n"},
         ),
         "/var/www/xdgen.com": ({"index.html": True}, {}),
-        "/var/www/50sea.com": ({"index.php": True}, {}),
-        "/opt/sateye/frontend": ({"package.json": True}, {"package.json": '{"name":"sateye"}'}),
+        "/var/www/50sea.com": (
+            {"index.php": True, "wp-config.php": True, "wp-includes": True},
+            {"wp-config.php": "define('DB_NAME', 'sea_tedb');\n"},
+        ),
+        "/var/www/html": ({"index.html": True}, {}),
         "/var/www/future-site.example.com": ({"index.html": True}, {}),
         "/var/www/dup-a": ({"index.html": True}, {}),
         "/var/www/dup-b": ({"index.html": True}, {}),
@@ -124,6 +134,17 @@ def _probe(root: str):
 
 def _exists(path: str) -> bool:
     return path not in {"/var/www/does-not-exist", "/missing/ojs-files"}
+
+
+def _by_host(apps):
+    mapping = {}
+    for app in apps:
+        names = list(app.get("hostnames") or [])
+        if app.get("hostname") and app.get("hostname") not in names:
+            names.insert(0, app.get("hostname"))
+        for name in names:
+            mapping[name] = app
+    return mapping
 
 
 def _apps(**kwargs):
@@ -154,7 +175,7 @@ def _apps(**kwargs):
         probe=_probe,
         path_exists=_exists,
         docker_containers=docker,
-        mariadb=["ojs50", "ojsxd", "mysql"],
+        mariadb=["ojs50", "ojsxd", "sea_tedb", "mysql"],
         **kwargs,
     )
 
@@ -178,7 +199,7 @@ def test_parses_multiple_server_names_and_roots():
 
 
 def test_alias_and_proxy_pass_and_docker():
-    apps = {app["hostname"]: app for app in _apps()}
+    apps = _by_host(_apps())
     assert apps["journal.50sea.com"]["type"] == "OJS"
     assert apps["journal.50sea.com"]["ojs_files_dir"] == "/var/lib/ojs-journal50"
     assert apps["citation.xdgen.com"]["type"] == "Docker"
@@ -277,19 +298,21 @@ def test_new_and_removed_sites(tmp_path: Path):
     dest.mkdir()
     first = [
         {
-            "application_id": "a.example.com:/var/www/a",
+            "application_id": "static:/var/www/a",
             "hostname": "a.example.com",
+            "hostnames": ["a.example.com"],
             "type": "Static",
             "root": "/var/www/a",
             "status": "READY",
         }
     ]
     save_snapshot(dest, {"applications": first})
-    set_approval(dest, "a.example.com:/var/www/a", approved=True)
+    set_approval(dest, "static:/var/www/a", approved=True)
     current = [
         {
-            "application_id": "b.example.com:/var/www/b",
+            "application_id": "static:/var/www/b",
             "hostname": "b.example.com",
+            "hostnames": ["b.example.com"],
             "type": "Static",
             "root": "/var/www/b",
             "status": "READY",
@@ -304,13 +327,13 @@ def test_new_and_removed_sites(tmp_path: Path):
 
 def test_invalid_root_and_duplicate_hostname_and_excluded_docker_storage():
     apps = _apps()
-    missing = [app for app in apps if app["hostname"] == "missing.example.com"][0]
+    missing = [app for app in apps if "missing.example.com" in (app.get("hostnames") or [app.get("hostname")])][0]
     assert missing["status"] == "REQUIRES REVIEW"
     assert any("invalid root" in note for note in missing["notes"])
-    dups = [app for app in apps if app["hostname"] == "duplicate.example.com"]
+    dups = [app for app in apps if "duplicate.example.com" in (app.get("hostnames") or [app.get("hostname")])]
     assert len(dups) == 2
     assert all(app["status"] == "REQUIRES REVIEW" for app in dups)
-    overlay = [app for app in apps if app["hostname"] == "overlay.example.com"][0]
+    overlay = [app for app in apps if "overlay.example.com" in (app.get("hostnames") or [app.get("hostname")])][0]
     assert overlay["excluded"] is True or overlay["status"] == "REQUIRES REVIEW"
     assert overlay.get("root") in {"", "/var/lib/docker/overlay2/abc"}
     sources = [p for app in apps for p in app.get("source_paths") or []]
@@ -326,7 +349,7 @@ def test_tmp_scratch_is_excluded_but_nested_app_trees_are_not():
 
 
 def test_database_association_and_secret_redaction():
-    apps = {app["hostname"]: app for app in _apps()}
+    apps = _by_host(_apps())
     assert apps["journal.50sea.com"]["database_name"] == "ojs50"
     assert apps["journal.50sea.com"]["database_type"] == "MariaDB"
     blob = json.dumps(apps["journal.50sea.com"])
@@ -339,7 +362,7 @@ def test_database_association_and_secret_redaction():
 
 
 def test_future_site_is_discovered_without_hardcoded_list():
-    hosts = {app["hostname"] for app in _apps()}
+    hosts = set(_by_host(_apps()))
     assert "future-site.example.com" in hosts
     assert "sateye.xdgen.com" in hosts
     source = (Path(__file__).resolve().parents[1] / "scripts" / "ubuntu" / "discover_apps.py").read_text(encoding="utf-8")
@@ -371,3 +394,141 @@ def test_windows_engine_uses_helper_and_does_not_write_head(tmp_path: Path):
     assert "backup" not in ssh.calls
     assert result.get("report_text")
     assert not (Path(cfg.backup_destination) / "master" / "HEAD").exists()
+
+
+def test_www_alias_in_same_server_block_is_one_application():
+    apps = _apps()
+    hosts = _by_host(apps)
+    xdgen = hosts["xdgen.com"]
+    www = hosts["www.xdgen.com"]
+    assert xdgen is www
+    assert xdgen["application_id"] == "static:/var/www/xdgen.com"
+    assert set(xdgen["hostnames"]) == {"xdgen.com", "www.xdgen.com"}
+    assert sum(1 for app in apps if app.get("root") == "/var/www/xdgen.com") == 1
+
+
+def test_shared_root_and_database_merges_hostnames():
+    hosts = _by_host(_apps())
+    sea = hosts["50sea.com"]
+    sateye = hosts["sateye.xdgen.com"]
+    assert sea is sateye
+    assert sea["application_id"] == "wordpress:/var/www/50sea.com"
+    assert set(sea["hostnames"]) == {"50sea.com", "sateye.xdgen.com"}
+    assert sea["database_name"] == "sea_tedb"
+    assert sea["type"] == "WordPress"
+
+
+def test_same_root_different_database_is_not_merged():
+    servers = [
+        {
+            "server_name": ["a.example.com"],
+            "root": "/var/www/shared",
+            "alias": [],
+            "proxy_pass": [],
+            "source_file": "/etc/nginx/a",
+            "listen": ["80"],
+            "http": True,
+            "https": False,
+        },
+        {
+            "server_name": ["b.example.com"],
+            "root": "/var/www/shared",
+            "alias": [],
+            "proxy_pass": [],
+            "source_file": "/etc/nginx/b",
+            "listen": ["80"],
+            "http": True,
+            "https": False,
+        },
+    ]
+    queue = ["db_a", "db_b"]
+
+    def probe(_root):
+        name = queue.pop(0)
+        return ({"wp-config.php": True, "wp-includes": True}, {"wp-config.php": f"define('DB_NAME', '{name}');\n"})
+
+    apps = da.applications_from_servers(servers, probe=probe, path_exists=lambda _p: True)
+    assert len([a for a in apps if a.get("root") == "/var/www/shared"]) == 2
+    names = {name for app in apps for name in (app.get("hostnames") or [])}
+    assert names == {"a.example.com", "b.example.com"}
+    dbs = {app.get("database_name") for app in apps if app.get("root") == "/var/www/shared"}
+    assert dbs == {"db_a", "db_b"}
+
+
+def test_unused_default_html_is_excluded():
+    html = _by_host(_apps()).get("_") or next(
+        app for app in _apps() if app.get("unused_default_root") or is_default_html_root(app.get("root") or "")
+    )
+    assert html["root"] == "/var/www/html"
+    assert html["status"] == "EXCLUDED — UNUSED DEFAULT ROOT"
+    assert html["excluded"] is True
+    assert html["default_server"] is True
+    assert any("default_server" in note or "unused default" in note.lower() for note in html.get("notes") or [])
+    report = format_discovery_report({"applications": _apps(), "nginx_ok": True, "hostname": "ubuntu"})
+    assert "EXCLUDED APPLICATIONS" in report
+    assert "UNUSED DEFAULT ROOT" in report
+    assert "DISCOVERED HOSTNAMES" in report
+    assert "REQUIRES REVIEW" in report
+
+
+def is_default_html_root(root: str) -> bool:
+    return da.is_default_html_root(root)
+
+
+def test_application_id_is_independent_of_hostname():
+    sea = _by_host(_apps())["sateye.xdgen.com"]
+    assert sea["application_id"] == "wordpress:/var/www/50sea.com"
+    assert sea["application_id"].startswith("wordpress:")
+    assert "sateye.xdgen.com" not in sea["application_id"]
+
+
+def test_new_hostname_alias_requires_approval(tmp_path: Path):
+    dest = tmp_path / "ServerBackups"
+    dest.mkdir()
+    save_snapshot(
+        dest,
+        {
+            "applications": [
+                {
+                    "application_id": "wordpress:/var/www/50sea.com",
+                    "hostname": "50sea.com",
+                    "hostnames": ["50sea.com"],
+                    "type": "WordPress",
+                    "root": "/var/www/50sea.com",
+                    "status": "READY",
+                }
+            ]
+        },
+    )
+    set_approval(dest, "wordpress:/var/www/50sea.com", approved=True)
+    current = [
+        {
+            "application_id": "wordpress:/var/www/50sea.com",
+            "hostname": "50sea.com",
+            "hostnames": ["50sea.com", "sateye.xdgen.com"],
+            "type": "WordPress",
+            "root": "/var/www/50sea.com",
+            "status": "READY",
+        }
+    ]
+    rows = apply_policy(current, dest)
+    assert rows[0]["status"] == "NEW HOSTNAME DETECTED — REQUIRES APPROVAL"
+    assert rows[0]["included"] is False
+    assert "sateye.xdgen.com" in " ".join(rows[0].get("notes") or [])
+
+
+def test_approve_all_skips_unused_default_and_does_not_auto_approve_before_click(tmp_path: Path):
+    dest = tmp_path / "ServerBackups"
+    dest.mkdir()
+    apps = _apps()
+    pending = apply_policy(apps, dest)
+    assert all(not row.get("included") for row in pending if row.get("change") != "removed")
+    approved = approve_all_applications(dest, pending)
+    assert approved
+    assert all("html" not in ident for ident in approved)
+    after = apply_policy(apps, dest)
+    html = next(row for row in after if row.get("unused_default_root") or str(row.get("root") or "").endswith("/www/html"))
+    assert html["included"] is False
+    assert html["excluded"] is True
+    live = [row for row in after if row.get("change") != "removed" and not row.get("excluded")]
+    assert all(row.get("included") for row in live)

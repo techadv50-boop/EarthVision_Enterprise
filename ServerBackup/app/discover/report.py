@@ -7,90 +7,173 @@ from typing import Any
 from app.utils.format import format_bytes
 
 
+def _hostnames(app: dict[str, Any]) -> list[str]:
+    names = [str(n) for n in (app.get("hostnames") or []) if n]
+    primary = str(app.get("hostname") or "")
+    if primary and primary not in names:
+        names.insert(0, primary)
+    return names
+
+
+def _db_label(app: dict[str, Any]) -> str:
+    if app.get("database_type") or app.get("database_name"):
+        return f"{app.get('database_type') or ''} {app.get('database_name') or ''}".strip()
+    return "—"
+
+
+def format_application_sections(
+    applications: list[dict[str, Any]],
+    *,
+    databases: dict[str, Any] | None = None,
+) -> list[str]:
+    apps = list(applications or [])
+    live = [a for a in apps if a.get("change") != "removed"]
+    included = [a for a in live if a.get("included")]
+    excluded = [
+        a
+        for a in live
+        if a.get("excluded") or a.get("unused_default_root") or "EXCLUDED" in str(a.get("status") or "")
+    ]
+    review = [
+        a
+        for a in apps
+        if "REVIEW" in str(a.get("status") or "") and "REQUIRES APPROVAL" not in str(a.get("status") or "")
+    ]
+    ojs = [a for a in live if a.get("type") == "OJS"]
+    lines: list[str] = ["DISCOVERED HOSTNAMES"]
+    hosts: list[tuple[str, dict[str, Any]]] = []
+    for app in live:
+        names = _hostnames(app)
+        if not names:
+            hosts.append((str(app.get("hostname") or "—"), app))
+            continue
+        for name in names:
+            hosts.append((name, app))
+    if hosts:
+        for name, app in hosts:
+            root = app.get("root") or ", ".join(app.get("proxy_pass") or []) or "—"
+            alias = ""
+            names = _hostnames(app)
+            if len(names) > 1:
+                others = [h for h in names if h != name]
+                alias = f"  alias-of {app.get('application_id')} ({', '.join(others)})"
+            lines.append(f"  {name} -> {root}{alias}")
+    else:
+        lines.append("  (none)")
+    lines.extend(
+        [
+            "",
+            "DISCOVERED APPLICATIONS",
+            f"  total={len(live)} included={len(included)} excluded={len(excluded)} pending_approval={len(live) - len(included) - len(excluded)}",
+            "  application_id | hostnames | type | root | database | status",
+        ]
+    )
+    if live:
+        for app in live:
+            names = ", ".join(_hostnames(app)) or str(app.get("hostname") or "—")
+            root = app.get("root") or ", ".join(app.get("proxy_pass") or []) or "—"
+            lines.append(
+                f"  {app.get('application_id')} | {names} | {app.get('type')} | {root} | {_db_label(app)} | {app.get('status')}"
+            )
+            for note in app.get("notes") or []:
+                lines.append(f"    note: {note}")
+    else:
+        lines.append("  (none)")
+    dbs = databases if isinstance(databases, dict) else {}
+    lines.extend(["", "DATABASES"])
+    mariadb = list(dbs.get("mariadb") or [])
+    postgres = list(dbs.get("postgresql") or [])
+    if not mariadb:
+        mariadb = sorted(
+            {
+                str(app.get("database_name"))
+                for app in live
+                if app.get("database_type") == "MariaDB" and app.get("database_name")
+            }
+        )
+    if not postgres:
+        postgres = sorted(
+            {
+                str(app.get("database_name"))
+                for app in live
+                if app.get("database_type") == "PostgreSQL" and app.get("database_name")
+            }
+        )
+    lines.append(f"  MariaDB: {', '.join(mariadb) if mariadb else '(none discovered)'}")
+    for app in live:
+        if app.get("database_type") == "MariaDB" and app.get("database_name"):
+            lines.append(
+                f"    {app.get('database_name')} <- {app.get('application_id')} ({', '.join(_hostnames(app))})"
+            )
+    lines.append(f"  PostgreSQL: {', '.join(postgres) if postgres else '(none discovered)'}")
+    for app in live:
+        if app.get("database_type") == "PostgreSQL" and app.get("database_name"):
+            lines.append(
+                f"    {app.get('database_name')} <- {app.get('application_id')} ({', '.join(_hostnames(app))})"
+            )
+    lines.extend(["", "OJS FILES_DIR"])
+    if ojs:
+        for app in ojs:
+            lines.append(f"  {', '.join(_hostnames(app))}")
+            lines.append(f"    application root: {app.get('root')}")
+            lines.append(f"    OJS private files: {app.get('ojs_files_dir') or 'MISSING'}")
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "INCLUDED APPLICATIONS"])
+    if included:
+        for app in included:
+            lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  APPROVED")
+    else:
+        lines.append("  (none)  approved=0")
+    lines.extend(["", "EXCLUDED APPLICATIONS"])
+    if excluded:
+        for app in excluded:
+            lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
+            for note in app.get("notes") or []:
+                lines.append(f"    note: {note}")
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "REQUIRES REVIEW"])
+    if review:
+        for app in review:
+            lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
+    else:
+        lines.append("  (none)")
+    return lines
+
+
 def format_discovery_report(result: dict[str, Any]) -> str:
     apps = list(result.get("applications") or [])
     new = [a for a in apps if a.get("change") == "new" or "NEW SITE DETECTED" in str(a.get("status") or "")]
     removed = [a for a in apps if a.get("change") == "removed" or "SITE REMOVED" in str(a.get("status") or "")]
-    changed = [a for a in apps if a.get("change") not in {"new", "removed", "unchanged", "excluded", None}]
-    review = [
-        a
-        for a in apps
-        if "REVIEW" in str(a.get("status") or "") or "REQUIRES APPROVAL" in str(a.get("status") or "")
-    ]
-    approved = [a for a in apps if a.get("included")]
-    ojs = [a for a in apps if a.get("type") == "OJS"]
     lines = [
         "DISCOVERY REPORT",
         f"Host: {result.get('hostname') or 'unknown'}",
         f"Source: {result.get('discovery_source') or 'nginx -T'}",
         f"Nginx: {'OK' if result.get('nginx_ok') else 'FAILED'}",
-        f"Total discovered applications: {len([a for a in apps if a.get('change') != 'removed'])}",
-        f"Approved: {len(approved)}",
-        f"Needs review: {len(review)}",
-        f"Removed since last run: {len(removed)}",
         "",
-        "DISCOVERED APPLICATIONS",
-        "Hostname | Type | Root | Database | Persistent Data | Status",
+        *format_application_sections(apps, databases=result.get("databases")),
+        "",
+        "NEW APPLICATIONS",
     ]
-    for app in apps:
-        db = ""
-        if app.get("database_type") or app.get("database_name"):
-            db = f"{app.get('database_type') or ''}: {app.get('database_name') or ''}".strip(": ")
-        persist = ", ".join(app.get("persistent_data_paths") or []) or "—"
-        root = app.get("root") or (app.get("docker") or {}).get("compose_file") or ", ".join(app.get("proxy_pass") or []) or "—"
-        lines.append(
-            f"{app.get('hostname')} | {app.get('type')} | {root} | {db or '—'} | {persist} | {app.get('status')}"
-        )
-        for note in app.get("notes") or []:
-            lines.append(f"    note: {note}")
-    lines.extend(["", "NEW APPLICATIONS"])
     if new:
         for app in new:
-            lines.append(f"  NEW SITE DETECTED  {app.get('hostname')}  {app.get('type')}  {app.get('root') or ''}")
-            lines.append(f"    database: {app.get('database_type') or '—'} {app.get('database_name') or ''}".rstrip())
-            lines.append(f"    persistent: {', '.join(app.get('persistent_data_paths') or []) or '—'}")
+            lines.append(
+                f"  NEW SITE DETECTED  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('type')}  {app.get('root') or ''}"
+            )
+            lines.append(f"    database: {_db_label(app)}")
             lines.append(f"    estimated size: {format_bytes(int(app.get('estimated_bytes') or 0))}")
-            lines.append("    Requires approval before the first backup of this site.")
+            lines.append("    Requires explicit approval before the first backup of this application.")
     else:
         lines.append("  (none)")
     lines.extend(["", "REMOVED APPLICATIONS"])
     if removed:
         for app in removed:
-            lines.append(f"  Previously backed up: {app.get('hostname')}")
+            lines.append(f"  Previously discovered: {app.get('application_id')} ({', '.join(_hostnames(app))})")
             lines.append("  No longer detected in active Nginx configuration.")
             lines.append("  Master data is NOT deleted. Review before removing from the backup set.")
     else:
         lines.append("  (none)")
-    if changed:
-        lines.extend(["", "CHANGED APPLICATIONS"])
-        for app in changed:
-            lines.append(f"  {app.get('hostname')}: {app.get('change')}")
-    lines.extend(["", "OJS INSTALLATIONS"])
-    if ojs:
-        for app in ojs:
-            lines.append(f"  {app.get('hostname')}")
-            lines.append(f"    application root: {app.get('root')}")
-            lines.append(f"    OJS private files: {app.get('ojs_files_dir') or 'MISSING'}")
-            if app.get("notes"):
-                lines.append(f"    status: {app.get('status')} ({'; '.join(app.get('notes'))})")
-    else:
-        lines.append("  (none)")
-    dbs = result.get("databases") or {}
-    lines.extend(
-        [
-            "",
-            "DATABASES",
-            f"  MariaDB: {', '.join(dbs.get('mariadb') or []) or '(none discovered)'}",
-            f"  PostgreSQL: {', '.join(dbs.get('postgresql') or []) or '(none discovered)'}",
-            "",
-            "PERSISTENT STORAGE",
-        ]
-    )
-    persist_all = sorted({p for app in apps for p in (app.get("persistent_data_paths") or [])})
-    if persist_all:
-        lines.extend(f"  {path}" for path in persist_all)
-    else:
-        lines.append("  (none beyond application roots)")
     if result.get("errors"):
         lines.extend(["", "ERRORS / WARNINGS"])
         lines.extend(f"  {item}" for item in result["errors"])
@@ -98,7 +181,7 @@ def format_discovery_report(result: dict[str, Any]) -> str:
         [
             "",
             "DISCOVER → CLASSIFY → VALIDATE → SHOW USER → APPROVE → DRY RUN → BACKUP.",
-            "A newly discovered site is not backed up until it is approved.",
+            "A newly discovered application or hostname alias is not backed up until it is approved.",
             "Removed sites are kept in the master until you review them.",
             "BACKUP NOW is not run by discovery or DRY RUN.",
         ]

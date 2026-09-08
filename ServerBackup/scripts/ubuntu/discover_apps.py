@@ -26,6 +26,7 @@ OJS_VERSION = re.compile(r"^\s*version\s*=\s*(.*)$", re.IGNORECASE)
 WP_DB = re.compile(r"""['"]DB_NAME['"]\s*,\s*['"]([^'"]+)['"]""")
 DEFAULT_OJS_FALLBACK = "/var/www/ojs-files"
 SKIP_HOSTS = {"", "*"}
+CATCHALL_HOSTS = {"", "*", "_", "localhost"}
 EXCLUDED_PREFIXES = (
     "/var/lib/docker",
     "/var/lib/containerd",
@@ -218,6 +219,7 @@ def _parse_server_block(block: str, source_file: str) -> dict[str, Any] | None:
         "http": http,
         "https": https,
         "ssl": https,
+        "default_server": any("default_server" in item.split() for item in listen),
     }
 
 
@@ -542,10 +544,176 @@ def _match_docker(proxy_passes: list[str], containers: list[dict[str, Any]]) -> 
     return None
 
 
-def _application_id(hostname: str, root: str) -> str:
-    host = hostname.strip().lower()
-    extra = root.rstrip("/") if root else ""
-    return f"{host}:{extra}" if extra else host
+def _application_id(
+    *,
+    app_type: str,
+    root: str = "",
+    docker: dict[str, Any] | None = None,
+    proxy_passes: list[str] | None = None,
+) -> str:
+    slug = (app_type or "other").strip().lower().replace(" ", "-").replace("/", "-")
+    extra = (root or "").rstrip("/")
+    if extra:
+        return f"{slug}:{extra}"
+    project = str((docker or {}).get("compose_project") or "")
+    if project:
+        return f"docker:{project}" if slug == "docker" else f"{slug}:docker:{project}"
+    proxies = [p.rstrip("/") for p in (proxy_passes or []) if p]
+    if proxies:
+        return f"{slug}:proxy:{proxies[0]}"
+    return f"{slug}:unknown"
+
+
+def _canonical_hostname(names: list[str]) -> str:
+    filtered = [n for n in names if n and n.lower() not in CATCHALL_HOSTS]
+    use = filtered or [n for n in names if n] or ["_"]
+
+    def sort_key(name: str) -> tuple[int, str]:
+        lower = name.lower()
+        return (1 if lower.startswith("www.") else 0, lower)
+
+    return sorted(use, key=sort_key)[0]
+
+
+def is_default_html_root(root: str) -> bool:
+    parts = Path((root or "").rstrip("/") or "/").parts
+    return len(parts) >= 2 and parts[-2:] == ("www", "html")
+
+
+def is_unused_default_root(
+    *,
+    root: str,
+    hostnames: list[str],
+    listen: list[str],
+    app_type: str,
+    files: dict[str, bool],
+) -> bool:
+    """True for the distro default vhost (usually /var/www/html + default_server)."""
+    if not is_default_html_root(root):
+        return False
+    named = [h for h in hostnames if h and h.lower() not in CATCHALL_HOSTS]
+    if named:
+        return False
+    if files.get("wp-config.php") or files.get("config.inc.php") or files.get("composer.json") or files.get("package.json"):
+        return False
+    default_listen = any("default_server" in str(item).split() for item in listen)
+    trivial = (app_type or "Other") in {"Other", "Static"}
+    return trivial and (default_listen or not named)
+
+
+def _merge_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    """Identity used to merge hostnames of the same application.
+
+    Same filesystem path is not enough: type and database must also match.
+    """
+    if candidate.get("unused_default_root"):
+        return ("unused-html", str(candidate.get("root") or ""))
+    root = str(candidate.get("root") or "").rstrip("/")
+    atype = str(candidate.get("type") or "").lower()
+    db = (str(candidate.get("database_type") or "").lower(), str(candidate.get("database_name") or ""))
+    if root:
+        return ("app", atype, root, db)
+    docker = candidate.get("docker") or {}
+    project = str(docker.get("compose_project") or "")
+    if project:
+        return ("docker", atype, project, db)
+    proxies = tuple(sorted(p.rstrip("/") for p in (candidate.get("proxy_pass") or []) if p))
+    if proxies:
+        return ("proxy", atype, proxies, db)
+    return ("singleton", str(candidate.get("hostname") or ""), atype)
+
+
+def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    order: list[tuple[Any, ...]] = []
+    for item in candidates:
+        key = _merge_key(item)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(item)
+    merged: list[dict[str, Any]] = []
+    for key in order:
+        rows = groups[key]
+        primary = dict(rows[0])
+        hostnames: list[str] = []
+        notes: list[str] = list(primary.get("notes") or [])
+        source_files: list[str] = []
+        listens: list[str] = []
+        proxies: list[str] = []
+        aliases: list[str] = []
+        config_paths: list[str] = []
+        sources: list[str] = []
+        persist: list[str] = []
+        for row in rows:
+            for name in row.get("hostnames") or [row.get("hostname")]:
+                if name and name not in hostnames:
+                    hostnames.append(str(name))
+            for note in row.get("notes") or []:
+                if note not in notes:
+                    notes.append(note)
+            for field, bucket in (
+                ("source_file", source_files),
+                ("listen", listens),
+                ("proxy_pass", proxies),
+                ("alias", aliases),
+                ("configuration_paths", config_paths),
+                ("source_paths", sources),
+                ("persistent_data_paths", persist),
+            ):
+                values = row.get(field)
+                if isinstance(values, list):
+                    for value in values:
+                        if value and value not in bucket:
+                            bucket.append(value)
+                elif values and values not in bucket:
+                    bucket.append(values)
+            primary["http"] = bool(primary.get("http") or row.get("http"))
+            primary["https"] = bool(primary.get("https") or row.get("https"))
+            primary["default_server"] = bool(primary.get("default_server") or row.get("default_server"))
+            primary["estimated_bytes"] = max(int(primary.get("estimated_bytes") or 0), int(row.get("estimated_bytes") or 0))
+            if row.get("ojs_files_dir") and not primary.get("ojs_files_dir"):
+                primary["ojs_files_dir"] = row.get("ojs_files_dir")
+            if row.get("database_name") and not primary.get("database_name"):
+                primary["database_name"] = row.get("database_name")
+                primary["database_type"] = row.get("database_type")
+        if len(rows) > 1:
+            notes.append(
+                "Hostname aliases of the same application (verified Nginx root, type, and database)."
+            )
+            for row in rows:
+                src = str(row.get("source_file") or "")
+                if src:
+                    notes.append(f"Nginx server block: {src}")
+        primary["hostnames"] = hostnames
+        primary["hostname"] = _canonical_hostname(hostnames)
+        primary["listen"] = listens or list(primary.get("listen") or [])
+        primary["proxy_pass"] = proxies or list(primary.get("proxy_pass") or [])
+        primary["alias"] = aliases or list(primary.get("alias") or [])
+        primary["configuration_paths"] = config_paths
+        primary["source_paths"] = sources or list(primary.get("source_paths") or [])
+        primary["persistent_data_paths"] = persist or list(primary.get("persistent_data_paths") or [])
+        primary["source_files"] = source_files
+        primary["notes"] = notes
+        primary["application_id"] = _application_id(
+            app_type=str(primary.get("type") or "Other"),
+            root=str(primary.get("root") or ""),
+            docker=primary.get("docker") if isinstance(primary.get("docker"), dict) else None,
+            proxy_passes=list(primary.get("proxy_pass") or []),
+        )
+        merged.append(primary)
+    seen_hosts: dict[str, int] = {}
+    for app in merged:
+        for name in app.get("hostnames") or []:
+            seen_hosts[name.lower()] = seen_hosts.get(name.lower(), 0) + 1
+    for app in merged:
+        dups = [name for name in (app.get("hostnames") or []) if seen_hosts.get(name.lower(), 0) > 1]
+        if dups:
+            app["status"] = "REQUIRES REVIEW"
+            note = "duplicate hostname: " + ", ".join(dups)
+            if note not in (app.get("notes") or []):
+                app.setdefault("notes", []).append(note)
+    return merged
 
 
 def applications_from_servers(
@@ -571,7 +739,7 @@ def applications_from_servers(
     for block in servers:
         for name in block.get("server_name") or []:
             seen_hosts[name.lower()] = seen_hosts.get(name.lower(), 0) + 1
-    apps: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for block in servers:
         names = [n for n in (block.get("server_name") or []) if n]
         if not names:
@@ -620,9 +788,6 @@ def applications_from_servers(
             elif docker.get("mysql_database"):
                 db_type = db_type or "MariaDB"
                 db_name = str(docker.get("mysql_database") or db_name)
-        if db_name and db_type == "MariaDB" and mariadb and db_name not in mariadb:
-            # Keep the association; mark review if the backup account cannot see it.
-            pass
         persistent = []
         for path in [ojs_files_dir, *aliases]:
             if path and path not in persistent and not is_excluded_path(path):
@@ -654,66 +819,98 @@ def applications_from_servers(
                     size_bytes += size
                 except OSError:
                     pass
-        for hostname in names:
-            notes: list[str] = []
-            status = "READY"
-            if seen_hosts.get(hostname.lower(), 0) > 1:
+        notes: list[str] = []
+        status = "READY"
+        default_server = bool(block.get("default_server")) or any(
+            "default_server" in str(item).split() for item in (block.get("listen") or [])
+        )
+        unused_default = is_unused_default_root(
+            root=root,
+            hostnames=names,
+            listen=list(block.get("listen") or []),
+            app_type=app_type,
+            files=files,
+        )
+        if unused_default:
+            status = "EXCLUDED — UNUSED DEFAULT ROOT"
+            notes.append("Nginx unused default root (typically /var/www/html).")
+            if default_server:
+                notes.append("listen default_server")
+            notes.append("server_name: " + ", ".join(names))
+            notes.append(f"Nginx server block: {block.get('source_file') or 'unknown'}")
+            notes.append(f"estimated size: {size_bytes} bytes")
+            notes.append("Not a named public site; excluded from backup unless you override.")
+        if any(seen_hosts.get(name.lower(), 0) > 1 for name in names):
+            if status == "READY":
                 status = "REQUIRES REVIEW"
-                notes.append("duplicate hostname")
-            if hostname in {"_", "localhost"}:
+            notes.append("duplicate hostname")
+        if all(name.lower() in CATCHALL_HOSTS for name in names) and not unused_default:
+            if status == "READY":
                 status = "REQUIRES REVIEW"
-                notes.append("catch-all/default server_name")
-            if root and is_excluded_path(root):
+            notes.append("catch-all/default server_name")
+        if root and is_excluded_path(root):
+            if status == "READY":
                 status = "REQUIRES REVIEW"
-                notes.append(f"excluded root {root}")
-                root_out = ""
-            else:
-                root_out = root
-            if root and not _exists(root):
+            notes.append(f"excluded root {root}")
+            root_out = ""
+        else:
+            root_out = root
+        if root and not _exists(root) and not unused_default:
+            if status == "READY":
                 status = "REQUIRES REVIEW"
-                notes.append(f"invalid root {root}")
-            if app_type == "OJS" and ojs_error:
+            notes.append(f"invalid root {root}")
+        if app_type == "OJS" and ojs_error:
+            if status == "READY":
                 status = "REQUIRES REVIEW"
-                notes.append(ojs_error)
-            if not root_out and not proxies and not docker:
+            notes.append(ojs_error)
+        if not root_out and not proxies and not docker and not unused_default:
+            if status == "READY":
                 status = "REQUIRES REVIEW"
-                notes.append("no application root or proxy target")
-            apps.append(
-                {
-                    "application_id": _application_id(hostname, root_out),
-                    "hostname": hostname,
-                    "type": app_type,
-                    "discovery_source": "nginx -T",
-                    "root": root_out,
-                    "alias": aliases,
-                    "proxy_pass": proxies,
-                    "configuration_paths": [p for p in config_paths if p],
-                    "database_type": db_type,
-                    "database_name": db_name,
-                    "persistent_data_paths": persistent,
-                    "source_paths": list(dict.fromkeys(sources)),
-                    "docker": {
-                        "compose_project": docker.get("compose_project"),
-                        "compose_file": docker.get("compose_files"),
-                        "service": docker.get("compose_service"),
-                        "container": docker.get("name"),
-                        "workdir": docker.get("compose_workdir"),
-                    }
-                    if docker
-                    else None,
-                    "ojs_files_dir": ojs_files_dir,
-                    "http": bool(block.get("http")),
-                    "https": bool(block.get("https")),
-                    "listen": list(block.get("listen") or []),
-                    "source_file": block.get("source_file") or "",
-                    "estimated_bytes": size_bytes,
-                    "status": status,
-                    "notes": notes,
-                    "included": False,
-                    "excluded": is_excluded_path(root) if root else False,
+            notes.append("no application root or proxy target")
+        candidates.append(
+            {
+                "application_id": _application_id(
+                    app_type=app_type,
+                    root=root_out,
+                    docker=docker if docker else None,
+                    proxy_passes=proxies,
+                ),
+                "hostname": _canonical_hostname(names),
+                "hostnames": list(dict.fromkeys(names)),
+                "type": app_type,
+                "discovery_source": "nginx -T",
+                "root": root_out,
+                "alias": aliases,
+                "proxy_pass": proxies,
+                "configuration_paths": [p for p in config_paths if p],
+                "database_type": db_type,
+                "database_name": db_name,
+                "persistent_data_paths": persistent,
+                "source_paths": list(dict.fromkeys(sources)),
+                "docker": {
+                    "compose_project": docker.get("compose_project"),
+                    "compose_file": docker.get("compose_files"),
+                    "service": docker.get("compose_service"),
+                    "container": docker.get("name"),
+                    "workdir": docker.get("compose_workdir"),
                 }
-            )
-    return apps
+                if docker
+                else None,
+                "ojs_files_dir": ojs_files_dir,
+                "http": bool(block.get("http")),
+                "https": bool(block.get("https")),
+                "listen": list(block.get("listen") or []),
+                "default_server": default_server,
+                "unused_default_root": unused_default,
+                "source_file": block.get("source_file") or "",
+                "estimated_bytes": size_bytes,
+                "status": status,
+                "notes": notes,
+                "included": False,
+                "excluded": bool(unused_default or (is_excluded_path(root) if root else False)),
+            }
+        )
+    return _merge_candidates(candidates)
 
 
 def discover_applications(payload: dict | None = None, *, run=None, mysql_defaults=None) -> dict[str, Any]:
