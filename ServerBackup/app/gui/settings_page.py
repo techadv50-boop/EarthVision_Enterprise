@@ -122,7 +122,7 @@ class SettingsPage(QWidget):
         form.addRow("SSH private key path", key_row)
         form.addRow("Backup destination", dest_row)
         form.addRow("Log directory", log_row)
-        form.addRow("Retention count", self.retention)
+        form.addRow("Retention count (legacy 1.3.7 archives only; not applied to master)", self.retention)
         form.addRow("Retry count", self.retry_count)
         form.addRow("Retry delay (seconds)", self.retry_delay)
         form.addRow("Minimum free disk (GB)", self.min_free)
@@ -141,7 +141,10 @@ class SettingsPage(QWidget):
         website_btns.addWidget(remove_site)
         form.addRow("Add website path", website_btns)
         self.ojs = _editable(QLineEdit(), "/var/www/ojs-files")
-        form.addRow("OJS private-files directory", self.ojs)
+        form.addRow(
+            "Legacy OJS path (not used as a silent fallback; 1.4.0 discovers files_dir from config.inc.php)",
+            self.ojs,
+        )
         self.nginx = _editable(QLineEdit(), "/etc/nginx")
         form.addRow("Nginx directory", self.nginx)
         form.addRow("Additional directories", self.extra)

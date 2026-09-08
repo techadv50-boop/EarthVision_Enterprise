@@ -19,6 +19,12 @@ ALLOWED_ACTIONS = {
     "backup",
     "cleanup",
     "dry-run",
+    "discover-ojs",
+    "inventory",
+    "hash-files",
+    "stream-objects",
+    "database-fingerprint",
+    "dump-databases",
 }
 SYSTEM_DATABASES = {"information_schema", "performance_schema", "mysql", "sys"}
 UNSAFE = set(';&|`$<>\\\n\r')
@@ -83,7 +89,10 @@ def path_checks(payload: dict) -> list[dict]:
     checks = []
     for label, path in [
         *[(f"website {p}", p) for p in payload.get("website_directories") or []],
-        ("OJS private files", payload.get("ojs_private_files") or ""),
+        *[
+            (f"OJS private files {p}", p)
+            for p in (payload.get("ojs_private_directories") or ([payload["ojs_private_files"]] if payload.get("ojs_private_files") else []))
+        ],
         ("Nginx", payload.get("nginx_directory") or ""),
         *[(f"extra {p}", p) for p in payload.get("extra_directories") or []],
     ]:
@@ -161,20 +170,23 @@ def stream_backup(payload: dict) -> None:
     compression = int(payload.get("compression_level") or 6)
     websites = [safe_unix(p) for p in payload.get("website_directories") or []]
     extra = [safe_unix(p) for p in payload.get("extra_directories") or []]
-    ojs = safe_unix(str(payload.get("ojs_private_files") or "/var/www/ojs-files"))
+    ojs_dirs = [safe_unix(p) for p in payload.get("ojs_private_directories") or []]
+    if not ojs_dirs and payload.get("ojs_private_files"):
+        ojs_dirs = [safe_unix(str(payload.get("ojs_private_files")))]
+    if not ojs_dirs:
+        fail("No OJS files_dir provided; refusing silent fallback to /var/www/ojs-files")
     nginx = safe_unix(str(payload.get("nginx_directory") or "/etc/nginx"))
     databases = list(payload.get("databases") or [])
     dumped = dump_databases(work, databases, compression) if databases else []
     manifest = {
         "hostname": socket.gethostname(),
         "websites": websites,
-        "ojs_private_files": ojs,
+        "ojs_private_directories": ojs_dirs,
         "nginx": nginx,
         "extra": extra,
         "databases": dumped,
     }
     (work / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    # Stream gzip+tar to stdout so Windows never needs a full extra copy on Ubuntu.
     gzip_file = gzip.open(sys.stdout.buffer, "wb", compresslevel=compression)
     with tarfile.open(fileobj=gzip_file, mode="w|") as archive:
         archive.add(work / "manifest.json", arcname="manifest.json")
@@ -182,7 +194,8 @@ def stream_backup(payload: dict) -> None:
             archive.add(work / "databases", arcname="databases", recursive=True)
         for path in websites:
             archive.add(path, arcname=f"websites/{Path(path).name}", recursive=True, filter=_safe_filter)
-        archive.add(ojs, arcname=f"ojs/{Path(ojs).name}", recursive=True, filter=_safe_filter)
+        for ojs in ojs_dirs:
+            archive.add(ojs, arcname=f"ojs/{Path(ojs).name}", recursive=True, filter=_safe_filter)
         archive.add(nginx, arcname="nginx", recursive=True, filter=_safe_filter)
         for path in extra:
             archive.add(path, arcname=f"extra/{Path(path).name}", recursive=True, filter=_safe_filter)
@@ -210,6 +223,29 @@ def main() -> None:
         if work.is_dir():
             shutil.rmtree(work)
         json.dump({"ok": True, "removed": str(work)}, sys.stdout)
+        sys.stdout.write("\n")
+        return
+    if action in {"discover-ojs", "inventory", "hash-files", "stream-objects", "database-fingerprint"}:
+        from prepare_master import handle as handle_master
+
+        result = handle_master(action, payload, run=run, mysql_defaults=mysql_defaults)
+        if result is None:
+            return
+        json.dump(result, sys.stdout)
+        sys.stdout.write("\n")
+        if not result.get("ok"):
+            raise SystemExit(1)
+        return
+    if action == "dump-databases":
+        work_id = "".join(ch for ch in str(payload.get("work_id") or "work") if ch.isalnum() or ch in "-_")
+        work = Path("/tmp") / f"server-backup-work-{work_id}"
+        work.mkdir(parents=True, exist_ok=True)
+        dumped = dump_databases(work, list(payload.get("databases") or []), int(payload.get("compression_level") or 6))
+        files = []
+        for name in dumped:
+            path = work / "databases" / f"{name}.sql.gz"
+            files.append({"name": name, "path": str(path), "size": path.stat().st_size if path.is_file() else 0})
+        json.dump({"ok": True, "dumps": files}, sys.stdout)
         sys.stdout.write("\n")
         return
     if action in {"check", "dry-run"}:

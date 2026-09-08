@@ -16,14 +16,16 @@ from PySide6.QtWidgets import (
 
 from app.backup.retention import list_successful_backups
 from app.config.schema import AppConfig
+from app.master.store import MasterStore
 from app.restore.restore_engine import CONFIRMATION_PHRASE, RestoreEngine, RestoreError, warning_text
-from app.ssh.client import SSHError
+from app.ssh.client import SSHClient, SSHError
 
 
 class RestorePage(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._config: AppConfig | None = None
+        self._ssh_password = ""
         layout = QVBoxLayout(self)
         heading = QLabel("Restore")
         heading.setObjectName("title")
@@ -65,11 +67,24 @@ class RestorePage(QWidget):
         layout.addWidget(button)
         self._refresh_warning()
 
-    def reload(self, config: AppConfig, selected: str | None = None) -> None:
+    def reload(self, config: AppConfig, selected: str | None = None, ssh_password: str = "") -> None:
         self._config = config
+        self._ssh_password = ssh_password
         self.backup.clear()
+        store = MasterStore(config.backup_destination)
+        if store.has_head():
+            head = store.head_generation()
+            self.backup.addItem(f"Master HEAD (generation {head})", f"master:{head}")
+            for tree_path in sorted(store.trees_dir.glob("*.json"), reverse=True):
+                try:
+                    gen = int(tree_path.stem)
+                except ValueError:
+                    continue
+                if gen == head:
+                    continue
+                self.backup.addItem(f"Master generation {gen}", f"master:{gen}")
         for path in reversed(list_successful_backups(config.backup_destination)):
-            self.backup.addItem(path.name, str(path))
+            self.backup.addItem(f"Legacy archive {path.name}", str(path))
         if selected:
             index = self.backup.findData(selected)
             if index >= 0:
@@ -104,7 +119,16 @@ class RestorePage(QWidget):
         )
         if reply != QMessageBox.StandardButton.Ok:
             return
-        engine = RestoreEngine(self._config)
+        window = self.window()
+        password = self._ssh_password
+        if hasattr(window, "ensure_password"):
+            if not window.ensure_password():
+                return
+            password = getattr(window, "_ssh_password", password)
+        engine = RestoreEngine(
+            self._config,
+            ssh=SSHClient(self._config, password=password or None),
+        )
         try:
             result = engine.restore(
                 self.backup.currentData(),

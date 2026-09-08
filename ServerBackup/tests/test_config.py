@@ -16,6 +16,7 @@ def test_default_config_values():
     assert cfg.security_mode == "BALANCED"
     assert cfg.retry_count == 3
     assert "/var/www/journal.50sea.com" in cfg.website_directories
+    assert "/var/www/50sea.com" in cfg.website_directories
     assert cfg.ojs_private_files == "/var/www/ojs-files"
 
 

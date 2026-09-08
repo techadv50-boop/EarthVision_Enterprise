@@ -272,6 +272,11 @@ def test_backup_now_stream_with_password_uses_paramiko_not_openssh(monkeypatch, 
     sent = getattr(fake, "sent", b"")
     assert b'"action":"backup"' in sent
     assert b"super-secret" not in sent
+    fake.sent = b""
+    client.popen_script(cfg.remote_prepare_script, {"action": "stream-objects", "files": [], "allowed_roots": []})
+    sent = getattr(fake, "sent", b"")
+    assert b'"action":"stream-objects"' in sent
+    assert b"super-secret" not in sent
 
 
 def test_key_only_popen_script_uses_openssh(monkeypatch):

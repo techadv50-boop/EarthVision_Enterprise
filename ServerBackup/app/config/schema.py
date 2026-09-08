@@ -34,6 +34,7 @@ class AppConfig:
             "/var/www/journal.50sea.com",
             "/var/www/journal.xdgen.com",
             "/var/www/xdgen.com",
+            "/var/www/50sea.com",
         ]
     )
     ojs_private_files: str = "/var/www/ojs-files"

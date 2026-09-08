@@ -31,6 +31,18 @@ def test_list_backup_drives_returns_existing_roots():
     assert all(item.path for item in drives)
 
 
+def test_sudoers_template_still_has_only_three_script_paths():
+    text = Path(__file__).resolve().parents[1].joinpath("scripts/ubuntu/ubuntu-backup-setup.sh").read_text(encoding="utf-8")
+    block = text.split('cat >"$TMP" <<EOF', 1)[1].split("EOF", 1)[0]
+    assert "NOPASSWD: /usr/local/lib/serverbackup/prepare-backup.sh" in block
+    assert "NOPASSWD: /usr/local/lib/serverbackup/restore-backup.sh" in block
+    assert "NOPASSWD: /usr/local/lib/serverbackup/security-audit.sh" in block
+    rules = [line for line in block.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    for line in rules:
+        assert "NOPASSWD: ALL" not in line
+    assert sum(line.count("NOPASSWD:") for line in rules) == 3
+
+
 def test_setup_completed_roundtrip(tmp_path: Path):
     from app.config.store import load_config, save_config
 

@@ -17,6 +17,7 @@ ALLOWED = {
     "restore-database",
     "restore-nginx",
     "restore-complete",
+    "restore-master",
     "nginx-test",
     "safety-dump",
 }
@@ -140,6 +141,13 @@ def main() -> None:
     action = str(payload.get("action") or "")
     if action not in ALLOWED:
         fail("action not allowed")
+    if action == "restore-master":
+        from restore_master import apply_pack
+
+        result = apply_pack(payload)
+        json.dump(result, sys.stdout)
+        sys.stdout.write("\n")
+        return
     archive_path = safe_unix(str(payload.get("archive_path") or ""))
     if action == "nginx-test":
         nginx_test()

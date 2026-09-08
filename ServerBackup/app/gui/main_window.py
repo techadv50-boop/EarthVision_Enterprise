@@ -75,10 +75,12 @@ class DashboardPage(QWidget):
         setup_row.addWidget(choose_drive)
         layout.addLayout(setup_row)
         self.server_card = Card("SERVER STATUS")
+        self.master_card = Card("MASTER BACKUP")
         self.backup_card = Card("BACKUP STATUS")
         self.storage_card = Card("STORAGE")
         self.schedule_card = Card("SCHEDULE")
         layout.addWidget(self.server_card)
+        layout.addWidget(self.master_card)
         layout.addWidget(self.backup_card)
         layout.addWidget(self.storage_card)
         layout.addWidget(self.schedule_card)
@@ -97,6 +99,9 @@ class DashboardPage(QWidget):
         self.backup_button.setObjectName("primary")
         self.backup_button.clicked.connect(self._window.confirm_backup)
         layout.addWidget(self.backup_button)
+        self.rebuild_button = QPushButton("REBUILD MASTER BASELINE")
+        self.rebuild_button.clicked.connect(self._window.confirm_rebuild)
+        layout.addWidget(self.rebuild_button)
         self.cancel_button = QPushButton("CANCEL BACKUP")
         self.cancel_button.setObjectName("danger")
         self.cancel_button.clicked.connect(self._window.cancel_backup)
@@ -153,13 +158,23 @@ class DashboardPage(QWidget):
                 ("SSH:", ssh),
             ]
         )
+        self.master_card.set_rows(
+            [
+                ("Status:", str(status.get("master_status") or "MISSING")),
+                ("Generation:", str(status.get("master_generation") or "—")),
+                ("Last operation:", str(status.get("master_type") or "—")),
+                ("Updated:", str(status.get("master_updated") or "—")),
+                ("OJS files_dir:", str(status.get("master_ojs") or "—")),
+                ("Integrity:", str(status.get("master_detail") or "—")),
+            ]
+        )
         self.backup_card.set_rows(
             [
                 ("Last Backup:", str(status.get("last_backup") or "—")),
                 ("Last Backup Status:", str(status.get("last_status") or "NEVER RUN")),
                 ("Last Backup Size:", str(status.get("last_size") or "—")),
-                ("Successful Backups:", str(status.get("successful_backups") or 0)),
-                ("Retention:", str(status.get("retention") or 5)),
+                ("Successful timestamped archives:", str(status.get("successful_backups") or 0)),
+                ("Master retention:", "none (no keep-5)"),
             ]
         )
         self.storage_card.set_rows(
@@ -190,6 +205,7 @@ class DashboardPage(QWidget):
         running = bool(status.get("backup_running"))
         self.cancel_button.setVisible(running)
         self.backup_button.setEnabled(not running)
+        self.rebuild_button.setEnabled(not running)
         message = status.get("live_message") or live_dashboard_message(progress, running=running)
         self.status_label.setText(message)
         done = int(progress.get("bytes_done") or 0)
@@ -322,7 +338,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.logs_page)
 
     def show_restore(self) -> None:
-        self.restore_page.reload(self.config)
+        self.restore_page.reload(self.config, ssh_password=self._ssh_password)
         self.stack.setCurrentWidget(self.restore_page)
 
     def show_security(self, tab: str = "check") -> None:
@@ -335,7 +351,7 @@ class MainWindow(QMainWindow):
         self.security_page._run_check()
 
     def open_restore(self, location: str) -> None:
-        self.restore_page.reload(self.config, selected=location)
+        self.restore_page.reload(self.config, selected=location, ssh_password=self._ssh_password)
         self.stack.setCurrentWidget(self.restore_page)
 
     def refresh(self) -> None:
@@ -355,10 +371,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "BACKUP NOW", "Backup already in progress.")
             return
         message = (
-            "Start a complete backup of the Ubuntu production server now?\n\n"
+            "Start a master backup of the Ubuntu production server now?\n\n"
             f"Source:\n{self.config.server_ip}\n\n"
-            f"Destination:\n{self.config.backup_destination}\n\n"
-            f"Retention:\n{self.config.retention_count} successful backups"
+            f"Destination:\n{self.config.backup_destination}\\master\\\n\n"
+            "First run creates a FULL master baseline. Later runs are INCREMENTAL.\n"
+            "Unchanged data is recorded as NO_CHANGE. Master does not use keep-5 retention.\n"
+            "Existing YYYY-MM-DD timestamped archives are left untouched."
         )
         box = QMessageBox(self)
         box.setWindowTitle("BACKUP NOW")
@@ -384,6 +402,42 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
         self.statusBar().showMessage("Backup started.")
+
+    def confirm_rebuild(self) -> None:
+        lock = BackupLock(self.config.backup_destination)
+        if lock.is_locked():
+            QMessageBox.warning(self, "REBUILD MASTER", "Backup already in progress.")
+            return
+        message = (
+            "Rebuild the master baseline from a full Ubuntu inventory?\n\n"
+            "This stages a new generation and replaces HEAD only after verification.\n"
+            "The previous HEAD remains valid if staging fails.\n"
+            "Existing 1.3.7 timestamped archives are not deleted."
+        )
+        box = QMessageBox(self)
+        box.setWindowTitle("REBUILD MASTER BASELINE")
+        box.setText(message)
+        start = box.addButton("REBUILD", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("CANCEL", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not start:
+            return
+        if not self.ensure_password():
+            return
+        save_config(self.config)
+        config = self.config
+        password = self._ssh_password
+
+        def work() -> None:
+            from app.engine.backup_engine import BackupEngine, BackupError
+
+            try:
+                BackupEngine(config, ssh=SSHClient(config, password=password or None), mode="manual").rebuild_master()
+            except (BackupError, SSHError, OSError) as exc:
+                ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.statusBar().showMessage("Master rebuild started.")
 
     def cancel_backup(self) -> None:
         ProgressReporter(progress_path()).request_cancel()
@@ -443,11 +497,15 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Dry run started.")
 
     def test_integrity(self) -> None:
-        self.show_history()
+        from app.master.health import assess_health
+        from app.master.store import MasterStore
+
+        store = MasterStore(self.config.backup_destination)
+        health = assess_health(store, deep=True)
         QMessageBox.information(
             self,
-            "TEST BACKUP INTEGRITY",
-            "Select a successful backup in history, then click Verify integrity.",
+            "MASTER INTEGRITY",
+            f"Status: {health.get('status')}\nGeneration: {health.get('generation')}\n{health.get('detail')}",
         )
 
     def open_backup_folder(self) -> None:

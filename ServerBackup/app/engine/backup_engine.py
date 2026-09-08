@@ -1,30 +1,30 @@
 """Single backup engine used by BACKUP NOW and Task Scheduler.
 
-This module never stops Nginx, PHP-FPM, or MariaDB and never mutates
-production website files or databases. Restore is a separate confirmed flow.
+Version 1.4.0 writes a content-addressed master at <destination>/master/.
+It never stops Nginx, PHP-FPM, or MariaDB and never mutates production
+website files or databases. Restore is a separate confirmed flow.
+
+Existing G:\\ServerBackups\\YYYY-MM-DD_HHMMSS\\ archives are left untouched.
+Master does not use keep-5 retention and does not rebuild a giant tar.gz
+for every run.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from app import __version__
-from app.backup.checksum import sha256_file
 from app.backup.lock import BackupAlreadyRunning, BackupLock
-from app.backup.metadata import write_backup_info
 from app.backup.progress import ProgressReporter
-from app.backup.retention import apply_retention
-from app.backup.transfer import TransferCancelled, stream_copy
-from app.backup.verify import ArchiveIntegrityError, verify_archive
 from app.config.schema import AppConfig
 from app.config.store import runtime_dir, save_state
 from app.logutil.logger import BackupLogger, prune_logs
+from app.master.pipeline import PipelineError, run_master_backup
+from app.master.store import MasterStore
 from app.security.paths import PathValidationError, validate_unix_path
 from app.ssh.client import SSHClient, SSHError
 from app.utils.disk import drive_status, ensure_directory
@@ -114,16 +114,14 @@ class BackupEngine:
     def _validate_config_paths(self) -> None:
         for directory in self.config.website_directories:
             validate_unix_path(directory, field="website directory")
-        validate_unix_path(self.config.ojs_private_files, field="OJS private-files directory")
+        if self.config.ojs_private_files:
+            validate_unix_path(self.config.ojs_private_files, field="OJS private-files directory")
         validate_unix_path(self.config.nginx_directory, field="Nginx directory")
         for directory in self.config.extra_directories:
             validate_unix_path(directory, field="additional directory")
         validate_unix_path(self.config.remote_prepare_script, field="remote prepare script")
 
-    def _cleanup_incomplete(self) -> None:
-        if self.incomplete_dir and self.incomplete_dir.exists():
-            shutil.rmtree(self.incomplete_dir, ignore_errors=True)
-            self.logger.info(f"Removed incomplete backup {self.incomplete_dir}")
+    def _cleanup_remote(self) -> None:
         if self._remote_work_id:
             try:
                 self.ssh.run_script(
@@ -154,15 +152,60 @@ class BackupEngine:
         text = stdout.strip()
         if not text:
             return {}
-        # The remote script may print logs; take the last JSON object.
-        last_brace = text.rfind("{")
-        if last_brace == -1:
-            return {}
+        decoder = json.JSONDecoder()
+        best: dict[str, Any] = {}
+        index = 0
+        helper_keys = {
+            "ok",
+            "installations",
+            "files",
+            "hostname",
+            "fingerprints",
+            "hashes",
+            "dumps",
+            "checks",
+            "error",
+        }
+        while True:
+            brace = text.find("{", index)
+            if brace == -1:
+                break
+            try:
+                data, _end = decoder.raw_decode(text, brace)
+            except json.JSONDecodeError:
+                index = brace + 1
+                continue
+            if isinstance(data, dict) and (helper_keys & set(data.keys())):
+                best = data
+            index = brace + 1
+        return best
+
+    def _stream_backup(self, archive_path: Path) -> int:
+        """Legacy 1.3.7 tar stream. Kept for SSH/Paramiko regression tests only."""
+        from app.backup.transfer import TransferCancelled, stream_copy
+
+        process = self.ssh.popen_script(
+            self.config.remote_prepare_script,
+            self._payload("backup"),
+        )
+
+        def on_progress(written: int, speed: float) -> None:
+            self.progress.write(
+                phase="transferring",
+                message="Transferring backup…",
+                bytes_done=written,
+                speed_bps=int(speed),
+            )
+
         try:
-            data = json.loads(text[last_brace:])
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}
+            return stream_copy(
+                process,
+                archive_path,
+                should_cancel=self.progress.cancel_requested,
+                on_progress=on_progress,
+            )
+        except TransferCancelled as exc:
+            raise BackupCancelled(str(exc)) from exc
 
     def test_connection(self) -> dict[str, Any]:
         results: dict[str, Any] = {
@@ -275,11 +318,32 @@ class BackupEngine:
             for check in parsed.get("checks") or []:
                 if isinstance(check, dict):
                     note(str(check.get("name")), bool(check.get("ok")), str(check.get("detail") or ""))
+            try:
+                master = run_master_backup(self, dry_run=True)
+            except (PipelineError, SSHError, BackupCancelled) as exc:
+                note("Master delta preview", False, str(exc))
+                report["ok"] = False
+                report["error"] = str(exc)
+                self.progress.write(status="failed", error=str(exc), message=str(exc))
+                return report
+            report["master"] = master
+            counts = master.get("counts") or {}
+            note(
+                "Master delta",
+                True,
+                (
+                    f"{master.get('type')} NEW={counts.get('new', 0)} "
+                    f"MODIFIED={counts.get('modified', 0)} DELETED={counts.get('deleted', 0)} "
+                    f"RENAMED={counts.get('renamed', 0)} MOVED={counts.get('moved', 0)} "
+                    f"DB={master.get('database')}"
+                ),
+            )
             report["ok"] = all(item["ok"] for item in report["checks"])
             report["remote"] = parsed
+            message = str((self.progress.read() or {}).get("message") or "Dry run complete")
             self.progress.write(
                 status="success" if report["ok"] else "failed",
-                message="Dry run complete" if report["ok"] else "Dry run found problems",
+                message=message if report["ok"] else "Dry run found problems",
             )
             return report
         finally:
@@ -287,32 +351,10 @@ class BackupEngine:
             if callable(closer):
                 closer()
 
-    def _stream_backup(self, archive_path: Path) -> int:
-        process = self.ssh.popen_script(
-            self.config.remote_prepare_script,
-            self._payload("backup"),
-        )
+    def rebuild_master(self) -> dict[str, Any]:
+        return self.run(rebuild=True)
 
-        def on_progress(written: int, speed: float) -> None:
-            self.progress.write(
-                phase="transferring",
-                message="Transferring backup…",
-                bytes_done=written,
-                speed_bps=int(speed),
-            )
-
-        try:
-            written = stream_copy(
-                process,
-                archive_path,
-                should_cancel=self.progress.cancel_requested,
-                on_progress=on_progress,
-            )
-        except TransferCancelled as exc:
-            raise BackupCancelled(str(exc)) from exc
-        return written
-
-    def run(self, *, dry_run: bool = False) -> dict[str, Any]:
+    def run(self, *, dry_run: bool = False, rebuild: bool = False) -> dict[str, Any]:
         if dry_run:
             return self.dry_run()
         dest = Path(self.config.backup_destination)
@@ -336,12 +378,13 @@ class BackupEngine:
             "errors": [],
             "warnings": [],
             "mode": self.mode,
+            "master": True,
         }
         status = "FAILED"
         error_message = ""
         try:
             prune_logs(self.config.log_directory, self.config.log_retention_days)
-            self.logger.info(f"Backup start {self.backup_id} mode={self.mode}")
+            self.logger.info(f"Master backup start {self.backup_id} mode={self.mode} rebuild={rebuild}")
             self.progress.write(
                 status="running",
                 phase="lock",
@@ -361,130 +404,43 @@ class BackupEngine:
             if drive.free_gb < self.config.min_free_disk_gb:
                 raise BackupError("Insufficient disk space.")
             self.progress.add_step("Windows free space", True, f"{drive.free_gb:.1f} GB available")
-
             ensure_directory(dest)
-            self.incomplete_dir = dest / f".incomplete_{self.backup_id}"
-            self.final_dir = dest / self.backup_id
-            if self.incomplete_dir.exists():
-                shutil.rmtree(self.incomplete_dir)
-            self.incomplete_dir.mkdir(parents=True, exist_ok=True)
+            MasterStore(dest).ensure_layout()
 
             self.progress.write(phase="ssh", message="Connecting to Ubuntu…")
             self.logger.info(
                 f"BACKUP NOW SSH transport={getattr(self.ssh, 'transport_name', lambda: 'unknown')()} "
                 f"user={self.config.ssh_username} host={self.config.server_ip}"
             )
-
-            def _login() -> None:
-                result = self.ssh.test_login()
-                if not result.ok:
-                    raise SSHError(result.stderr.strip() or "SSH login failed.")
-
-            self._retry("SSH connectivity", _login)
-            self.progress.add_step("Connected", True, self.config.server_ip)
-            helpers = self.ssh.ensure_remote_scripts()
-            if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
-                self.progress.add_step("Ubuntu helpers", True, "installed")
-            elif not helpers.ok:
-                raise BackupError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
-
-            self.progress.write(phase="remote-check", message="Checking Ubuntu disk space and services…")
-
-            def _check() -> dict[str, Any]:
-                result = self.ssh.run_script(
-                    self.config.remote_prepare_script,
-                    self._payload("check"),
-                    timeout=120,
-                )
-                if not result.ok:
-                    raise BackupError(result.stderr.strip() or result.stdout.strip() or "Remote check failed.")
-                return self._parse_json_result(result.stdout)
-
-            remote = self._retry("Ubuntu pre-checks", _check)
-            hostname = str(remote.get("hostname") or "")
-            info["source_hostname"] = hostname or None
-            if remote.get("free_gb") is not None and float(remote["free_gb"]) < self.config.min_remote_free_disk_gb:
-                raise BackupError("Insufficient disk space.")
-            self.progress.add_step("Ubuntu disk space", True, f"{remote.get('free_gb', '?')} GB free")
-            self.progress.add_step("Required directories", True)
-            self.progress.add_step("MariaDB", True, "Online dump (no service stop)")
-
-            self._remote_work_id = str(self._payload("backup")["work_id"])
-            archive_path = self.incomplete_dir / "server-backup.tar.gz"
-            self.progress.write(phase="prepare", message="Preparing backup on Ubuntu…")
-            self.progress.add_step("Preparing MariaDB / website files / Nginx", True, "Streaming archive")
-
-            self.progress.write(phase="transferring", message="Transferring backup…")
-            if self.transfer_fn is not None:
-                written = self._retry("Backup transfer", lambda: self.transfer_fn(archive_path))
-            else:
-                written = self._retry("Backup transfer", lambda: self._stream_backup(archive_path))
-            info["backup_size"] = written
-            self.progress.add_step("Transfer", True, f"{written} bytes")
-
-            self.progress.write(phase="verify", message="Verifying…")
-            verify_archive(
-                archive_path,
-                website_directories=self.config.website_directories,
-                ojs_private_files=self.config.ojs_private_files,
-                nginx_directory=self.config.nginx_directory,
-                databases=self.config.databases_for_backup(),
-            )
-            self.progress.add_step("Archive integrity", True)
-
-            digest = sha256_file(archive_path)
-            info["sha256"] = digest
-            self.progress.write(sha256=digest)
-            self.progress.add_step("SHA-256", True, digest)
-            self.logger.info(f"SHA-256 {digest}")
-
-            log_copy = self.incomplete_dir / "backup.log"
-            if Path(self.logger.path).is_file():
-                shutil.copy2(self.logger.path, log_copy)
-
+            self._remote_work_id = str(self._payload("inventory")["work_id"])
+            result = run_master_backup(self, rebuild=rebuild)
+            info.update(result)
+            info["backup_size"] = int(result.get("bytes_transferred") or 0)
+            info["status"] = "SUCCESS"
             finished = datetime.now()
             info["finish_time"] = finished.isoformat(timespec="seconds")
             info["duration_seconds"] = int((finished - self._started).total_seconds())
-            info["status"] = "SUCCESS"
-            info["warnings"] = list(self.warnings)
-            write_backup_info(self.incomplete_dir, info)
-
-            os.replace(self.incomplete_dir, self.final_dir)
-            self.incomplete_dir = None
             status = "SUCCESS"
-            self.logger.info(f"Backup finalized {self.final_dir}")
-            if self.final_dir and Path(self.logger.path).is_file():
-                shutil.copy2(self.logger.path, self.final_dir / "backup.log")
-
-            self.progress.write(phase="retention", message="Applying retention…")
-            removed = apply_retention(dest, self.config.retention_count)
-            self.progress.add_step(
-                "Retention",
-                True,
-                f"Kept {self.config.retention_count}; removed {len(removed)} old backup(s)",
+            self.logger.info(
+                f"Master {result.get('type')} generation={result.get('generation')} "
+                f"bytes={result.get('bytes_transferred')}"
             )
+            # Master never uses keep-5 retention and never deletes YYYY-MM-DD archives.
             self.progress.write(
                 status="success",
                 phase="complete",
-                message="BACKUP COMPLETED SUCCESSFULLY",
+                message=str((self.progress.read() or {}).get("message") or "MASTER BACKUP STATUS=SUCCESS"),
             )
             save_state(
                 {
                     "last_backup": info["timestamp"],
                     "last_status": "SUCCESS",
-                    "last_size": written,
+                    "last_size": info["backup_size"],
                     "last_id": self.backup_id,
-                    "last_sha256": digest,
+                    "last_type": result.get("type"),
+                    "last_generation": result.get("generation"),
                 }
             )
-            try:
-                self.ssh.run_script(
-                    self.config.remote_prepare_script,
-                    {"action": "cleanup", "work_id": self._remote_work_id},
-                    timeout=120,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.logger.warning(f"Remote cleanup warning: {exc}")
             self._remote_work_id = None
             return info
         except BackupAlreadyRunning:
@@ -496,16 +452,24 @@ class BackupEngine:
             error_message = str(exc)
             self.errors.append(error_message)
             self.logger.info("Backup cancelled by user")
-            self._cleanup_incomplete()
+            self._cleanup_remote()
             self.progress.write(status="cancelled", message="Backup cancelled.", error=error_message)
             save_state({"last_status": "CANCELLED", "last_backup": info["timestamp"]})
             raise
-        except (BackupError, SSHError, ArchiveIntegrityError, PathValidationError, OSError) as exc:
+        except (BackupError, SSHError, PipelineError, PathValidationError, OSError, ValueError) as exc:
+            if "cancelled" in str(exc).lower():
+                status = "CANCELLED"
+                error_message = str(exc)
+                self.errors.append(error_message)
+                self._cleanup_remote()
+                self.progress.write(status="cancelled", message="Backup cancelled.", error=error_message)
+                save_state({"last_status": "CANCELLED", "last_backup": info["timestamp"]})
+                raise BackupCancelled(error_message) from exc
             status = "FAILED"
             error_message = str(exc)
             self.errors.append(error_message)
             self.logger.error(error_message)
-            self._cleanup_incomplete()
+            self._cleanup_remote()
             self.progress.write(status="failed", message=error_message, error=error_message)
             save_state({"last_status": "FAILED", "last_backup": info["timestamp"], "last_error": error_message})
             raise BackupError(error_message) from exc

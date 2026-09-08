@@ -20,6 +20,8 @@ from app.backup.checksum import sha256_file
 from app.backup.retention import list_history
 from app.backup.verify import ArchiveIntegrityError, verify_archive
 from app.config.schema import AppConfig
+from app.master.health import assess_health
+from app.master.store import MasterStore
 from app.utils.format import format_bytes, format_duration
 
 
@@ -33,7 +35,7 @@ class HistoryPage(QWidget):
         heading.setObjectName("title")
         layout.addWidget(heading)
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Date/Time", "Status", "Size", "Duration", "SHA-256 / Location"])
+        self.table.setHorizontalHeaderLabels(["Date/Time", "Status / type", "Size", "Duration", "SHA-256 / Location"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -56,7 +58,25 @@ class HistoryPage(QWidget):
 
     def reload(self, config: AppConfig) -> None:
         self._config = config
-        self._rows = list_history(config.backup_destination)
+        rows: list[dict] = []
+        store = MasterStore(config.backup_destination)
+        for item in store.list_history():
+            rows.append(
+                {
+                    "id": item.get("operation_id") or f"master-{item.get('generation')}",
+                    "location": str(store.root),
+                    "status": item.get("status") or "UNKNOWN",
+                    "type": item.get("type"),
+                    "size": item.get("bytes_transferred"),
+                    "duration": item.get("duration_seconds"),
+                    "sha256": f"generation {item.get('generation')}",
+                    "timestamp": item.get("timestamp"),
+                    "info": item,
+                    "master": True,
+                }
+            )
+        rows.extend(list_history(config.backup_destination))
+        self._rows = rows
         self.table.setRowCount(len(self._rows))
         for index, row in enumerate(self._rows):
             size = row.get("size")
@@ -65,7 +85,8 @@ class HistoryPage(QWidget):
             location = row.get("location") or ""
             values = [
                 str(row.get("timestamp") or row.get("id")),
-                str(row.get("status") or "UNKNOWN"),
+                str(row.get("status") or "UNKNOWN")
+                + (f" / {row['type']}" if row.get("type") else ""),
                 size_text,
                 format_duration(row.get("duration")),
                 f"{sha}\n{location}",
@@ -103,6 +124,15 @@ class HistoryPage(QWidget):
         if row.get("status") != "SUCCESS":
             QMessageBox.warning(self, "Integrity", "Only successful backups can be verified.")
             return
+        if row.get("master"):
+            store = MasterStore(self._config.backup_destination)
+            health = assess_health(store, deep=True)
+            QMessageBox.information(
+                self,
+                "Integrity",
+                f"Master {health.get('status')}\nGeneration {health.get('generation')}\n{health.get('detail')}",
+            )
+            return
         archive = Path(row["location"]) / "server-backup.tar.gz"
         try:
             verify_archive(archive)
@@ -131,6 +161,11 @@ class HistoryPage(QWidget):
             return
         if row.get("status") != "SUCCESS":
             QMessageBox.warning(self, "Restore", "Only a successful backup can be restored.")
+            return
+        if row.get("master"):
+            window = self.window()
+            if hasattr(window, "open_restore"):
+                window.open_restore(f"master:{row.get('info', {}).get('generation') or ''}")
             return
         window = self.window()
         if hasattr(window, "open_restore"):

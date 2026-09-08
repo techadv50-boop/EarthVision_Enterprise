@@ -81,7 +81,9 @@ for path in \
   /var/www/journal.50sea.com \
   /var/www/journal.xdgen.com \
   /var/www/xdgen.com \
+  /var/www/50sea.com \
   /var/www/ojs-files \
+  /var/lib/ojs-journal50 \
   /etc/nginx
  do
   if [[ -d "$path" ]]; then
@@ -105,8 +107,10 @@ if [[ "$INSTALL_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$DEST"
   install -m 0755 "$SRC/prepare-backup.sh" "$DEST/prepare-backup.sh"
   install -m 0755 "$SRC/prepare_backup.py" "$DEST/prepare_backup.py"
+  install -m 0755 "$SRC/prepare_master.py" "$DEST/prepare_master.py"
   install -m 0755 "$SRC/restore-backup.sh" "$DEST/restore-backup.sh"
   install -m 0755 "$SRC/restore_backup.py" "$DEST/restore_backup.py"
+  install -m 0755 "$SRC/restore_master.py" "$DEST/restore_master.py"
   install -m 0755 "$SRC/security-audit.sh" "$DEST/security-audit.sh"
   install -m 0755 "$SRC/security_audit.py" "$DEST/security_audit.py"
   echo "Installed scripts to $DEST"

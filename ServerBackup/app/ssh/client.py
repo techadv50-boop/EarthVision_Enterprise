@@ -22,8 +22,10 @@ from app.security.redact import redact_secrets
 UBUNTU_HELPER_FILES = (
     "prepare-backup.sh",
     "prepare_backup.py",
+    "prepare_master.py",
     "restore-backup.sh",
     "restore_backup.py",
+    "restore_master.py",
     "security-audit.sh",
     "security_audit.py",
 )

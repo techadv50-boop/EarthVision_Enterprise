@@ -34,7 +34,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"{__app_name__} {__version__}")
     parser.add_argument("--gui", action="store_true", help="Open the dashboard (default)")
     parser.add_argument("--backup", action="store_true", help="Run a complete backup now")
-    parser.add_argument("--dry-run", action="store_true", help="Check readiness without changing data")
+    parser.add_argument("--dry-run", action="store_true", help="Preview master delta without changing HEAD")
+    parser.add_argument("--rebuild-master", action="store_true", help="Rebuild the master baseline after staging + verification")
     parser.add_argument("--test-connection", action="store_true")
     parser.add_argument("--discover-databases", action="store_true")
     parser.add_argument("--verify", metavar="ARCHIVE")
@@ -96,6 +97,22 @@ def main(argv: list[str] | None = None) -> int:
         result = engine.dry_run()
         print(json.dumps({k: v for k, v in result.items() if k != "remote"}, indent=2, default=str))
         return 0 if result.get("ok") else 3
+    if args.rebuild_master:
+        engine = BackupEngine(config, mode=args.mode)
+        try:
+            info = engine.rebuild_master()
+        except BackupAlreadyRunning as exc:
+            print(str(exc))
+            return 4
+        except BackupCancelled as exc:
+            print(str(exc))
+            return 5
+        except (BackupError, SSHError) as exc:
+            print(str(exc))
+            return 1
+        print("MASTER REBUILD COMPLETED SUCCESSFULLY")
+        print(f"Generation: {info.get('generation')}")
+        return 0
     if args.backup:
         engine = BackupEngine(config, mode=args.mode)
         try:
@@ -111,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"BACKUP COMPLETED SUCCESSFULLY")
         print(f"ID: {info.get('backup_id')}")
-        print(f"SHA-256: {info.get('sha256')}")
+        print(f"Type: {info.get('type')}")
+        print(f"Generation: {info.get('generation')}")
         return 0
 
     save_config(config, args.config or default_config_path())

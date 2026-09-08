@@ -35,6 +35,8 @@ def list_successful_backups(destination: str | Path) -> list[Path]:
         name = child.name
         if name.startswith("."):
             continue
+        if name == "master":
+            continue
         if name.startswith("incomplete") or name.startswith(".incomplete"):
             continue
         try:
@@ -55,6 +57,8 @@ def list_history(destination: str | Path) -> list[dict[str, Any]]:
         return rows
     for child in sorted(root.iterdir(), reverse=True):
         if not child.is_dir() or child.name.startswith("."):
+            continue
+        if child.name == "master":
             continue
         info_path = child / "backup-info.json"
         record: dict[str, Any] = {

@@ -21,11 +21,31 @@ def test_prepare_helper_rejects_empty_action():
     assert "action not allowed" in (result.stderr + result.stdout)
 
 
+def test_prepare_helper_accepts_master_actions():
+    for action in (
+        "discover-ojs",
+        "inventory",
+        "hash-files",
+        "stream-objects",
+        "database-fingerprint",
+        "dump-databases",
+    ):
+        result = _run_helper(f'{{"action":"{action}"}}')
+        combined = result.stderr + result.stdout
+        assert "action not allowed" not in combined, action
+
+
 def test_prepare_helper_accepts_existing_check_action():
     result = _run_helper('{"action":"check"}')
     combined = result.stderr + result.stdout
     assert "action not allowed" not in combined
     assert '"hostname"' in result.stdout or '"checks"' in result.stdout or result.returncode in {0, 1}
+
+
+def test_restore_helper_wrapper_does_not_use_heredoc_for_stdin():
+    text = (bundled_ubuntu_scripts() / "restore-backup.sh").read_text(encoding="utf-8")
+    assert "python3 - <<" not in text
+    assert '"$PYTHON" -c' in text
 
 
 def test_ubuntu_helper_scripts_use_lf_and_env_bash_shebang():

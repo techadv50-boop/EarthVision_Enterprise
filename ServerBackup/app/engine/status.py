@@ -14,6 +14,8 @@ from app.backup.progress import ProgressReporter
 from app.backup.retention import list_history, list_successful_backups
 from app.config.schema import AppConfig
 from app.config.store import load_state, runtime_dir
+from app.master.health import assess_health
+from app.master.store import MasterStore
 from app.utils.disk import drive_status
 from app.utils.format import format_gb
 
@@ -73,9 +75,25 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
     history = list_history(dest)
     last = history[0] if history else None
     state = load_state()
-    last_status = (last or {}).get("status") or state.get("last_status") or "NEVER RUN"
-    last_time = (last or {}).get("timestamp") or state.get("last_backup") or "—"
-    last_size = (last or {}).get("size")
+    master = _master_status(config)
+    store = MasterStore(dest)
+    master_history = store.list_history()
+    last_master = master_history[0] if master_history else None
+    last_status = (
+        (last_master or {}).get("status")
+        or (last or {}).get("status")
+        or state.get("last_status")
+        or "NEVER RUN"
+    )
+    last_time = (
+        (last_master or {}).get("timestamp")
+        or (last or {}).get("timestamp")
+        or state.get("last_backup")
+        or "—"
+    )
+    last_size = (last_master or {}).get("bytes_transferred")
+    if last_size is None:
+        last_size = (last or {}).get("size")
     if last_size is None:
         last_size_display = "—"
     elif isinstance(last_size, (int, float)):
@@ -93,7 +111,13 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
         "last_status": last_status,
         "last_size": last_size_display,
         "successful_backups": len(successful),
-        "retention": config.retention_count,
+        "retention": "master (no keep-5)",
+        "master_status": master.get("status"),
+        "master_generation": master.get("generation"),
+        "master_detail": master.get("detail"),
+        "master_type": master.get("last_type"),
+        "master_ojs": master.get("ojs"),
+        "master_updated": master.get("updated_at"),
         "drive": drive.path,
         "drive_exists": drive.exists,
         "total_space": format_gb(drive.total_bytes) if drive.exists else "—",
@@ -107,6 +131,26 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
         "destination": str(dest),
         "drive_error": drive.error,
         **_security_status(config),
+    }
+
+
+def _master_status(config: AppConfig) -> dict[str, Any]:
+    store = MasterStore(config.backup_destination)
+    health = assess_health(store, deep=False)
+    meta = store.load_meta()
+    history = store.list_history()
+    last = history[0] if history else {}
+    ojs = meta.get("ojs") or []
+    ojs_text = ", ".join(
+        f"{item.get('domain')}:{item.get('files_dir')}" for item in ojs if isinstance(item, dict)
+    )
+    return {
+        "status": health.get("status"),
+        "generation": health.get("generation"),
+        "detail": health.get("detail"),
+        "last_type": last.get("type") or meta.get("last_type"),
+        "updated_at": meta.get("updated_at") or last.get("timestamp"),
+        "ojs": ojs_text or "—",
     }
 
 

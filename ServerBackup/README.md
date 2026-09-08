@@ -2,20 +2,56 @@
 
 Windows desktop application for backing up a live Ubuntu web server (Nginx, MariaDB, OJS, and configurable extra paths).
 
-**Version 1.3.7**
+**Version 1.4.0**
 
 Primary action: **BACKUP NOW**. Automatic scheduling is **OFF by default**. Both methods use the same backup engine.
 
 This application is independent of Cursor after installation.
 
+## What 1.4.0 changes
+
+BACKUPS NOW write a single logical **master** at `G:\ServerBackups\master\`.
+
+- First successful run is a **FULL master baseline**.
+- Later runs are **INCREMENTAL** (NEW / MODIFIED / DELETED / RENAMED / MOVED).
+- If nothing changed, the run is **NO_CHANGE** (history only; HEAD is unchanged).
+- Master does **not** use keep-5 retention and does **not** rebuild a giant `tar.gz` on every run.
+- Existing `G:\ServerBackups\YYYY-MM-DD_HHMMSS\` archives from 1.3.7 are left untouched and are never used as MASTER HEAD.
+
+Objects are SHA-256 content-addressed. Inventory is metadata-first; only change candidates are hashed. OJS private files are streamed as objects and are never copied into `/tmp`.
+
 ## Safety
 
-- Never stops Nginx, PHP-FPM, or MariaDB
+- Never stops Nginx, PHP-FPM, MariaDB, or Docker
 - Never reboots the server
 - Never modifies website files, databases, or Nginx configuration during backup
-- Never deletes an existing successful backup because a new backup started
-- Marks SUCCESS only after transfer, archive integrity, and SHA-256 complete
-- Failed, cancelled, and incomplete backups do not count toward retention
+- Never deletes an existing 1.3.7 timestamped backup
+- Never advances HEAD if transfer, hashing, database dump, integrity verification, or cancellation fails
+- Failed, cancelled, and incomplete operations leave the previous HEAD valid
+
+## OJS discovery
+
+`files_dir` is read from each approved site's `config.inc.php`. A missing or invalid `files_dir` is a hard failure. There is no silent fallback to `/var/www/ojs-files`.
+
+Known mappings:
+
+| Application | Private files |
+| --- | --- |
+| `/var/www/journal.50sea.com` | `/var/lib/ojs-journal50` |
+| `/var/www/journal.xdgen.com` | `/var/www/ojs-files` |
+
+Additional valid OJS installations are discovered the same way. Approved website roots are only:
+
+- `/var/www/journal.50sea.com`
+- `/var/www/journal.xdgen.com`
+- `/var/www/xdgen.com`
+- `/var/www/50sea.com`
+
+`/var/www` as a whole is not included. Docker trees and historical migration copies are not included unless you add them under extra directories.
+
+## Database
+
+No binlogs. Each selected database is fingerprinted first (`SHOW TABLE STATUS` + table list). Unchanged databases are skipped. Changed databases are dumped with `mysqldump --single-transaction`. Filesystem objects and database dumps belong to the same generation. A database failure does not advance HEAD.
 
 ## Server security (on-demand)
 
@@ -66,11 +102,11 @@ CLI (same engine as the GUI):
 ```powershell
 python -m app.main --backup
 python -m app.main --dry-run
+python -m app.main --rebuild-master
 python -m app.main --test-connection
 python -m app.main --discover-databases
 python -m app.main --cancel
 python -m app.main --security-check
-
 ```
 
 ## Build ServerBackup.exe
@@ -98,8 +134,9 @@ sudo bash ubuntu-backup-setup.sh --install-scripts --sudoers --ssh-user zhzh
 
 - `/usr/local/lib/serverbackup/prepare-backup.sh`
 - `/usr/local/lib/serverbackup/restore-backup.sh`
+- `/usr/local/lib/serverbackup/security-audit.sh`
 
-Never `NOPASSWD: ALL`.
+Never `NOPASSWD: ALL`. New 1.4.0 helper modules (`prepare_master.py`, `restore_master.py`) are installed next to those scripts and imported by them. They are not extra sudoers paths.
 
 Place an SSH public key for the Windows backup PC in the Ubuntu account's `authorized_keys`. MariaDB credentials stay on Ubuntu in `/etc/serverbackup/my.cnf` (mode 600).
 
@@ -117,27 +154,37 @@ Defaults:
 | SSH user | `zhzh` |
 | Destination | `G:\ServerBackups` |
 | Logs | `C:\ServerBackup\Logs` |
-| Retention | 5 successful backups |
+| Master retention | none (no keep-5) |
 | Automatic backup | OFF |
 
-The SSH setting is the **path** to a private key file on the Windows PC, or you can enter the Ubuntu password when the app asks. Password logins use Paramiko (Windows OpenSSH cannot type a password). The same password is reused for `sudo` when Ubuntu asks for it. The password is kept in memory only and is never written to config or logs.
+The SSH setting is the **path** to a private key file on the Windows PC, or you can enter the Ubuntu password when the app asks. Password logins use Paramiko (Windows OpenSSH cannot type a password). The same password is reused for `sudo` when Ubuntu asks for it. The password is kept in memory only and is never written to config or logs. Restore reuses the in-memory password.
 
 ## Backup layout
 
 ```
 G:\ServerBackups\
-  .incomplete_2026-09-07_082000\    (temporary; deleted on failure)
-  2026-09-07_082000\
+  master\
+    HEAD
+    meta.json
+    objects\<ab>\<sha256>
+    trees\<generation>.json
+    history\<operation-id>.json
+    staging\<operation-id>\
+  2026-09-07_082000\          (legacy 1.3.7 archive; left untouched)
     server-backup.tar.gz
     backup-info.json
     backup.log
 ```
 
-Only the finalized timestamp directory is a successful backup. Retention deletes the oldest **successful** directory only after a new backup is verified.
+HEAD is replaced only after the new tree, objects, and database dumps (if any) verify. A crash during staging leaves the previous HEAD valid.
+
+**DRY RUN** inventories Ubuntu and prints NEW / MODIFIED / DELETED / RENAMED / MOVED counts plus whether databases changed. It does not write HEAD.
+
+**REBUILD MASTER BASELINE** stages a new full generation and replaces HEAD only after verification.
 
 ## Restore
 
-Restore requires typing `RESTORE`. The Ubuntu helper creates a safety copy where practical and runs `nginx -t` after Nginx restores. **Nginx is never restarted automatically.**
+Restore requires typing `RESTORE`. You can restore the current master HEAD or a historical generation. Legacy 1.3.7 timestamped archives remain selectable. The Ubuntu helper creates a safety copy where practical and runs `nginx -t` after Nginx restores. **Nginx is never restarted automatically.**
 
 ## Tests
 

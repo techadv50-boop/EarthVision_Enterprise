@@ -1,6 +1,6 @@
 # Server Backup security
 
-Version 1.3.7
+Version 1.4.0
 
 ## Principles
 
@@ -40,15 +40,11 @@ The setup script, when explicitly invoked with `--sudoers`, installs a visudo-va
 
 ## Backup atomicity
 
-Incomplete data is written to `G:\ServerBackups\.incomplete_YYYY-MM-DD_HHMMSS\`. That directory is renamed only after:
+Master objects are written under `G:\ServerBackups\master\staging\<operation>\` and copied into `objects\` as SHA-256 content-addressed blobs. `trees\<generation>.json` and `history\` are written first. **HEAD is last.**
 
-1. Transfer completed
-2. Archive members exist
-3. Archive integrity (tar)
-4. SHA-256
-5. `backup-info.json` written with `status: SUCCESS`
+The previous HEAD remains valid if transfer, hashing, database dump, integrity verification, cancellation, or a crash occurs during staging.
 
-Failure or cancel deletes **only** the incomplete directory. Existing successful backups are left untouched. Retention runs only after success.
+Legacy 1.3.7 timestamped folders under `G:\ServerBackups\YYYY-MM-DD_HHMMSS\` are never used as HEAD and are never deleted by 1.4.0 retention (master has no keep-5).
 
 ## Restore
 
