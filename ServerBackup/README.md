@@ -178,7 +178,7 @@ G:\ServerBackups\
 
 HEAD is replaced only after the new tree, objects, and database dumps (if any) verify. A crash during staging leaves the previous HEAD valid.
 
-**DRY RUN** inventories Ubuntu and prints NEW / MODIFIED / DELETED / RENAMED / MOVED counts plus whether databases changed. It does not write HEAD.
+**DRY RUN** is a metadata-only preview: it connects over SSH, discovers OJS `files_dir`, inventories approved sources, and compares against master **without hashing the live tree or writing HEAD**. A missing master is reported as `NO BASELINE` / `FULL BASELINE PREVIEW`, not as a failure.
 
 **REBUILD MASTER BASELINE** stages a new full generation and replaces HEAD only after verification.
 

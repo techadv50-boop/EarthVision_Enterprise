@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import __app_name__, __version__
-from app.backup.lock import BackupLock
+from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
 from app.config.store import save_config
@@ -39,6 +40,8 @@ from app.gui.widgets import Card
 from app.ssh.client import SSHClient, SSHError
 from app.utils.disk import needs_setup
 from app.utils.format import format_bytes, format_duration
+
+_LOG = logging.getLogger("serverbackup.gui")
 
 
 class DashboardPage(QWidget):
@@ -237,6 +240,8 @@ class DashboardPage(QWidget):
 
 
 class MainWindow(QMainWindow):
+    _dry_run_finished = Signal(bool, str)
+
     def __init__(self, config: AppConfig, ssh_password: str = "") -> None:
         super().__init__()
         self.config = config
@@ -266,6 +271,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
         self.settings_page.load_config(config)
         self.statusBar().showMessage(f"{__app_name__} Version {__version__}")
+        self._dry_run_finished.connect(self._on_dry_run_finished, Qt.ConnectionType.QueuedConnection)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
@@ -479,6 +485,9 @@ class MainWindow(QMainWindow):
 
     def dry_run(self) -> None:
         self.config = self.settings_page.current_config()
+        if BackupLock(self.config.backup_destination).is_locked():
+            QMessageBox.warning(self, "DRY RUN", "Backup already in progress.")
+            return
         if not self.ensure_password():
             return
         save_config(self.config)
@@ -486,15 +495,37 @@ class MainWindow(QMainWindow):
         password = self._ssh_password
 
         def work() -> None:
-            from app.engine.backup_engine import BackupEngine
+            from app.engine.backup_engine import BackupEngine, BackupCancelled, BackupError
 
             try:
-                BackupEngine(config, ssh=SSHClient(config, password=password or None)).dry_run()
-            except (SSHError, OSError) as exc:
-                ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
+                result = BackupEngine(config, ssh=SSHClient(config, password=password or None)).dry_run()
+                text = str(result.get("report_text") or "Dry run finished.")
+                self._dry_run_finished.emit(bool(result.get("ok")), text)
+            except BackupAlreadyRunning as exc:
+                _LOG.error("DRY_RUN_ERROR %s", exc)
+                self._dry_run_finished.emit(False, str(exc))
+            except BackupCancelled as exc:
+                _LOG.info("DRY_RUN_ERROR cancelled")
+                self._dry_run_finished.emit(False, str(exc))
+            except (BackupError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("DRY_RUN_ERROR")
+                try:
+                    ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
+                except OSError:
+                    pass
+                self._dry_run_finished.emit(False, str(exc))
 
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=work, name="serverbackup-dry-run", daemon=True).start()
         self.statusBar().showMessage("Dry run started.")
+
+    def _on_dry_run_finished(self, ok: bool, text: str) -> None:
+        self.refresh()
+        if ok:
+            QMessageBox.information(self, "DRY RUN", text)
+            self.statusBar().showMessage("Dry run complete.")
+        else:
+            QMessageBox.critical(self, "DRY RUN failed", text)
+            self.statusBar().showMessage("Dry run failed.")
 
     def test_integrity(self) -> None:
         from app.master.health import assess_health

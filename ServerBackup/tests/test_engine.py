@@ -280,7 +280,11 @@ def test_dry_run_closes_ssh_session_and_previews_delta(tmp_path: Path):
     assert "dry-run" in ssh.calls
     assert "discover-ojs" in ssh.calls
     assert "backup" not in ssh.calls
+    assert "hash-files" not in ssh.calls
+    assert "stream-objects" not in ssh.calls
     assert "master" in result
+    assert "HEAD: unchanged" in (result.get("report_text") or "")
+    assert not MasterStore(cfg.backup_destination).has_head()
 
 
 def test_rebuild_master_replaces_head_after_verification(tmp_path: Path):

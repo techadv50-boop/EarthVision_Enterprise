@@ -8,7 +8,7 @@ from typing import Any
 import struct
 
 from app import __version__
-from app.master.delta import compute_delta, next_tree_files
+from app.master.delta import compute_delta, next_tree_files, promote_unhashed_for_preview
 from app.master.health import HEALTHY, WARNING, assess_health
 from app.master.pack import unpack_to_objects
 from app.master.store import MasterStore
@@ -16,6 +16,7 @@ from app.master.tree import file_key
 from app.ojs.discover import DiscoveryError, is_required_ojs_application, validate_discovery
 from app.ssh.client import SSHError
 from app.utils.disk import drive_status
+from app.utils.format import format_bytes
 
 BLOCKED_PREFIXES = (
     "/var/lib/containerd",
@@ -243,13 +244,95 @@ def _apply_abs_hashes(inventory: list[dict[str, Any]], abs_hashes: dict[str, str
             item["sha256"] = digest
 
 
+def format_dry_run_report(
+    *,
+    has_master: bool,
+    generation: int | None,
+    op_type: str,
+    ojs: list[dict[str, Any]],
+    sources: list[dict[str, str]],
+    db_names: list[str],
+    db_result: str,
+    db_error: str = "",
+    changed_dbs: list[str] | None = None,
+    counts: dict[str, int] | None = None,
+    estimated_bytes: int = 0,
+) -> str:
+    """Human-readable DRY RUN summary. Never mutates master or HEAD."""
+    changed_dbs = list(changed_dbs or [])
+    counts = counts or {}
+    if not has_master:
+        master_status = "NO BASELINE"
+        mode = "FULL BASELINE PREVIEW"
+        expected = "FULL MASTER BASELINE"
+    elif op_type == "NO_CHANGE":
+        master_status = f"GENERATION {generation}"
+        mode = "NO_CHANGE PREVIEW"
+        expected = "NO_CHANGE"
+    else:
+        master_status = f"GENERATION {generation}"
+        mode = "INCREMENTAL PREVIEW"
+        expected = "INCREMENTAL"
+    ojs_lines = [
+        f"  {item.get('application_path') or item.get('domain')} -> {item.get('files_dir')}"
+        for item in ojs
+    ] or ["  (none discovered)"]
+    websites = [item["root"] for item in sources if item.get("category") == "website"]
+    web_lines = [f"  {path}" for path in websites] or ["  (none)"]
+    if db_error:
+        db_line = f"fingerprint failed: {db_error}"
+    elif not db_names:
+        db_line = "none configured"
+    elif not has_master:
+        db_line = "discovered"
+    elif db_result == "UNCHANGED":
+        db_line = "unchanged"
+    elif changed_dbs:
+        db_line = "changed (" + ", ".join(changed_dbs) + ")"
+    else:
+        db_line = db_result.lower()
+    counts_line = (
+        f"NEW={counts.get('new', 0)} MODIFIED={counts.get('modified', 0)} "
+        f"DELETED={counts.get('deleted', 0)} RENAMED={counts.get('renamed', 0)} "
+        f"MOVED={counts.get('moved', 0)}"
+    )
+    return "\n".join(
+        [
+            f"MASTER STATUS: {master_status}",
+            f"MODE: {mode}",
+            "OJS:",
+            *ojs_lines,
+            "WEBSITES:",
+            *web_lines,
+            f"DATABASES: {db_line}",
+            f"EXPECTED ACTION: {expected}",
+            f"ESTIMATED TRANSFER: {format_bytes(estimated_bytes)}",
+            "HEAD: unchanged",
+            counts_line,
+        ]
+    )
+
+
+def _dry_run_stage(engine, token: str, message: str, pct: int) -> None:
+    engine.logger.info(token)
+    engine.progress.write(
+        status="running",
+        phase="dry-run",
+        backup_id=engine.backup_id,
+        message=message,
+        bytes_done=pct,
+        bytes_total=100,
+    )
+
+
 def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -> dict[str, Any]:
     config = engine.config
     store = MasterStore(config.backup_destination)
     op_id = engine.backup_id.replace("_", "")
     started = datetime.now()
     timestamp = started.strftime("%Y-%m-%d %H:%M:%S")
-    engine.progress.write(status="running", phase="master", backup_id=engine.backup_id, message="Master backup…")
+    if not dry_run:
+        engine.progress.write(status="running", phase="master", backup_id=engine.backup_id, message="Master backup…")
     dest = Path(config.backup_destination)
     drive = drive_status(dest)
     if not drive.exists:
@@ -270,11 +353,18 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         raise PipelineError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
 
     engine._check_cancel()
-    engine.logger.info("OJS discovery started")
+    if dry_run:
+        _dry_run_stage(engine, "DRY_RUN_DISCOVERY_START", "Discovering OJS files_dir…", 30)
+    else:
+        engine.logger.info("OJS discovery started")
     try:
         ojs = _discover_ojs(engine)
     except DiscoveryError as exc:
+        if dry_run:
+            engine.logger.error(f"DRY_RUN_ERROR OJS discovery: {exc}")
         raise PipelineError(str(exc)) from exc
+    if dry_run:
+        _dry_run_stage(engine, "DRY_RUN_DISCOVERY_COMPLETE", "OJS discovery complete.", 40)
     for install in ojs:
         engine.logger.info(
             f"{install.get('domain')} files_dir={install.get('files_dir')} "
@@ -291,16 +381,28 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         raise PipelineError("Required OJS application(s) were not discovered: " + ", ".join(required_missing))
 
     sources = collect_sources(config, ojs)
-    engine.progress.write(phase="inventory", message="Building file inventory…")
+    if dry_run:
+        _dry_run_stage(engine, "DRY_RUN_INVENTORY_START", "Building file inventory…", 50)
+    else:
+        engine.progress.write(phase="inventory", message="Building file inventory…")
     inventory = _inventory(engine, sources)
+    if dry_run:
+        _dry_run_stage(engine, "DRY_RUN_INVENTORY_COMPLETE", "Inventory complete.", 70)
     previous = store.load_tree() if store.has_head() and not rebuild else {"files": []}
     has_master = store.has_head() and not rebuild
     op_type = "FULL" if not has_master or rebuild else "INCREMENTAL"
 
     engine._check_cancel()
     hashes = _key_hashes(inventory)
+    if dry_run:
+        _dry_run_stage(engine, "DRY_RUN_DELTA_START", "Comparing inventory to master…", 75)
     changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
-    if changes.hash_candidates:
+    if dry_run:
+        # Metadata-only preview. Hashing the live tree (including ~19 GB OJS)
+        # is what made first-run DRY RUN appear frozen at 0%.
+        promote_unhashed_for_preview(changes)
+        _dry_run_stage(engine, "DRY_RUN_DELTA_COMPLETE", "Delta preview complete.", 85)
+    elif changes.hash_candidates:
         engine.progress.write(phase="hash", message="Hashing changed file candidates…")
         paths = [_absolute(item) for item in changes.hash_candidates]
         abs_hashes = _hash_paths(engine, paths, _required_roots(sources))
@@ -310,19 +412,31 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
 
     db_names = config.databases_for_backup()
     db_result = "SKIPPED"
+    db_error = ""
     fingerprints: dict[str, str] = {}
     changed_dbs: list[str] = []
     if db_names:
-        engine.progress.write(phase="database", message="Fingerprinting MariaDB databases…")
+        if dry_run:
+            _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_START", "Fingerprinting MariaDB databases…", 90)
+        else:
+            engine.progress.write(phase="database", message="Fingerprinting MariaDB databases…")
         try:
             fingerprints = _fingerprint_databases(engine)
+            previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
+            for name in db_names:
+                if fingerprints.get(name) != previous_fp.get(name):
+                    changed_dbs.append(name)
+            db_result = "UNCHANGED" if not changed_dbs else "CHANGED"
+            if dry_run:
+                _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_COMPLETE", "Database fingerprint complete.", 95)
         except Exception as exc:  # noqa: BLE001
-            raise PipelineError(f"Database backup failed: {exc}") from exc
-        previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
-        for name in db_names:
-            if fingerprints.get(name) != previous_fp.get(name):
-                changed_dbs.append(name)
-        db_result = "UNCHANGED" if not changed_dbs else "CHANGED"
+            if dry_run:
+                db_result = "FAILED"
+                db_error = str(exc)
+                engine.logger.error(f"DRY_RUN_ERROR database fingerprint: {exc}")
+                engine.logger.info("DRY_RUN_DB_FINGERPRINT_COMPLETE")
+            else:
+                raise PipelineError(f"Database backup failed: {exc}") from exc
 
     counts = changes.counts()
     engine.logger.info(
@@ -331,10 +445,29 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     )
 
     if dry_run:
+        preview_type = (
+            "NO_CHANGE"
+            if has_master and changes.empty and not changed_dbs and not db_error and not rebuild
+            else op_type
+        )
+        report_ok = not db_error
+        report_text = format_dry_run_report(
+            has_master=has_master,
+            generation=store.head_generation(),
+            op_type=preview_type,
+            ojs=ojs,
+            sources=sources,
+            db_names=db_names,
+            db_result=db_result,
+            db_error=db_error,
+            changed_dbs=changed_dbs,
+            counts=counts,
+            estimated_bytes=changes.estimated_transfer_bytes(),
+        )
         report = {
-            "ok": True,
+            "ok": report_ok,
             "operation": "DRY_RUN",
-            "type": op_type if not (has_master and changes.empty and not changed_dbs and not rebuild) else "NO_CHANGE",
+            "type": preview_type,
             "master_exists": has_master,
             "counts": counts,
             "estimated_transfer_bytes": changes.estimated_transfer_bytes(),
@@ -342,13 +475,19 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             "changed_databases": changed_dbs,
             "ojs": ojs,
             "sources": sources,
+            "report_text": report_text,
+            "hashed": False,
+            "head_unchanged": True,
+            "error": db_error or None,
         }
-        message = (
-            f"DRY RUN {report['type']}: NEW={counts['new']} MODIFIED={counts['modified']} "
-            f"DELETED={counts['deleted']} RENAMED={counts['renamed']} MOVED={counts['moved']} "
-            f"DB={db_result}"
+        engine.logger.info("DRY_RUN_RESULT")
+        engine.progress.write(
+            status="success" if report_ok else "failed",
+            message="Dry run complete. HEAD unchanged." if report_ok else db_error,
+            dry_run=report,
+            bytes_done=100,
+            bytes_total=100,
         )
-        engine.progress.write(status="success", message=message, dry_run=report)
         return report
 
     no_change = has_master and changes.empty and not changed_dbs and not rebuild

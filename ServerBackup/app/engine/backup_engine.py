@@ -268,18 +268,33 @@ class BackupEngine:
         return results
 
     def dry_run(self) -> dict[str, Any]:
-        self.progress.write(status="running", phase="dry-run", backup_id=self.backup_id, message="Dry run…")
-        self.logger.info(
-            f"Dry run SSH transport={getattr(self.ssh, 'transport_name', lambda: 'unknown')()} "
-            f"user={self.config.ssh_username} host={self.config.server_ip}"
-        )
-        report: dict[str, Any] = {"ok": False, "checks": []}
+        report: dict[str, Any] = {"ok": False, "checks": [], "report_text": ""}
 
         def note(name: str, ok: bool, detail: str = "") -> None:
             report["checks"].append({"name": name, "ok": ok, "detail": detail})
             self.progress.add_step(name, ok, detail)
 
+        def stage(token: str, message: str, pct: int) -> None:
+            self.logger.info(token)
+            self.progress.write(
+                status="running",
+                phase="dry-run",
+                backup_id=self.backup_id,
+                message=message,
+                bytes_done=pct,
+                bytes_total=100,
+            )
+
         try:
+            self.lock.acquire(mode="dry-run", backup_id=self.backup_id)
+            stage("DRY_RUN_START", "Dry run started…", 1)
+            self._check_cancel()
+            has_password = bool(getattr(self.ssh, "password", None))
+            self.logger.info(
+                f"DRY_RUN_PASSWORD_CHECK in_memory_password={'yes' if has_password else 'no'} "
+                f"transport={getattr(self.ssh, 'transport_name', lambda: 'unknown')()} "
+                f"user={self.config.ssh_username} host={self.config.server_ip}"
+            )
             drive = drive_status(self.config.backup_destination)
             note("G: / backup drive", drive.exists, drive.error or f"{drive.free_gb:.1f} GB free")
             if drive.exists:
@@ -291,22 +306,41 @@ class BackupEngine:
             except PathValidationError as exc:
                 note("Configuration paths", False, str(exc))
                 report["ok"] = False
-                self.progress.write(status="failed", error=str(exc))
+                report["error"] = str(exc)
+                report["report_text"] = str(exc)
+                self.logger.error(f"DRY_RUN_ERROR {exc}")
+                self.progress.write(status="failed", error=str(exc), message=str(exc))
                 return report
+            stage("DRY_RUN_SSH_CONNECT_START", "Connecting to Ubuntu…", 10)
             try:
                 login = self.ssh.test_login()
                 note("SSH", login.ok, login.stderr.strip() if not login.ok else "OK")
             except SSHError as exc:
                 note("SSH", False, str(exc))
-                self.progress.write(status="failed", error=str(exc))
+                report["ok"] = False
+                report["error"] = str(exc)
+                report["report_text"] = str(exc)
+                self.logger.error(f"DRY_RUN_ERROR {exc}")
+                self.progress.write(status="failed", error=str(exc), message=str(exc))
                 return report
+            if not login.ok:
+                report["ok"] = False
+                report["error"] = login.stderr.strip() or "SSH login failed."
+                report["report_text"] = report["error"]
+                self.logger.error(f"DRY_RUN_ERROR {report['error']}")
+                self.progress.write(status="failed", error=report["error"], message=report["error"])
+                return report
+            stage("DRY_RUN_SSH_CONNECTED", "SSH connected.", 20)
             helpers = self.ssh.ensure_remote_scripts()
             if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
                 note("Ubuntu helpers", True, "installed")
             elif not helpers.ok:
                 note("Ubuntu helpers", False, helpers.stderr.strip())
                 report["ok"] = False
-                self.progress.write(status="failed", error=helpers.stderr.strip())
+                report["error"] = helpers.stderr.strip()
+                report["report_text"] = report["error"]
+                self.logger.error(f"DRY_RUN_ERROR {report['error']}")
+                self.progress.write(status="failed", error=report["error"], message=report["error"])
                 return report
             result = self.ssh.run_script(
                 self.config.remote_prepare_script,
@@ -318,15 +352,21 @@ class BackupEngine:
             for check in parsed.get("checks") or []:
                 if isinstance(check, dict):
                     note(str(check.get("name")), bool(check.get("ok")), str(check.get("detail") or ""))
+            self._check_cancel()
             try:
                 master = run_master_backup(self, dry_run=True)
-            except (PipelineError, SSHError, BackupCancelled) as exc:
+            except BackupCancelled:
+                raise
+            except (PipelineError, SSHError) as exc:
                 note("Master delta preview", False, str(exc))
                 report["ok"] = False
                 report["error"] = str(exc)
+                report["report_text"] = str(exc)
+                self.logger.error(f"DRY_RUN_ERROR {exc}")
                 self.progress.write(status="failed", error=str(exc), message=str(exc))
                 return report
             report["master"] = master
+            report["report_text"] = str(master.get("report_text") or "")
             counts = master.get("counts") or {}
             note(
                 "Master delta",
@@ -338,15 +378,39 @@ class BackupEngine:
                     f"DB={master.get('database')}"
                 ),
             )
-            report["ok"] = all(item["ok"] for item in report["checks"])
+            report["ok"] = all(item["ok"] for item in report["checks"]) and bool(master.get("ok", True))
             report["remote"] = parsed
-            message = str((self.progress.read() or {}).get("message") or "Dry run complete")
+            if not report["ok"] and master.get("error"):
+                report["error"] = master.get("error")
+            message = (
+                "Dry run complete. HEAD unchanged."
+                if report["ok"]
+                else (report.get("error") or "Dry run found problems")
+            )
             self.progress.write(
                 status="success" if report["ok"] else "failed",
-                message=message if report["ok"] else "Dry run found problems",
+                message=message,
+                bytes_done=100,
+                bytes_total=100,
             )
+            if not report["ok"]:
+                self.logger.error(f"DRY_RUN_ERROR {message}")
             return report
+        except BackupAlreadyRunning:
+            self.logger.error("DRY_RUN_ERROR Backup already in progress.")
+            raise
+        except BackupCancelled as exc:
+            self.logger.info("DRY_RUN_ERROR cancelled")
+            self.progress.write(status="cancelled", message=str(exc), error=str(exc))
+            raise
+        except Exception as exc:
+            self.logger.error(f"DRY_RUN_ERROR {exc}")
+            self.progress.write(status="failed", message=str(exc), error=str(exc))
+            if isinstance(exc, BackupError):
+                raise
+            raise BackupError(str(exc)) from exc
         finally:
+            self.lock.release()
             closer = getattr(self.ssh, "close", None)
             if callable(closer):
                 closer()

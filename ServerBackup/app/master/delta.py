@@ -37,6 +37,24 @@ class ChangeSet:
         return int(sum(int(item.get("size") or 0) for item in self.transfer))
 
 
+def promote_unhashed_for_preview(changes: ChangeSet) -> ChangeSet:
+    """Classify unhashed candidates using metadata only. DRY RUN never SHA-256s the live tree.
+
+    New paths without a digest become NEW. Existing paths whose size/mtime/mode
+    changed become MODIFIED. Rename/move detection requires hashes and is left
+    to BACKUP NOW.
+    """
+    for item in changes.hash_candidates:
+        rec = dict(item)
+        if rec.get("previous_sha256"):
+            changes.modified.append(rec)
+        else:
+            changes.new.append(rec)
+        changes.transfer.append(rec)
+    changes.hash_candidates.clear()
+    return changes
+
+
 def _meta_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
     for field_name in ("size", "mtime", "mode", "uid", "gid"):
         if int(left.get(field_name) or 0) != int(right.get(field_name) or 0):

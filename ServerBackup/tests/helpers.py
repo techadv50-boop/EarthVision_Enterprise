@@ -236,6 +236,7 @@ class LocalMasterSSH(FakeSSH):
         self.remote_root = Path(remote_root)
         self.db_fingerprint = "fp-journal-1"
         self.fail_database = False
+        self.fail_discover = False
         self.truncate_stream = False
         self.corrupt_stream = False
         self.fail_hash = False
@@ -249,6 +250,19 @@ class LocalMasterSSH(FakeSSH):
         import prepare_master
 
         if action == "discover-ojs":
+            if self.fail_discover:
+                return SSHResult(
+                    1,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "discovery failed",
+                            "installations": [],
+                            "errors": ["discovery failed"],
+                        }
+                    ),
+                    "discovery failed",
+                )
             result = prepare_master.discover_ojs(payload)
             return SSHResult(0 if result.get("ok") else 1, json.dumps(result), result.get("error") or "")
         if action == "inventory":
