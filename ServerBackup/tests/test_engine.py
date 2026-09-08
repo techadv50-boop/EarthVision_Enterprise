@@ -272,8 +272,14 @@ def test_test_connection_sends_check_to_installed_helper(tmp_path: Path):
     assert result["login"] is True
     assert result["script"] is True
     assert ssh.script_path == "/usr/local/lib/serverbackup/prepare-backup.sh"
+    assert "ensure-backup-mysql-user" in ssh.calls
+    assert "check" in ssh.calls
     assert ssh.payload["action"] == "check"
     assert "backup" != ssh.payload["action"]
+    account = result.get("database_account") or {}
+    assert account.get("configured_user") == "serverbackup"
+    assert account.get("using_root") is False
+    assert "password" not in str(account).lower()
 
 
 def test_dry_run_closes_ssh_session_and_previews_delta(tmp_path: Path):

@@ -30,6 +30,7 @@ def test_prepare_helper_accepts_master_actions():
         "database-fingerprint",
         "dump-databases",
         "discover-applications",
+        "ensure-backup-mysql-user",
     ):
         result = _run_helper(f'{{"action":"{action}"}}')
         combined = result.stderr + result.stdout

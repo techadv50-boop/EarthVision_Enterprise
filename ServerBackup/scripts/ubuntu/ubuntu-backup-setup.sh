@@ -175,7 +175,7 @@ import getpass, os, subprocess, tempfile
 pw = getpass.getpass("MariaDB password for serverbackup user: ")
 sql = (
     "CREATE USER IF NOT EXISTS 'serverbackup'@'localhost' IDENTIFIED BY %s;\n"
-    "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS ON *.* "
+    "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS, RELOAD ON *.* "
     "TO 'serverbackup'@'localhost';\nFLUSH PRIVILEGES;\n"
 )
 # mysql CLI cannot take a bound parameter; write an escaped SQL file with 0600 perms.
@@ -185,7 +185,7 @@ if re.search(r"[\x00\n\r]", pw):
 escaped = pw.replace("\\", "\\\\").replace("'", "\\'")
 text = (
     "CREATE USER IF NOT EXISTS 'serverbackup'@'localhost' IDENTIFIED BY '" + escaped + "';\n"
-    "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS ON *.* "
+    "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS, RELOAD ON *.* "
     "TO 'serverbackup'@'localhost';\nFLUSH PRIVILEGES;\n"
 )
 fd, path = tempfile.mkstemp(prefix="serverbackup-sql-")

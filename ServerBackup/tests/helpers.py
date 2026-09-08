@@ -364,6 +364,32 @@ class FakeSSH:
             }
             stdout = json.dumps(body)
             return SSHResult(0 if self.check_ok else 1, stdout, "" if self.check_ok else "check failed")
+        if action == "ensure-backup-mysql-user":
+            return SSHResult(
+                0,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "database_account": {
+                            "configured_user": "serverbackup",
+                            "current_user": "serverbackup@localhost",
+                            "session_user": "serverbackup@localhost",
+                            "source": "/etc/serverbackup/my.cnf",
+                            "file_present": True,
+                            "using_root": False,
+                            "least_privilege": True,
+                            "grants": [
+                                "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS, RELOAD ON *.* TO `serverbackup`@`localhost`"
+                            ],
+                            "fingerprint_ok": True,
+                            "dump_probe_ok": True,
+                            "root_unchanged": True,
+                            "application_credentials_unchanged": True,
+                        },
+                    }
+                ),
+                "",
+            )
         if action == "cleanup":
             return SSHResult(0, json.dumps({"ok": True}), "")
         if action == "discover-databases":
@@ -628,7 +654,7 @@ class LocalMasterSSH(FakeSSH):
     def run_script(self, script_path: str, payload, *, timeout=None, use_sudo: bool = True) -> SSHResult:
         action = payload.get("action")
         self.calls.append(action)
-        if action in {"check", "dry-run", "cleanup", "discover-databases"}:
+        if action in {"check", "dry-run", "cleanup", "discover-databases", "ensure-backup-mysql-user"}:
             return super().run_script(script_path, payload, timeout=timeout, use_sudo=use_sudo)
         import prepare_master
 

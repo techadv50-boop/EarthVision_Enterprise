@@ -376,6 +376,9 @@ def test_future_site_is_discovered_without_hardcoded_list():
     assert "sateye.xdgen.com" not in audit
     assert "xdgen_db" not in source
     assert "xdgen_db" not in audit
+    mysql_user = (Path(__file__).resolve().parents[1] / "scripts" / "ubuntu" / "mysql_backup_user.py").read_text(encoding="utf-8")
+    assert "xdgen_db" not in mysql_user
+    assert "sateye.xdgen.com" not in mysql_user
 
 
 def test_helper_allows_discover_applications():

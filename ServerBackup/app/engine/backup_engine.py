@@ -234,6 +234,35 @@ class BackupEngine:
                 results["details"].append("Installed Ubuntu backup helpers")
             elif not helpers.ok:
                 results["details"].append(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
+            ensure = self.ssh.run_script(
+                self.config.remote_prepare_script,
+                self._payload("ensure-backup-mysql-user"),
+                timeout=90,
+            )
+            ensure_parsed = self._parse_json_result(ensure.stdout)
+            results["database_account"] = ensure_parsed.get("database_account") or {}
+            if ensure.ok:
+                account = results["database_account"]
+                user = account.get("current_user") or account.get("configured_user") or "serverbackup"
+                results["details"].append(f"MariaDB backup user: {user}")
+                if account.get("using_root"):
+                    results["details"].append("MariaDB backup user is still root — least-privilege switch failed")
+                    results["script"] = False
+                    results["permissions"] = False
+                    return results
+                if account.get("least_privilege") is False:
+                    results["details"].append("MariaDB backup user grants are not least-privilege")
+                    results["script"] = False
+                    results["permissions"] = False
+                    return results
+            else:
+                results["details"].append(
+                    ensure.stderr.strip()
+                    or str(ensure_parsed.get("error") or "Could not switch to the dedicated MariaDB backup account.")
+                )
+                results["script"] = False
+                results["permissions"] = False
+                return results
             check = self.ssh.run_script(
                 self.config.remote_prepare_script,
                 self._payload("check"),

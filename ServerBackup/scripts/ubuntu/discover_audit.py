@@ -69,10 +69,10 @@ EXTRA_SEARCH_ROOTS = (
 )
 MYSQL_CNF = "/etc/serverbackup/my.cnf"
 LEAST_PRIVILEGE_NOTE = (
-    "Discovery and dump already use --defaults-extra-file=/etc/serverbackup/my.cnf. "
-    "A dedicated least-privilege account (SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS) "
-    "is already created by ubuntu-backup-setup.sh --mysql-user. Switching my.cnf user= off root "
-    "does not require application code changes. Credentials were not modified."
+    "TEST CONNECTION switches /etc/serverbackup/my.cnf to user=serverbackup "
+    "(SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, EVENT, PROCESS, RELOAD). "
+    "Root is not disabled. Application database users are not changed. "
+    "The password stays in my.cnf mode 600 and is never logged."
 )
 IDENTIFYING_TABLE_HINTS = (
     "wp_posts",

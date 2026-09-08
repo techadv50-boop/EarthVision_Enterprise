@@ -26,6 +26,7 @@ ALLOWED_ACTIONS = {
     "database-fingerprint",
     "dump-databases",
     "discover-applications",
+    "ensure-backup-mysql-user",
 }
 SYSTEM_DATABASES = {"information_schema", "performance_schema", "mysql", "sys"}
 UNSAFE = set(';&|`$<>\\\n\r')
@@ -214,6 +215,18 @@ def main() -> None:
     if action == "discover-databases":
         names = discover_databases()
         json.dump({"ok": True, "databases": names}, sys.stdout)
+        sys.stdout.write("\n")
+        return
+    if action == "ensure-backup-mysql-user":
+        from mysql_backup_user import ensure_backup_mysql_user
+
+        try:
+            account = ensure_backup_mysql_user(run, mysql_defaults)
+        except Exception as exc:  # noqa: BLE001
+            json.dump({"ok": False, "error": str(exc).split("IDENTIFIED")[0].strip()}, sys.stdout)
+            sys.stdout.write("\n")
+            raise SystemExit(1)
+        json.dump({"ok": True, "database_account": account}, sys.stdout)
         sys.stdout.write("\n")
         return
     if action == "cleanup":
