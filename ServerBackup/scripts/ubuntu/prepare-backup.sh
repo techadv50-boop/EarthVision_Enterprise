@@ -45,7 +45,7 @@ print(data.get("action") or "")
 PY
 )"
 
-ALLOWED="check discover-databases backup cleanup dry-run discover-ojs inventory hash-files stream-objects database-fingerprint dump-databases"
+ALLOWED="check discover-databases backup cleanup dry-run discover-ojs inventory hash-files stream-objects database-fingerprint dump-databases discover-applications"
 if [[ " $ALLOWED " != *" $ACTION "* ]]; then
   echo "{\"ok\": false, \"error\": \"action not allowed\"}" >&2
   exit 1

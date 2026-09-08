@@ -29,6 +29,7 @@ def test_prepare_helper_accepts_master_actions():
         "stream-objects",
         "database-fingerprint",
         "dump-databases",
+        "discover-applications",
     ):
         result = _run_helper(f'{{"action":"{action}"}}')
         combined = result.stderr + result.stdout

@@ -22,6 +22,7 @@ REMOTE_ACTIONS = frozenset(
         "restore-master",
         "nginx-test",
         "safety-dump",
+        "discover-applications",
         "security-audit",
         "security-rotate-token",
         "security-rollback",

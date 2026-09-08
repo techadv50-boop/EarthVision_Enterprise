@@ -28,6 +28,7 @@ from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
 from app.config.store import save_config
 from app.engine.status import clear_stale_progress, collect_dashboard_status, live_dashboard_message, progress_path
+from app.gui.discover_page import DiscoverPage
 from app.gui.history_page import HistoryPage
 from app.gui.logs_page import LogsPage
 from app.gui.password import prompt_ubuntu_password
@@ -82,8 +83,10 @@ class DashboardPage(QWidget):
         self.backup_card = Card("BACKUP STATUS")
         self.storage_card = Card("STORAGE")
         self.schedule_card = Card("SCHEDULE")
+        self.apps_card = Card("DISCOVERED APPLICATIONS")
         layout.addWidget(self.server_card)
         layout.addWidget(self.master_card)
+        layout.addWidget(self.apps_card)
         layout.addWidget(self.backup_card)
         layout.addWidget(self.storage_card)
         layout.addWidget(self.schedule_card)
@@ -120,6 +123,7 @@ class DashboardPage(QWidget):
             ("RESTORE", self._window.show_restore),
             ("TEST BACKUP INTEGRITY", self._window.test_integrity),
             ("DRY RUN", self._window.dry_run),
+            ("DISCOVER SERVER", self._window.discover_server),
             ("REFRESH", self._window.refresh),
         ]:
             button = QPushButton(label)
@@ -169,6 +173,14 @@ class DashboardPage(QWidget):
                 ("Updated:", str(status.get("master_updated") or "—")),
                 ("OJS files_dir:", str(status.get("master_ojs") or "—")),
                 ("Integrity:", str(status.get("master_detail") or "—")),
+            ]
+        )
+        self.apps_card.set_rows(
+            [
+                ("Total discovered:", str(status.get("discovered_total") or "—")),
+                ("Approved:", str(status.get("discovered_approved") or "—")),
+                ("Needs review:", str(status.get("discovered_review") or "—")),
+                ("Removed since last run:", str(status.get("discovered_removed") or "—")),
             ]
         )
         self.backup_card.set_rows(
@@ -241,6 +253,7 @@ class DashboardPage(QWidget):
 
 class MainWindow(QMainWindow):
     _dry_run_finished = Signal(bool, str)
+    _discover_finished = Signal(bool, str)
 
     def __init__(self, config: AppConfig, ssh_password: str = "") -> None:
         super().__init__()
@@ -259,12 +272,14 @@ class MainWindow(QMainWindow):
         self.logs_page = LogsPage()
         self.restore_page = RestorePage()
         self.security_page = SecurityPage()
+        self.discover_page = DiscoverPage()
         self.stack.addWidget(self.dashboard)
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.logs_page)
         self.stack.addWidget(self.restore_page)
         self.stack.addWidget(self.security_page)
+        self.stack.addWidget(self.discover_page)
         layout.addWidget(self.stack)
         back = QPushButton("Back to dashboard")
         back.clicked.connect(self.show_dashboard)
@@ -272,6 +287,8 @@ class MainWindow(QMainWindow):
         self.settings_page.load_config(config)
         self.statusBar().showMessage(f"{__app_name__} Version {__version__}")
         self._dry_run_finished.connect(self._on_dry_run_finished, Qt.ConnectionType.QueuedConnection)
+        self._discover_finished.connect(self._on_discover_finished, Qt.ConnectionType.QueuedConnection)
+        self.discover_page.discover_btn.clicked.connect(self.discover_server)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
@@ -346,6 +363,48 @@ class MainWindow(QMainWindow):
     def show_restore(self) -> None:
         self.restore_page.reload(self.config, ssh_password=self._ssh_password)
         self.stack.setCurrentWidget(self.restore_page)
+
+    def show_discover(self) -> None:
+        self.discover_page.reload(self.config)
+        self.stack.setCurrentWidget(self.discover_page)
+
+    def discover_server(self) -> None:
+        self.config = self.settings_page.current_config()
+        if not self.ensure_password():
+            return
+        save_config(self.config)
+        config = self.config
+        password = self._ssh_password
+        self.show_discover()
+
+        def work() -> None:
+            from app.discover.engine import DiscoveryError, discover_applications
+
+            try:
+                result = discover_applications(
+                    config,
+                    ssh=SSHClient(config, password=password or None),
+                )
+                self._last_discovery = result
+                self._discover_finished.emit(True, str(result.get("report_text") or "Discovery finished."))
+            except (DiscoveryError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("DISCOVER_ERROR")
+                self._discover_finished.emit(False, str(exc))
+
+        threading.Thread(target=work, name="serverbackup-discover", daemon=True).start()
+        self.statusBar().showMessage("Discovering applications…")
+
+    def _on_discover_finished(self, ok: bool, text: str) -> None:
+        result = getattr(self, "_last_discovery", None)
+        if ok and isinstance(result, dict):
+            self.discover_page.reload(self.config, result)
+        self.refresh()
+        if ok:
+            QMessageBox.information(self, "DISCOVERY REPORT", text)
+            self.statusBar().showMessage("Discovery complete.")
+        else:
+            QMessageBox.critical(self, "DISCOVER SERVER failed", text)
+            self.statusBar().showMessage("Discovery failed.")
 
     def show_security(self, tab: str = "check") -> None:
         self.security_page.reload(self.config)

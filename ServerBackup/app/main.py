@@ -37,6 +37,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Preview master delta without changing HEAD")
     parser.add_argument("--rebuild-master", action="store_true", help="Rebuild the master baseline after staging + verification")
     parser.add_argument("--test-connection", action="store_true")
+    parser.add_argument("--discover", action="store_true", help="Read-only Nginx application discovery")
     parser.add_argument("--discover-databases", action="store_true")
     parser.add_argument("--verify", metavar="ARCHIVE")
     parser.add_argument("--security-check", action="store_true", help="On-demand three-layer security audit")
@@ -68,6 +69,16 @@ def main(argv: list[str] | None = None) -> int:
         result = engine.test_connection()
         print(json.dumps(result, indent=2))
         return 0 if result.get("login") else 2
+    if args.discover:
+        from app.discover.engine import DiscoveryError, discover_applications
+
+        try:
+            result = discover_applications(config)
+        except (DiscoveryError, SSHError) as exc:
+            print(str(exc))
+            return 7
+        print(result.get("report_text") or json.dumps(result, indent=2, default=str))
+        return 0 if result.get("nginx_ok") else 7
     if args.discover_databases:
         rows = discover_databases(config)
         print(json.dumps(rows, indent=2))

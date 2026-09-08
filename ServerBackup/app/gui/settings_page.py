@@ -128,7 +128,10 @@ class SettingsPage(QWidget):
         form.addRow("Minimum free disk (GB)", self.min_free)
         form.addRow("Minimum Ubuntu temp space (GB)", self.min_remote)
         form.addRow("Compression level", self.compression)
-        form.addRow("Website directories", self.websites)
+        form.addRow(
+            "Website directories (legacy BACKUP NOW list — use DISCOVER SERVER for Nginx inventory)",
+            self.websites,
+        )
         self.website_input = _editable(QLineEdit(), "/var/www/example.com")
         website_btns = QHBoxLayout()
         website_btns.addWidget(self.website_input)

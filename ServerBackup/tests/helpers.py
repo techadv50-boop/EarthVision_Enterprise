@@ -203,6 +203,22 @@ class FakeSSH:
             )
         if action == "discover-ojs":
             return SSHResult(0, json.dumps(self._discover_ojs(payload)), "")
+        if action == "discover-applications":
+            return SSHResult(
+                0,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "nginx_ok": True,
+                        "hostname": "ubuntu-server",
+                        "discovery_source": "nginx -T",
+                        "applications": [],
+                        "databases": {"mariadb": ["journal"], "postgresql": []},
+                        "errors": [],
+                    }
+                ),
+                "",
+            )
         if action == "inventory":
             return SSHResult(0, json.dumps({"ok": True, "files": [], "errors": []}), "")
         if action == "hash-files":

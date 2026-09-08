@@ -25,6 +25,7 @@ ALLOWED_ACTIONS = {
     "stream-objects",
     "database-fingerprint",
     "dump-databases",
+    "discover-applications",
 }
 SYSTEM_DATABASES = {"information_schema", "performance_schema", "mysql", "sys"}
 UNSAFE = set(';&|`$<>\\\n\r')
@@ -224,6 +225,15 @@ def main() -> None:
             shutil.rmtree(work)
         json.dump({"ok": True, "removed": str(work)}, sys.stdout)
         sys.stdout.write("\n")
+        return
+    if action == "discover-applications":
+        from discover_apps import handle as handle_discover
+
+        result = handle_discover(action, payload, run=run, mysql_defaults=mysql_defaults)
+        json.dump(result, sys.stdout)
+        sys.stdout.write("\n")
+        if not result.get("ok"):
+            raise SystemExit(1)
         return
     if action in {"discover-ojs", "inventory", "hash-files", "stream-objects", "database-fingerprint"}:
         from prepare_master import handle as handle_master

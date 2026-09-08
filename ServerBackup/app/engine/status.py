@@ -130,7 +130,31 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
         "progress": progress,
         "destination": str(dest),
         "drive_error": drive.error,
+        **_discovery_status(config),
         **_security_status(config),
+    }
+
+
+def _discovery_status(config: AppConfig) -> dict[str, Any]:
+    try:
+        from app.discover.policy import apply_policy, load_snapshot
+
+        snap = load_snapshot(config.backup_destination)
+        apps = apply_policy(list(snap.get("applications") or []), config.backup_destination)
+    except Exception:
+        apps = []
+    live = [row for row in apps if row.get("change") != "removed"]
+    return {
+        "discovered_total": len(live) if apps else "—",
+        "discovered_approved": sum(1 for row in live if row.get("included")) if apps else "—",
+        "discovered_review": sum(
+            1
+            for row in apps
+            if "REVIEW" in str(row.get("status") or "") or row.get("status") == "NEW SITE DETECTED"
+        )
+        if apps
+        else "—",
+        "discovered_removed": sum(1 for row in apps if row.get("change") == "removed") if apps else "—",
     }
 
 
