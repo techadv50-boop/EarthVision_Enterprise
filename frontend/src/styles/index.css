@@ -33,6 +33,18 @@
   display: none !important;
 }
 
-.cesium-widget-credits {
-  display: none !important;
+.review-mark {
+  @apply rounded-sm px-0.5 cursor-pointer underline decoration-dotted decoration-2 underline-offset-2;
+}
+.review-mark-high {
+  @apply bg-red-500/25 decoration-red-400 text-red-100;
+}
+.review-mark-medium {
+  @apply bg-amber-500/20 decoration-amber-400 text-amber-100;
+}
+.review-mark-low {
+  @apply bg-sky-500/15 decoration-sky-400 text-sky-100;
+}
+.review-mark-active {
+  @apply ring-2 ring-earth-400 ring-offset-1 ring-offset-gray-950;
 }

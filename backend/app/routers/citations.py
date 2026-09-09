@@ -854,3 +854,68 @@ async def export_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+_REVIEW_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _is_docx_upload(filename: str, data: bytes) -> bool:
+    name = (filename or "").lower()
+    if name.endswith(".doc") and not name.endswith(".docx"):
+        return False
+    return name.endswith(".docx") or (data[:2] == b"PK" and data[:4] != b"%PDF")
+
+
+async def _read_review_upload(file: UploadFile, *, require_docx: bool = False) -> tuple[bytes, str]:
+    filename = file.filename or "upload"
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail=f"{filename} is empty.")
+    if len(data) > _REVIEW_MAX_BYTES:
+        raise HTTPException(status_code=400, detail=f"{filename} is larger than 25 MB.")
+    lower = filename.lower()
+    if lower.endswith(".doc") and not lower.endswith(".docx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Old .doc files are not supported. Save the file as .docx.",
+        )
+    if require_docx and not _is_docx_upload(filename, data):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload a Word (.docx) file.",
+        )
+    return data, filename
+
+
+@router.post("/review/reference-integrity")
+async def reference_integrity_check(
+    _user: CurrentUser,
+    original: UploadFile = File(...),
+    returned: UploadFile = File(...),
+):
+    """Compare References in the file sent to staff vs the file they returned."""
+    from app.services.reference_integrity import compare_manuscripts
+
+    orig_bytes, orig_name = await _read_review_upload(original, require_docx=True)
+    ret_bytes, ret_name = await _read_review_upload(returned, require_docx=True)
+    return compare_manuscripts(
+        orig_bytes,
+        ret_bytes,
+        original_name=orig_name,
+        returned_name=ret_name,
+    )
+
+
+@router.post("/review/language")
+async def language_review_check(
+    _user: CurrentUser,
+    file: UploadFile = File(...),
+):
+    """Review a manuscript for English, structure, slang, and ambiguity."""
+    from app.services.language_review import review_document
+
+    data, filename = await _read_review_upload(file, require_docx=False)
+    try:
+        return await review_document(data, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
