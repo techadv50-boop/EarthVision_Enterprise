@@ -5,6 +5,22 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping
 
+from app.backup.operation import (
+    UI_CANCELLED,
+    UI_COMMITTING,
+    UI_CONNECTING,
+    UI_DATABASE,
+    UI_DELTA,
+    UI_DISCOVERING,
+    UI_FAILED,
+    UI_HASHING,
+    UI_IDLE,
+    UI_INVENTORY,
+    UI_STARTING,
+    UI_SUCCESS,
+    UI_TRANSFERRING,
+    UI_VERIFYING,
+)
 from app.utils.format import format_bytes, format_hms
 
 STAGE_DISCOVERY = "DATABASE DISCOVERY"
@@ -20,24 +36,15 @@ STAGE_FAILED = "DATABASE FAILED"
 PREPARING_STAGES = frozenset({STAGE_DISCOVERY, STAGE_FINGERPRINT, STAGE_DUMP_PREPARING})
 MEASURING_STAGES = frozenset({STAGE_DUMPING, STAGE_TRANSFERRING, STAGE_VERIFYING})
 
-UI_PREPARING = "PREPARING"
-UI_CONNECTING = "CONNECTING"
-UI_DISCOVERING = "DISCOVERING"
-UI_INVENTORY = "INVENTORY"
-UI_HASHING = "HASHING"
-UI_DATABASE = "DATABASE"
-UI_TRANSFERRING = "TRANSFERRING"
-UI_VERIFYING = "VERIFYING"
-UI_COMMITTING = "COMMITTING"
-UI_SUCCESS = "SUCCESS"
-UI_FAILED = "FAILED"
-UI_CANCELLED = "CANCELLED"
+UI_PREPARING = "PREPARING"  # legacy token; displayed as STARTING
 
 UI_STAGES = (
-    UI_PREPARING,
+    UI_IDLE,
+    UI_STARTING,
     UI_CONNECTING,
     UI_DISCOVERING,
     UI_INVENTORY,
+    UI_DELTA,
     UI_HASHING,
     UI_DATABASE,
     UI_TRANSFERRING,
@@ -48,17 +55,20 @@ UI_STAGES = (
     UI_CANCELLED,
 )
 
-SCANNING_UI = frozenset({UI_PREPARING, UI_CONNECTING, UI_DISCOVERING, UI_INVENTORY, UI_HASHING})
+SCANNING_UI = frozenset(
+    {UI_PREPARING, UI_STARTING, UI_CONNECTING, UI_DISCOVERING, UI_INVENTORY, UI_DELTA, UI_HASHING}
+)
 
 PHASE_TO_STAGE = {
     "ssh": UI_CONNECTING,
-    "lock": UI_PREPARING,
-    "storage": UI_PREPARING,
-    "helpers": UI_PREPARING,
-    "master": UI_PREPARING,
+    "lock": UI_STARTING,
+    "storage": UI_STARTING,
+    "helpers": UI_STARTING,
+    "master": UI_STARTING,
     "discovery": UI_DISCOVERING,
     "discover": UI_DISCOVERING,
     "inventory": UI_INVENTORY,
+    "delta": UI_DELTA,
     "hash": UI_HASHING,
     "database": UI_DATABASE,
     "transferring": UI_TRANSFERRING,
@@ -75,11 +85,17 @@ def friendly_stage(ui_stage: str, progress: Mapping[str, Any] | None = None) -> 
     last = str(data.get("last_stage") or "")
     phase = str(data.get("phase") or "")
     raw = str(ui_stage or "")
-    if status in {"failed", "cancelled"} and last and last not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS, ""}:
+    if str(data.get("ui_stage") or raw) == UI_IDLE and status in {"idle", ""}:
+        return "—"
+    if status in {"idle", ""} and not raw and not last and not data.get("operation") and not data.get("operation_id"):
+        return "—"
+    if status in {"failed", "cancelled"} and last and last not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS, UI_IDLE, ""}:
         raw = last
-    elif raw in {"", UI_FAILED, UI_CANCELLED} and last and last not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS}:
+    elif raw in {"", UI_FAILED, UI_CANCELLED} and last and last not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS, UI_IDLE}:
         raw = last
-    if raw.lower() == "ssh" or phase == "ssh" and raw in {"", UI_PREPARING}:
+    if raw in {UI_PREPARING, "preparing"}:
+        raw = UI_STARTING
+    if raw.lower() == "ssh" or phase == "ssh" and raw in {"", UI_PREPARING, UI_STARTING}:
         raw = UI_CONNECTING
     if raw.lower() == "ssh":
         raw = UI_CONNECTING
@@ -88,6 +104,8 @@ def friendly_stage(ui_stage: str, progress: Mapping[str, Any] | None = None) -> 
         raw = mapped
     if raw == UI_TRANSFERRING:
         return "OBJECT TRANSFER"
+    if raw in {UI_IDLE, ""}:
+        return "—"
     return raw or PHASE_TO_STAGE.get(phase, phase.upper() if phase else "—")
 
 
@@ -101,10 +119,24 @@ def log_pipeline(engine, token: str, detail: str = "") -> None:
 
 def is_backup_operation(progress: Mapping[str, Any] | None) -> bool:
     data = dict(progress or {})
-    operation = str(data.get("operation") or "")
-    if operation.upper().startswith("BACKUP"):
+    kind = str(data.get("kind") or "").lower()
+    if kind in {"backup", "rebuild"}:
         return True
-    return bool(data.get("ui_stage"))
+    operation = str(data.get("operation") or "")
+    return operation.upper().startswith("BACKUP") or operation.upper().startswith("REBUILD")
+
+
+def is_idle_progress(progress: Mapping[str, Any] | None) -> bool:
+    data = dict(progress or {})
+    status = str(data.get("status") or "").lower()
+    if status in {"running", "starting", "failed", "cancelled", "success"}:
+        return False
+    stage = str(data.get("ui_stage") or "")
+    if stage and stage not in {UI_IDLE, ""}:
+        return False
+    if data.get("operation") or data.get("operation_id") or data.get("backup_id"):
+        return False
+    return status in {"idle", ""}
 
 
 def show_live_backup_panel(
@@ -113,12 +145,8 @@ def show_live_backup_panel(
     running: bool,
     backup_active: bool = False,
 ) -> bool:
-    """Keep the live panel visible for the whole BACKUP NOW lifecycle, including failure."""
+    """Live worker panel is only for the current operation, never leftover cache."""
     if running or backup_active:
-        return True
-    data = dict(progress or {})
-    status = str(data.get("status") or "").lower()
-    if status in {"running", "failed", "cancelled", "success"} and is_backup_operation(data):
         return True
     return False
 
@@ -151,6 +179,9 @@ def measurable_percent(
 
 def progress_label(*, done: int | None, total: int | None, stage: str = "", ui_stage: str = "") -> str:
     ui = str(ui_stage or "")
+    if ui == UI_IDLE:
+        if (done is None or int(done) == 0) and (total is None or int(total) <= 0):
+            return "—"
     if (done is None or int(done) == 0) and (total is None or int(total) <= 0):
         if ui == UI_INVENTORY:
             return "Scanning..."
@@ -220,21 +251,62 @@ def application_for_root(applications: list[dict[str, Any]] | None, root: str) -
     return ""
 
 
+def format_idle_backup_panel(
+    progress: Mapping[str, Any] | None = None,
+    *,
+    master_size: int | None = None,
+    head_state: str | None = None,
+) -> str:
+    data = dict(progress or {})
+    master = data.get("master") if isinstance(data.get("master"), dict) else {}
+    size = master_size if master_size is not None else master.get("current_size")
+    head = head_state or data.get("head_state") or master.get("head_state") or "MISSING"
+    return "\n".join(
+        [
+            "No backup running.",
+            "",
+            "Overall: Ready",
+            "Stage: —",
+            "Status: IDLE",
+            "Application: —",
+            "Database: —",
+            "Progress: —",
+            "Files: 0 / 0",
+            "Objects: 0 / 0",
+            "Transferred: 0 B",
+            "Speed: —",
+            "ETA: —",
+            "Elapsed: —",
+            "",
+            "MASTER:",
+            f"Current size: {format_bytes(int(size or 0))}",
+            f"HEAD: {head}",
+        ]
+    )
+
+
 def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float | None = None) -> str:
     """Human-readable BACKUP NOW panel. Omits percentages that were not measured."""
     data = dict(progress or {})
+    status = str(data.get("status") or "").lower()
+    ui_stage = str(data.get("ui_stage") or "")
+    if is_idle_progress(data):
+        return format_idle_backup_panel(data)
     operation = str(data.get("operation") or data.get("message") or "BACKUP")
     db = data.get("database") if isinstance(data.get("database"), dict) else {}
     overall = data.get("overall") if isinstance(data.get("overall"), dict) else {}
     master = data.get("master") if isinstance(data.get("master"), dict) else {}
-    ui_stage = str(data.get("ui_stage") or "")
     started = data.get("started_at")
     elapsed = data.get("elapsed_seconds")
-    if now is not None and started:
+    if status in {"failed", "cancelled", "success"}:
+        elapsed = data.get("elapsed_seconds")
+    elif now is not None and started:
         try:
             elapsed = max(0, int(now - float(started)))
         except (TypeError, ValueError):
             elapsed = elapsed
+    elif status in {"idle", ""}:
+        elapsed = None
     percent = overall.get("percent")
     if percent is None:
         percent = measurable_percent(
@@ -373,20 +445,22 @@ def format_live_backup_rows(progress: Mapping[str, Any] | None, *, now: float | 
 class BackupLiveSession:
     """Writes real pipeline events to progress.json. Never fakes a percentage."""
 
-    def __init__(self, reporter, *, operation: str, backup_id: str = "", applications: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        reporter,
+        *,
+        operation: str,
+        backup_id: str = "",
+        operation_id: str = "",
+        applications: list[dict[str, Any]] | None = None,
+        started_at: float | None = None,
+    ) -> None:
         self.reporter = reporter
         self.operation = operation
         self.backup_id = backup_id
+        self.operation_id = operation_id or backup_id
         self.applications = list(applications or [])
-        existing = {}
-        try:
-            existing = dict(reporter.read() or {})
-        except Exception:
-            existing = {}
-        try:
-            self.started_at = float(existing.get("started_at") or time.time())
-        except (TypeError, ValueError):
-            self.started_at = time.time()
+        self.started_at = float(started_at) if started_at is not None else time.time()
         self._last_bytes = 0
         self._last_t = self.started_at
         self._last_publish = 0.0
@@ -408,9 +482,9 @@ class BackupLiveSession:
         self.database: dict[str, Any] = {}
         self.application = ""
         self.phase = "master"
-        self.ui_stage = UI_PREPARING
+        self.ui_stage = UI_STARTING
         self.ssh_action = ""
-        self.last_stage = UI_PREPARING
+        self.last_stage = UI_STARTING
         self.message = operation
         self.current_source = ""
         self.current_object = ""
@@ -473,6 +547,7 @@ class BackupLiveSession:
             ssh_action=self.ssh_action or None,
             message=self.message,
             backup_id=self.backup_id,
+            operation_id=self.operation_id or self.backup_id,
             started_at=self.started_at,
             elapsed_seconds=elapsed,
             operation=self.operation,
@@ -541,6 +616,7 @@ class BackupLiveSession:
             message=message,
             error=error or None,
             backup_id=self.backup_id,
+            operation_id=self.operation_id or self.backup_id,
             started_at=self.started_at,
             elapsed_seconds=elapsed,
             operation=self.operation,

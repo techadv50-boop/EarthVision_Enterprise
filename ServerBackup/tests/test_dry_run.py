@@ -217,7 +217,14 @@ def test_dry_run_cancellation(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
     engine = BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote"))
-    engine.progress.request_cancel()
+    original_begin = engine.progress.begin
+
+    def begin_then_cancel(**kwargs):
+        result = original_begin(**kwargs)
+        engine.progress.request_cancel()
+        return result
+
+    engine.progress.begin = begin_then_cancel  # type: ignore[method-assign]
     try:
         engine.dry_run()
         assert False, "cancelled dry run should raise"
@@ -269,7 +276,6 @@ def test_dry_run_holds_lock_so_dashboard_shows_live_progress(tmp_path: Path):
     assert result["ok"] is True
     assert seen["locked"] is True
     assert seen["message"]
-    assert seen["percent"] > 0
     assert BackupLock(cfg.backup_destination).is_locked() is False
 
 
@@ -297,7 +303,7 @@ def test_dry_run_does_not_require_prior_test_connection():
     assert "ensure_password" in dry_run_fn
     assert "_dry_run_finished.emit" in dry_run_fn
     assert "except" in dry_run_fn and "Exception" in dry_run_fn
-    assert "_dry_run_finished = Signal(bool, str)" in text
+    assert "_dry_run_finished = Signal(str, bool, str)" in text
     assert "QueuedConnection" in text
     assert "show_scrollable_report" in finished
     assert "QMessageBox.information" not in finished

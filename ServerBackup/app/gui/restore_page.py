@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.backup.operation import KIND_RESTORE
 from app.backup.retention import list_successful_backups
 from app.config.schema import AppConfig
 from app.master.store import MasterStore
@@ -120,11 +121,20 @@ class RestorePage(QWidget):
         if reply != QMessageBox.StandardButton.Ok:
             return
         window = self.window()
+        if hasattr(window, "_busy") and window._busy():
+            QMessageBox.warning(self, "Restore", "An operation is already in progress.")
+            return
         password = self._ssh_password
         if hasattr(window, "ensure_password"):
             if not window.ensure_password():
                 return
             password = getattr(window, "_ssh_password", password)
+        state = None
+        if hasattr(window, "operations"):
+            state = window.operations.try_start(KIND_RESTORE)
+            if state is None:
+                QMessageBox.warning(self, "Restore", "An operation is already in progress.")
+                return
         engine = RestoreEngine(
             self._config,
             ssh=SSHClient(self._config, password=password or None),
@@ -140,4 +150,7 @@ class RestorePage(QWidget):
         except (RestoreError, SSHError) as exc:
             QMessageBox.critical(self, "Restore", str(exc))
             return
+        finally:
+            if state is not None and hasattr(window, "operations"):
+                window.operations.finish(state.operation_id)
         QMessageBox.information(self, "Restore", str(result.get("message") or result))

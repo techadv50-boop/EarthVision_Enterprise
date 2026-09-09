@@ -23,12 +23,13 @@ from app.backup.live import (
     UI_CANCELLED,
     UI_CONNECTING,
     UI_FAILED,
-    UI_PREPARING,
+    UI_STARTING,
     UI_SUCCESS,
     log_pipeline,
 )
 from app.backup.manual_preflight import MANUAL_BACKUP_NEED_PASSWORD, manual_backup_password_error
 from app.backup.lock import BackupAlreadyRunning, BackupLock
+from app.backup.operation import KIND_BACKUP, KIND_DRY_RUN, KIND_REBUILD
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
 from app.config.store import runtime_dir, save_state
@@ -59,13 +60,17 @@ class BackupEngine:
         progress: ProgressReporter | None = None,
         logger: BackupLogger | None = None,
         mode: str = "manual",
+        operation_id: str | None = None,
+        cancel_event=None,
     ) -> None:
         self.config = config
         self.ssh = ssh or SSHClient(config)
         self.mode = mode
-        self.backup_id = backup_id_now()
+        self.backup_id = operation_id or backup_id_now()
         self.logger = logger or BackupLogger(config.log_directory, self.backup_id.split("_")[0])
         self.progress = progress or ProgressReporter(runtime_dir() / "progress.json")
+        if cancel_event is not None:
+            self.progress.bind_cancel_event(cancel_event)
         self.lock = BackupLock(config.backup_destination)
         self.incomplete_dir: Path | None = None
         self.final_dir: Path | None = None
@@ -135,7 +140,7 @@ class BackupEngine:
                     time.sleep(delay)
                     live = getattr(self, "live", None)
                     if live is not None:
-                        live.set_ui_stage(UI_PREPARING, f"{label} retrying…")
+                        live.set_ui_stage(UI_STARTING, f"{label} retrying…")
         assert last_error is not None
         raise last_error
 
@@ -371,20 +376,29 @@ class BackupEngine:
             report["checks"].append({"name": name, "ok": ok, "detail": detail})
             self.progress.add_step(name, ok, detail)
 
-        def stage(token: str, message: str, pct: int) -> None:
+        def stage(token: str, message: str) -> None:
             self.logger.info(token)
             self.progress.write(
                 status="running",
                 phase="dry-run",
+                kind=KIND_DRY_RUN,
                 backup_id=self.backup_id,
+                operation_id=self.backup_id,
+                operation="DRY RUN",
                 message=message,
-                bytes_done=pct,
-                bytes_total=100,
             )
 
         try:
+            self.progress.begin(
+                backup_id=self.backup_id,
+                operation_id=self.backup_id,
+                operation="DRY RUN",
+                kind=KIND_DRY_RUN,
+                ui_stage=UI_STARTING,
+                message="Dry run started…",
+            )
             self.lock.acquire(mode="dry-run", backup_id=self.backup_id)
-            stage("DRY_RUN_START", "Dry run started…", 1)
+            stage("DRY_RUN_START", "Dry run started…")
             self._check_cancel()
             has_password = bool(getattr(self.ssh, "password", None))
             self.logger.info(
@@ -408,7 +422,7 @@ class BackupEngine:
                 self.logger.error(f"DRY_RUN_ERROR {exc}")
                 self.progress.write(status="failed", error=str(exc), message=str(exc))
                 return report
-            stage("DRY_RUN_SSH_CONNECT_START", "Connecting to Ubuntu…", 10)
+            stage("DRY_RUN_SSH_CONNECT_START", "Connecting to Ubuntu…")
             try:
                 login = self.ssh.test_login()
                 note("SSH", login.ok, login.stderr.strip() if not login.ok else "OK")
@@ -427,7 +441,7 @@ class BackupEngine:
                 self.logger.error(f"DRY_RUN_ERROR {report['error']}")
                 self.progress.write(status="failed", error=report["error"], message=report["error"])
                 return report
-            stage("DRY_RUN_SSH_CONNECTED", "SSH connected.", 20)
+            stage("DRY_RUN_SSH_CONNECTED", "SSH connected.")
             helpers = self.ssh.ensure_remote_scripts()
             if helpers.ok and helpers.stderr == "installed Ubuntu backup helpers":
                 note("Ubuntu helpers", True, "installed")
@@ -487,14 +501,16 @@ class BackupEngine:
             self.progress.write(
                 status="success" if report["ok"] else "failed",
                 message=message,
-                bytes_done=100,
-                bytes_total=100,
+                kind=KIND_DRY_RUN,
+                operation="DRY RUN",
+                operation_id=self.backup_id,
             )
             if not report["ok"]:
                 self.logger.error(f"DRY_RUN_ERROR {message}")
             return report
         except BackupAlreadyRunning:
             self.logger.error("DRY_RUN_ERROR Backup already in progress.")
+            self.progress.reset_idle()
             raise
         except BackupCancelled as exc:
             self.logger.info("DRY_RUN_ERROR cancelled")
@@ -548,24 +564,28 @@ class BackupEngine:
             self.logger.info(f"Master backup start {self.backup_id} mode={self.mode} rebuild={rebuild}")
             self.progress.begin(
                 backup_id=self.backup_id,
+                operation_id=self.backup_id,
                 phase="lock",
-                ui_stage=UI_PREPARING,
+                kind=KIND_REBUILD if rebuild else KIND_BACKUP,
+                ui_stage=UI_STARTING,
                 message="Checking whether another backup is running…",
-                operation="BACKUP",
+                operation="BACKUP — REBUILD MASTER" if rebuild else "BACKUP",
             )
             self.live = BackupLiveSession(
                 self.progress,
-                operation="BACKUP",
+                operation="BACKUP — REBUILD MASTER" if rebuild else "BACKUP",
                 backup_id=self.backup_id,
+                operation_id=self.backup_id,
+                started_at=time.time(),
             )
             log_pipeline(self, "BACKUP_START", self.backup_id)
-            self.live.set_ui_stage(UI_PREPARING, "Checking whether another backup is running…", phase="lock")
+            self.live.set_ui_stage(UI_STARTING, "Checking whether another backup is running…", phase="lock")
             self._assert_manual_paramiko()
             self.lock.acquire(mode=self.mode, backup_id=self.backup_id)
             self._check_cancel()
             self._validate_config_paths()
 
-            self.live.set_ui_stage(UI_PREPARING, "Checking backup drive…", phase="storage")
+            self.live.set_ui_stage(UI_STARTING, "Checking backup drive…", phase="storage")
             drive = drive_status(dest)
             if not drive.exists:
                 raise BackupError(drive.error or "Backup drive is unavailable.")

@@ -36,12 +36,12 @@ def test_live_timeout_still_shows_while_backup_lock_is_held():
     assert message == STALE_TIMEOUT
 
 
-def test_successful_backup_message_remains_when_idle():
+def test_successful_backup_message_is_not_live_when_idle():
     message = live_dashboard_message(
         {"status": "success", "message": "BACKUP COMPLETED SUCCESSFULLY"},
         running=False,
     )
-    assert message == "BACKUP COMPLETED SUCCESSFULLY"
+    assert message == "Ready."
 
 
 def test_dashboard_status_ignores_stale_failed_progress(tmp_path: Path):
@@ -50,7 +50,8 @@ def test_dashboard_status_ignores_stale_failed_progress(tmp_path: Path):
     status = collect_dashboard_status(cfg)
     assert status["backup_running"] is False
     assert status["live_message"] == "Ready."
-    assert status["progress"]["message"] == STALE_TIMEOUT
+    assert status["progress"]["status"] == "idle"
+    assert status["progress"]["ui_stage"] == "IDLE"
 
 
 def test_dashboard_status_does_not_treat_orphan_running_progress_as_live(tmp_path: Path):
@@ -100,7 +101,7 @@ def test_clear_stale_progress_does_not_touch_a_live_backup(tmp_path: Path):
         lock.release()
 
 
-def test_backup_failure_stays_visible_without_lock(tmp_path: Path):
+def test_backup_failure_is_not_live_without_lock(tmp_path: Path):
     cfg = make_config(tmp_path)
     _write_progress(
         status="failed",
@@ -112,11 +113,12 @@ def test_backup_failure_stays_visible_without_lock(tmp_path: Path):
     )
     status = collect_dashboard_status(cfg)
     assert status["backup_running"] is False
-    assert status["show_live_panel"] is True
-    assert "SSH connection timed out." in status["live_message"]
+    assert status["show_live_panel"] is False
+    assert status["live_message"] == "Ready."
+    assert status["progress"]["status"] == "idle"
 
 
-def test_clear_stale_progress_does_not_erase_backup_failure(tmp_path: Path):
+def test_clear_stale_progress_idles_leftover_backup_failure(tmp_path: Path):
     cfg = make_config(tmp_path)
     _write_progress(
         status="failed",
@@ -125,10 +127,11 @@ def test_clear_stale_progress_does_not_erase_backup_failure(tmp_path: Path):
         message="BACKUP FAILED",
         error="worker crashed",
     )
-    assert clear_stale_progress(cfg) is False
+    assert clear_stale_progress(cfg) is True
     leftover = ProgressReporter(progress_path()).read()
-    assert leftover["status"] == "failed"
-    assert leftover["error"] == "worker crashed"
+    assert leftover["status"] == "idle"
+    assert leftover["ui_stage"] == "IDLE"
+    assert leftover.get("cancel_requested") is False
 
 
 def test_test_connection_does_not_write_progress(tmp_path: Path):

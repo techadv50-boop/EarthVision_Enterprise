@@ -175,7 +175,14 @@ def test_cancel_leaves_legacy_and_does_not_create_head(tmp_path: Path):
     dest = Path(cfg.backup_destination)
     ids = _seed_five(dest)
     engine = BackupEngine(cfg, ssh=FakeSSH(), mode="manual")
-    engine.progress.request_cancel()
+    original_begin = engine.progress.begin
+
+    def begin_then_cancel(**kwargs):
+        result = original_begin(**kwargs)
+        engine.progress.request_cancel()
+        return result
+
+    engine.progress.begin = begin_then_cancel  # type: ignore[method-assign]
     try:
         engine.run()
         assert False, "should cancel"

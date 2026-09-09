@@ -105,13 +105,17 @@ def test_live_panel_omits_invented_percent_and_shows_current_database():
 
 def test_progress_begin_clears_leftover_fake_percent(tmp_path: Path):
     reporter = ProgressReporter(tmp_path / "progress.json")
-    reporter.write(status="success", bytes_done=0, bytes_total=100, message="Dry run complete.")
+    reporter.write(status="success", bytes_done=0, bytes_total=100, message="Dry run complete.", cancel_requested=True)
     reporter.begin(backup_id="op1", operation="BACKUP")
     data = reporter.read()
     assert data["bytes_done"] == 0
     assert data["bytes_total"] == 0
     assert data["overall"]["percent"] is None
     assert data["overall"]["label"] == "Preparing..."
+    assert data["cancel_requested"] is False
+    assert reporter.cancel_requested() is False
+    assert data["operation_id"] == "op1"
+    assert data["ui_stage"] == "STARTING"
 
 
 def test_live_session_publishes_real_dump_events(tmp_path: Path):
@@ -325,7 +329,7 @@ def test_dashboard_does_not_show_zero_percent_when_bytes_are_unknown(tmp_path: P
     window.close()
 
 
-def test_live_panel_stays_visible_after_backup_failure_without_lock(tmp_path: Path):
+def test_live_panel_is_idle_after_leftover_failure_without_lock(tmp_path: Path):
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
@@ -340,41 +344,23 @@ def test_live_panel_stays_visible_after_backup_failure_without_lock(tmp_path: Pa
     window.timer.stop()
     window.show()
     qt.processEvents()
-    window.dashboard.render(
-        {
-            "backup_running": False,
-            "backup_active": False,
-            "show_live_panel": True,
-            "live_message": "SSH connection timed out.",
-            "progress": {
-                "status": "failed",
-                "operation": "BACKUP — FULL MASTER BASELINE",
-                "ui_stage": "FAILED",
-                "error": "SSH connection timed out.",
-                "message": "BACKUP FAILED",
-                "backup_id": "2026-09-09_010000",
-                "head_state": "UNCHANGED",
-                "staging_state": "CLEANED",
-                "overall": {"percent": None, "label": "Preparing...", "bytes_done": 0, "bytes_total": 0},
-            },
-        }
-    )
-    qt.processEvents()
-    assert not window.dashboard.live_panel.isHidden()
     text = window.dashboard.live_panel.text()
-    assert "BACKUP FAILED" in text
-    assert "SSH connection timed out." in text
-    assert "HEAD: UNCHANGED" in text
+    assert "Status: IDLE" in text
+    assert "Overall: Ready" in text
+    assert "Elapsed: —" in text
+    assert window.dashboard.progress_bar.format() == "—"
+    assert window.dashboard.progress_bar.minimum() == 0
+    assert window.dashboard.progress_bar.maximum() == 100
+    assert window.dashboard.progress_bar.value() == 0
     window.close()
 
 
-def test_worker_exception_reaches_gui_without_hiding_panel(tmp_path: Path):
+def test_worker_exception_reaches_gui_without_stale_live_state(tmp_path: Path):
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication, QMessageBox
 
-    from app.backup.progress import ProgressReporter
-    from app.engine.status import progress_path
+    from app.backup.operation import KIND_BACKUP
     from app.gui.main_window import MainWindow
     from tests.helpers import make_config
 
@@ -392,22 +378,15 @@ def test_worker_exception_reaches_gui_without_hiding_panel(tmp_path: Path):
 
     from unittest.mock import patch
 
-    ProgressReporter(progress_path()).write(
-        status="failed",
-        operation="BACKUP",
-        ui_stage="FAILED",
-        message="BACKUP FAILED",
-        error="simulated worker crash",
-        head_state="UNCHANGED",
-        staging_state="CLEANED",
-    )
+    state = window.operations.try_start(KIND_BACKUP)
+    assert state is not None
     with patch.object(QMessageBox, "critical", fake_critical):
-        window._on_backup_finished(False, "simulated worker crash")
+        window._on_backup_finished(state.operation_id, False, "simulated worker crash")
     qt.processEvents()
     assert boxes
     assert "BACKUP FAILED" in boxes[0]
-    assert not window.dashboard.live_panel.isHidden()
-    assert "simulated worker crash" in window.dashboard.live_panel.text()
+    assert "Status: IDLE" in window.dashboard.live_panel.text()
+    assert "simulated worker crash" in window.dashboard.result_panel.text()
     window.close()
 
 
@@ -425,7 +404,7 @@ def test_stage_change_does_not_reset_measured_bytes(tmp_path: Path):
     assert data["overall"]["bytes_done"] == 400
 
 
-def test_show_live_panel_helper_keeps_backup_failure():
+def test_show_live_panel_helper_only_for_active_operation():
     from app.backup.live import show_live_backup_panel
 
     assert show_live_backup_panel({"status": "failed", "message": "timeout"}, running=False) is False
@@ -434,9 +413,11 @@ def test_show_live_panel_helper_keeps_backup_failure():
             {"status": "failed", "operation": "BACKUP", "error": "timeout"},
             running=False,
         )
-        is True
+        is False
     )
+    assert show_live_backup_panel({"status": "cancelled", "operation": "BACKUP"}, running=False) is False
     assert show_live_backup_panel({"status": "running", "operation": "BACKUP"}, running=False, backup_active=True) is True
+    assert show_live_backup_panel({"status": "running", "operation": "BACKUP"}, running=True) is True
 
 
 def test_failed_transfer_records_unchanged_head_in_progress(tmp_path: Path):

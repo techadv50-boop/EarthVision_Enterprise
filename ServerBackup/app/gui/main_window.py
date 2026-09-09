@@ -27,17 +27,24 @@ from PySide6.QtWidgets import (
 )
 
 from app import __app_name__, __version__
-from app.backup.live import format_live_backup_panel, measurable_percent, show_live_backup_panel
+from app.backup.live import format_idle_backup_panel, format_live_backup_panel, measurable_percent
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.manual_preflight import manual_backup_password_error
+from app.backup.operation import (
+    KIND_BACKUP,
+    KIND_DRY_RUN,
+    KIND_REBUILD,
+    OperationRegistry,
+)
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
 from app.config.store import save_config
 from app.engine.status import (
-    clear_stale_progress,
     collect_dashboard_status,
     format_discovery_count,
     live_dashboard_message,
+    master_idle_facts,
+    normalize_startup_progress,
     progress_path,
 )
 from app.gui.discover_page import DiscoverPage
@@ -131,13 +138,20 @@ class DashboardPage(QWidget):
         self.live_panel.setObjectName("liveBackupPanel")
         self.live_panel.setWordWrap(True)
         self.live_panel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.live_panel.setVisible(False)
+        self.live_panel.setVisible(True)
         layout.addWidget(self.live_panel)
+        self.result_panel = QLabel("")
+        self.result_panel.setObjectName("completedResultPanel")
+        self.result_panel.setWordWrap(True)
+        self.result_panel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.result_panel.setVisible(False)
+        layout.addWidget(self.result_panel)
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("backupProgress")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setFormat("—")
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
         self.speed_label = QLabel("")
         layout.addWidget(self.speed_label)
@@ -261,10 +275,7 @@ class DashboardPage(QWidget):
         )
         progress = status.get("progress") or {}
         running = bool(status.get("backup_running") or status.get("backup_active"))
-        show_live = bool(
-            status.get("show_live_panel")
-            or show_live_backup_panel(progress, running=running, backup_active=bool(status.get("backup_active")))
-        )
+        last_completed = status.get("last_completed") if isinstance(status.get("last_completed"), dict) else None
         self.cancel_button.setVisible(running)
         self.backup_button.setEnabled(not running)
         self.rebuild_button.setEnabled(not running)
@@ -285,34 +296,50 @@ class DashboardPage(QWidget):
                 total,
                 stage=str(database.get("stage") or progress.get("ui_stage") or progress.get("phase") or ""),
             )
-        progress_status = str(progress.get("status") or "idle").lower()
-        if show_live:
-            self.live_panel.setVisible(True)
+        self.live_panel.setVisible(True)
+        if running:
             self.live_panel.setText(format_live_backup_panel(progress, now=time.time()))
+            self.result_panel.setVisible(False)
+            self.result_panel.setText("")
         else:
-            self.live_panel.setVisible(False)
-            self.live_panel.setText("")
-        if running and percent is None:
-            self.progress_bar.setRange(0, 0)
-            label = str(overall.get("label") or progress.get("ui_stage") or "Preparing...")
-            self.progress_bar.setFormat(label)
-        elif percent is not None and show_live:
+            self.live_panel.setText(
+                format_idle_backup_panel(
+                    progress,
+                    master_size=status.get("master_bytes"),
+                    head_state=status.get("head_label"),
+                )
+            )
+            if last_completed:
+                result_status = str(last_completed.get("status") or "").upper()
+                self.result_panel.setVisible(True)
+                self.result_panel.setText(
+                    "\n".join(
+                        [
+                            f"LAST RESULT: {result_status}",
+                            str(last_completed.get("message") or last_completed.get("error") or ""),
+                            f"Operation: {last_completed.get('operation_id') or '—'}",
+                            f"HEAD: {last_completed.get('head_state') or 'UNCHANGED'}",
+                        ]
+                    )
+                )
+            else:
+                self.result_panel.setVisible(False)
+                self.result_panel.setText("")
+        if running and percent is not None:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(int(percent))
             self.progress_bar.setFormat(f"{float(percent):.1f}%")
-        elif progress_status == "success" and show_live:
+        elif running:
             self.progress_bar.setRange(0, 100)
-            self.progress_bar.setFormat("%p%")
-            self.progress_bar.setValue(100)
-        elif show_live:
-            self.progress_bar.setRange(0, 0)
-            self.progress_bar.setFormat(str(progress.get("ui_stage") or progress_status or "Preparing..."))
+            self.progress_bar.setValue(0)
+            label = str(overall.get("label") or progress.get("ui_stage") or "Preparing...")
+            self.progress_bar.setFormat(label)
         else:
             self.progress_bar.setRange(0, 100)
-            self.progress_bar.setFormat("%p%")
             self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("—")
         bits = []
-        if show_live:
+        if running:
             speed = int(overall.get("speed_bps") or progress.get("speed_bps") or 0)
             eta = overall.get("eta_seconds")
             if eta is None:
@@ -341,16 +368,19 @@ class DashboardPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    _dry_run_finished = Signal(bool, str)
+    _dry_run_finished = Signal(str, bool, str)
     _discover_finished = Signal(bool, str)
-    _backup_finished = Signal(bool, str)
+    _backup_finished = Signal(str, bool, str)
 
     def __init__(self, config: AppConfig, ssh_password: str = "") -> None:
         super().__init__()
         self.config = config
         self._ssh_password = ssh_password or ""
         self._ssh_state = ("UNKNOWN", "UNKNOWN")
+        self.operations = OperationRegistry()
+        self._last_completed: dict | None = None
         self._backup_active = False
+        normalize_startup_progress(config)
         self.setWindowTitle(f"{__app_name__}  {__version__}")
         self.resize(1100, 780)
         root = QWidget()
@@ -543,15 +573,58 @@ class MainWindow(QMainWindow):
         status = collect_dashboard_status(self.config)
         status["connection"] = self._ssh_state[0]
         status["ssh"] = self._ssh_state[1]
-        status["backup_active"] = bool(self._backup_active)
-        if status.get("backup_active"):
+        active = self.operations.active()
+        active_id = None if active is None else active.operation_id
+        status["active_operation_id"] = active_id
+        status["backup_active"] = active_id is not None
+        status["last_completed"] = self._last_completed
+        if active_id:
             status["backup_running"] = True
             status["show_live_panel"] = True
+            status["live_message"] = "BACKUP IN PROGRESS" if active.kind != KIND_DRY_RUN else "DRY RUN IN PROGRESS"
+            file_progress = ProgressReporter(progress_path()).read()
+            if str(file_progress.get("operation_id") or "") == active_id:
+                status["progress"] = file_progress
+            else:
+                status["progress"] = {
+                    "status": "running",
+                    "ui_stage": "STARTING",
+                    "last_stage": "STARTING",
+                    "operation_id": active_id,
+                    "backup_id": active_id,
+                    "kind": active.kind,
+                    "operation": "DRY RUN" if active.kind == KIND_DRY_RUN else "BACKUP",
+                    "message": "Starting…",
+                    "started_at": active.started_at,
+                    "elapsed_seconds": 0,
+                    "application": None,
+                    "database": {},
+                    "overall": {
+                        "label": "Preparing...",
+                        "percent": None,
+                        "bytes_done": 0,
+                        "bytes_total": 0,
+                        "files_done": 0,
+                        "files_total": None,
+                        "objects_done": 0,
+                        "objects_total": None,
+                    },
+                    "head_state": status.get("head_label") or "UNCHANGED",
+                    "master": {
+                        "current_size": status.get("master_bytes") or 0,
+                        "head_state": status.get("head_label") or "UNCHANGED",
+                    },
+                }
+        else:
+            status["backup_active"] = False
+        self._backup_active = bool(active_id)
         self.dashboard.render(status, self._ssh_state)
 
+    def _busy(self) -> bool:
+        return self.operations.active_id() is not None or BackupLock(self.config.backup_destination).is_locked()
+
     def confirm_backup(self) -> None:
-        lock = BackupLock(self.config.backup_destination)
-        if lock.is_locked():
+        if self._busy():
             QMessageBox.warning(self, "BACKUP NOW", "Backup already in progress.")
             return
         message = (
@@ -573,10 +646,15 @@ class MainWindow(QMainWindow):
         if not self._require_manual_backup_password("BACKUP NOW"):
             return
         save_config(self.config)
+        state = self.operations.try_start(KIND_BACKUP)
+        if state is None:
+            QMessageBox.warning(self, "BACKUP NOW", "Backup already in progress.")
+            return
         config = self.config
         password = self._ssh_password
         window = self
-        window._backup_active = True
+        op_id = state.operation_id
+        cancel_event = state.cancel_event
         self.refresh()
 
         def work() -> None:
@@ -589,38 +667,22 @@ class MainWindow(QMainWindow):
                     config,
                     ssh=SSHClient(config, password=password, require_paramiko=True),
                     mode="manual",
+                    operation_id=op_id,
+                    cancel_event=cancel_event,
                 ).run()
                 ok = True
                 message = "MASTER BACKUP STATUS=SUCCESS"
             except (BackupError, SSHError, OSError, Exception) as exc:
                 _LOG.exception("BACKUP_FAILED")
-                try:
-                    ProgressReporter(progress_path()).finish(
-                        status="failed",
-                        ui_stage="FAILED",
-                        message="BACKUP FAILED",
-                        error=str(exc),
-                    )
-                    ProgressReporter(progress_path()).write(operation="BACKUP", head_state="UNCHANGED")
-                except Exception:
-                    ProgressReporter(progress_path()).write(
-                        status="failed",
-                        message="BACKUP FAILED",
-                        error=str(exc),
-                        ui_stage="FAILED",
-                        operation="BACKUP",
-                        head_state="UNCHANGED",
-                    )
                 message = str(exc)
             finally:
-                window._backup_finished.emit(ok, message)
+                window._backup_finished.emit(op_id, ok, message)
 
         threading.Thread(target=work, daemon=True).start()
         self.statusBar().showMessage("Backup started.")
 
     def confirm_rebuild(self) -> None:
-        lock = BackupLock(self.config.backup_destination)
-        if lock.is_locked():
+        if self._busy():
             QMessageBox.warning(self, "REBUILD MASTER", "Backup already in progress.")
             return
         message = (
@@ -640,10 +702,15 @@ class MainWindow(QMainWindow):
         if not self._require_manual_backup_password("REBUILD MASTER"):
             return
         save_config(self.config)
+        state = self.operations.try_start(KIND_REBUILD)
+        if state is None:
+            QMessageBox.warning(self, "REBUILD MASTER", "Backup already in progress.")
+            return
         config = self.config
         password = self._ssh_password
         window = self
-        window._backup_active = True
+        op_id = state.operation_id
+        cancel_event = state.cancel_event
         self.refresh()
 
         def work() -> None:
@@ -656,46 +723,60 @@ class MainWindow(QMainWindow):
                     config,
                     ssh=SSHClient(config, password=password, require_paramiko=True),
                     mode="manual",
+                    operation_id=op_id,
+                    cancel_event=cancel_event,
                 ).rebuild_master()
                 ok = True
                 message = "MASTER BACKUP STATUS=SUCCESS"
             except (BackupError, SSHError, OSError, Exception) as exc:
                 _LOG.exception("BACKUP_FAILED")
-                try:
-                    ProgressReporter(progress_path()).finish(
-                        status="failed",
-                        ui_stage="FAILED",
-                        message="BACKUP FAILED",
-                        error=str(exc),
-                    )
-                    ProgressReporter(progress_path()).write(operation="BACKUP", head_state="UNCHANGED")
-                except Exception:
-                    ProgressReporter(progress_path()).write(
-                        status="failed",
-                        message="BACKUP FAILED",
-                        error=str(exc),
-                        ui_stage="FAILED",
-                        operation="BACKUP",
-                        head_state="UNCHANGED",
-                    )
                 message = str(exc)
             finally:
-                window._backup_finished.emit(ok, message)
+                window._backup_finished.emit(op_id, ok, message)
 
         threading.Thread(target=work, daemon=True).start()
         self.statusBar().showMessage("Master rebuild started.")
 
-    def _on_backup_finished(self, ok: bool, text: str) -> None:
+    def _on_backup_finished(self, operation_id: str, ok: bool, text: str) -> None:
+        if self.operations.ignore_event(operation_id):
+            return
+        finished = self.operations.finish(operation_id, {"ok": ok, "message": text})
+        if finished is None:
+            return
+        cancelled = (not ok) and "cancel" in str(text or "").lower()
+        facts = master_idle_facts(self.config)
+        self._last_completed = {
+            "status": "success" if ok else ("cancelled" if cancelled else "failed"),
+            "ui_stage": "SUCCESS" if ok else ("CANCELLED" if cancelled else "FAILED"),
+            "message": text,
+            "error": None if ok else text,
+            "operation_id": operation_id,
+            "elapsed_seconds": finished.frozen_elapsed,
+            "head_state": facts["head_state"] if ok else "UNCHANGED",
+            "operation": "BACKUP",
+        }
+        ProgressReporter(progress_path()).reset_idle(
+            master_size=int(facts["current_size"] or 0),
+            head_state=str(facts["head_state"]),
+            last_result=dict(self._last_completed),
+        )
         self._backup_active = False
         self.refresh()
         if ok:
             self.statusBar().showMessage(text)
             return
-        self.statusBar().showMessage("BACKUP FAILED")
+        self.statusBar().showMessage("BACKUP CANCELLED" if cancelled else "BACKUP FAILED")
+        if cancelled:
+            QMessageBox.information(self, "BACKUP CANCELLED", text or "Backup cancelled. HEAD is unchanged.")
+            return
         QMessageBox.critical(self, "BACKUP FAILED", text or "Backup failed. HEAD is unchanged.")
 
     def cancel_backup(self) -> None:
-        ProgressReporter(progress_path()).request_cancel()
+        op = self.operations.active()
+        if op is None:
+            return
+        op.request_cancel()
+        ProgressReporter(progress_path()).request_cancel(op.operation_id)
         self.statusBar().showMessage("Cancel requested.")
 
     def test_connection(self) -> None:
@@ -726,7 +807,7 @@ class MainWindow(QMainWindow):
         self._ssh_state = ("CONNECTED" if result.get("reachable") else "DISCONNECTED", "OK" if ok else "FAILED")
         details = "\n".join(result.get("details") or []) or str(result)
         if ok:
-            clear_stale_progress(self.config)
+            normalize_startup_progress(self.config)
             QMessageBox.information(self, "TEST CONNECTION", details)
         else:
             QMessageBox.critical(self, "TEST CONNECTION", details)
@@ -734,40 +815,69 @@ class MainWindow(QMainWindow):
 
     def dry_run(self) -> None:
         self.config = self.settings_page.current_config()
-        if BackupLock(self.config.backup_destination).is_locked():
+        if self._busy():
             QMessageBox.warning(self, "DRY RUN", "Backup already in progress.")
             return
         if not self.ensure_password():
             return
         save_config(self.config)
+        state = self.operations.try_start(KIND_DRY_RUN)
+        if state is None:
+            QMessageBox.warning(self, "DRY RUN", "Backup already in progress.")
+            return
         config = self.config
         password = self._ssh_password
+        op_id = state.operation_id
+        cancel_event = state.cancel_event
+        self.refresh()
 
         def work() -> None:
             from app.engine.backup_engine import BackupEngine, BackupCancelled, BackupError
 
             try:
-                result = BackupEngine(config, ssh=SSHClient(config, password=password or None)).dry_run()
+                result = BackupEngine(
+                    config,
+                    ssh=SSHClient(config, password=password or None),
+                    operation_id=op_id,
+                    cancel_event=cancel_event,
+                ).dry_run()
                 text = str(result.get("report_text") or "Dry run finished.")
-                self._dry_run_finished.emit(bool(result.get("ok")), text)
+                self._dry_run_finished.emit(op_id, bool(result.get("ok")), text)
             except BackupAlreadyRunning as exc:
                 _LOG.error("DRY_RUN_ERROR %s", exc)
-                self._dry_run_finished.emit(False, str(exc))
+                self._dry_run_finished.emit(op_id, False, str(exc))
             except BackupCancelled as exc:
                 _LOG.info("DRY_RUN_ERROR cancelled")
-                self._dry_run_finished.emit(False, str(exc))
+                self._dry_run_finished.emit(op_id, False, str(exc))
             except (BackupError, SSHError, OSError, Exception) as exc:
                 _LOG.exception("DRY_RUN_ERROR")
-                try:
-                    ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
-                except OSError:
-                    pass
-                self._dry_run_finished.emit(False, str(exc))
+                self._dry_run_finished.emit(op_id, False, str(exc))
 
         threading.Thread(target=work, name="serverbackup-dry-run", daemon=True).start()
         self.statusBar().showMessage("Dry run started.")
 
-    def _on_dry_run_finished(self, ok: bool, text: str) -> None:
+    def _on_dry_run_finished(self, operation_id: str, ok: bool, text: str) -> None:
+        if self.operations.ignore_event(operation_id):
+            return
+        finished = self.operations.finish(operation_id, {"ok": ok, "message": text})
+        if finished is None:
+            return
+        facts = master_idle_facts(self.config)
+        cancelled = (not ok) and "cancel" in str(text or "").lower()
+        self._last_completed = {
+            "status": "success" if ok else ("cancelled" if cancelled else "failed"),
+            "message": text,
+            "error": None if ok else text,
+            "operation_id": operation_id,
+            "operation": "DRY RUN",
+            "elapsed_seconds": finished.frozen_elapsed,
+            "head_state": facts["head_state"],
+        }
+        ProgressReporter(progress_path()).reset_idle(
+            master_size=int(facts["current_size"] or 0),
+            head_state=str(facts["head_state"]),
+            last_result=dict(self._last_completed),
+        )
         self.refresh()
         if ok:
             show_scrollable_report(self, "DRY RUN", text)

@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from app.backup.live import is_backup_operation, show_live_backup_panel
 from app.backup.lock import BackupLock
-from app.backup.progress import ProgressReporter
+from app.backup.progress import ProgressReporter, idle_progress_payload
 from app.backup.retention import list_history, list_successful_backups
 from app.config.schema import AppConfig
 from app.config.store import load_state, runtime_dir
@@ -28,48 +28,54 @@ def progress_path() -> Path:
 def live_dashboard_message(progress: Mapping[str, Any] | None, *, running: bool) -> str:
     """Banner text for the dashboard.
 
-    Failed leftover messages such as "SSH connection timed out." stay in
-    progress.json after an earlier TEST CONNECTION. They must not be shown
-    as live status once no backup is running — unless they belong to BACKUP NOW.
+    Leftover progress.json from an earlier process is never shown as live
+    status. Only the current running operation updates this banner.
     """
     data = dict(progress or {})
     if running:
         return str(data.get("message") or "BACKUP IN PROGRESS")
-    status = str(data.get("status") or "idle").lower()
-    if is_backup_operation(data) and status in {"failed", "cancelled", "running", "success"}:
-        if status == "failed":
-            return str(data.get("error") or data.get("message") or "BACKUP FAILED")
-        if status == "cancelled":
-            return str(data.get("message") or "BACKUP CANCELLED")
-        return str(data.get("message") or "BACKUP IN PROGRESS")
-    if status == "success":
-        return str(data.get("message") or "Ready.")
     return "Ready."
 
 
+def master_idle_facts(config: AppConfig) -> dict[str, Any]:
+    store = MasterStore(config.backup_destination)
+    meta = store.load_meta()
+    generation = store.head_generation()
+    size = int(meta.get("master_bytes") or meta.get("source_bytes") or 0)
+    if generation is None:
+        head = "MISSING"
+    else:
+        head = str(generation)
+    return {"current_size": size, "head_state": head, "generation": generation}
+
+
 def clear_stale_progress(config: AppConfig) -> bool:
-    """Idle the progress file when a leftover failure is not a live backup."""
+    """Normalize leftover runtime state to IDLE when no backup lock is held."""
+    return normalize_startup_progress(config)
+
+
+def normalize_startup_progress(config: AppConfig) -> bool:
+    """Crash recovery is not implemented: leftover RUNNING/PREPARING/CANCELLED become IDLE."""
     if BackupLock(config.backup_destination).is_locked():
         return False
     reporter = ProgressReporter(progress_path())
     data = reporter.read()
-    if is_backup_operation(data) and str(data.get("status") or "").lower() in {"failed", "cancelled", "success"}:
-        return False
-    status = str(data.get("status") or "idle").lower()
-    if status not in {"failed", "cancelled", "running"}:
-        return False
-    reporter.write(
-        status="idle",
-        phase="idle",
-        message="Ready.",
-        error=None,
-        cancel_requested=False,
-        bytes_done=0,
-        bytes_total=0,
-        speed_bps=0,
-        eta_seconds=None,
-        sha256=None,
-        steps=[],
+    facts = master_idle_facts(config)
+    last_result = None
+    if isinstance(data.get("last_result"), dict):
+        last_result = data.get("last_result")
+    elif str(data.get("status") or "").lower() in {"failed", "cancelled", "success"}:
+        last_result = {
+            "status": data.get("status"),
+            "message": data.get("message"),
+            "error": data.get("error"),
+            "operation_id": data.get("operation_id") or data.get("backup_id"),
+            "head_state": data.get("head_state"),
+        }
+    reporter.reset_idle(
+        master_size=int(facts["current_size"] or 0),
+        head_state=str(facts["head_state"]),
+        last_result=last_result,
     )
     return True
 
@@ -93,9 +99,12 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
     drive = drive_status(dest)
     lock = BackupLock(dest)
     progress = ProgressReporter(progress_path()).read()
-    running = lock.is_locked() or (
-        str(progress.get("status") or "").lower() == "running" and is_backup_operation(progress)
-    )
+    lock_held = lock.is_locked()
+    file_running = str(progress.get("status") or "").lower() == "running"
+    running = lock_held and (file_running or is_backup_operation(progress) or str(progress.get("kind") or "") == "dry_run")
+    if not lock_held:
+        running = False
+    facts = master_idle_facts(config)
     successful = list_successful_backups(dest)
     history = list_history(dest)
     last = history[0] if history else None
@@ -153,7 +162,13 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
         "backup_running": running,
         "show_live_panel": show_live_backup_panel(progress, running=running),
         "live_message": live_dashboard_message(progress, running=running),
-        "progress": progress,
+        "progress": progress if running else idle_progress_payload(
+            master_size=int(facts["current_size"] or 0),
+            head_state=str(facts["head_state"]),
+            last_result=progress.get("last_result") if isinstance(progress.get("last_result"), dict) else None,
+        ),
+        "master_bytes": facts["current_size"],
+        "head_label": facts["head_state"],
         "destination": str(dest),
         "drive_error": drive.error,
         **_discovery_status(config),

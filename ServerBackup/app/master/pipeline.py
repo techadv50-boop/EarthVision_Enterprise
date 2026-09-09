@@ -28,7 +28,7 @@ from app.backup.live import (
     UI_FAILED,
     UI_HASHING,
     UI_INVENTORY,
-    UI_PREPARING,
+    UI_STARTING,
     UI_SUCCESS,
     UI_TRANSFERRING,
     UI_VERIFYING,
@@ -971,7 +971,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                 raise SSHError(result.stderr.strip() or "SSH login failed.")
 
         engine._retry("SSH connectivity", _login_dry)
-        engine.progress.write(phase="helpers", ui_stage=UI_PREPARING, message="Installing Ubuntu backup helpers…")
+        engine.progress.write(phase="helpers", ui_stage=UI_STARTING, message="Installing Ubuntu backup helpers…")
         helpers = engine.ssh.ensure_remote_scripts()
         if not helpers.ok:
             raise PipelineError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
@@ -987,7 +987,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         )
         engine.live = live
     log_pipeline(engine, "BACKUP_START", engine.backup_id)
-    live.set_ui_stage(UI_PREPARING, "Master backup…", phase="master")
+    live.set_ui_stage(UI_STARTING, "Master backup…", phase="master")
 
     log_pipeline(engine, "SSH_CONNECT_START")
     live.set_ui_stage(UI_CONNECTING, "Connecting to Ubuntu…", phase="ssh")
@@ -999,7 +999,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
 
     engine._retry("SSH connectivity", _login)
     log_pipeline(engine, "SSH_CONNECTED")
-    live.set_ui_stage(UI_PREPARING, "Installing Ubuntu backup helpers…", phase="helpers")
+    live.set_ui_stage(UI_STARTING, "Installing Ubuntu backup helpers…", phase="helpers")
     helpers = engine.ssh.ensure_remote_scripts()
     if not helpers.ok:
         raise PipelineError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
