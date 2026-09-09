@@ -1,0 +1,935 @@
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app import __app_name__, __version__
+from app.backup.live import format_idle_backup_panel, format_live_backup_panel, measurable_percent
+from app.backup.lock import BackupAlreadyRunning, BackupLock
+from app.backup.manual_preflight import manual_backup_password_error
+from app.backup.operation import (
+    KIND_BACKUP,
+    KIND_DRY_RUN,
+    KIND_REBUILD,
+    OperationRegistry,
+)
+from app.backup.progress import ProgressReporter
+from app.config.schema import AppConfig
+from app.config.store import save_config
+from app.engine.status import (
+    collect_dashboard_status,
+    format_discovery_count,
+    live_dashboard_message,
+    master_idle_facts,
+    normalize_startup_progress,
+    progress_path,
+)
+from app.gui.discover_page import DiscoverPage
+from app.gui.history_page import HistoryPage
+from app.gui.logs_page import LogsPage
+from app.gui.password import prompt_ubuntu_password
+from app.gui.restore_page import RestorePage
+from app.gui.security_page import SecurityPage
+from app.gui.settings_page import SettingsPage
+from app.gui.setup_dialog import DrivePickerDialog, SetupDialog
+from app.gui.styles import STYLESHEET
+from app.gui.widgets import Card
+from app.ssh.client import SSHClient, SSHError
+from app.utils.disk import needs_setup
+from app.utils.format import format_bytes, format_duration
+
+_LOG = logging.getLogger("serverbackup.gui")
+
+
+def show_scrollable_report(parent, title: str, text: str) -> None:
+    """Show a full DRY RUN / discovery report. QMessageBox truncates long text on Windows."""
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.resize(900, 680)
+    layout = QVBoxLayout(dialog)
+    view = QPlainTextEdit()
+    view.setReadOnly(True)
+    view.setPlainText(text)
+    layout.addWidget(view)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+    buttons.accepted.connect(dialog.accept)
+    layout.addWidget(buttons)
+    dialog.exec()
+
+
+class DashboardPage(QWidget):
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        title = QLabel(f"{__app_name__}")
+        title.setObjectName("title")
+        subtitle = QLabel(
+            f"Version {__version__}  ·  Primary action: BACKUP NOW  ·  Automatic backup is OFF by default"
+        )
+        subtitle.setObjectName("subtitle")
+        readonly = QLabel(
+            "This dashboard is read-only. Click EDIT SETTINGS or CHOOSE BACKUP DRIVE to change values."
+        )
+        readonly.setObjectName("subtitle")
+        readonly.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addWidget(readonly)
+        setup_row = QHBoxLayout()
+        edit_settings = QPushButton("EDIT SETTINGS")
+        edit_settings.setObjectName("primary")
+        edit_settings.clicked.connect(self._window.show_settings)
+        choose_drive = QPushButton("CHOOSE BACKUP DRIVE")
+        choose_drive.clicked.connect(self._window.choose_backup_drive)
+        setup_row.addWidget(edit_settings)
+        setup_row.addWidget(choose_drive)
+        layout.addLayout(setup_row)
+        self.server_card = Card("SERVER STATUS")
+        self.master_card = Card("MASTER BACKUP")
+        self.backup_card = Card("BACKUP STATUS")
+        self.storage_card = Card("STORAGE")
+        self.schedule_card = Card("SCHEDULE")
+        self.apps_card = Card("DISCOVERED APPLICATIONS")
+        layout.addWidget(self.server_card)
+        layout.addWidget(self.master_card)
+        layout.addWidget(self.apps_card)
+        self.review_apps_button = QPushButton("REVIEW / APPROVE APPLICATIONS")
+        self.review_apps_button.setObjectName("primary")
+        self.review_apps_button.clicked.connect(self._window.show_discover)
+        layout.addWidget(self.review_apps_button)
+        layout.addWidget(self.backup_card)
+        layout.addWidget(self.storage_card)
+        layout.addWidget(self.schedule_card)
+        self.security_card = Card("SERVER SECURITY")
+        layout.addWidget(self.security_card)
+        self.status_label = QLabel("Ready.")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        self.live_panel = QLabel("")
+        self.live_panel.setObjectName("liveBackupPanel")
+        self.live_panel.setWordWrap(True)
+        self.live_panel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.live_panel.setVisible(True)
+        layout.addWidget(self.live_panel)
+        self.result_panel = QLabel("")
+        self.result_panel.setObjectName("completedResultPanel")
+        self.result_panel.setWordWrap(True)
+        self.result_panel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.result_panel.setVisible(False)
+        layout.addWidget(self.result_panel)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("backupProgress")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("—")
+        self.progress_bar.setTextVisible(True)
+        layout.addWidget(self.progress_bar)
+        self.speed_label = QLabel("")
+        layout.addWidget(self.speed_label)
+        self.backup_button = QPushButton("BACKUP NOW")
+        self.backup_button.setObjectName("primary")
+        self.backup_button.clicked.connect(self._window.confirm_backup)
+        layout.addWidget(self.backup_button)
+        self.rebuild_button = QPushButton("REBUILD MASTER BASELINE")
+        self.rebuild_button.clicked.connect(self._window.confirm_rebuild)
+        layout.addWidget(self.rebuild_button)
+        self.cancel_button = QPushButton("CANCEL BACKUP")
+        self.cancel_button.setObjectName("danger")
+        self.cancel_button.clicked.connect(self._window.cancel_backup)
+        self.cancel_button.setVisible(False)
+        layout.addWidget(self.cancel_button)
+        grid = QHBoxLayout()
+        for label, handler in [
+            ("TEST CONNECTION", self._window.test_connection),
+            ("BACKUP HISTORY", self._window.show_history),
+            ("VIEW LOGS", self._window.show_logs),
+            ("OPEN BACKUP FOLDER", self._window.open_backup_folder),
+            ("SETTINGS", self._window.show_settings),
+            ("RESTORE", self._window.show_restore),
+            ("TEST BACKUP INTEGRITY", self._window.test_integrity),
+            ("DRY RUN", self._window.dry_run),
+            ("DISCOVER SERVER", self._window.discover_server),
+            ("REFRESH", self._window.refresh),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            grid.addWidget(button)
+        wrap = QWidget()
+        wrap.setLayout(grid)
+        layout.addWidget(wrap)
+        security_label = QLabel("SERVER SECURITY")
+        security_label.setStyleSheet("font-weight: 700; color: #10233a;")
+        layout.addWidget(security_label)
+        sec_grid = QHBoxLayout()
+        check_btn = QPushButton("SECURITY CHECK")
+        check_btn.clicked.connect(self._window.security_check)
+        sec_grid.addWidget(check_btn)
+        for label, tab in [
+            ("ROTATE SECURITY CREDENTIALS", "rotate"),
+            ("VIEW SERVER CHANGES", "changes"),
+            ("VIEW SECURITY REPORT", "report"),
+            ("SECURITY HISTORY", "history"),
+            ("ROLLBACK SECURITY CHANGES", "rollback"),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, name=tab: self._window.show_security(name))
+            sec_grid.addWidget(button)
+        sec_wrap = QWidget()
+        sec_wrap.setLayout(sec_grid)
+        layout.addWidget(sec_wrap)
+        layout.addStretch()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+    def render(self, status: dict, ssh_state: tuple[str, str] | None = None) -> None:
+        connection, ssh = ssh_state or (status.get("connection") or "UNKNOWN", status.get("ssh") or "UNKNOWN")
+        self.server_card.set_rows(
+            [
+                ("Ubuntu Server:", status.get("server_ip") or "—"),
+                ("Connection:", connection),
+                ("SSH:", ssh),
+            ]
+        )
+        self.master_card.set_rows(
+            [
+                ("Status:", str(status.get("master_status") or "MISSING")),
+                ("Generation:", str(status.get("master_generation") or "—")),
+                ("Last operation:", str(status.get("master_type") or "—")),
+                ("Updated:", str(status.get("master_updated") or "—")),
+                ("OJS files_dir:", str(status.get("master_ojs") or "—")),
+                ("Integrity:", str(status.get("master_detail") or "—")),
+            ]
+        )
+        self.apps_card.set_rows(
+            [
+                ("Total discovered:", format_discovery_count(status.get("discovered_total"))),
+                ("Approved:", format_discovery_count(status.get("discovered_approved"))),
+                ("Needs review:", format_discovery_count(status.get("discovered_review"))),
+                (
+                    "Removed since last run:",
+                    format_discovery_count(status.get("discovered_removed"), zero_as_dash=True),
+                ),
+            ]
+        )
+        self.backup_card.set_rows(
+            [
+                ("Last Backup:", str(status.get("last_backup") or "—")),
+                ("Last Backup Status:", str(status.get("last_status") or "NEVER RUN")),
+                ("Last Backup Size:", str(status.get("last_size") or "—")),
+                ("Successful timestamped archives:", str(status.get("successful_backups") or 0)),
+                ("Master retention:", "none (no keep-5)"),
+            ]
+        )
+        self.storage_card.set_rows(
+            [
+                ("Backup Drive:", str(status.get("drive") or "—")),
+                ("Total Space:", str(status.get("total_space") or "—")),
+                ("Free Space:", str(status.get("free_space") or "—")),
+                ("Used Space:", str(status.get("used_space") or "—")),
+            ]
+        )
+        self.schedule_card.set_rows(
+            [
+                ("Automatic Backup:", str(status.get("automatic_backup") or "OFF")),
+                ("Next Automatic Backup:", str(status.get("next_automatic_backup") or "—")),
+            ]
+        )
+        self.security_card.set_rows(
+            [
+                ("Mode:", str(status.get("security_mode") or "BALANCED")),
+                ("Last Security Check:", str(status.get("last_security_check") or "NEVER RUN")),
+                ("Overall:", str(status.get("security_overall") or "NEVER RUN")),
+                ("Layer 1 Entry:", str(status.get("security_layer1") or "—")),
+                ("Layer 2 Access:", str(status.get("security_layer2") or "—")),
+                ("Layer 3 Integrity:", str(status.get("security_layer3") or "—")),
+            ]
+        )
+        progress = status.get("progress") or {}
+        running = bool(status.get("backup_running") or status.get("backup_active"))
+        last_completed = status.get("last_completed") if isinstance(status.get("last_completed"), dict) else None
+        self.cancel_button.setVisible(running)
+        self.backup_button.setEnabled(not running)
+        self.rebuild_button.setEnabled(not running)
+        message = status.get("live_message") or live_dashboard_message(progress, running=running)
+        self.status_label.setText(message)
+        overall = progress.get("overall") if isinstance(progress.get("overall"), dict) else {}
+        database = progress.get("database") if isinstance(progress.get("database"), dict) else {}
+        done = overall.get("bytes_done")
+        if done is None:
+            done = progress.get("bytes_done")
+        total = overall.get("bytes_total")
+        if total is None:
+            total = progress.get("bytes_total")
+        percent = overall.get("percent")
+        if percent is None:
+            percent = measurable_percent(
+                done,
+                total,
+                stage=str(database.get("stage") or progress.get("ui_stage") or progress.get("phase") or ""),
+            )
+        self.live_panel.setVisible(True)
+        if running:
+            self.live_panel.setText(format_live_backup_panel(progress, now=time.time()))
+            self.result_panel.setVisible(False)
+            self.result_panel.setText("")
+        else:
+            self.live_panel.setText(
+                format_idle_backup_panel(
+                    progress,
+                    master_size=status.get("master_bytes"),
+                    head_state=status.get("head_label"),
+                )
+            )
+            if last_completed:
+                result_status = str(last_completed.get("status") or "").upper()
+                self.result_panel.setVisible(True)
+                self.result_panel.setText(
+                    "\n".join(
+                        [
+                            f"LAST RESULT: {result_status}",
+                            str(last_completed.get("message") or last_completed.get("error") or ""),
+                            f"Operation: {last_completed.get('operation_id') or '—'}",
+                            f"HEAD: {last_completed.get('head_state') or 'UNCHANGED'}",
+                        ]
+                    )
+                )
+            else:
+                self.result_panel.setVisible(False)
+                self.result_panel.setText("")
+        if running and percent is not None:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(int(percent))
+            self.progress_bar.setFormat(f"{float(percent):.1f}%")
+        elif running:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            label = str(overall.get("label") or progress.get("ui_stage") or "Preparing...")
+            self.progress_bar.setFormat(label)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("—")
+        bits = []
+        if running:
+            speed = int(overall.get("speed_bps") or progress.get("speed_bps") or 0)
+            eta = overall.get("eta_seconds")
+            if eta is None:
+                eta = progress.get("eta_seconds")
+            sha = progress.get("sha256")
+            if speed:
+                bits.append(f"Speed: {format_bytes(speed)}/s")
+            if eta:
+                bits.append(f"Estimated remaining: {format_duration(eta)}")
+            if sha:
+                bits.append(f"SHA-256: {sha}")
+            files_done = overall.get("files_done")
+            files_total = overall.get("files_total")
+            if files_done is not None or files_total is not None:
+                bits.append(f"Files: {files_done if files_done is not None else '—'} / {files_total if files_total is not None else '—'}")
+            objects_done = overall.get("objects_done")
+            objects_total = overall.get("objects_total")
+            if objects_done is not None or objects_total is not None:
+                bits.append(
+                    f"Objects: {objects_done if objects_done is not None else '—'} / {objects_total if objects_total is not None else '—'}"
+                )
+            steps = progress.get("steps") or []
+            if steps:
+                bits.append(" | ".join(f"{'✓' if s.get('ok') else '•'} {s.get('label')}" for s in steps[-6:]))
+        self.speed_label.setText("\n".join(bits))
+
+
+class MainWindow(QMainWindow):
+    _dry_run_finished = Signal(str, bool, str)
+    _discover_finished = Signal(bool, str)
+    _backup_finished = Signal(str, bool, str)
+
+    def __init__(self, config: AppConfig, ssh_password: str = "") -> None:
+        super().__init__()
+        self.config = config
+        self._ssh_password = ssh_password or ""
+        self._ssh_state = ("UNKNOWN", "UNKNOWN")
+        self.operations = OperationRegistry()
+        self._last_completed: dict | None = None
+        self._backup_active = False
+        normalize_startup_progress(config)
+        self.setWindowTitle(f"{__app_name__}  {__version__}")
+        self.resize(1100, 780)
+        root = QWidget()
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        self.stack = QStackedWidget()
+        self.dashboard = DashboardPage(self)
+        self.settings_page = SettingsPage()
+        self.history_page = HistoryPage()
+        self.logs_page = LogsPage()
+        self.restore_page = RestorePage()
+        self.security_page = SecurityPage()
+        self.discover_page = DiscoverPage()
+        self.stack.addWidget(self.dashboard)
+        self.stack.addWidget(self.settings_page)
+        self.stack.addWidget(self.history_page)
+        self.stack.addWidget(self.logs_page)
+        self.stack.addWidget(self.restore_page)
+        self.stack.addWidget(self.security_page)
+        self.stack.addWidget(self.discover_page)
+        layout.addWidget(self.stack)
+        back = QPushButton("Back to dashboard")
+        back.clicked.connect(self.show_dashboard)
+        layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.settings_page.load_config(config)
+        self.statusBar().showMessage(f"{__app_name__} Version {__version__}")
+        self._dry_run_finished.connect(self._on_dry_run_finished, Qt.ConnectionType.QueuedConnection)
+        self._discover_finished.connect(self._on_discover_finished, Qt.ConnectionType.QueuedConnection)
+        self._backup_finished.connect(self._on_backup_finished, Qt.ConnectionType.QueuedConnection)
+        self.discover_page.rediscover_requested.connect(self.discover_server)
+        self.discover_page.cancelled.connect(self.show_dashboard)
+        self.discover_page.approved.connect(self._on_applications_approved)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(1000)
+        self.refresh()
+
+    def _ssh_client(self) -> SSHClient:
+        return SSHClient(self.config, password=self._ssh_password or None)
+
+    def _has_usable_key(self) -> bool:
+        key = (self.config.ssh_private_key_path or "").strip()
+        if not key:
+            return False
+        return Path(os.path.expandvars(os.path.expanduser(key))).is_file()
+
+    def ensure_password(self) -> bool:
+        if self._ssh_password:
+            return True
+        if self._has_usable_key():
+            return True
+        entered = prompt_ubuntu_password(self, self.config.ssh_username, self.config.server_ip)
+        if entered is None:
+            return False
+        self._ssh_password = entered
+        if not self._ssh_password:
+            QMessageBox.warning(
+                self,
+                "Ubuntu password",
+                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}, "
+                "or click Create SSH key first.",
+            )
+            return False
+        return True
+
+    def _require_manual_backup_password(self, title: str = "BACKUP NOW") -> bool:
+        error = manual_backup_password_error(self._ssh_password)
+        if error:
+            QMessageBox.warning(self, title, error)
+            return False
+        return True
+
+    def show_dashboard(self) -> None:
+        self.stack.setCurrentWidget(self.dashboard)
+        self.refresh()
+
+    def show_settings(self) -> None:
+        self.config = self.settings_page.current_config()
+        self.settings_page.load_config(self.config)
+        self.stack.setCurrentWidget(self.settings_page)
+        self.settings_page.server_ip.setFocus()
+
+    def choose_backup_drive(self) -> None:
+        self.config = self.settings_page.current_config()
+        dialog = DrivePickerDialog(self.config.backup_destination, self)
+        if not dialog.exec() or not dialog.selected:
+            return
+        self.config.backup_destination = dialog.selected
+        self.config.setup_completed = True
+        self.settings_page.load_config(self.config)
+        save_config(self.config)
+        try:
+            Path(self.config.backup_destination).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Backup folder", str(exc))
+        self.refresh()
+        QMessageBox.information(
+            self,
+            "Backup folder",
+            f"Backups will be saved to:\n{self.config.backup_destination}",
+        )
+
+    def show_history(self) -> None:
+        self.history_page.reload(self.config)
+        self.stack.setCurrentWidget(self.history_page)
+
+    def show_logs(self) -> None:
+        self.logs_page.reload(self.config)
+        self.stack.setCurrentWidget(self.logs_page)
+
+    def show_restore(self) -> None:
+        self.restore_page.reload(self.config, ssh_password=self._ssh_password)
+        self.stack.setCurrentWidget(self.restore_page)
+
+    def show_discover(self) -> None:
+        self.discover_page.reload(self.config)
+        self.discover_page.set_busy(False)
+        self.stack.setCurrentWidget(self.discover_page)
+
+    def discover_server(self) -> None:
+        self.config = self.settings_page.current_config()
+        if not self.ensure_password():
+            return
+        save_config(self.config)
+        config = self.config
+        password = self._ssh_password
+        self.show_discover()
+        self.discover_page.set_busy(True, "Discovering Nginx applications…")
+
+        def work() -> None:
+            from app.discover.engine import DiscoveryError, discover_applications
+
+            try:
+                result = discover_applications(
+                    config,
+                    ssh=SSHClient(config, password=password or None),
+                )
+                self._last_discovery = result
+                self._discover_finished.emit(True, str(result.get("report_text") or "Discovery finished."))
+            except (DiscoveryError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("DISCOVER_ERROR")
+                self._discover_finished.emit(False, str(exc))
+
+        threading.Thread(target=work, name="serverbackup-discover", daemon=True).start()
+        self.statusBar().showMessage("Discovering applications…")
+
+    def _on_discover_finished(self, ok: bool, text: str) -> None:
+        result = getattr(self, "_last_discovery", None)
+        self.discover_page.set_busy(False)
+        if ok and isinstance(result, dict):
+            self.discover_page.reload(self.config, result)
+            self.stack.setCurrentWidget(self.discover_page)
+        self.refresh()
+        if ok:
+            self.statusBar().showMessage(
+                "Discovery complete. Approve applications on this page. BACKUP NOW was not started."
+            )
+        else:
+            QMessageBox.critical(self, "DISCOVER SERVER failed", text)
+            self.statusBar().showMessage("Discovery failed.")
+
+    def _on_applications_approved(self, count: int) -> None:
+        self.show_dashboard()
+        QMessageBox.information(
+            self,
+            "APPLICATIONS APPROVED",
+            f"Approved {count} application(s).\n\n"
+            "Dashboard counts are updated. BACKUP NOW was not started.",
+        )
+
+    def show_security(self, tab: str = "check") -> None:
+        self.security_page.reload(self.config)
+        self.security_page.show_tab(tab)
+        self.stack.setCurrentWidget(self.security_page)
+
+    def security_check(self) -> None:
+        self.show_security("check")
+        self.security_page._run_check()
+
+    def open_restore(self, location: str) -> None:
+        self.restore_page.reload(self.config, selected=location, ssh_password=self._ssh_password)
+        self.stack.setCurrentWidget(self.restore_page)
+
+    def refresh(self) -> None:
+        """Reload local dashboard files. This never opens an SSH connection."""
+        if self.stack.currentWidget() is self.settings_page:
+            self.config = self.settings_page.current_config()
+            return
+        self.config = self.settings_page.current_config()
+        status = collect_dashboard_status(self.config)
+        status["connection"] = self._ssh_state[0]
+        status["ssh"] = self._ssh_state[1]
+        active = self.operations.active()
+        active_id = None if active is None else active.operation_id
+        status["active_operation_id"] = active_id
+        status["backup_active"] = active_id is not None
+        status["last_completed"] = self._last_completed
+        if active_id:
+            status["backup_running"] = True
+            status["show_live_panel"] = True
+            status["live_message"] = "BACKUP IN PROGRESS" if active.kind != KIND_DRY_RUN else "DRY RUN IN PROGRESS"
+            file_progress = ProgressReporter(progress_path()).read()
+            if str(file_progress.get("operation_id") or "") == active_id:
+                status["progress"] = file_progress
+            else:
+                status["progress"] = {
+                    "status": "running",
+                    "ui_stage": "STARTING",
+                    "last_stage": "STARTING",
+                    "operation_id": active_id,
+                    "backup_id": active_id,
+                    "kind": active.kind,
+                    "operation": "DRY RUN" if active.kind == KIND_DRY_RUN else "BACKUP",
+                    "message": "Starting…",
+                    "started_at": active.started_at,
+                    "elapsed_seconds": 0,
+                    "application": None,
+                    "database": {},
+                    "overall": {
+                        "label": "Preparing...",
+                        "percent": None,
+                        "bytes_done": 0,
+                        "bytes_total": 0,
+                        "files_done": 0,
+                        "files_total": None,
+                        "objects_done": 0,
+                        "objects_total": None,
+                    },
+                    "head_state": status.get("head_label") or "UNCHANGED",
+                    "master": {
+                        "current_size": status.get("master_bytes") or 0,
+                        "head_state": status.get("head_label") or "UNCHANGED",
+                    },
+                }
+        else:
+            status["backup_active"] = False
+        self._backup_active = bool(active_id)
+        self.dashboard.render(status, self._ssh_state)
+
+    def _busy(self) -> bool:
+        return self.operations.active_id() is not None or BackupLock(self.config.backup_destination).is_locked()
+
+    def confirm_backup(self) -> None:
+        if self._busy():
+            QMessageBox.warning(self, "BACKUP NOW", "Backup already in progress.")
+            return
+        message = (
+            "Start a master backup of the Ubuntu production server now?\n\n"
+            f"Source:\n{self.config.server_ip}\n\n"
+            f"Destination:\n{self.config.backup_destination}\\master\\\n\n"
+            "First run creates a FULL master baseline. Later runs are INCREMENTAL.\n"
+            "Unchanged data is recorded as NO_CHANGE. Master does not use keep-5 retention.\n"
+            "Existing YYYY-MM-DD timestamped archives are left untouched."
+        )
+        box = QMessageBox(self)
+        box.setWindowTitle("BACKUP NOW")
+        box.setText(message)
+        start = box.addButton("START BACKUP", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("CANCEL", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not start:
+            return
+        if not self._require_manual_backup_password("BACKUP NOW"):
+            return
+        save_config(self.config)
+        state = self.operations.try_start(KIND_BACKUP)
+        if state is None:
+            QMessageBox.warning(self, "BACKUP NOW", "Backup already in progress.")
+            return
+        config = self.config
+        password = self._ssh_password
+        window = self
+        op_id = state.operation_id
+        cancel_event = state.cancel_event
+        self.refresh()
+
+        def work() -> None:
+            from app.engine.backup_engine import BackupEngine, BackupError
+
+            ok = False
+            message = "BACKUP FAILED"
+            try:
+                BackupEngine(
+                    config,
+                    ssh=SSHClient(config, password=password, require_paramiko=True),
+                    mode="manual",
+                    operation_id=op_id,
+                    cancel_event=cancel_event,
+                ).run()
+                ok = True
+                message = "MASTER BACKUP STATUS=SUCCESS"
+            except (BackupError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("BACKUP_FAILED")
+                message = str(exc)
+            finally:
+                window._backup_finished.emit(op_id, ok, message)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.statusBar().showMessage("Backup started.")
+
+    def confirm_rebuild(self) -> None:
+        if self._busy():
+            QMessageBox.warning(self, "REBUILD MASTER", "Backup already in progress.")
+            return
+        message = (
+            "Rebuild the master baseline from a full Ubuntu inventory?\n\n"
+            "This stages a new generation and replaces HEAD only after verification.\n"
+            "The previous HEAD remains valid if staging fails.\n"
+            "Existing 1.3.7 timestamped archives are not deleted."
+        )
+        box = QMessageBox(self)
+        box.setWindowTitle("REBUILD MASTER BASELINE")
+        box.setText(message)
+        start = box.addButton("REBUILD", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("CANCEL", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not start:
+            return
+        if not self._require_manual_backup_password("REBUILD MASTER"):
+            return
+        save_config(self.config)
+        state = self.operations.try_start(KIND_REBUILD)
+        if state is None:
+            QMessageBox.warning(self, "REBUILD MASTER", "Backup already in progress.")
+            return
+        config = self.config
+        password = self._ssh_password
+        window = self
+        op_id = state.operation_id
+        cancel_event = state.cancel_event
+        self.refresh()
+
+        def work() -> None:
+            from app.engine.backup_engine import BackupEngine, BackupError
+
+            ok = False
+            message = "BACKUP FAILED"
+            try:
+                BackupEngine(
+                    config,
+                    ssh=SSHClient(config, password=password, require_paramiko=True),
+                    mode="manual",
+                    operation_id=op_id,
+                    cancel_event=cancel_event,
+                ).rebuild_master()
+                ok = True
+                message = "MASTER BACKUP STATUS=SUCCESS"
+            except (BackupError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("BACKUP_FAILED")
+                message = str(exc)
+            finally:
+                window._backup_finished.emit(op_id, ok, message)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.statusBar().showMessage("Master rebuild started.")
+
+    def _on_backup_finished(self, operation_id: str, ok: bool, text: str) -> None:
+        if self.operations.ignore_event(operation_id):
+            return
+        finished = self.operations.finish(operation_id, {"ok": ok, "message": text})
+        if finished is None:
+            return
+        cancelled = (not ok) and "cancel" in str(text or "").lower()
+        facts = master_idle_facts(self.config)
+        self._last_completed = {
+            "status": "success" if ok else ("cancelled" if cancelled else "failed"),
+            "ui_stage": "SUCCESS" if ok else ("CANCELLED" if cancelled else "FAILED"),
+            "message": text,
+            "error": None if ok else text,
+            "operation_id": operation_id,
+            "elapsed_seconds": finished.frozen_elapsed,
+            "head_state": facts["head_state"] if ok else "UNCHANGED",
+            "operation": "BACKUP",
+        }
+        ProgressReporter(progress_path()).reset_idle(
+            master_size=int(facts["current_size"] or 0),
+            head_state=str(facts["head_state"]),
+            last_result=dict(self._last_completed),
+        )
+        self._backup_active = False
+        self.refresh()
+        if ok:
+            self.statusBar().showMessage(text)
+            return
+        self.statusBar().showMessage("BACKUP CANCELLED" if cancelled else "BACKUP FAILED")
+        if cancelled:
+            QMessageBox.information(self, "BACKUP CANCELLED", text or "Backup cancelled. HEAD is unchanged.")
+            return
+        QMessageBox.critical(self, "BACKUP FAILED", text or "Backup failed. HEAD is unchanged.")
+
+    def cancel_backup(self) -> None:
+        op = self.operations.active()
+        if op is None:
+            return
+        op.request_cancel()
+        ProgressReporter(progress_path()).request_cancel(op.operation_id)
+        self.statusBar().showMessage("Cancel requested.")
+
+    def test_connection(self) -> None:
+        from app.engine.backup_engine import BackupEngine
+
+        self.config = self.settings_page.current_config()
+        entered = prompt_ubuntu_password(self, self.config.ssh_username, self.config.server_ip)
+        if entered is None:
+            return
+        self._ssh_password = entered
+        if not self._ssh_password and not self._has_usable_key():
+            QMessageBox.warning(
+                self,
+                "Ubuntu password",
+                f"Enter the SSH password for {self.config.ssh_username}@{self.config.server_ip}, "
+                "or click Create SSH key first.",
+            )
+            return
+        engine = BackupEngine(self.config, ssh=self._ssh_client())
+        try:
+            result = engine.test_connection()
+        except SSHError as exc:
+            self._ssh_state = ("DISCONNECTED", "FAILED")
+            QMessageBox.critical(self, "TEST CONNECTION", str(exc))
+            self.refresh()
+            return
+        ok = bool(result.get("login") and result.get("script"))
+        self._ssh_state = ("CONNECTED" if result.get("reachable") else "DISCONNECTED", "OK" if ok else "FAILED")
+        details = "\n".join(result.get("details") or []) or str(result)
+        if ok:
+            normalize_startup_progress(self.config)
+            QMessageBox.information(self, "TEST CONNECTION", details)
+        else:
+            QMessageBox.critical(self, "TEST CONNECTION", details)
+        self.refresh()
+
+    def dry_run(self) -> None:
+        self.config = self.settings_page.current_config()
+        if self._busy():
+            QMessageBox.warning(self, "DRY RUN", "Backup already in progress.")
+            return
+        if not self.ensure_password():
+            return
+        save_config(self.config)
+        state = self.operations.try_start(KIND_DRY_RUN)
+        if state is None:
+            QMessageBox.warning(self, "DRY RUN", "Backup already in progress.")
+            return
+        config = self.config
+        password = self._ssh_password
+        op_id = state.operation_id
+        cancel_event = state.cancel_event
+        self.refresh()
+
+        def work() -> None:
+            from app.engine.backup_engine import BackupEngine, BackupCancelled, BackupError
+
+            try:
+                result = BackupEngine(
+                    config,
+                    ssh=SSHClient(config, password=password or None),
+                    operation_id=op_id,
+                    cancel_event=cancel_event,
+                ).dry_run()
+                text = str(result.get("report_text") or "Dry run finished.")
+                self._dry_run_finished.emit(op_id, bool(result.get("ok")), text)
+            except BackupAlreadyRunning as exc:
+                _LOG.error("DRY_RUN_ERROR %s", exc)
+                self._dry_run_finished.emit(op_id, False, str(exc))
+            except BackupCancelled as exc:
+                _LOG.info("DRY_RUN_ERROR cancelled")
+                self._dry_run_finished.emit(op_id, False, str(exc))
+            except (BackupError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("DRY_RUN_ERROR")
+                self._dry_run_finished.emit(op_id, False, str(exc))
+
+        threading.Thread(target=work, name="serverbackup-dry-run", daemon=True).start()
+        self.statusBar().showMessage("Dry run started.")
+
+    def _on_dry_run_finished(self, operation_id: str, ok: bool, text: str) -> None:
+        if self.operations.ignore_event(operation_id):
+            return
+        finished = self.operations.finish(operation_id, {"ok": ok, "message": text})
+        if finished is None:
+            return
+        facts = master_idle_facts(self.config)
+        cancelled = (not ok) and "cancel" in str(text or "").lower()
+        self._last_completed = {
+            "status": "success" if ok else ("cancelled" if cancelled else "failed"),
+            "message": text,
+            "error": None if ok else text,
+            "operation_id": operation_id,
+            "operation": "DRY RUN",
+            "elapsed_seconds": finished.frozen_elapsed,
+            "head_state": facts["head_state"],
+        }
+        ProgressReporter(progress_path()).reset_idle(
+            master_size=int(facts["current_size"] or 0),
+            head_state=str(facts["head_state"]),
+            last_result=dict(self._last_completed),
+        )
+        self.refresh()
+        if ok:
+            show_scrollable_report(self, "DRY RUN", text)
+            self.statusBar().showMessage("Dry run complete.")
+        else:
+            QMessageBox.critical(self, "DRY RUN failed", text)
+            self.statusBar().showMessage("Dry run failed.")
+
+    def test_integrity(self) -> None:
+        from app.master.health import assess_health
+        from app.master.store import MasterStore
+
+        store = MasterStore(self.config.backup_destination)
+        health = assess_health(store, deep=True)
+        QMessageBox.information(
+            self,
+            "MASTER INTEGRITY",
+            f"Status: {health.get('status')}\nGeneration: {health.get('generation')}\n{health.get('detail')}",
+        )
+
+    def open_backup_folder(self) -> None:
+        self.open_path(self.config.backup_destination)
+
+    def open_path(self, path: str) -> None:
+        target = Path(path)
+        target.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(target)  # type: ignore[attr-defined]
+            return
+        opener = "xdg-open"
+        subprocess.Popen([opener, str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def run_gui(config: AppConfig) -> int:
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName(__app_name__)
+    app.setApplicationVersion(__version__)
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYLESHEET)
+    ssh_password = ""
+    if needs_setup(config):
+        dialog = SetupDialog(config)
+        if dialog.exec():
+            config = dialog.apply_to(config)
+            ssh_password = dialog.ubuntu_password()
+            save_config(config)
+            try:
+                Path(config.backup_destination).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+    window = MainWindow(config, ssh_password=ssh_password)
+    window.show()
+    if needs_setup(config):
+        window.choose_backup_drive()
+    return app.exec()
