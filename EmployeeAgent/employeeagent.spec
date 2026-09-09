@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PyInstaller.building.api import EXE, PYZ
 from PyInstaller.building.build_main import Analysis
+from PyInstaller.utils.hooks import collect_submodules
 
 root = Path(SPECPATH).resolve()
 if not (root / "app" / "main.py").is_file():
@@ -15,26 +16,11 @@ a = Analysis(
     pathex=[str(root)],
     binaries=[],
     datas=[],
-    hiddenimports=[
-        "PySide6.QtCore",
-        "PySide6.QtGui",
-        "PySide6.QtWidgets",
-        "app.gui",
-        "app.gui.app",
-        "app.gui.dashboard",
-        "app.gui.tray",
-        "app.gui.styles",
-        "app.gui.password_dialog",
-        "app.gui.setup_dialog",
-        "app.gui.native",
-        "app.gui.already_running",
-        "app.service.agent",
-        "app.platform.windows",
-    ],
+    hiddenimports=collect_submodules("app"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["tkinter", "matplotlib", "numpy", "pandas"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -48,7 +34,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

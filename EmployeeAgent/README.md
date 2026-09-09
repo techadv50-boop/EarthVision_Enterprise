@@ -2,6 +2,16 @@
 
 Windows desktop agent for workstation **presence and availability** monitoring.
 
+## Windows download
+
+After the Windows build job finishes, download:
+
+- **EXE:** https://github.com/techadv50-boop/EarthVision_Enterprise/releases/download/employee-agent-v1.0.0/EmployeeAgent.exe
+- **Zip:** https://github.com/techadv50-boop/EarthVision_Enterprise/releases/download/employee-agent-v1.0.0/EmployeeMonitoringAgent-1.0.0-windows.zip
+- **Release page:** https://github.com/techadv50-boop/EarthVision_Enterprise/releases/tag/employee-agent-v1.0.0
+
+Double-click `EmployeeAgent.exe`. The first launch sets Employee ID, Device ID, and a dashboard password, then the agent stays in the system tray. Windows SmartScreen may warn because the EXE is not code-signed; use **More info → Run anyway** if you trust this repository build.
+
 Phase 1 implements the agent itself. It runs in the system tray, starts with Windows, and is ready to send heartbeats to a future FastAPI server. It does **not** record keystrokes, passwords, mouse coordinates, screenshots, webcam, microphone, documents, clipboard, websites, or private messages.
 
 ## Phase 1 checklist
