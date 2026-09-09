@@ -171,6 +171,7 @@ def test_key_only_keeps_batchmode(monkeypatch):
     client = SSHClient(cfg)
     args = client._base_ssh_args()
     assert "BatchMode=yes" in " ".join(args)
+    assert "ServerAliveInterval=" in " ".join(args)
     assert "SERVERBACKUP_ASKPASS" not in client.ssh_env()
 
 

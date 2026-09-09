@@ -22,6 +22,7 @@ from app.backup.live import (
     STAGE_UNCHANGED,
     STAGE_VERIFYING,
     UI_COMMITTING,
+    UI_CONNECTING,
     UI_DATABASE,
     UI_DISCOVERING,
     UI_FAILED,
@@ -31,6 +32,7 @@ from app.backup.live import (
     UI_SUCCESS,
     UI_TRANSFERRING,
     UI_VERIFYING,
+    application_for_root,
     log_pipeline,
 )
 from app.config.schema import SYSTEM_DATABASES
@@ -46,6 +48,7 @@ from app.master.store import MasterStore
 from app.master.tree import file_key
 from app.ojs.discover import DiscoveryError, is_required_ojs_application, validate_discovery
 from app.ssh.client import SSHError
+from app.ssh.timeouts import SSHCommandTimeout
 from app.utils.disk import drive_status
 from app.utils.format import format_bytes
 
@@ -68,10 +71,14 @@ def _json_script(
     action: str,
     extra: dict[str, Any] | None = None,
     *,
-    timeout: int = 120,
+    timeout: int | None = None,
     require_ok: bool = True,
 ) -> dict[str, Any]:
     payload = engine._payload(action, extra)
+    live = getattr(engine, "live", None)
+    if live is not None:
+        live.ssh_action = action
+        live.publish()
     result = engine.ssh.run_script(engine.config.remote_prepare_script, payload, timeout=timeout)
     parsed = engine._parse_json_result(result.stdout)
     if not result.ok and not parsed:
@@ -225,7 +232,7 @@ def _required_roots(sources: list[dict[str, str]]) -> list[str]:
 
 
 def _discover_ojs(engine) -> list[dict[str, Any]]:
-    parsed = _json_script(engine, "discover-ojs", timeout=120)
+    parsed = _json_script(engine, "discover-ojs")
     return validate_discovery(parsed, website_directories=engine.config.website_directories)
 
 
@@ -333,6 +340,10 @@ def _stream_files(
     stdout = process.stdout
     if stdout is None:
         raise PipelineError("Object stream has no stdout.")
+    if live is not None:
+        live.set_ui_stage(UI_TRANSFERRING, "Transferring changed objects…", phase="transferring")
+        live.ssh_action = "stream-objects"
+        live.publish()
     try:
         stored = unpack_to_objects(
             stdout,
@@ -341,7 +352,13 @@ def _stream_files(
             should_cancel=engine.progress.cancel_requested,
             on_progress=on_progress if live is not None else None,
         )
-    except (ValueError, struct.error, OSError) as exc:
+    except (SSHCommandTimeout, SSHError, ValueError, struct.error, OSError) as exc:
+        killer = getattr(process, "kill", None)
+        if callable(killer):
+            try:
+                killer()
+            except Exception:
+                pass
         if "cancelled" in str(exc).lower():
             raise
         raise PipelineError(str(exc)) from exc
@@ -483,7 +500,7 @@ def _fingerprint_databases(engine, names: list[str] | None = None) -> dict[str, 
     names = list(names if names is not None else engine.config.databases_for_backup())
     if not names:
         return {}
-    parsed = _json_script(engine, "database-fingerprint", {"databases": names}, timeout=120)
+    parsed = _json_script(engine, "database-fingerprint", {"databases": names})
     mapping = {}
     for item in parsed.get("fingerprints") or []:
         mapping[str(item.get("name"))] = str(item.get("sha256") or "")
@@ -524,17 +541,28 @@ def _dump_changed_databases(
             },
         ),
     )
+    if live is not None:
+        live.ssh_action = "dump-databases"
+        live.publish()
     try:
         dumps = _consume_dump_progress(process, live)
-    except PipelineError:
-        if live is not None and live.database.get("stage") != STAGE_FAILED:
-            live.database_event(
-                name=changed[0],
-                stage=STAGE_FAILED,
-                status="failed",
-                error="dump-databases failed",
-            )
-        raise
+    except (SSHCommandTimeout, SSHError, PipelineError) as exc:
+        killer = getattr(process, "kill", None)
+        if callable(killer):
+            try:
+                killer()
+            except Exception:
+                pass
+        if isinstance(exc, PipelineError):
+            if live is not None and live.database.get("stage") != STAGE_FAILED:
+                live.database_event(
+                    name=changed[0],
+                    stage=STAGE_FAILED,
+                    status="failed",
+                    error="dump-databases failed",
+                )
+            raise
+        raise PipelineError(str(exc)) from exc
     result: dict[str, str] = {}
     for item in dumps:
         name = str(item.get("name"))
@@ -935,7 +963,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         raise PipelineError("Insufficient disk space.")
 
     if dry_run:
-        engine.progress.write(phase="ssh", message="Connecting to Ubuntu…")
+        engine.progress.write(phase="ssh", ui_stage=UI_CONNECTING, message="Connecting to Ubuntu…")
 
         def _login_dry() -> None:
             result = engine.ssh.test_login()
@@ -943,6 +971,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                 raise SSHError(result.stderr.strip() or "SSH login failed.")
 
         engine._retry("SSH connectivity", _login_dry)
+        engine.progress.write(phase="helpers", ui_stage=UI_PREPARING, message="Installing Ubuntu backup helpers…")
         helpers = engine.ssh.ensure_remote_scripts()
         if not helpers.ok:
             raise PipelineError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
@@ -961,7 +990,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     live.set_ui_stage(UI_PREPARING, "Master backup…", phase="master")
 
     log_pipeline(engine, "SSH_CONNECT_START")
-    live.set_ui_stage(UI_PREPARING, "Connecting to Ubuntu…", phase="ssh")
+    live.set_ui_stage(UI_CONNECTING, "Connecting to Ubuntu…", phase="ssh")
 
     def _login() -> None:
         result = engine.ssh.test_login()
@@ -970,6 +999,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
 
     engine._retry("SSH connectivity", _login)
     log_pipeline(engine, "SSH_CONNECTED")
+    live.set_ui_stage(UI_PREPARING, "Installing Ubuntu backup helpers…", phase="helpers")
     helpers = engine.ssh.ensure_remote_scripts()
     if not helpers.ok:
         raise PipelineError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
@@ -1017,6 +1047,9 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
 
     sources = collect_sources(config, ojs)
     log_pipeline(engine, "INVENTORY_START")
+    if sources:
+        live.current_source = str(sources[0].get("root") or "")
+        live.application = application_for_root(live.applications, live.current_source)
     live.set_ui_stage(UI_INVENTORY, "Building file inventory…", phase="inventory")
     inventory = _inventory(engine, sources)
     log_pipeline(engine, "INVENTORY_COMPLETE", f"files={len(inventory)}")

@@ -21,6 +21,7 @@ PREPARING_STAGES = frozenset({STAGE_DISCOVERY, STAGE_FINGERPRINT, STAGE_DUMP_PRE
 MEASURING_STAGES = frozenset({STAGE_DUMPING, STAGE_TRANSFERRING, STAGE_VERIFYING})
 
 UI_PREPARING = "PREPARING"
+UI_CONNECTING = "CONNECTING"
 UI_DISCOVERING = "DISCOVERING"
 UI_INVENTORY = "INVENTORY"
 UI_HASHING = "HASHING"
@@ -34,6 +35,7 @@ UI_CANCELLED = "CANCELLED"
 
 UI_STAGES = (
     UI_PREPARING,
+    UI_CONNECTING,
     UI_DISCOVERING,
     UI_INVENTORY,
     UI_HASHING,
@@ -46,7 +48,47 @@ UI_STAGES = (
     UI_CANCELLED,
 )
 
-SCANNING_UI = frozenset({UI_PREPARING, UI_DISCOVERING, UI_INVENTORY, UI_HASHING})
+SCANNING_UI = frozenset({UI_PREPARING, UI_CONNECTING, UI_DISCOVERING, UI_INVENTORY, UI_HASHING})
+
+PHASE_TO_STAGE = {
+    "ssh": UI_CONNECTING,
+    "lock": UI_PREPARING,
+    "storage": UI_PREPARING,
+    "helpers": UI_PREPARING,
+    "master": UI_PREPARING,
+    "discovery": UI_DISCOVERING,
+    "discover": UI_DISCOVERING,
+    "inventory": UI_INVENTORY,
+    "hash": UI_HASHING,
+    "database": UI_DATABASE,
+    "transferring": UI_TRANSFERRING,
+    "transfer": UI_TRANSFERRING,
+    "verify": UI_VERIFYING,
+    "commit": UI_COMMITTING,
+}
+
+
+def friendly_stage(ui_stage: str, progress: Mapping[str, Any] | None = None) -> str:
+    """Human Stage line. Never leave a generic 'ssh' label on a later pipeline step."""
+    data = dict(progress or {})
+    status = str(data.get("status") or "").lower()
+    last = str(data.get("last_stage") or "")
+    phase = str(data.get("phase") or "")
+    raw = str(ui_stage or "")
+    if status in {"failed", "cancelled"} and last and last not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS, ""}:
+        raw = last
+    elif raw in {"", UI_FAILED, UI_CANCELLED} and last and last not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS}:
+        raw = last
+    if raw.lower() == "ssh" or phase == "ssh" and raw in {"", UI_PREPARING}:
+        raw = UI_CONNECTING
+    if raw.lower() == "ssh":
+        raw = UI_CONNECTING
+    mapped = PHASE_TO_STAGE.get(raw.lower())
+    if mapped:
+        raw = mapped
+    if raw == UI_TRANSFERRING:
+        return "OBJECT TRANSFER"
+    return raw or PHASE_TO_STAGE.get(phase, phase.upper() if phase else "—")
 
 
 def log_pipeline(engine, token: str, detail: str = "") -> None:
@@ -232,9 +274,12 @@ def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float |
     if eta is None:
         eta = eta_seconds(done=overall.get("bytes_done"), total=overall.get("bytes_total"), speed_bps=speed)
     status = str(data.get("status") or db.get("status") or "—")
-    stage_line = ui_stage or str(db.get("stage") or data.get("phase") or "—")
-    if ui_stage == UI_DATABASE and db.get("stage"):
-        stage_line = f"{ui_stage} / {db.get('stage')}"
+    stage_line = friendly_stage(ui_stage, data)
+    if ui_stage == UI_DATABASE or stage_line == UI_DATABASE:
+        if db.get("stage"):
+            stage_line = f"{UI_DATABASE} / {db.get('stage')}"
+    files_discovered = files_total if files_total is not None else overall.get("files_discovered")
+    ssh_action = str(data.get("ssh_action") or "")
     transferred_line = progress_label(
         done=overall.get("bytes_done"),
         total=overall.get("bytes_total"),
@@ -257,6 +302,7 @@ def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float |
         f"Overall: {overall_line}",
         f"Stage: {stage_line}",
         f"Status: {status}",
+        *([f"SSH action: {ssh_action}"] if ssh_action else []),
         "",
         "Transfer:",
         f"Transferred: {transferred_line}",
@@ -265,6 +311,7 @@ def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float |
         f"ETA: {format_hms(eta)}",
         "",
         "Files:",
+        f"Files discovered: {files_discovered if files_discovered is not None else '—'}",
         f"Files processed: {files_done if files_done is not None else '—'} / {files_total if files_total is not None else '—'}",
         "",
         "Objects:",
@@ -362,6 +409,8 @@ class BackupLiveSession:
         self.application = ""
         self.phase = "master"
         self.ui_stage = UI_PREPARING
+        self.ssh_action = ""
+        self.last_stage = UI_PREPARING
         self.message = operation
         self.current_source = ""
         self.current_object = ""
@@ -420,6 +469,8 @@ class BackupLiveSession:
             status="running",
             phase=self.phase,
             ui_stage=self.ui_stage,
+            last_stage=self.last_stage,
+            ssh_action=self.ssh_action or None,
             message=self.message,
             backup_id=self.backup_id,
             started_at=self.started_at,
@@ -444,10 +495,13 @@ class BackupLiveSession:
         self.overall["objects_total"] = files_total
         self.overall["bytes_total"] = bytes_total if bytes_total > 0 else 0
         self.ui_stage = UI_TRANSFERRING
+        self.last_stage = UI_TRANSFERRING
         self.publish(phase="transferring", message="Transferring changed objects…")
 
     def set_ui_stage(self, ui_stage: str, message: str | None = None, *, phase: str | None = None) -> None:
         self.ui_stage = ui_stage
+        if ui_stage not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS}:
+            self.last_stage = ui_stage
         if phase:
             self.phase = phase
         self.publish(phase=self.phase, message=message)
@@ -465,6 +519,8 @@ class BackupLiveSession:
             self.master["head_state"] = str(generation)
 
     def finish(self, status: str, ui_stage: str, message: str, *, error: str = "", staging_state: str = "CLEANED") -> None:
+        if self.ui_stage not in {UI_FAILED, UI_CANCELLED, UI_SUCCESS}:
+            self.last_stage = self.ui_stage
         self.ui_stage = ui_stage
         self.staging_state = staging_state
         elapsed = max(0, int(time.time() - self.started_at))
@@ -480,6 +536,8 @@ class BackupLiveSession:
             status=status,
             phase=self.phase,
             ui_stage=ui_stage,
+            last_stage=self.last_stage,
+            ssh_action=self.ssh_action or None,
             message=message,
             error=error or None,
             backup_id=self.backup_id,
@@ -557,6 +615,7 @@ class BackupLiveSession:
     ) -> None:
         self.application = application_for_database(self.applications, name) or self.application
         self.ui_stage = UI_DATABASE
+        self.last_stage = UI_DATABASE
         produced = bytes_produced if bytes_produced is not None else self.database.get("bytes_produced")
         transferred = bytes_transferred if bytes_transferred is not None else self.database.get("bytes_transferred")
         estimated = bytes_estimated if bytes_estimated is not None else self.database.get("bytes_estimated")

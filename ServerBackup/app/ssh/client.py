@@ -10,7 +10,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -18,6 +20,14 @@ from app.config.schema import AppConfig
 from app.security.allowlist import is_allowed_remote_action
 from app.security.paths import validate_unix_path
 from app.security.redact import redact_secrets
+from app.ssh.timeouts import (
+    IdleTimeoutStream,
+    SSHCommandTimeout,
+    command_timeout_for,
+    idle_timeout_for,
+    keepalive_count,
+    keepalive_interval,
+)
 
 UBUNTU_HELPER_FILES = (
     "prepare-backup.sh",
@@ -103,6 +113,10 @@ class SSHClient:
         self._paramiko: Any = None
         self._sudo_askpass: str | None = None
         self._sudo_pwfile: str | None = None
+        self.logger: Any = None
+        self.on_action: Callable[[str], None] | None = None
+        self.current_action: str = ""
+        self._active_process: Any = None
 
     def _ssh_bin(self) -> str:
         found = shutil.which("ssh")
@@ -144,6 +158,12 @@ class SSHClient:
             "StrictHostKeyChecking=accept-new",
             "-o",
             f"ConnectTimeout={self.config.ssh_connect_timeout}",
+            "-o",
+            f"ServerAliveInterval={keepalive_interval(self.config)}",
+            "-o",
+            f"ServerAliveCountMax={keepalive_count(self.config)}",
+            "-o",
+            "TCPKeepAlive=yes",
             "-o",
             "BatchMode=yes",
             "-o",
@@ -265,13 +285,49 @@ class SSHClient:
         self._sudo_pwfile = pwfile
         self._sudo_askpass = askpass
 
+    def _log(self, message: str) -> None:
+        text = redact_secrets(message or "")
+        if self.password and self.password in text:
+            text = text.replace(self.password, "[REDACTED]")
+        logger = self.logger
+        if logger is not None:
+            logger.info(text)
+
+    def _set_action(self, action: str) -> None:
+        name = str(action or "ssh-command")
+        self.current_action = name
+        callback = self.on_action
+        if callable(callback):
+            try:
+                callback(name)
+            except Exception:
+                pass
+
+    def _clear_action(self, action: str) -> None:
+        if self.current_action == action:
+            self.current_action = ""
+
+    def _kill_active_process(self) -> None:
+        proc = self._active_process
+        self._active_process = None
+        if proc is None:
+            return
+        killer = getattr(proc, "kill", None)
+        if callable(killer):
+            try:
+                killer()
+            except Exception:
+                return
+
     def close(self) -> None:
+        self._kill_active_process()
         if self._sudo_pwfile:
             self._remove_remote_file(self._sudo_pwfile)
         if self._sudo_askpass:
             self._remove_remote_file(self._sudo_askpass)
         self._sudo_pwfile = None
         self._sudo_askpass = None
+        self.current_action = ""
         if self._paramiko is not None:
             try:
                 self._paramiko.close()
@@ -306,11 +362,35 @@ class SSHClient:
             )
         except Exception as exc:
             raise self._map_paramiko_error(exc) from exc
+        transport = client.get_transport()
+        if transport is not None:
+            try:
+                transport.set_keepalive(keepalive_interval(self.config))
+            except Exception:
+                pass
         self._paramiko = client
         return client
 
     def _shell_join(self, remote_command: list[str]) -> str:
         return " ".join(shlex.quote(part) for part in remote_command)
+
+    def _timeout_error(
+        self,
+        action: str,
+        started: float,
+        timeout: int,
+        *,
+        bytes_seen: int = 0,
+    ) -> SSHCommandTimeout:
+        elapsed = time.monotonic() - started
+        return SSHCommandTimeout(
+            action,
+            elapsed=elapsed,
+            last_activity=elapsed,
+            timeout=timeout,
+            bytes_seen=bytes_seen,
+            kind="command",
+        )
 
     def run(
         self,
@@ -319,11 +399,62 @@ class SSHClient:
         stdin_data: str | None = None,
         timeout: int | None = None,
         extra_ssh: list[str] | None = None,
+        action: str = "",
     ) -> SSHResult:
         if not remote_command:
             raise SSHError("Remote command is empty.")
-        if self.uses_paramiko():
-            return self._run_paramiko(remote_command, stdin_data=stdin_data, timeout=timeout)
+        action_name = str(action or remote_command[0] or "ssh-command")
+        resolved = command_timeout_for(action_name, self.config, timeout)
+        self._set_action(action_name)
+        started = time.monotonic()
+        stamp = datetime.now().isoformat(timespec="seconds")
+        self._log(
+            f"SSH_COMMAND_START action={action_name} timestamp={stamp} "
+            f"timeout={resolved} transport={self.transport_name()}"
+        )
+        try:
+            if self.uses_paramiko():
+                result = self._run_paramiko(
+                    remote_command,
+                    stdin_data=stdin_data,
+                    timeout=resolved,
+                    action=action_name,
+                    started=started,
+                )
+            else:
+                result = self._run_openssh(
+                    remote_command,
+                    stdin_data=stdin_data,
+                    timeout=resolved,
+                    extra_ssh=extra_ssh,
+                    action=action_name,
+                    started=started,
+                )
+            elapsed = time.monotonic() - started
+            self._log(
+                f"SSH_COMMAND_COMPLETE action={action_name} elapsed={elapsed:.1f} "
+                f"returncode={result.returncode}"
+            )
+            return result
+        except SSHCommandTimeout as extra:
+            self._log(
+                f"SSH_COMMAND_TIMEOUT action={extra.action} elapsed={extra.elapsed:.1f} "
+                f"last_activity={extra.last_activity:.1f}"
+            )
+            raise SSHError(str(extra)) from extra
+        finally:
+            self._clear_action(action_name)
+
+    def _run_openssh(
+        self,
+        remote_command: list[str],
+        *,
+        stdin_data: str | None,
+        timeout: int,
+        extra_ssh: list[str] | None,
+        action: str,
+        started: float,
+    ) -> SSHResult:
         args = self._base_ssh_args()
         if extra_ssh:
             host = args.pop()
@@ -337,23 +468,26 @@ class SSHClient:
                 input=stdin_data,
                 capture_output=True,
                 text=True,
-                timeout=timeout or self.config.ssh_connect_timeout,
+                timeout=timeout,
                 check=False,
                 **self._popen_kwargs(),
             )
-        except subprocess.TimeoutExpired as exc:
-            raise SSHError("SSH command timed out.") from exc
-        except FileNotFoundError as exc:
-            raise SSHError("OpenSSH ssh client was not found.") from exc
+        except subprocess.TimeoutExpired as extra:
+            raise self._timeout_error(action, started, timeout) from extra
+        except FileNotFoundError as extra:
+            raise SSHError("OpenSSH ssh client was not found.") from extra
         except TypeError:
-            completed = self._runner(
-                args,
-                input=stdin_data,
-                capture_output=True,
-                text=True,
-                timeout=timeout or self.config.ssh_connect_timeout,
-                check=False,
-            )
+            try:
+                completed = self._runner(
+                    args,
+                    input=stdin_data,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as extra:
+                raise self._timeout_error(action, started, timeout) from extra
         stdout = self._redact(completed.stdout or "")
         stderr = self._redact(completed.stderr or "")
         return SSHResult(completed.returncode, stdout, stderr)
@@ -363,15 +497,14 @@ class SSHClient:
         remote_command: list[str],
         *,
         stdin_data: str | None,
-        timeout: int | None,
+        timeout: int,
+        action: str,
+        started: float,
     ) -> SSHResult:
         client = self._connect_paramiko()
         command = self._shell_join(remote_command)
         try:
-            stdin, stdout, stderr = client.exec_command(
-                command,
-                timeout=timeout or self.config.ssh_connect_timeout,
-            )
+            stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
             if stdin_data:
                 stdin.write(stdin_data)
                 stdin.flush()
@@ -381,37 +514,83 @@ class SSHClient:
             code = stdout.channel.recv_exit_status()
         except SSHError:
             raise
+        except SSHCommandTimeout:
+            raise
         except Exception as extra:
             if isinstance(extra, TimeoutError) or type(extra).__name__ in {"timeout", "TimeoutError"}:
-                raise SSHError("Ubuntu command timed out after SSH login succeeded.") from extra
+                raise self._timeout_error(action, started, timeout) from extra
             raise SSHError(f"SSH command failed: {extra}") from extra
         return SSHResult(code, self._redact(out), self._redact(err))
 
-    def popen(self, remote_command: list[str], *, stdin_bytes: bytes | None = None) -> Any:
+    def _wrap_stream(self, raw: Any, *, action: str, process: Any) -> Any:
+        if raw is None:
+            return raw
+        idle = idle_timeout_for(action, self.config)
+
+        def kill() -> None:
+            killer = getattr(process, "kill", None)
+            if callable(killer):
+                try:
+                    killer()
+                except Exception:
+                    return
+
+        return IdleTimeoutStream(
+            raw,
+            action=action,
+            idle_timeout=idle,
+            on_log=self._log,
+            on_kill=kill,
+        )
+
+    def popen(
+        self,
+        remote_command: list[str],
+        *,
+        stdin_bytes: bytes | None = None,
+        action: str = "stream",
+    ) -> Any:
+        action_name = str(action or "stream")
+        self._set_action(action_name)
+        stamp = datetime.now().isoformat(timespec="seconds")
+        idle = idle_timeout_for(action_name, self.config)
+        self._log(
+            f"SSH_COMMAND_START action={action_name} timestamp={stamp} "
+            f"timeout=idle:{idle} transport={self.transport_name()}"
+        )
         if self.uses_paramiko():
             client = self._connect_paramiko()
             transport = client.get_transport()
             if transport is None:
                 raise SSHError("SSH connection is not open.")
             channel = transport.open_session()
+            # Do not pass exec_command timeout: that waits for EOF and treats a
+            # live stream as hung. Keepalives plus idle timeout on stdout instead.
             channel.exec_command(self._shell_join(remote_command))
+            try:
+                channel.settimeout(idle)
+            except Exception:
+                pass
             if stdin_bytes:
                 channel.sendall(stdin_bytes)
             channel.shutdown_write()
-            return _ParamikoProc(channel)
-        args = self._base_ssh_args()
-        args.append("--")
-        args.extend(remote_command)
-        process = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            **self._popen_kwargs(),
-        )
-        if stdin_bytes is not None and process.stdin is not None:
-            process.stdin.write(stdin_bytes)
-            process.stdin.close()
+            process = _ParamikoProc(channel)
+        else:
+            args = self._base_ssh_args()
+            args.append("--")
+            args.extend(remote_command)
+            process = subprocess.Popen(
+                args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                **self._popen_kwargs(),
+            )
+            if stdin_bytes is not None and process.stdin is not None:
+                process.stdin.write(stdin_bytes)
+                process.stdin.close()
+        self._active_process = process
+        process.stdout = self._wrap_stream(process.stdout, action=action_name, process=process)
         return process
 
     def scp_upload(self, local: Path, remote: str) -> SSHResult:
@@ -438,6 +617,12 @@ class SSHClient:
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
+            f"ConnectTimeout={self.config.ssh_connect_timeout}",
+            "-o",
+            f"ServerAliveInterval={keepalive_interval(self.config)}",
+            "-o",
+            f"ServerAliveCountMax={keepalive_count(self.config)}",
+            "-o",
             "BatchMode=yes",
             "-o",
             "IdentitiesOnly=yes",
@@ -447,13 +632,19 @@ class SSHClient:
             args.extend(["-i", str(key_path)])
         args.append(str(local))
         args.append(f"{self.config.ssh_username}@{self.config.server_ip}:{remote}")
-        completed = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            check=False,
-            **self._popen_kwargs(),
-        )
+        timeout = command_timeout_for("install_helper", self.config)
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+                **self._popen_kwargs(),
+            )
+        except subprocess.TimeoutExpired as extra:
+            raise SSHError(str(self._timeout_error("install_helper", started, timeout))) from extra
         return SSHResult(
             completed.returncode,
             self._redact(completed.stdout or ""),
@@ -479,6 +670,7 @@ class SSHClient:
         *,
         stdin_data: str = "",
         timeout: int | None = None,
+        action: str = "",
     ) -> SSHResult:
         if self.password:
             self._ensure_sudo_askpass()
@@ -486,11 +678,13 @@ class SSHClient:
                 self._sudo_askpass_argv(remote_command),
                 stdin_data=stdin_data,
                 timeout=timeout,
+                action=action,
             )
         return self.run(
             self._sudo_argv(remote_command, feed_password=False),
             stdin_data=stdin_data,
             timeout=timeout,
+            action=action,
         )
 
     def run_script(
@@ -507,8 +701,8 @@ class SSHClient:
             raise SSHError(f"Remote action is not allowlisted: {action!r}")
         stdin_data = json.dumps(payload, separators=(",", ":"))
         if not use_sudo:
-            return self.run([script_path], stdin_data=stdin_data, timeout=timeout)
-        return self._run_sudo([script_path], stdin_data=stdin_data, timeout=timeout)
+            return self.run([script_path], stdin_data=stdin_data, timeout=timeout, action=action)
+        return self._run_sudo([script_path], stdin_data=stdin_data, timeout=timeout, action=action)
 
     def popen_script(self, script_path: str, payload: Mapping[str, Any]) -> Any:
         validate_unix_path(script_path, field="remote script")
@@ -521,21 +715,21 @@ class SSHClient:
             remote = self._sudo_askpass_argv([script_path])
         else:
             remote = self._sudo_argv([script_path], feed_password=False)
-        return self.popen(remote, stdin_bytes=body.encode("utf-8"))
+        return self.popen(remote, stdin_bytes=body.encode("utf-8"), action=action)
 
     def ensure_remote_scripts(self) -> SSHResult:
         source = bundled_ubuntu_scripts()
         missing = [name for name in UBUNTU_HELPER_FILES if not (source / name).is_file()]
         if missing:
             raise SSHError(f"Windows helper scripts are missing: {', '.join(missing)}")
-        mkdir = self.run(["mkdir", "-p", REMOTE_HELPER_STAGING], timeout=self.config.ssh_connect_timeout)
+        mkdir = self.run(["mkdir", "-p", REMOTE_HELPER_STAGING], action="install_helper")
         if not mkdir.ok:
             return SSHResult(mkdir.returncode, mkdir.stdout, mkdir.stderr or "Could not create /tmp staging directory.")
         for name in UBUNTU_HELPER_FILES:
             uploaded = self._upload_unix_text(source / name, f"{REMOTE_HELPER_STAGING}/{name}")
             if not uploaded.ok:
                 return SSHResult(uploaded.returncode, uploaded.stdout, uploaded.stderr or f"Failed to upload {name}.")
-        mkdir_dest = self._run_sudo(["mkdir", "-p", REMOTE_HELPER_DIR], timeout=60)
+        mkdir_dest = self._run_sudo(["mkdir", "-p", REMOTE_HELPER_DIR], action="install_helper")
         if not mkdir_dest.ok:
             return SSHResult(
                 mkdir_dest.returncode,
@@ -552,7 +746,7 @@ class SSHClient:
                     f"{REMOTE_HELPER_STAGING}/{name}",
                     f"{REMOTE_HELPER_DIR}/{name}",
                 ],
-                timeout=60,
+                action="install_helper",
             )
             if not installed.ok:
                 return SSHResult(
@@ -563,4 +757,4 @@ class SSHClient:
         return SSHResult(0, "", "installed Ubuntu backup helpers")
 
     def test_login(self) -> SSHResult:
-        return self.run(["printf", "ok"], timeout=self.config.ssh_connect_timeout)
+        return self.run(["printf", "ok"], action="test_login")

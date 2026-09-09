@@ -54,6 +54,13 @@ class AppConfig:
     security_mode: str = "BALANCED"
     setup_completed: bool = False
     ssh_connect_timeout: int = 20
+    ssh_keepalive_interval: int = 15
+    ssh_keepalive_count: int = 4
+    ssh_idle_timeout: int = 300
+    ssh_install_timeout: int = 180
+    ssh_discovery_timeout: int = 1800
+    ssh_fingerprint_timeout: int = 600
+    ssh_command_timeout: int = 1800
     transfer_timeout: int = 6 * 60 * 60
     security_audit_timeout: int = 180
 
@@ -75,6 +82,15 @@ class AppConfig:
             cfg.ssh_username = "zhzh"
         cfg.compression_level = min(9, max(1, int(cfg.compression_level)))
         cfg.security_audit_timeout = max(30, int(cfg.security_audit_timeout))
+        cfg.ssh_connect_timeout = max(5, int(cfg.ssh_connect_timeout))
+        cfg.ssh_keepalive_interval = max(1, int(cfg.ssh_keepalive_interval))
+        cfg.ssh_keepalive_count = max(1, int(cfg.ssh_keepalive_count))
+        cfg.ssh_idle_timeout = max(30, int(cfg.ssh_idle_timeout))
+        cfg.ssh_install_timeout = max(30, int(cfg.ssh_install_timeout))
+        cfg.ssh_discovery_timeout = max(60, int(cfg.ssh_discovery_timeout))
+        cfg.ssh_fingerprint_timeout = max(60, int(cfg.ssh_fingerprint_timeout))
+        cfg.ssh_command_timeout = max(60, int(cfg.ssh_command_timeout))
+        cfg.transfer_timeout = max(60, int(cfg.transfer_timeout))
         cfg.website_directories = [str(p) for p in cfg.website_directories]
         cfg.extra_directories = [str(p) for p in cfg.extra_directories]
         cfg.selected_databases = [str(p) for p in cfg.selected_databases]

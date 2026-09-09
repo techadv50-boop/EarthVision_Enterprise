@@ -41,7 +41,6 @@ def discover_applications(
         result = client.run_script(
             config.remote_prepare_script,
             {"action": "discover-applications", "previous_hostnames": previous_hostnames},
-            timeout=120,
         )
         parsed = _parse_json(result.stdout)
         if not result.ok and not parsed:

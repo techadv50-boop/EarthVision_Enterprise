@@ -18,7 +18,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app import __version__
-from app.backup.live import BackupLiveSession, UI_CANCELLED, UI_FAILED, UI_PREPARING, UI_SUCCESS, log_pipeline
+from app.backup.live import (
+    BackupLiveSession,
+    UI_CANCELLED,
+    UI_CONNECTING,
+    UI_FAILED,
+    UI_PREPARING,
+    UI_SUCCESS,
+    log_pipeline,
+)
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
@@ -65,6 +73,22 @@ class BackupEngine:
         self.warnings: list[str] = []
         self.errors: list[str] = []
         self.transfer_fn: Callable[[Path], int] | None = None
+        if getattr(self.ssh, "logger", None) is None:
+            try:
+                self.ssh.logger = self.logger
+            except Exception:
+                pass
+        try:
+            self.ssh.on_action = self._on_ssh_action
+        except Exception:
+            pass
+
+    def _on_ssh_action(self, action: str) -> None:
+        live = getattr(self, "live", None)
+        if live is None:
+            return
+        live.ssh_action = str(action or "")
+        live.publish()
 
     def _check_cancel(self) -> None:
         if self.progress.cancel_requested():
@@ -128,7 +152,10 @@ class BackupEngine:
     def _finish_failure(self, error_message: str, *, status: str = "failed", ui_stage: str = UI_FAILED) -> None:
         live = getattr(self, "live", None)
         banner = "BACKUP FAILED" if status == "failed" else "BACKUP CANCELLED"
+        action = str(getattr(self.ssh, "current_action", "") or "")
         if live is not None:
+            if action and not live.ssh_action:
+                live.ssh_action = action
             live.finish(
                 status,
                 ui_stage,
@@ -534,7 +561,7 @@ class BackupEngine:
             ensure_directory(dest)
             MasterStore(dest).ensure_layout()
 
-            self.live.set_ui_stage(UI_PREPARING, "Connecting to Ubuntu…", phase="ssh")
+            self.live.set_ui_stage(UI_CONNECTING, "Connecting to Ubuntu…", phase="ssh")
             log_pipeline(self, "SSH_CONNECT_START")
             self.logger.info(
                 f"BACKUP NOW SSH transport={getattr(self.ssh, 'transport_name', lambda: 'unknown')()} "
