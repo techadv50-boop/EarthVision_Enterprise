@@ -1,0 +1,25 @@
+name: Employee Agent
+
+on:
+  push:
+    paths:
+      - "EmployeeAgent/**"
+      - ".github/workflows/employee-agent.yml"
+  pull_request:
+    paths:
+      - "EmployeeAgent/**"
+      - ".github/workflows/employee-agent.yml"
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: pip install pytest
+      - name: Run Phase 1 agent tests
+        working-directory: EmployeeAgent
+        run: pytest -v

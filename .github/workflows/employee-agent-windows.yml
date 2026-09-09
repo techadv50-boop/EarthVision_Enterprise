@@ -1,0 +1,74 @@
+name: Employee Agent Windows
+
+on:
+  push:
+    paths:
+      - "EmployeeAgent/**"
+      - ".github/workflows/employee-agent-windows.yml"
+  pull_request:
+    paths:
+      - "EmployeeAgent/**"
+      - ".github/workflows/employee-agent-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install packaging dependencies
+        working-directory: EmployeeAgent
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build EmployeeAgent.exe
+        working-directory: EmployeeAgent
+        run: python -m PyInstaller --noconfirm --clean employeeagent.spec
+      - name: Stage Windows download zip
+        working-directory: EmployeeAgent
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/download | Out-Null
+          Copy-Item dist/EmployeeAgent.exe dist/download/EmployeeAgent.exe
+          Copy-Item README.md dist/download/README.md
+          Copy-Item INSTALL_WINDOWS.txt dist/download/INSTALL_WINDOWS.txt
+          Compress-Archive -Path dist/download/* -DestinationPath dist/EmployeeMonitoringAgent-1.0.0-windows.zip -Force
+          Get-Item dist/EmployeeAgent.exe, dist/EmployeeMonitoringAgent-1.0.0-windows.zip | Format-Table Name, Length
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: EmployeeMonitoringAgent-windows
+          path: |
+            EmployeeAgent/dist/EmployeeAgent.exe
+            EmployeeAgent/dist/EmployeeMonitoringAgent-1.0.0-windows.zip
+          if-no-files-found: error
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: employee-agent-v1.0.0
+          name: Employee Monitoring Agent 1.0.0 (Windows)
+          prerelease: true
+          body: |
+            Windows desktop download for the Employee Monitoring Agent (Phase 1).
+
+            **EmployeeAgent.exe** — run this on the employee PC. It stays in the system tray.
+
+            First launch asks for Employee ID, Device ID, server URL, and a dashboard password.
+            The password is stored as a hash, never as plain text.
+
+            Windows SmartScreen may warn because this build is not code-signed. Choose
+            More info → Run anyway if you trust this repository build.
+
+            Direct links:
+            - https://github.com/techadv50-boop/EarthVision_Enterprise/releases/download/employee-agent-v1.0.0/EmployeeAgent.exe
+            - https://github.com/techadv50-boop/EarthVision_Enterprise/releases/download/employee-agent-v1.0.0/EmployeeMonitoringAgent-1.0.0-windows.zip
+          files: |
+            EmployeeAgent/dist/EmployeeAgent.exe
+            EmployeeAgent/dist/EmployeeMonitoringAgent-1.0.0-windows.zip

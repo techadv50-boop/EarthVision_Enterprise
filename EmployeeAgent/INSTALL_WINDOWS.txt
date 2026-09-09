@@ -1,0 +1,18 @@
+Employee Monitoring Agent for Windows
+=====================================
+
+1. Download EmployeeAgent.exe (or unzip the Windows zip).
+2. Double-click EmployeeAgent.exe.
+3. On first run, set Employee ID, Device ID, and a dashboard password.
+4. The agent minimizes to the system tray (near the clock).
+5. Right-click the tray icon: Open, Status, Settings, About, Exit.
+6. Open, Settings, and Exit always ask for the password.
+
+The agent starts automatically the next time Windows starts.
+
+Windows SmartScreen may show "Windows protected your PC" because the
+file is not code-signed. Use More info → Run anyway if you trust this build.
+
+The agent monitors workstation presence only. It does not record typed
+characters, passwords, mouse coordinates, screenshots, webcam, microphone,
+documents, clipboard, websites, or private messages.
