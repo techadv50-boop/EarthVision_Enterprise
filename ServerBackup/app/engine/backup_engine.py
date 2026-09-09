@@ -27,6 +27,7 @@ from app.backup.live import (
     UI_SUCCESS,
     log_pipeline,
 )
+from app.backup.manual_preflight import MANUAL_BACKUP_NEED_PASSWORD, manual_backup_password_error
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
@@ -93,6 +94,19 @@ class BackupEngine:
     def _check_cancel(self) -> None:
         if self.progress.cancel_requested():
             raise BackupCancelled("Backup cancelled.")
+
+    def _assert_manual_paramiko(self) -> None:
+        """GUI BACKUP NOW must not silently fall back to OpenSSH."""
+        if self.mode != "manual":
+            return
+        ssh = self.ssh
+        if not isinstance(ssh, SSHClient):
+            return
+        error = manual_backup_password_error(getattr(ssh, "password", None))
+        if error:
+            raise BackupError(error)
+        if not ssh.uses_paramiko():
+            raise BackupError(MANUAL_BACKUP_NEED_PASSWORD)
 
     def _retry(self, label: str, func: Callable[[], Any]) -> Any:
         attempts = max(1, int(self.config.retry_count))
@@ -546,6 +560,7 @@ class BackupEngine:
             )
             log_pipeline(self, "BACKUP_START", self.backup_id)
             self.live.set_ui_stage(UI_PREPARING, "Checking whether another backup is running…", phase="lock")
+            self._assert_manual_paramiko()
             self.lock.acquire(mode=self.mode, backup_id=self.backup_id)
             self._check_cancel()
             self._validate_config_paths()

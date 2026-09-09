@@ -27,6 +27,7 @@ from discover_audit import (
     parse_generic_database_from_texts,
     scan_inactive_hostnames,
 )
+from path_safety import is_safe_unix_syntax
 
 UNSAFE = set(";&|`$<>\\\n\r")
 FILE_MARKER = re.compile(r"^# configuration file (.+):\s*$")
@@ -66,7 +67,7 @@ def _strip_value(raw: str) -> str:
 
 def safe_unix(path: str) -> str:
     cleaned = (path or "").strip()
-    if not cleaned.startswith("/") or ".." in cleaned or any(ch in cleaned for ch in UNSAFE):
+    if not is_safe_unix_syntax(cleaned):
         return ""
     return cleaned.rstrip("/") or "/"
 

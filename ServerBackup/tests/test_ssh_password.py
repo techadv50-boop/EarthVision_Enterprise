@@ -322,6 +322,7 @@ def test_gui_backup_now_passes_in_memory_password_to_same_ssh_client():
 
     source = (_Path(__file__).resolve().parents[1] / "app" / "gui" / "main_window.py").read_text(encoding="utf-8")
     assert "SSHClient(config, password=password or None)" in source
+    assert "require_paramiko=True" in source
     assert "mode=\"manual\"" in source or "mode='manual'" in source
     assert "ssh=self._ssh_client()" in source
     assert "engine.test_connection()" in source

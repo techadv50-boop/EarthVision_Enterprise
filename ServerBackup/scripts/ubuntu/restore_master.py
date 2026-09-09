@@ -14,6 +14,8 @@ import sys
 import time
 from pathlib import Path
 
+from path_safety import require_unix_syntax
+
 UNSAFE = set(";&|`$<>\\\n\r")
 MAGIC = b"SB01"
 CHUNK = 1024 * 1024
@@ -27,9 +29,11 @@ def fail(message: str) -> None:
 
 
 def safe_unix(path: str) -> str:
-    if not path or not path.startswith("/") or ".." in path or any(ch in path for ch in UNSAFE):
+    try:
+        return require_unix_syntax(path)
+    except ValueError:
         fail(f"Refusing unsafe path: {path!r}")
-    return path.rstrip("/") or "/"
+    return "/"
 
 
 def mysql_defaults() -> list[str]:

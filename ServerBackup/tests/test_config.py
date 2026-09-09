@@ -32,6 +32,10 @@ def test_config_roundtrip(tmp_path: Path):
 
 def test_unix_path_validation():
     assert is_safe_unix_path("/var/www/xdgen.com")
+    assert is_safe_unix_path(
+        "/var/www/journal.50sea.com/public/site/images/abidsultan006/"
+        "publication-fee-by-coorsponding-author-a-survey-paper-on-ascii-based-cryptographic-techniques..jpg"
+    )
     assert not is_safe_unix_path("/var/www/../../etc/passwd")
     assert not is_safe_unix_path("/var/www; rm -rf /")
     try:

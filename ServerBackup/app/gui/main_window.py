@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from app import __app_name__, __version__
 from app.backup.live import format_live_backup_panel, measurable_percent, show_live_backup_panel
 from app.backup.lock import BackupAlreadyRunning, BackupLock
+from app.backup.manual_preflight import manual_backup_password_error
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
 from app.config.store import save_config
@@ -415,6 +416,13 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _require_manual_backup_password(self, title: str = "BACKUP NOW") -> bool:
+        error = manual_backup_password_error(self._ssh_password)
+        if error:
+            QMessageBox.warning(self, title, error)
+            return False
+        return True
+
     def show_dashboard(self) -> None:
         self.stack.setCurrentWidget(self.dashboard)
         self.refresh()
@@ -562,7 +570,7 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is not start:
             return
-        if not self.ensure_password():
+        if not self._require_manual_backup_password("BACKUP NOW"):
             return
         save_config(self.config)
         config = self.config
@@ -577,7 +585,11 @@ class MainWindow(QMainWindow):
             ok = False
             message = "BACKUP FAILED"
             try:
-                BackupEngine(config, ssh=SSHClient(config, password=password or None), mode="manual").run()
+                BackupEngine(
+                    config,
+                    ssh=SSHClient(config, password=password, require_paramiko=True),
+                    mode="manual",
+                ).run()
                 ok = True
                 message = "MASTER BACKUP STATUS=SUCCESS"
             except (BackupError, SSHError, OSError, Exception) as exc:
@@ -625,7 +637,7 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is not start:
             return
-        if not self.ensure_password():
+        if not self._require_manual_backup_password("REBUILD MASTER"):
             return
         save_config(self.config)
         config = self.config
@@ -640,7 +652,11 @@ class MainWindow(QMainWindow):
             ok = False
             message = "BACKUP FAILED"
             try:
-                BackupEngine(config, ssh=SSHClient(config, password=password or None), mode="manual").rebuild_master()
+                BackupEngine(
+                    config,
+                    ssh=SSHClient(config, password=password, require_paramiko=True),
+                    mode="manual",
+                ).rebuild_master()
                 ok = True
                 message = "MASTER BACKUP STATUS=SUCCESS"
             except (BackupError, SSHError, OSError, Exception) as exc:

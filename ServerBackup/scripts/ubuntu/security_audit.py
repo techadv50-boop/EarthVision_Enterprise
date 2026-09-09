@@ -19,6 +19,8 @@ import sys
 import time
 from pathlib import Path
 
+from path_safety import require_unix_syntax
+
 ALLOWED = {"security-audit", "security-rotate-token", "security-rollback"}
 UNSAFE = set(';&|`$<>\\\n\r')
 SKIP_DIR_NAMES = {
@@ -53,9 +55,11 @@ def fail(message: str) -> None:
 
 
 def safe_unix(path: str) -> str:
-    if not path or not path.startswith("/") or ".." in path or any(ch in path for ch in UNSAFE):
+    try:
+        return require_unix_syntax(path)
+    except ValueError:
         fail(f"Refusing unsafe path: {path!r}")
-    return path.rstrip("/") or "/"
+    return "/"
 
 
 def load(path: str) -> dict:

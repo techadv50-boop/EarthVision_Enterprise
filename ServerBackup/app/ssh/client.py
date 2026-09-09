@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from app.backup.manual_preflight import MANUAL_BACKUP_NEED_PASSWORD
 from app.config.schema import AppConfig
 from app.security.allowlist import is_allowed_remote_action
 from app.security.paths import validate_unix_path
@@ -33,6 +34,7 @@ UBUNTU_HELPER_FILES = (
     "prepare-backup.sh",
     "prepare_backup.py",
     "prepare_master.py",
+    "path_safety.py",
     "discover_apps.py",
     "discover_audit.py",
     "mysql_backup_user.py",
@@ -106,10 +108,14 @@ class SSHClient:
         *,
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         password: str | None = None,
+        require_paramiko: bool = False,
     ) -> None:
         self.config = config
         self._runner = runner or subprocess.run
         self.password = password or None
+        self.require_paramiko = bool(require_paramiko)
+        if self.require_paramiko and not str(self.password or "").strip():
+            raise SSHError(MANUAL_BACKUP_NEED_PASSWORD)
         self._paramiko: Any = None
         self._sudo_askpass: str | None = None
         self._sudo_pwfile: str | None = None
@@ -143,7 +149,13 @@ class SSHClient:
         return bool(self.password)
 
     def uses_paramiko(self) -> bool:
-        """Password logins use Paramiko. Key-only logins use OpenSSH BatchMode."""
+        """Password logins use Paramiko. Key-only logins use OpenSSH BatchMode.
+
+        GUI manual BACKUP NOW sets require_paramiko so an empty password cannot
+        silently fall back to OpenSSH.
+        """
+        if self.require_paramiko:
+            return bool(self.password)
         return self._use_password() and self._runner is subprocess.run
 
     def transport_name(self) -> str:

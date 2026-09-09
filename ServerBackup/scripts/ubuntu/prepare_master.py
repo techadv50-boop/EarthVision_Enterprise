@@ -16,6 +16,12 @@ import struct
 import sys
 from pathlib import Path
 
+from path_safety import (
+    contained_in_root,
+    explain_uncontained,
+    require_unix_syntax,
+)
+
 UNSAFE = set(";&|`$<>\\\n\r")
 SKIP_NAMES = {".git"}
 CHUNK = 1024 * 1024
@@ -34,9 +40,11 @@ def fail(message: str, code: int = 1) -> None:
 
 
 def safe_unix(path: str) -> str:
-    if not path or not path.startswith("/") or ".." in path or any(ch in path for ch in UNSAFE):
+    try:
+        return require_unix_syntax(path)
+    except ValueError:
         fail(f"Refusing unsafe path: {path!r}")
-    return path.rstrip("/") or "/"
+    return "/"
 
 
 def _strip_value(raw: str) -> str:
@@ -163,11 +171,12 @@ def discover_ojs(payload: dict) -> dict:
 
 def _allowed(path: str, roots: list[str]) -> bool:
     cleaned = safe_unix(path)
-    for root in roots:
-        base = root.rstrip("/")
-        if cleaned == base or cleaned.startswith(base + "/"):
-            return True
-    return False
+    return any(contained_in_root(cleaned, root) for root in roots)
+
+
+def _require_allowed(path: str, roots: list[str]) -> None:
+    if roots and not _allowed(path, roots):
+        fail(explain_uncontained(path, roots))
 
 
 def inventory(payload: dict) -> dict:
@@ -183,23 +192,17 @@ def inventory(payload: dict) -> dict:
         if not path.exists():
             errors.append(f"missing source {root}")
             continue
-        if path.is_file():
-            info = path.lstat()
+        if path.is_file() or (path.is_symlink() and path.exists() and Path(os.path.realpath(path)).is_file()):
+            if not contained_in_root(str(path), root):
+                errors.append(explain_uncontained(str(path), [root]))
+                continue
+            target = Path(os.path.realpath(path)) if path.is_symlink() else path
+            info = target.stat() if path.is_symlink() else path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
             files.append(_file_record(root, ".", info, category, path))
             continue
-        for walk_root, dirs, names in os.walk(path, followlinks=False):
-            dirs[:] = [name for name in dirs if name not in SKIP_NAMES]
-            for name in names:
-                file_path = Path(walk_root) / name
-                try:
-                    info = file_path.lstat()
-                except OSError as exc:
-                    errors.append(f"{file_path}: {exc}")
-                    continue
-                if not stat.S_ISREG(info.st_mode):
-                    continue
-                rel = str(file_path.relative_to(path)).replace("\\", "/")
-                files.append(_file_record(root, rel, info, category, file_path))
+        files.extend(_walk_source(path, root, category, errors))
     return {
         "ok": not errors,
         "files": files,
@@ -207,6 +210,76 @@ def inventory(payload: dict) -> dict:
         "file_count": len(files),
         "bytes": int(sum(int(item["size"]) for item in files)),
     }
+
+
+def _walk_source(root_path: Path, root: str, category: str, errors: list[str]) -> list[dict]:
+    found: list[dict] = []
+    extra: list[Path] = [root_path]
+    seen_dirs: set[str] = set()
+    while extra:
+        current = extra.pop()
+        try:
+            current_real = os.path.realpath(current)
+        except OSError as exc:
+            errors.append(f"{current}: {exc}")
+            continue
+        if not contained_in_root(current_real, root):
+            errors.append(explain_uncontained(str(current), [root]))
+            continue
+        if current_real in seen_dirs:
+            continue
+        seen_dirs.add(current_real)
+        for walk_root, dirs, names in os.walk(current_real, followlinks=False):
+            keep_dirs: list[str] = []
+            for name in dirs:
+                if name in SKIP_NAMES:
+                    continue
+                dir_path = Path(walk_root) / name
+                if dir_path.is_symlink():
+                    if contained_in_root(str(dir_path), root):
+                        extra.append(dir_path)
+                    else:
+                        errors.append(explain_uncontained(str(dir_path), [root]))
+                    continue
+                keep_dirs.append(name)
+            dirs[:] = keep_dirs
+            for name in names:
+                file_path = Path(walk_root) / name
+                try:
+                    record = _inventory_file(file_path, root_path, root, category, errors)
+                except OSError as exc:
+                    errors.append(f"{file_path}: {exc}")
+                    continue
+                if record is not None:
+                    found.append(record)
+    return found
+
+
+def _inventory_file(file_path: Path, root_path: Path, root: str, category: str, errors: list[str]) -> dict | None:
+    if file_path.is_symlink():
+        if not contained_in_root(str(file_path), root):
+            errors.append(explain_uncontained(str(file_path), [root]))
+            return None
+        target = Path(os.path.realpath(file_path))
+        if not target.is_file():
+            return None
+        info = target.stat()
+    else:
+        try:
+            info = file_path.lstat()
+        except OSError as exc:
+            errors.append(f"{file_path}: {exc}")
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if not contained_in_root(str(file_path), root):
+            errors.append(explain_uncontained(str(file_path), [root]))
+            return None
+    try:
+        rel = str(file_path.relative_to(Path(os.path.realpath(root_path)))).replace("\\", "/")
+    except ValueError:
+        rel = os.path.relpath(str(file_path), os.path.realpath(root_path)).replace("\\", "/")
+    return _file_record(root, rel, info, category, file_path)
 
 
 def _file_record(root: str, relative: str, info: os.stat_result, category: str, path: Path) -> dict:
@@ -232,7 +305,7 @@ def hash_files(payload: dict) -> dict:
     for raw in payload.get("paths") or []:
         path = safe_unix(str(raw))
         if roots and not _allowed(path, roots):
-            errors.append(f"path not under approved source: {path}")
+            errors.append(explain_uncontained(path, roots))
             continue
         file_path = Path(path)
         if not file_path.is_file():
@@ -264,8 +337,7 @@ def stream_objects_lowmem(payload: dict) -> None:
     stdout.write(MAGIC)
     for item in payload.get("files") or []:
         path = safe_unix(str(item.get("path") or item.get("absolute_path") or item))
-        if roots and not _allowed(path, roots):
-            fail(f"path not under approved source: {path}")
+        _require_allowed(path, roots)
         file_path = Path(path)
         if not file_path.is_file():
             fail(f"missing file {path}")
