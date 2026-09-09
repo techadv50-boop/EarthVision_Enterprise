@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, Signal
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import __app_name__, __version__
+from app.backup.live import format_live_backup_panel, measurable_percent
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
@@ -124,9 +126,17 @@ class DashboardPage(QWidget):
         self.status_label = QLabel("Ready.")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+        self.live_panel = QLabel("")
+        self.live_panel.setObjectName("liveBackupPanel")
+        self.live_panel.setWordWrap(True)
+        self.live_panel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.live_panel.setVisible(False)
+        layout.addWidget(self.live_panel)
         self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("backupProgress")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
         layout.addWidget(self.progress_bar)
         self.speed_label = QLabel("")
         layout.addWidget(self.speed_label)
@@ -255,21 +265,42 @@ class DashboardPage(QWidget):
         self.rebuild_button.setEnabled(not running)
         message = status.get("live_message") or live_dashboard_message(progress, running=running)
         self.status_label.setText(message)
-        done = int(progress.get("bytes_done") or 0)
-        total = int(progress.get("bytes_total") or 0)
+        overall = progress.get("overall") if isinstance(progress.get("overall"), dict) else {}
+        database = progress.get("database") if isinstance(progress.get("database"), dict) else {}
+        done = overall.get("bytes_done")
+        if done is None:
+            done = progress.get("bytes_done")
+        total = overall.get("bytes_total")
+        if total is None:
+            total = progress.get("bytes_total")
+        percent = overall.get("percent")
+        if percent is None:
+            percent = measurable_percent(done, total, stage=str(database.get("stage") or progress.get("phase") or ""))
         progress_status = str(progress.get("status") or "idle").lower()
         show_details = running or progress_status == "success"
-        if total > 0 and show_details:
-            self.progress_bar.setValue(min(100, int(done * 100 / total)))
-        elif running:
+        if running:
+            self.live_panel.setVisible(True)
+            self.live_panel.setText(format_live_backup_panel(progress, now=time.time()))
+        else:
+            self.live_panel.setVisible(False)
+            self.live_panel.setText("")
+        if running and percent is None:
             self.progress_bar.setRange(0, 0)
+            self.progress_bar.setFormat(str(overall.get("label") or "Preparing..."))
+        elif percent is not None and show_details:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(int(percent))
+            self.progress_bar.setFormat("%p%")
         else:
             self.progress_bar.setRange(0, 100)
+            self.progress_bar.setFormat("%p%")
             self.progress_bar.setValue(100 if progress_status == "success" else 0)
         bits = []
         if show_details:
-            speed = int(progress.get("speed_bps") or 0)
-            eta = progress.get("eta_seconds")
+            speed = int(overall.get("speed_bps") or progress.get("speed_bps") or 0)
+            eta = overall.get("eta_seconds")
+            if eta is None:
+                eta = progress.get("eta_seconds")
             sha = progress.get("sha256")
             if speed:
                 bits.append(f"Speed: {format_bytes(speed)}/s")
@@ -277,6 +308,16 @@ class DashboardPage(QWidget):
                 bits.append(f"Estimated remaining: {format_duration(eta)}")
             if sha:
                 bits.append(f"SHA-256: {sha}")
+            files_done = overall.get("files_done")
+            files_total = overall.get("files_total")
+            if files_done is not None or files_total is not None:
+                bits.append(f"Files: {files_done if files_done is not None else '—'} / {files_total if files_total is not None else '—'}")
+            objects_done = overall.get("objects_done")
+            objects_total = overall.get("objects_total")
+            if objects_done is not None or objects_total is not None:
+                bits.append(
+                    f"Objects: {objects_done if objects_done is not None else '—'} / {objects_total if objects_total is not None else '—'}"
+                )
             steps = progress.get("steps") or []
             if steps:
                 bits.append(" | ".join(f"{'✓' if s.get('ok') else '•'} {s.get('label')}" for s in steps[-6:]))

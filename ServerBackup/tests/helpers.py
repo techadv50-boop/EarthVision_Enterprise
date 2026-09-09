@@ -734,6 +734,9 @@ class LocalMasterSSH(FakeSSH):
 
     def popen_script(self, script_path: str, payload):
         self.calls.append(payload.get("action"))
+        action = payload.get("action")
+        if action == "dump-databases":
+            return self._popen_dump_databases(payload)
         import prepare_master
 
         buf = io.BytesIO()
@@ -760,6 +763,77 @@ class LocalMasterSSH(FakeSSH):
         if self.corrupt_stream and len(data) > 50:
             data = data[:40] + b"\xff" + data[41:]
         return _Proc(data)
+
+    def _popen_dump_databases(self, payload) -> _Proc:
+        names = list(payload.get("databases") or [])
+        if self.fail_database:
+            failed = names[0] if names else "database"
+            lines = [
+                json.dumps(
+                    {
+                        "event": "progress",
+                        "stage": "DATABASE FAILED",
+                        "name": failed,
+                        "type": "MariaDB",
+                        "status": "failed",
+                        "error": "mysqldump failed",
+                    }
+                ),
+                json.dumps({"ok": False, "error": "mysqldump failed"}),
+            ]
+            return _Proc(("\n".join(lines) + "\n").encode("utf-8"), returncode=1)
+        work_id = "".join(ch for ch in str(payload.get("work_id") or "work") if ch.isalnum() or ch in "-_")
+        dest = Path("/tmp") / f"server-backup-work-{work_id}" / "databases"
+        dest.mkdir(parents=True, exist_ok=True)
+        dumps = []
+        events: list[dict] = []
+        catalog = []
+        for name in names:
+            path = dest / f"{name}.sql.gz"
+            payload_bytes = b"SQL " + name.encode("utf-8") + b" " + self.db_fingerprint.encode("utf-8")
+            with gzip.open(path, "wb") as handle:
+                handle.write(payload_bytes)
+            size = path.stat().st_size
+            estimated = max(len(payload_bytes), 1)
+            catalog.append({"name": name, "estimated_bytes": estimated, "type": "MariaDB"})
+            dumps.append({"name": name, "path": str(path), "size": size, "bytes_produced": len(payload_bytes)})
+        events.append(
+            {
+                "event": "progress",
+                "stage": "DATABASE DISCOVERY",
+                "status": "running",
+                "type": "MariaDB",
+                "databases": catalog,
+            }
+        )
+        for item in dumps:
+            events.append(
+                {
+                    "event": "progress",
+                    "stage": "DATABASE DUMP PREPARING",
+                    "name": item["name"],
+                    "type": "MariaDB",
+                    "status": "running",
+                    "estimated_bytes": catalog[[row["name"] for row in catalog].index(item["name"])]["estimated_bytes"],
+                    "bytes_produced": 0,
+                }
+            )
+            events.append(
+                {
+                    "event": "progress",
+                    "stage": "DATABASE DUMPING",
+                    "name": item["name"],
+                    "type": "MariaDB",
+                    "status": "running",
+                    "bytes_produced": item.get("bytes_produced") or item["size"],
+                    "bytes_written": item["size"],
+                    "estimated_bytes": catalog[[row["name"] for row in catalog].index(item["name"])]["estimated_bytes"],
+                    "elapsed_seconds": 1,
+                }
+            )
+        events.append({"event": "ok", "ok": True, "dumps": dumps})
+        encoded = "".join(json.dumps(event) + "\n" for event in events).encode("utf-8")
+        return _Proc(encoded)
 
     def scp_upload(self, local, remote) -> SSHResult:
         self.calls.append("scp")

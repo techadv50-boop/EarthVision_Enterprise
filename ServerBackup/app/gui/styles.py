@@ -76,6 +76,15 @@ QProgressBar {
 QProgressBar::chunk {
     background: #1b7f4e;
 }
+QLabel#liveBackupPanel {
+    background: #ffffff;
+    border: 1px solid #d9e1ea;
+    border-radius: 10px;
+    padding: 12px;
+    font-family: "Consolas", "Segoe UI", monospace;
+    font-size: 13px;
+    color: #10233a;
+}
 QTableWidget {
     background: #ffffff;
     border: 1px solid #d9e1ea;

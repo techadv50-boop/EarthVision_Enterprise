@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import json
 import struct
 
 from app import __version__
+from app.backup.live import (
+    BackupLiveSession,
+    STAGE_COMPLETE,
+    STAGE_DISCOVERY,
+    STAGE_DUMPING,
+    STAGE_DUMP_PREPARING,
+    STAGE_FAILED,
+    STAGE_FINGERPRINT,
+    STAGE_TRANSFERRING,
+    STAGE_UNCHANGED,
+    STAGE_VERIFYING,
+)
 from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
 from app.discover.engine import DiscoveryError as ApplicationDiscoveryError
@@ -249,13 +263,53 @@ def _hash_paths(engine, paths: list[str], allowed_roots: list[str]) -> dict[str,
     return mapping
 
 
-def _stream_files(engine, store: MasterStore, files: list[dict[str, Any]], allowed_roots: list[str]) -> int:
+def _stream_files(
+    engine,
+    store: MasterStore,
+    files: list[dict[str, Any]],
+    allowed_roots: list[str],
+    live: BackupLiveSession | None = None,
+    *,
+    transfer_kind: str = "files",
+    database_name: str = "",
+    db_type: str = "MariaDB",
+) -> int:
     if not files:
         return 0
     payload_files = []
+    by_abs = {}
     for item in files:
         path = item.get("absolute_path") or f"{item.get('source_root')}/{item.get('relative_path')}"
         payload_files.append({"path": path, "absolute_path": path})
+        by_abs[str(path)] = item
+    total_bytes = int(sum(int(item.get("size") or 0) for item in files))
+    if live is not None and transfer_kind == "files":
+        live.set_file_totals(files_total=len(files), bytes_total=total_bytes)
+
+    def on_progress(info: dict[str, Any]) -> None:
+        if live is None:
+            return
+        if transfer_kind == "database" and database_name:
+            live.database_event(
+                name=database_name,
+                db_type=db_type,
+                stage=STAGE_TRANSFERRING,
+                status="Transferring dump to Windows…",
+                bytes_transferred=int(info.get("bytes_done") or 0),
+                bytes_total=total_bytes,
+                bytes_produced=total_bytes,
+            )
+            return
+        key = str(info.get("key") or "")
+        rec = by_abs.get(key)
+        root = str((rec or {}).get("source_root") or "")
+        live.file_progress(
+            files_done=int(info.get("files_done") or 0),
+            objects_done=int(info.get("objects_done") or 0),
+            bytes_done=int(info.get("bytes_done") or 0),
+            source_root=root,
+        )
+
     process = engine.ssh.popen_script(
         engine.config.remote_prepare_script,
         {
@@ -267,16 +321,13 @@ def _stream_files(engine, store: MasterStore, files: list[dict[str, Any]], allow
     stdout = process.stdout
     if stdout is None:
         raise PipelineError("Object stream has no stdout.")
-    by_abs = {}
-    for item in files:
-        path = str(item.get("absolute_path") or f"{item.get('source_root')}/{item.get('relative_path')}")
-        by_abs[path] = item
     try:
         stored = unpack_to_objects(
             stdout,
             store.staging_dir,
             lambda tmp, expected: store.put_file_object(tmp, expected=expected),
             should_cancel=engine.progress.cancel_requested,
+            on_progress=on_progress if live is not None else None,
         )
     except (ValueError, struct.error, OSError) as exc:
         if "cancelled" in str(exc).lower():
@@ -298,7 +349,110 @@ def _stream_files(engine, store: MasterStore, files: list[dict[str, Any]], allow
     missing = [path for path, rec in by_abs.items() if not rec.get("sha256")]
     if missing:
         raise PipelineError("Interrupted object transfer; missing: " + ", ".join(missing[:8]))
+    if live is not None and transfer_kind != "database":
+        live.overall["file_bytes_complete"] = transferred
+        live.overall["files_done"] = len(stored)
+        live.overall["objects_done"] = len(stored)
+        live.overall["bytes_done"] = transferred
+        live.publish(phase="transferring", message="Transfer complete.")
     return transferred
+
+
+def _iter_ndjson(stdout) -> Iterator[dict[str, Any]]:
+    while True:
+        raw = stdout.readline()
+        if not raw:
+            break
+        if isinstance(raw, bytes):
+            text = raw.decode("utf-8", "replace").strip()
+        else:
+            text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            event = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+def _apply_dump_event(live: BackupLiveSession | None, event: dict[str, Any]) -> None:
+    if live is None:
+        return
+    stage = str(event.get("stage") or "")
+    name = str(event.get("name") or "")
+    if stage == STAGE_DISCOVERY:
+        estimates: dict[str, int] = {}
+        for item in event.get("databases") or []:
+            if isinstance(item, dict) and item.get("name"):
+                estimates[str(item["name"])] = int(item.get("estimated_bytes") or 0)
+        if estimates:
+            live.apply_dump_estimates(estimates)
+        first = next(iter(estimates), name)
+        live.database_event(
+            name=first or name,
+            stage=STAGE_DISCOVERY,
+            status=str(event.get("status") or "Measuring schema sizes…"),
+            db_type=str(event.get("type") or "MariaDB"),
+            bytes_estimated=estimates.get(first) if first else None,
+        )
+        return
+    if not stage and not name:
+        return
+    live.database_event(
+        name=name or str(live.database.get("name") or ""),
+        stage=stage or STAGE_DUMPING,
+        status=str(event.get("status") or "running"),
+        db_type=str(event.get("type") or "MariaDB"),
+        bytes_produced=event.get("bytes_produced"),
+        bytes_estimated=event.get("estimated_bytes"),
+        bytes_transferred=event.get("bytes_written") if stage == STAGE_TRANSFERRING else None,
+        elapsed_seconds=event.get("elapsed_seconds"),
+        error=str(event.get("error") or ""),
+    )
+
+
+def _consume_dump_progress(process, live: BackupLiveSession | None) -> list[dict[str, Any]]:
+    dumps: list[dict[str, Any]] = []
+    stdout = process.stdout
+    if stdout is None:
+        raise PipelineError("dump-databases has no stdout.")
+    error = ""
+    failed = False
+    for event in _iter_ndjson(stdout):
+        if event.get("event") == "ok" or (event.get("ok") is True and event.get("dumps") is not None):
+            dumps = list(event.get("dumps") or [])
+            continue
+        if event.get("ok") is False and event.get("event") != "progress":
+            error = str(event.get("error") or error or "dump-databases failed")
+            failed = True
+            _apply_dump_event(
+                live,
+                {
+                    "stage": STAGE_FAILED,
+                    "name": event.get("name") or (live.database.get("name") if live else ""),
+                    "status": "failed",
+                    "error": error,
+                    "type": event.get("type") or "MariaDB",
+                },
+            )
+            continue
+        _apply_dump_event(live, event)
+        if str(event.get("stage") or "") == STAGE_FAILED:
+            failed = True
+            error = str(event.get("error") or error or "mysqldump failed")
+    code = process.wait()
+    stderr = b""
+    if getattr(process, "stderr", None):
+        stderr = process.stderr.read() or b""
+    if isinstance(stderr, bytes):
+        stderr_text = stderr.decode("utf-8", "replace").strip()
+    else:
+        stderr_text = str(stderr).strip()
+    if failed or code not in (0, None) or not dumps:
+        raise PipelineError(error or stderr_text or f"dump-databases exit {code}")
+    return dumps
 
 
 def _fingerprint_databases(engine, names: list[str] | None = None) -> dict[str, str]:
@@ -317,37 +471,108 @@ def _fingerprint_databases(engine, names: list[str] | None = None) -> dict[str, 
     return mapping
 
 
-def _dump_changed_databases(engine, store: MasterStore, changed: list[str], allowed_roots: list[str]) -> dict[str, str]:
+def _dump_changed_databases(
+    engine,
+    store: MasterStore,
+    changed: list[str],
+    allowed_roots: list[str],
+    live: BackupLiveSession | None = None,
+) -> dict[str, str]:
     if not changed:
         return {}
-    parsed = _json_script(
-        engine,
-        "dump-databases",
-        {
-            "databases": changed,
-            "work_id": engine.backup_id.replace("_", ""),
-            "compression_level": engine.config.compression_level,
-        },
-        timeout=engine.config.transfer_timeout,
+    if live is not None:
+        live.overall["objects_total"] = int(live.overall.get("files_total") or 0) + len(changed)
+        for name in changed:
+            live.database_event(
+                name=name,
+                stage=STAGE_DUMP_PREPARING,
+                status="Preparing mysqldump…",
+                db_type="MariaDB",
+            )
+    process = engine.ssh.popen_script(
+        engine.config.remote_prepare_script,
+        engine._payload(
+            "dump-databases",
+            {
+                "databases": changed,
+                "work_id": engine.backup_id.replace("_", ""),
+                "compression_level": engine.config.compression_level,
+            },
+        ),
     )
-    dumps = parsed.get("dumps") or []
-    files = [
-        {
-            "absolute_path": item["path"],
-            "source_root": "/tmp",
-            "relative_path": Path(item["path"]).name,
-            "size": item.get("size") or 0,
-        }
-        for item in dumps
-    ]
-    _stream_files(engine, store, files, allowed_roots + ["/tmp"])
-    result = {}
+    try:
+        dumps = _consume_dump_progress(process, live)
+    except PipelineError:
+        if live is not None and live.database.get("stage") != STAGE_FAILED:
+            live.database_event(
+                name=changed[0],
+                stage=STAGE_FAILED,
+                status="failed",
+                error="dump-databases failed",
+            )
+        raise
+    result: dict[str, str] = {}
     for item in dumps:
         name = str(item.get("name"))
-        rec = next((row for row in files if row["absolute_path"] == item["path"]), None)
-        if not rec or not rec.get("sha256"):
+        files = [
+            {
+                "absolute_path": item["path"],
+                "source_root": "/tmp",
+                "relative_path": Path(item["path"]).name,
+                "size": item.get("size") or 0,
+            }
+        ]
+        if live is not None:
+            live.database_event(
+                name=name,
+                stage=STAGE_TRANSFERRING,
+                status="Transferring dump to Windows…",
+                db_type="MariaDB",
+                bytes_produced=int(item.get("size") or 0),
+                bytes_transferred=0,
+                bytes_total=int(item.get("size") or 0),
+            )
+        _stream_files(
+            engine,
+            store,
+            files,
+            allowed_roots + ["/tmp"],
+            live=live,
+            transfer_kind="database",
+            database_name=name,
+            db_type="MariaDB",
+        )
+        rec = files[0]
+        if live is not None:
+            live.database_event(
+                name=name,
+                stage=STAGE_VERIFYING,
+                status="Verifying stored dump object…",
+                db_type="MariaDB",
+                bytes_produced=int(item.get("size") or 0),
+                bytes_transferred=int(item.get("size") or 0),
+                bytes_total=int(item.get("size") or 0),
+            )
+        if not rec.get("sha256"):
+            if live is not None:
+                live.database_event(
+                    name=name,
+                    stage=STAGE_FAILED,
+                    status="failed",
+                    error=f"Database dump for {name} was not stored.",
+                )
             raise PipelineError(f"Database dump for {name} was not stored.")
         result[name] = str(rec["sha256"])
+        if live is not None:
+            live.database_event(
+                name=name,
+                stage=STAGE_COMPLETE,
+                status="Dump stored.",
+                db_type="MariaDB",
+                bytes_produced=int(item.get("size") or 0),
+                bytes_transferred=int(item.get("size") or 0),
+                bytes_total=int(item.get("size") or 0),
+            )
     return result
 
 
@@ -705,6 +930,14 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         discovery = discover_applications(config, ssh=engine.ssh, persist=True)
     except ApplicationDiscoveryError as exc:
         raise PipelineError(str(exc)) from exc
+    applications = list(discovery.get("applications") or [])
+    live = BackupLiveSession(
+        engine.progress,
+        operation="BACKUP",
+        backup_id=engine.backup_id,
+        applications=applications,
+    )
+    live.publish(phase="discovery", message="Discovering applications…")
     gate = discovery.get("backup_gate") or assess_backup_gate(
         list(discovery.get("applications") or []),
         list(discovery.get("database_inventory") or []),
@@ -734,17 +967,19 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         raise PipelineError("Required OJS application(s) were not discovered: " + ", ".join(required_missing))
 
     sources = collect_sources(config, ojs)
-    engine.progress.write(phase="inventory", message="Building file inventory…")
+    live.publish(phase="inventory", message="Building file inventory…")
     inventory = _inventory(engine, sources)
     previous = store.load_tree() if store.has_head() and not rebuild else {"files": []}
     has_master = store.has_head() and not rebuild
     op_type = "FULL" if not has_master or rebuild else "INCREMENTAL"
+    live.operation = "BACKUP — FULL MASTER BASELINE" if op_type == "FULL" else "BACKUP — INCREMENTAL"
+    live.publish()
 
     engine._check_cancel()
     hashes = _key_hashes(inventory)
     changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
     if changes.hash_candidates:
-        engine.progress.write(phase="hash", message="Hashing changed file candidates…")
+        live.publish(phase="hash", message="Hashing changed file candidates…")
         paths = [_absolute(item) for item in changes.hash_candidates]
         abs_hashes = _hash_paths(engine, paths, _required_roots(sources))
         _apply_abs_hashes(inventory, abs_hashes)
@@ -756,15 +991,40 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     fingerprints: dict[str, str] = {}
     changed_dbs: list[str] = []
     if db_names:
-        engine.progress.write(phase="database", message="Fingerprinting MariaDB databases…")
+        live.database_event(
+            name=db_names[0],
+            stage=STAGE_DISCOVERY,
+            status="Listing selected databases…",
+            db_type="MariaDB",
+        )
+        for name in db_names:
+            live.database_event(
+                name=name,
+                stage=STAGE_FINGERPRINT,
+                status="Comparing database fingerprints…",
+                db_type="MariaDB",
+            )
         try:
             fingerprints = _fingerprint_databases(engine)
             previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
             for name in db_names:
                 if fingerprints.get(name) != previous_fp.get(name):
                     changed_dbs.append(name)
+                else:
+                    live.database_event(
+                        name=name,
+                        stage=STAGE_UNCHANGED,
+                        status="Fingerprint matches; dump skipped.",
+                        db_type="MariaDB",
+                    )
             db_result = "UNCHANGED" if not changed_dbs else "CHANGED"
         except Exception as exc:  # noqa: BLE001
+            live.database_event(
+                name=db_names[0],
+                stage=STAGE_FAILED,
+                status="failed",
+                error=str(exc),
+            )
             raise PipelineError(f"Database backup failed: {exc}") from exc
 
     counts = changes.counts()
@@ -810,15 +1070,21 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         to_send = list(changes.transfer)
         if op_type == "FULL":
             to_send = [item for item in inventory]
-        engine.progress.write(phase="transferring", message="Transferring changed objects…")
-        transferred = _stream_files(engine, store, to_send, _required_roots(sources))
+        live.publish(phase="transferring", message="Transferring changed objects…")
+        transferred = _stream_files(engine, store, to_send, _required_roots(sources), live=live)
         hashes = _key_hashes(inventory)
         changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
 
         if db_names and changed_dbs:
-            engine.progress.write(phase="database", message="Dumping changed MariaDB databases…")
+            live.publish(phase="database", message="Dumping changed MariaDB databases…")
             try:
-                db_objects = _dump_changed_databases(engine, store, changed_dbs, _required_roots(sources))
+                db_objects = _dump_changed_databases(
+                    engine,
+                    store,
+                    changed_dbs,
+                    _required_roots(sources),
+                    live=live,
+                )
                 db_result = "OK"
             except Exception as exc:  # noqa: BLE001
                 raise PipelineError(f"Database backup failed: {exc}") from exc

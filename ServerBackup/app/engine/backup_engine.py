@@ -480,12 +480,11 @@ class BackupEngine:
         try:
             prune_logs(self.config.log_directory, self.config.log_retention_days)
             self.logger.info(f"Master backup start {self.backup_id} mode={self.mode} rebuild={rebuild}")
-            self.progress.write(
-                status="running",
-                phase="lock",
+            self.progress.begin(
                 backup_id=self.backup_id,
+                phase="lock",
                 message="Checking whether another backup is running…",
-                steps=[],
+                operation="BACKUP",
             )
             self.lock.acquire(mode=self.mode, backup_id=self.backup_id)
             self._check_cancel()

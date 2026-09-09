@@ -26,6 +26,12 @@ class ProgressReporter:
             "error": None,
             "cancel_requested": False,
             "updated_at": None,
+            "started_at": None,
+            "elapsed_seconds": 0,
+            "operation": None,
+            "application": None,
+            "database": {},
+            "overall": {},
         }
 
     def read(self) -> dict[str, Any]:
@@ -50,6 +56,31 @@ class ProgressReporter:
             json.dump(current, handle, indent=2)
         tmp.replace(self.path)
         return current
+
+    def begin(self, **updates: Any) -> dict[str, Any]:
+        """Start a live operation. Clears leftover 0/100 percents from earlier runs."""
+        previous = self.read()
+        current = {
+            "status": "running",
+            "phase": "master",
+            "message": "Backup started.",
+            "steps": [],
+            "bytes_done": 0,
+            "bytes_total": 0,
+            "speed_bps": 0,
+            "eta_seconds": None,
+            "sha256": None,
+            "error": None,
+            "cancel_requested": bool(previous.get("cancel_requested")),
+            "started_at": time.time(),
+            "elapsed_seconds": 0,
+            "operation": None,
+            "application": None,
+            "database": {},
+            "overall": {"label": "Preparing...", "percent": None, "bytes_done": 0, "bytes_total": 0},
+        }
+        current.update(updates)
+        return self.write(**current)
 
     def add_step(self, label: str, ok: bool = True, detail: str = "") -> None:
         steps = list(self.read().get("steps") or [])

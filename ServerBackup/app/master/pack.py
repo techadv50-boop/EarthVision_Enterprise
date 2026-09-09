@@ -98,6 +98,7 @@ def unpack_to_objects(
     write_object,
     *,
     should_cancel=None,
+    on_progress=None,
 ) -> list[dict[str, str | int]]:
     magic = stream.read(len(MAGIC))
     if magic != MAGIC:
@@ -130,6 +131,7 @@ def unpack_to_objects(
         tmp.parent.mkdir(parents=True, exist_ok=True)
         hasher = hashlib.sha256()
         remaining = size
+        file_got = 0
         with tmp.open("wb") as handle:
             while remaining > 0:
                 chunk = stream.read(min(CHUNK, remaining))
@@ -139,6 +141,19 @@ def unpack_to_objects(
                 handle.write(chunk)
                 hasher.update(chunk)
                 remaining -= len(chunk)
+                file_got += len(chunk)
+                if on_progress is not None:
+                    prior = int(sum(int(item.get("size") or 0) for item in stored))
+                    on_progress(
+                        {
+                            "key": key,
+                            "files_done": len(stored),
+                            "objects_done": len(stored),
+                            "bytes_done": prior + file_got,
+                            "file_bytes_done": file_got,
+                            "file_bytes_total": size,
+                        }
+                    )
         actual = hasher.hexdigest()
         if digest != actual:
             tmp.unlink(missing_ok=True)
@@ -146,4 +161,15 @@ def unpack_to_objects(
         write_object(tmp, expected=actual)
         tmp.unlink(missing_ok=True)
         stored.append({"key": key, "sha256": actual, "size": size})
+        if on_progress is not None:
+            on_progress(
+                {
+                    "key": key,
+                    "files_done": len(stored),
+                    "objects_done": len(stored),
+                    "bytes_done": int(sum(int(item.get("size") or 0) for item in stored)),
+                    "file_bytes_done": size,
+                    "file_bytes_total": size,
+                }
+            )
     return stored

@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 ALLOWED_ACTIONS = {
@@ -111,40 +112,179 @@ def path_checks(payload: dict) -> list[dict]:
     return checks
 
 
-def dump_databases(work: Path, names: list[str], compression_level: int) -> list[str]:
+def schema_size_bytes(name: str) -> int | None:
+    if any(ch in name for ch in UNSAFE) or "/" in name or " " in name:
+        return None
+    mysql = shutil.which("mysql")
+    if not mysql:
+        return None
+    sql = (
+        "SELECT COALESCE(SUM(data_length + index_length), 0) "
+        "FROM information_schema.tables "
+        f"WHERE table_schema = '{name}'"
+    )
+    result = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", "-e", sql], timeout=30)
+    if result.returncode != 0:
+        return None
+    try:
+        return int((result.stdout or "0").strip() or 0)
+    except ValueError:
+        return None
+
+
+def emit_dump_progress(payload: dict) -> None:
+    sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def dump_one_database(
+    name: str,
+    out: Path,
+    compression_level: int,
+    *,
+    mysqldump: str,
+    emit_progress: bool = False,
+    estimated_bytes: int | None = None,
+    run_dump=None,
+) -> dict:
+    args = [
+        mysqldump,
+        *mysql_defaults(),
+        "--single-transaction",
+        "--quick",
+        "--routines",
+        "--triggers",
+        "--events",
+        "--hex-blob",
+        "--databases",
+        name,
+    ]
+    started = time.time()
+    if emit_progress:
+        emit_dump_progress(
+            {
+                "event": "progress",
+                "stage": "DATABASE DUMP PREPARING",
+                "name": name,
+                "type": "MariaDB",
+                "status": "running",
+                "estimated_bytes": estimated_bytes,
+                "bytes_produced": 0,
+            }
+        )
+    launcher = run_dump or subprocess.Popen
+    proc = launcher(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout is not None
+    produced = 0
+    last_emit = 0
+    if emit_progress:
+        emit_dump_progress(
+            {
+                "event": "progress",
+                "stage": "DATABASE DUMPING",
+                "name": name,
+                "type": "MariaDB",
+                "status": "running",
+                "bytes_produced": 0,
+                "estimated_bytes": estimated_bytes,
+                "elapsed_seconds": int(time.time() - started),
+            }
+        )
+    with gzip.open(out, "wb", compresslevel=compression_level) as handle:
+        while True:
+            chunk = proc.stdout.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+            produced += len(chunk)
+            if emit_progress and produced - last_emit >= 1024 * 1024:
+                last_emit = produced
+                written = out.stat().st_size if out.is_file() else 0
+                emit_dump_progress(
+                    {
+                        "event": "progress",
+                        "stage": "DATABASE DUMPING",
+                        "name": name,
+                        "type": "MariaDB",
+                        "status": "running",
+                        "bytes_produced": produced,
+                        "bytes_written": written,
+                        "estimated_bytes": estimated_bytes,
+                        "elapsed_seconds": int(time.time() - started),
+                    }
+                )
+    stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
+    if proc.wait() != 0:
+        if emit_progress:
+            emit_dump_progress(
+                {
+                    "event": "progress",
+                    "stage": "DATABASE FAILED",
+                    "name": name,
+                    "type": "MariaDB",
+                    "status": "failed",
+                    "error": stderr.strip() or f"mysqldump failed for {name}",
+                }
+            )
+        fail(stderr.strip() or f"mysqldump failed for {name}")
+    written = out.stat().st_size if out.is_file() else 0
+    if emit_progress:
+        emit_dump_progress(
+            {
+                "event": "progress",
+                "stage": "DATABASE DUMPING",
+                "name": name,
+                "type": "MariaDB",
+                "status": "running",
+                "bytes_produced": produced,
+                "bytes_written": written,
+                "estimated_bytes": estimated_bytes,
+                "elapsed_seconds": int(time.time() - started),
+            }
+        )
+    return {"name": name, "path": str(out), "size": written, "bytes_produced": produced, "estimated_bytes": estimated_bytes}
+
+
+def dump_databases(
+    work: Path,
+    names: list[str],
+    compression_level: int,
+    *,
+    emit_progress: bool = False,
+) -> list[str]:
     dumped: list[str] = []
     dest = work / "databases"
     dest.mkdir(parents=True, exist_ok=True)
     mysqldump = shutil.which("mysqldump")
     if not mysqldump:
         fail("mysqldump was not found")
+    estimates: dict[str, int | None] = {}
     for name in names:
         if any(ch in name for ch in UNSAFE) or "/" in name or " " in name:
             fail(f"Refusing unsafe database name: {name!r}")
-        out = dest / f"{name}.sql.gz"
-        args = [
-            mysqldump,
-            *mysql_defaults(),
-            "--single-transaction",
-            "--quick",
-            "--routines",
-            "--triggers",
-            "--events",
-            "--hex-blob",
-            "--databases",
+        estimates[name] = schema_size_bytes(name) if emit_progress else None
+    if emit_progress:
+        emit_dump_progress(
+            {
+                "event": "progress",
+                "stage": "DATABASE DISCOVERY",
+                "status": "running",
+                "type": "MariaDB",
+                "databases": [
+                    {"name": name, "estimated_bytes": estimates.get(name), "type": "MariaDB"}
+                    for name in names
+                ],
+            }
+        )
+    for name in names:
+        dump_one_database(
             name,
-        ]
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        assert proc.stdout is not None
-        with gzip.open(out, "wb", compresslevel=compression_level) as handle:
-            while True:
-                chunk = proc.stdout.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-        stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
-        if proc.wait() != 0:
-            fail(stderr.strip() or f"mysqldump failed for {name}")
+            dest / f"{name}.sql.gz",
+            compression_level,
+            mysqldump=mysqldump,
+            emit_progress=emit_progress,
+            estimated_bytes=estimates.get(name),
+        )
         dumped.append(name)
     return dumped
 
@@ -263,13 +403,12 @@ def main() -> None:
         work_id = "".join(ch for ch in str(payload.get("work_id") or "work") if ch.isalnum() or ch in "-_")
         work = Path("/tmp") / f"server-backup-work-{work_id}"
         work.mkdir(parents=True, exist_ok=True)
-        dumped = dump_databases(work, list(payload.get("databases") or []), int(payload.get("compression_level") or 6))
+        dumped = dump_databases(work, list(payload.get("databases") or []), int(payload.get("compression_level") or 6), emit_progress=True)
         files = []
         for name in dumped:
             path = work / "databases" / f"{name}.sql.gz"
             files.append({"name": name, "path": str(path), "size": path.stat().st_size if path.is_file() else 0})
-        json.dump({"ok": True, "dumps": files}, sys.stdout)
-        sys.stdout.write("\n")
+        emit_dump_progress({"event": "ok", "ok": True, "dumps": files})
         return
     if action in {"check", "dry-run"}:
         checks = path_checks(payload)
