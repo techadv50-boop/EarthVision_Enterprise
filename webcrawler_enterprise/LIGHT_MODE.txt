@@ -1,0 +1,35 @@
+WebCrawler Enterprise — Light Mode (Contact Scan)
+=================================================
+
+What it does
+------------
+- Crawls ALL reachable pages of each website (does not skip pages)
+- Reads HTML pages and linked documents (PDF, DOC/DOCX, XLS/XLSX, PPT, TXT, CSV, ZIP text, etc.)
+- Extracts every email and phone number it finds
+- Writes them to:
+    domain.com\emails.txt
+    domain.com\phone_numbers.txt
+    domain.com\Reports\...
+
+What it does NOT do
+-------------------
+- Does NOT save website files (no HTML mirror, no PDF/Word/Image folders filled)
+- Skips image downloads (JPG/PNG rarely contain plain-text emails/phones)
+
+How to use
+----------
+1. Open the app
+2. Keep the checkbox enabled:
+   "Light mode — crawl ALL pages for emails & phones only (no file downloads, faster)"
+3. Paste URLs → choose output folder → Start
+
+Full download mode
+------------------
+Uncheck Light mode if you want the complete website saved to disk
+(HTML + documents + images). That mode is slower.
+
+Tips
+----
+- Start uses only the URLs in the box, from scratch
+- Resume continues an interrupted previous run
+- Raise Page workers in Settings (12–24) for more speed
