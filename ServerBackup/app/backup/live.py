@@ -20,14 +20,74 @@ STAGE_FAILED = "DATABASE FAILED"
 PREPARING_STAGES = frozenset({STAGE_DISCOVERY, STAGE_FINGERPRINT, STAGE_DUMP_PREPARING})
 MEASURING_STAGES = frozenset({STAGE_DUMPING, STAGE_TRANSFERRING, STAGE_VERIFYING})
 
+UI_PREPARING = "PREPARING"
+UI_DISCOVERING = "DISCOVERING"
+UI_INVENTORY = "INVENTORY"
+UI_HASHING = "HASHING"
+UI_DATABASE = "DATABASE"
+UI_TRANSFERRING = "TRANSFERRING"
+UI_VERIFYING = "VERIFYING"
+UI_COMMITTING = "COMMITTING"
+UI_SUCCESS = "SUCCESS"
+UI_FAILED = "FAILED"
+UI_CANCELLED = "CANCELLED"
+
+UI_STAGES = (
+    UI_PREPARING,
+    UI_DISCOVERING,
+    UI_INVENTORY,
+    UI_HASHING,
+    UI_DATABASE,
+    UI_TRANSFERRING,
+    UI_VERIFYING,
+    UI_COMMITTING,
+    UI_SUCCESS,
+    UI_FAILED,
+    UI_CANCELLED,
+)
+
+SCANNING_UI = frozenset({UI_PREPARING, UI_DISCOVERING, UI_INVENTORY, UI_HASHING})
+
+
+def log_pipeline(engine, token: str, detail: str = "") -> None:
+    """Log a real pipeline state token. Never include secrets."""
+    line = token if not detail else f"{token} {detail}"
+    logger = getattr(engine, "logger", None)
+    if logger is not None:
+        logger.info(line)
+
+
+def is_backup_operation(progress: Mapping[str, Any] | None) -> bool:
+    data = dict(progress or {})
+    operation = str(data.get("operation") or "")
+    if operation.upper().startswith("BACKUP"):
+        return True
+    return bool(data.get("ui_stage"))
+
+
+def show_live_backup_panel(
+    progress: Mapping[str, Any] | None,
+    *,
+    running: bool,
+    backup_active: bool = False,
+) -> bool:
+    """Keep the live panel visible for the whole BACKUP NOW lifecycle, including failure."""
+    if running or backup_active:
+        return True
+    data = dict(progress or {})
+    status = str(data.get("status") or "").lower()
+    if status in {"running", "failed", "cancelled", "success"} and is_backup_operation(data):
+        return True
+    return False
+
 
 def measurable_percent(
     done: int | float | None,
     total: int | float | None,
     *,
     stage: str = "",
-) -> int | None:
-    """Return 0-100 only when both values are real and total > 0. Never invent a percent."""
+) -> float | None:
+    """Return 0-100.0 only when both values are real and total > 0. Never invent a percent."""
     if done is None or total is None:
         return None
     try:
@@ -38,24 +98,36 @@ def measurable_percent(
     if total_n <= 0 or done_n < 0:
         return None
     if done_n > total_n:
-        # Schema-size estimates can undershoot mysqldump output. Do not claim 100%.
         if stage == STAGE_DUMPING:
-            return 99
+            return 99.9
         return None
-    percent = int(done_n * 100 / total_n)
+    percent = round(done_n * 100.0 / total_n, 1)
     if percent >= 100 and stage == STAGE_DUMPING:
-        return 99
-    return min(100, percent)
+        return 99.9
+    return min(100.0, percent)
 
 
-def progress_label(*, done: int | None, total: int | None, stage: str = "") -> str:
+def progress_label(*, done: int | None, total: int | None, stage: str = "", ui_stage: str = "") -> str:
+    ui = str(ui_stage or "")
+    if (done is None or int(done) == 0) and (total is None or int(total) <= 0):
+        if ui == UI_INVENTORY:
+            return "Scanning..."
+        if ui == UI_VERIFYING:
+            return "Verifying..."
+        if ui == UI_TRANSFERRING or stage in MEASURING_STAGES:
+            return "Calculating..."
+        if ui in SCANNING_UI or stage in PREPARING_STAGES or not stage:
+            return "Preparing..."
+        return "Preparing..."
     if stage in PREPARING_STAGES or (not done and stage == STAGE_DUMPING and not total):
         if stage == STAGE_DUMPING:
             return "Calculating..."
         return "Preparing..."
     if done is None or done < 0:
-        if stage in MEASURING_STAGES:
+        if stage in MEASURING_STAGES or ui == UI_TRANSFERRING:
             return "Calculating..."
+        if ui == UI_VERIFYING:
+            return "Verifying..."
         return "Preparing..."
     if total is None or total <= 0:
         return f"{format_bytes(done)} produced"
@@ -112,6 +184,8 @@ def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float |
     operation = str(data.get("operation") or data.get("message") or "BACKUP")
     db = data.get("database") if isinstance(data.get("database"), dict) else {}
     overall = data.get("overall") if isinstance(data.get("overall"), dict) else {}
+    master = data.get("master") if isinstance(data.get("master"), dict) else {}
+    ui_stage = str(data.get("ui_stage") or "")
     started = data.get("started_at")
     elapsed = data.get("elapsed_seconds")
     if now is not None and started:
@@ -126,15 +200,20 @@ def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float |
             overall.get("bytes_total"),
             stage=str(db.get("stage") or data.get("phase") or ""),
         )
-    overall_line = f"{percent}%" if percent is not None else str(
-        overall.get("label") or progress_label(
-            done=overall.get("bytes_done"),
-            total=overall.get("bytes_total"),
-            stage=str(db.get("stage") or data.get("phase") or ""),
+    if percent is None:
+        overall_line = str(
+            overall.get("label")
+            or progress_label(
+                done=overall.get("bytes_done"),
+                total=overall.get("bytes_total"),
+                stage=str(db.get("stage") or ""),
+                ui_stage=ui_stage,
+            )
         )
-    )
-    db_done = db.get("bytes_transferred") if str(db.get("stage") or "") == STAGE_TRANSFERRING else db.get("bytes_produced")
-    db_total = db.get("bytes_estimated") if str(db.get("stage") or "") != STAGE_TRANSFERRING else db.get("bytes_total")
+    else:
+        overall_line = f"{float(percent):.1f}%"
+    db_done = db.get("bytes_produced")
+    db_total = db.get("bytes_estimated")
     if str(db.get("stage") or "") == STAGE_TRANSFERRING:
         db_done = db.get("bytes_transferred")
         db_total = db.get("bytes_total")
@@ -142,6 +221,7 @@ def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float |
         done=db_done,
         total=db_total,
         stage=str(db.get("stage") or ""),
+        ui_stage=ui_stage,
     )
     files_done = overall.get("files_done")
     files_total = overall.get("files_total")
@@ -151,23 +231,80 @@ def format_live_backup_panel(progress: Mapping[str, Any] | None, *, now: float |
     eta = overall.get("eta_seconds")
     if eta is None:
         eta = eta_seconds(done=overall.get("bytes_done"), total=overall.get("bytes_total"), speed_bps=speed)
+    status = str(data.get("status") or db.get("status") or "—")
+    stage_line = ui_stage or str(db.get("stage") or data.get("phase") or "—")
+    if ui_stage == UI_DATABASE and db.get("stage"):
+        stage_line = f"{ui_stage} / {db.get('stage')}"
+    transferred_line = progress_label(
+        done=overall.get("bytes_done"),
+        total=overall.get("bytes_total"),
+        stage=str(db.get("stage") or ""),
+        ui_stage=ui_stage,
+    )
+    head_state = data.get("head_state") or master.get("head_state") or "UNCHANGED"
+    committed = master.get("committed_bytes")
+    staged = master.get("staged_bytes")
+    written = master.get("write_bytes")
+    write_objects = master.get("write_objects")
+    staging_objects = master.get("staging_objects")
+    staging_bytes = master.get("staging_bytes")
+    master_size = master.get("current_size")
+    if master_size is None:
+        master_size = written if written is not None else 0
     lines = [
         str(operation),
         "",
         f"Overall: {overall_line}",
-        f"Application: {data.get('application') or '—'}",
-        f"Database: {db.get('name') or '—'}",
-        f"Database type: {db.get('type') or '—'}",
-        f"Stage: {db.get('stage') or data.get('phase') or '—'}",
-        f"Status: {db.get('status') or data.get('status') or '—'}",
-        f"Database: {db_progress}",
+        f"Stage: {stage_line}",
+        f"Status: {status}",
+        "",
+        "Transfer:",
+        f"Transferred: {transferred_line}",
         f"Speed: {speed_label(speed)}",
         f"Elapsed: {format_hms(elapsed)}",
         f"ETA: {format_hms(eta)}",
-        f"Files: {files_done if files_done is not None else '—'} / {files_total if files_total is not None else '—'}",
-        f"Objects: {objects_done if objects_done is not None else '—'} / {objects_total if objects_total is not None else '—'}",
-        f"Bytes transferred: {progress_label(done=overall.get('bytes_done'), total=overall.get('bytes_total'))}",
+        "",
+        "Files:",
+        f"Files processed: {files_done if files_done is not None else '—'} / {files_total if files_total is not None else '—'}",
+        "",
+        "Objects:",
+        f"Objects processed: {objects_done if objects_done is not None else '—'} / {objects_total if objects_total is not None else '—'}",
+        "",
+        "Current:",
+        f"Application: {data.get('application') or '—'}",
+        f"Source: {data.get('current_source') or overall.get('current_source') or '—'}",
+        f"Current file/object: {data.get('current_object') or overall.get('current_object') or '—'}",
+        "",
+        "Database:",
+        f"Database: {db.get('name') or '—'}",
+        f"Database type: {db.get('type') or '—'}",
+        f"Stage: {db.get('stage') or '—'}",
+        f"Bytes produced: {progress_label(done=db.get('bytes_produced'), total=db.get('bytes_estimated'), stage=str(db.get('stage') or ''), ui_stage=ui_stage)}",
+        f"Bytes transferred: {progress_label(done=db.get('bytes_transferred'), total=db.get('bytes_total'), stage=str(db.get('stage') or STAGE_TRANSFERRING), ui_stage=ui_stage)}",
+        f"Speed: {speed_label(db.get('speed_bps'))}",
+        f"Progress: {db_progress}",
+        "",
+        "MASTER:",
+        f"Current size: {format_bytes(master_size or 0)}",
+        f"Transferred bytes: {format_bytes(int(overall.get('bytes_done') or 0))}",
+        f"Staged bytes: {format_bytes(int(staged or 0))}",
+        f"Committed master bytes: {format_bytes(int(committed or 0))}",
+        f"MASTER WRITES: {write_objects if write_objects is not None else 0} objects / {format_bytes(int(written or 0))}",
+        f"STAGING: {staging_objects if staging_objects is not None else 0} objects / {format_bytes(int(staging_bytes or 0))}",
+        f"HEAD: {head_state}",
+        f"Staging: {data.get('staging_state') or '—'}",
     ]
+    if str(data.get("status") or "").lower() in {"failed", "cancelled"}:
+        lines.extend(
+            [
+                "",
+                "BACKUP FAILED" if str(data.get("status") or "").lower() == "failed" else "BACKUP CANCELLED",
+                f"Error: {data.get('error') or data.get('message') or '—'}",
+                f"Operation ID: {data.get('backup_id') or '—'}",
+                f"HEAD: {head_state}",
+                f"Staging: {data.get('staging_state') or 'CLEANED'}",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -224,7 +361,22 @@ class BackupLiveSession:
         self.database: dict[str, Any] = {}
         self.application = ""
         self.phase = "master"
+        self.ui_stage = UI_PREPARING
         self.message = operation
+        self.current_source = ""
+        self.current_object = ""
+        self.head_state = "UNCHANGED"
+        self.staging_state = "—"
+        self.master = {
+            "current_size": 0,
+            "write_bytes": 0,
+            "write_objects": 0,
+            "staged_bytes": 0,
+            "staging_bytes": 0,
+            "staging_objects": 0,
+            "committed_bytes": 0,
+            "head_state": "UNCHANGED",
+        }
 
     def _speed(self, bytes_now: int) -> float:
         now = time.time()
@@ -249,30 +401,38 @@ class BackupLiveSession:
         )
         self.overall["percent"] = percent
         if percent is None:
-            stage = str(self.database.get("stage") or "")
             self.overall["label"] = progress_label(
                 done=self.overall.get("bytes_done"),
                 total=self.overall.get("bytes_total"),
-                stage=stage,
+                stage=str(self.database.get("stage") or ""),
+                ui_stage=self.ui_stage,
             )
         else:
-            self.overall["label"] = f"{percent}%"
+            self.overall["label"] = f"{float(percent):.1f}%"
         self.overall["eta_seconds"] = eta_seconds(
             done=self.overall.get("bytes_done"),
             total=self.overall.get("bytes_total"),
             speed_bps=self.overall.get("speed_bps"),
         )
+        self.master["head_state"] = self.head_state
+        self.master["current_size"] = int(self.master.get("write_bytes") or 0) + int(self.master.get("committed_bytes") or 0)
         self.reporter.write(
             status="running",
             phase=self.phase,
+            ui_stage=self.ui_stage,
             message=self.message,
             backup_id=self.backup_id,
             started_at=self.started_at,
             elapsed_seconds=elapsed,
             operation=self.operation,
             application=self.application or None,
+            current_source=self.current_source or None,
+            current_object=self.current_object or None,
             database=dict(self.database),
             overall=dict(self.overall),
+            master=dict(self.master),
+            head_state=self.head_state,
+            staging_state=self.staging_state,
             bytes_done=int(self.overall.get("bytes_done") or 0),
             bytes_total=int(self.overall.get("bytes_total") or 0),
             speed_bps=int(self.overall.get("speed_bps") or 0),
@@ -283,7 +443,62 @@ class BackupLiveSession:
         self.overall["files_total"] = files_total
         self.overall["objects_total"] = files_total
         self.overall["bytes_total"] = bytes_total if bytes_total > 0 else 0
+        self.ui_stage = UI_TRANSFERRING
         self.publish(phase="transferring", message="Transferring changed objects…")
+
+    def set_ui_stage(self, ui_stage: str, message: str | None = None, *, phase: str | None = None) -> None:
+        self.ui_stage = ui_stage
+        if phase:
+            self.phase = phase
+        self.publish(phase=self.phase, message=message)
+
+    def note_master_write(self, size: int) -> None:
+        self.master["write_objects"] = int(self.master.get("write_objects") or 0) + 1
+        self.master["write_bytes"] = int(self.master.get("write_bytes") or 0) + max(0, int(size))
+        self.master["staged_bytes"] = int(self.master.get("write_bytes") or 0)
+        self.master["current_size"] = int(self.master.get("write_bytes") or 0)
+
+    def set_committed(self, bytes_count: int, *, generation: int | None = None) -> None:
+        self.master["committed_bytes"] = int(bytes_count)
+        if generation is not None:
+            self.head_state = str(generation)
+            self.master["head_state"] = str(generation)
+
+    def finish(self, status: str, ui_stage: str, message: str, *, error: str = "", staging_state: str = "CLEANED") -> None:
+        self.ui_stage = ui_stage
+        self.staging_state = staging_state
+        elapsed = max(0, int(time.time() - self.started_at))
+        percent = measurable_percent(
+            self.overall.get("bytes_done"),
+            self.overall.get("bytes_total"),
+            stage=str(self.database.get("stage") or self.phase or ""),
+        )
+        if percent is not None:
+            self.overall["percent"] = percent
+            self.overall["label"] = f"{float(percent):.1f}%"
+        self.reporter.write(
+            status=status,
+            phase=self.phase,
+            ui_stage=ui_stage,
+            message=message,
+            error=error or None,
+            backup_id=self.backup_id,
+            started_at=self.started_at,
+            elapsed_seconds=elapsed,
+            operation=self.operation,
+            application=self.application or None,
+            current_source=self.current_source or None,
+            current_object=self.current_object or None,
+            database=dict(self.database),
+            overall=dict(self.overall),
+            master=dict(self.master),
+            head_state=self.head_state,
+            staging_state=staging_state,
+            bytes_done=int(self.overall.get("bytes_done") or 0),
+            bytes_total=int(self.overall.get("bytes_total") or 0),
+            speed_bps=int(self.overall.get("speed_bps") or 0),
+            eta_seconds=self.overall.get("eta_seconds"),
+        )
 
     def apply_dump_estimates(self, estimates: dict[str, int]) -> None:
         total = sum(int(value or 0) for value in estimates.values())
@@ -302,19 +517,27 @@ class BackupLiveSession:
         objects_done: int,
         bytes_done: int,
         source_root: str = "",
+        current_object: str = "",
     ) -> None:
+        previous_done = int(self.overall.get("bytes_done") or 0)
         self.overall["files_done"] = files_done
         self.overall["objects_done"] = objects_done
         self.overall["bytes_done"] = bytes_done
         self.overall["speed_bps"] = self._speed(bytes_done)
+        self.master["staged_bytes"] = bytes_done
         if source_root:
             self.application = application_for_root(self.applications, source_root)
+            self.current_source = source_root
+        if current_object:
+            self.current_object = current_object
+            self.overall["current_object"] = current_object
+            self.overall["current_source"] = self.current_source
         now = time.time()
         force = False
         totals = self.overall.get("files_total")
         if totals and files_done >= int(totals):
             force = True
-        if force or now - self._last_publish >= 0.25:
+        if force or now - self._last_publish >= 0.25 or bytes_done != previous_done:
             self._last_publish = now
             self.publish(phase="transferring", message="Transferring changed objects…")
 
@@ -333,6 +556,7 @@ class BackupLiveSession:
         error: str = "",
     ) -> None:
         self.application = application_for_database(self.applications, name) or self.application
+        self.ui_stage = UI_DATABASE
         produced = bytes_produced if bytes_produced is not None else self.database.get("bytes_produced")
         transferred = bytes_transferred if bytes_transferred is not None else self.database.get("bytes_transferred")
         estimated = bytes_estimated if bytes_estimated is not None else self.database.get("bytes_estimated")

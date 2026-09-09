@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app import __version__
+from app.backup.live import BackupLiveSession, UI_CANCELLED, UI_FAILED, UI_PREPARING, UI_SUCCESS, log_pipeline
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
@@ -94,6 +95,9 @@ class BackupEngine:
                         )
                     )
                     time.sleep(delay)
+                    live = getattr(self, "live", None)
+                    if live is not None:
+                        live.set_ui_stage(UI_PREPARING, f"{label} retrying…")
         assert last_error is not None
         raise last_error
 
@@ -120,6 +124,27 @@ class BackupEngine:
         for directory in self.config.extra_directories:
             validate_unix_path(directory, field="additional directory")
         validate_unix_path(self.config.remote_prepare_script, field="remote prepare script")
+
+    def _finish_failure(self, error_message: str, *, status: str = "failed", ui_stage: str = UI_FAILED) -> None:
+        live = getattr(self, "live", None)
+        banner = "BACKUP FAILED" if status == "failed" else "BACKUP CANCELLED"
+        if live is not None:
+            live.finish(
+                status,
+                ui_stage,
+                banner,
+                error=error_message,
+                staging_state="CLEANED",
+            )
+            return
+        self.progress.finish(
+            status=status,
+            ui_stage=ui_stage,
+            message=banner,
+            error=error_message,
+            head_state="UNCHANGED",
+            staging_state="CLEANED",
+        )
 
     def _cleanup_remote(self) -> None:
         if self._remote_work_id:
@@ -483,14 +508,22 @@ class BackupEngine:
             self.progress.begin(
                 backup_id=self.backup_id,
                 phase="lock",
+                ui_stage=UI_PREPARING,
                 message="Checking whether another backup is running…",
                 operation="BACKUP",
             )
+            self.live = BackupLiveSession(
+                self.progress,
+                operation="BACKUP",
+                backup_id=self.backup_id,
+            )
+            log_pipeline(self, "BACKUP_START", self.backup_id)
+            self.live.set_ui_stage(UI_PREPARING, "Checking whether another backup is running…", phase="lock")
             self.lock.acquire(mode=self.mode, backup_id=self.backup_id)
             self._check_cancel()
             self._validate_config_paths()
 
-            self.progress.write(phase="storage", message="Checking backup drive…")
+            self.live.set_ui_stage(UI_PREPARING, "Checking backup drive…", phase="storage")
             drive = drive_status(dest)
             if not drive.exists:
                 raise BackupError(drive.error or "Backup drive is unavailable.")
@@ -501,7 +534,8 @@ class BackupEngine:
             ensure_directory(dest)
             MasterStore(dest).ensure_layout()
 
-            self.progress.write(phase="ssh", message="Connecting to Ubuntu…")
+            self.live.set_ui_stage(UI_PREPARING, "Connecting to Ubuntu…", phase="ssh")
+            log_pipeline(self, "SSH_CONNECT_START")
             self.logger.info(
                 f"BACKUP NOW SSH transport={getattr(self.ssh, 'transport_name', lambda: 'unknown')()} "
                 f"user={self.config.ssh_username} host={self.config.server_ip}"
@@ -523,6 +557,7 @@ class BackupEngine:
             self.progress.write(
                 status="success",
                 phase="complete",
+                ui_stage=UI_SUCCESS,
                 message=str((self.progress.read() or {}).get("message") or "MASTER BACKUP STATUS=SUCCESS"),
             )
             save_state(
@@ -538,34 +573,39 @@ class BackupEngine:
             self._remote_work_id = None
             return info
         except BackupAlreadyRunning:
-            self.progress.write(status="failed", message="Backup already in progress.", error="Backup already in progress.")
+            self._finish_failure("Backup already in progress.", ui_stage=UI_FAILED)
             self.logger.error("Backup already in progress.")
             raise
         except BackupCancelled as exc:
             status = "CANCELLED"
             error_message = str(exc)
             self.errors.append(error_message)
+            log_pipeline(self, "BACKUP_CANCELLED")
             self.logger.info("Backup cancelled by user")
             self._cleanup_remote()
-            self.progress.write(status="cancelled", message="Backup cancelled.", error=error_message)
+            self._finish_failure(error_message, status="cancelled", ui_stage=UI_CANCELLED)
             save_state({"last_status": "CANCELLED", "last_backup": info["timestamp"]})
             raise
-        except (BackupError, SSHError, PipelineError, PathValidationError, OSError, ValueError) as exc:
-            if "cancelled" in str(exc).lower():
+        except Exception as exc:
+            if "cancelled" in str(exc).lower() or isinstance(exc, BackupCancelled):
                 status = "CANCELLED"
                 error_message = str(exc)
                 self.errors.append(error_message)
+                log_pipeline(self, "BACKUP_CANCELLED")
                 self._cleanup_remote()
-                self.progress.write(status="cancelled", message="Backup cancelled.", error=error_message)
+                self._finish_failure(error_message, status="cancelled", ui_stage=UI_CANCELLED)
                 save_state({"last_status": "CANCELLED", "last_backup": info["timestamp"]})
                 raise BackupCancelled(error_message) from exc
             status = "FAILED"
             error_message = str(exc)
             self.errors.append(error_message)
-            self.logger.error(error_message)
+            log_pipeline(self, "BACKUP_FAILED", error_message)
+            self.logger.exception(error_message)
             self._cleanup_remote()
-            self.progress.write(status="failed", message=error_message, error=error_message)
+            self._finish_failure(error_message, ui_stage=UI_FAILED)
             save_state({"last_status": "FAILED", "last_backup": info["timestamp"], "last_error": error_message})
+            if isinstance(exc, BackupAlreadyRunning):
+                raise
             raise BackupError(error_message) from exc
         finally:
             info["status"] = status if status != "RUNNING" else "FAILED"

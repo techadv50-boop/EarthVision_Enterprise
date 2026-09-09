@@ -21,6 +21,17 @@ from app.backup.live import (
     STAGE_TRANSFERRING,
     STAGE_UNCHANGED,
     STAGE_VERIFYING,
+    UI_COMMITTING,
+    UI_DATABASE,
+    UI_DISCOVERING,
+    UI_FAILED,
+    UI_HASHING,
+    UI_INVENTORY,
+    UI_PREPARING,
+    UI_SUCCESS,
+    UI_TRANSFERRING,
+    UI_VERIFYING,
+    log_pipeline,
 )
 from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
@@ -308,6 +319,7 @@ def _stream_files(
             objects_done=int(info.get("objects_done") or 0),
             bytes_done=int(info.get("bytes_done") or 0),
             source_root=root,
+            current_object=key,
         )
 
     process = engine.ssh.popen_script(
@@ -325,7 +337,7 @@ def _stream_files(
         stored = unpack_to_objects(
             stdout,
             store.staging_dir,
-            lambda tmp, expected: store.put_file_object(tmp, expected=expected),
+            lambda tmp, expected: _put_object(store, tmp, expected, live=live),
             should_cancel=engine.progress.cancel_requested,
             on_progress=on_progress if live is not None else None,
         )
@@ -356,6 +368,18 @@ def _stream_files(
         live.overall["bytes_done"] = transferred
         live.publish(phase="transferring", message="Transfer complete.")
     return transferred
+
+
+def _put_object(store: MasterStore, tmp, expected, live: BackupLiveSession | None = None):
+    size = 0
+    try:
+        size = int(tmp.stat().st_size) if tmp.is_file() else 0
+    except OSError:
+        size = 0
+    digest = store.put_file_object(tmp, expected=expected)
+    if live is not None:
+        live.note_master_write(size)
+    return digest
 
 
 def _iter_ndjson(stdout) -> Iterator[dict[str, Any]]:
@@ -910,7 +934,34 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     if drive.free_gb < config.min_free_disk_gb:
         raise PipelineError("Insufficient disk space.")
 
-    engine.progress.write(phase="ssh", message="Connecting to Ubuntu…")
+    if dry_run:
+        engine.progress.write(phase="ssh", message="Connecting to Ubuntu…")
+
+        def _login_dry() -> None:
+            result = engine.ssh.test_login()
+            if not result.ok:
+                raise SSHError(result.stderr.strip() or "SSH login failed.")
+
+        engine._retry("SSH connectivity", _login_dry)
+        helpers = engine.ssh.ensure_remote_scripts()
+        if not helpers.ok:
+            raise PipelineError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
+        engine._check_cancel()
+        return _run_dry_run_preview(engine, store)
+
+    live = getattr(engine, "live", None)
+    if live is None:
+        live = BackupLiveSession(
+            engine.progress,
+            operation="BACKUP",
+            backup_id=engine.backup_id,
+        )
+        engine.live = live
+    log_pipeline(engine, "BACKUP_START", engine.backup_id)
+    live.set_ui_stage(UI_PREPARING, "Master backup…", phase="master")
+
+    log_pipeline(engine, "SSH_CONNECT_START")
+    live.set_ui_stage(UI_PREPARING, "Connecting to Ubuntu…", phase="ssh")
 
     def _login() -> None:
         result = engine.ssh.test_login()
@@ -918,26 +969,24 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             raise SSHError(result.stderr.strip() or "SSH login failed.")
 
     engine._retry("SSH connectivity", _login)
+    log_pipeline(engine, "SSH_CONNECTED")
     helpers = engine.ssh.ensure_remote_scripts()
     if not helpers.ok:
         raise PipelineError(helpers.stderr.strip() or "Could not install Ubuntu backup helpers.")
 
     engine._check_cancel()
-    if dry_run:
-        return _run_dry_run_preview(engine, store)
 
+    log_pipeline(engine, "REMOTE_DISCOVERY_START")
+    live.set_ui_stage(UI_DISCOVERING, "Discovering applications…", phase="discovery")
     try:
         discovery = discover_applications(config, ssh=engine.ssh, persist=True)
     except ApplicationDiscoveryError as exc:
         raise PipelineError(str(exc)) from exc
     applications = list(discovery.get("applications") or [])
-    live = BackupLiveSession(
-        engine.progress,
-        operation="BACKUP",
-        backup_id=engine.backup_id,
-        applications=applications,
-    )
+    live.applications = applications
+    live.operation = "BACKUP"
     live.publish(phase="discovery", message="Discovering applications…")
+    log_pipeline(engine, "REMOTE_DISCOVERY_COMPLETE", f"applications={len(applications)}")
     gate = discovery.get("backup_gate") or assess_backup_gate(
         list(discovery.get("applications") or []),
         list(discovery.get("database_inventory") or []),
@@ -967,8 +1016,13 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         raise PipelineError("Required OJS application(s) were not discovered: " + ", ".join(required_missing))
 
     sources = collect_sources(config, ojs)
-    live.publish(phase="inventory", message="Building file inventory…")
+    log_pipeline(engine, "INVENTORY_START")
+    live.set_ui_stage(UI_INVENTORY, "Building file inventory…", phase="inventory")
     inventory = _inventory(engine, sources)
+    log_pipeline(engine, "INVENTORY_COMPLETE", f"files={len(inventory)}")
+    live.overall["files_total"] = len(inventory)
+    live.overall["objects_total"] = len(inventory)
+    live.publish(phase="inventory", message=f"Inventory complete ({len(inventory)} files).")
     previous = store.load_tree() if store.has_head() and not rebuild else {"files": []}
     has_master = store.has_head() and not rebuild
     op_type = "FULL" if not has_master or rebuild else "INCREMENTAL"
@@ -978,19 +1032,24 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     engine._check_cancel()
     hashes = _key_hashes(inventory)
     changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
+    log_pipeline(engine, "DELTA_COMPLETE")
     if changes.hash_candidates:
-        live.publish(phase="hash", message="Hashing changed file candidates…")
+        log_pipeline(engine, "HASH_START")
+        live.set_ui_stage(UI_HASHING, "Hashing changed file candidates…", phase="hash")
         paths = [_absolute(item) for item in changes.hash_candidates]
         abs_hashes = _hash_paths(engine, paths, _required_roots(sources))
         _apply_abs_hashes(inventory, abs_hashes)
         hashes = _key_hashes(inventory)
         changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
+        log_pipeline(engine, "HASH_COMPLETE")
 
     db_names = config.databases_for_backup()
     db_result = "SKIPPED"
     fingerprints: dict[str, str] = {}
     changed_dbs: list[str] = []
     if db_names:
+        log_pipeline(engine, "DATABASE_FINGERPRINT_START")
+        live.set_ui_stage(UI_DATABASE, "Fingerprinting MariaDB databases…", phase="database")
         live.database_event(
             name=db_names[0],
             stage=STAGE_DISCOVERY,
@@ -1018,6 +1077,11 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                         db_type="MariaDB",
                     )
             db_result = "UNCHANGED" if not changed_dbs else "CHANGED"
+            log_pipeline(
+                engine,
+                "DATABASE_FINGERPRINT_COMPLETE",
+                f"changed={len(changed_dbs)} unchanged={len(db_names) - len(changed_dbs)}",
+            )
         except Exception as exc:  # noqa: BLE001
             live.database_event(
                 name=db_names[0],
@@ -1047,7 +1111,8 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             **counts,
         }
         store.write_history_only(history)
-        engine.progress.write(status="success", phase="complete", message="NO CHANGES DETECTED")
+        live.set_ui_stage(UI_SUCCESS, "NO CHANGES DETECTED", phase="complete")
+        live.finish("success", UI_SUCCESS, "NO CHANGES DETECTED", staging_state="NONE")
         engine.logger.info("NO_CHANGE Master already current")
         return {
             "status": "SUCCESS",
@@ -1070,13 +1135,16 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         to_send = list(changes.transfer)
         if op_type == "FULL":
             to_send = [item for item in inventory]
-        live.publish(phase="transferring", message="Transferring changed objects…")
+        log_pipeline(engine, "OBJECT_TRANSFER_START", f"files={len(to_send)}")
+        live.set_ui_stage(UI_TRANSFERRING, "Transferring changed objects…", phase="transferring")
         transferred = _stream_files(engine, store, to_send, _required_roots(sources), live=live)
+        log_pipeline(engine, "OBJECT_TRANSFER_COMPLETE", f"bytes={transferred}")
         hashes = _key_hashes(inventory)
         changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
 
         if db_names and changed_dbs:
-            live.publish(phase="database", message="Dumping changed MariaDB databases…")
+            log_pipeline(engine, "DATABASE_DUMP_START", ",".join(changed_dbs))
+            live.set_ui_stage(UI_DATABASE, "Dumping changed MariaDB databases…", phase="database")
             try:
                 db_objects = _dump_changed_databases(
                     engine,
@@ -1086,6 +1154,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                     live=live,
                 )
                 db_result = "OK"
+                log_pipeline(engine, "DATABASE_DUMP_COMPLETE")
             except Exception as exc:  # noqa: BLE001
                 raise PipelineError(f"Database backup failed: {exc}") from exc
         elif db_names:
@@ -1093,6 +1162,8 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             db_result = "UNCHANGED"
 
         engine._check_cancel()
+        log_pipeline(engine, "VERIFY_START")
+        live.set_ui_stage(UI_VERIFYING, "Verifying transferred objects…", phase="verify")
         generation = 1 if previous_head is None else int(previous_head) + 1
         files = next_tree_files(changes, generation=generation, timestamp=timestamp)
         inventory_keys = {
@@ -1165,17 +1236,24 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         }
         if not files:
             raise PipelineError("Refusing to commit an empty master tree.")
+        log_pipeline(engine, "VERIFY_COMPLETE")
+        log_pipeline(engine, "HEAD_COMMIT_START")
+        live.set_ui_stage(UI_COMMITTING, "Committing HEAD…", phase="commit")
         store.commit(generation=generation, tree=tree, meta=meta, history=history)
         committed = True
         if store.head_generation() != generation:
             raise PipelineError("HEAD did not advance after commit.")
+        log_pipeline(engine, "HEAD_COMMIT_COMPLETE", f"generation={generation}")
+        live.set_committed(int(live.master.get("write_bytes") or transferred or 0), generation=generation)
+        live.head_state = str(generation)
         health = assess_health(
             store,
             required_sources=None,
             require_database=bool(db_names),
             deep=False,
         )
-        engine.progress.write(status="success", phase="complete", message="MASTER BACKUP STATUS=SUCCESS")
+        log_pipeline(engine, "BACKUP_SUCCESS")
+        live.finish("success", UI_SUCCESS, "MASTER BACKUP STATUS=SUCCESS", staging_state="CLEANED")
         engine.logger.info("Master update committed")
         return {
             "status": "SUCCESS",
@@ -1194,6 +1272,8 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             current = store.head_generation()
             if current != previous_head:
                 engine.logger.error(f"HEAD changed during failed operation ({previous_head} -> {current})")
+            live.head_state = "UNCHANGED"
+            live.staging_state = "CLEANED"
         store.cleanup_staging(op_id)
         try:
             engine.ssh.run_script(

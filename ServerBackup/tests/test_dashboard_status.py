@@ -100,6 +100,37 @@ def test_clear_stale_progress_does_not_touch_a_live_backup(tmp_path: Path):
         lock.release()
 
 
+def test_backup_failure_stays_visible_without_lock(tmp_path: Path):
+    cfg = make_config(tmp_path)
+    _write_progress(
+        status="failed",
+        operation="BACKUP — FULL MASTER BASELINE",
+        ui_stage="FAILED",
+        message="BACKUP FAILED",
+        error="SSH connection timed out.",
+        head_state="UNCHANGED",
+    )
+    status = collect_dashboard_status(cfg)
+    assert status["backup_running"] is False
+    assert status["show_live_panel"] is True
+    assert "SSH connection timed out." in status["live_message"]
+
+
+def test_clear_stale_progress_does_not_erase_backup_failure(tmp_path: Path):
+    cfg = make_config(tmp_path)
+    _write_progress(
+        status="failed",
+        operation="BACKUP",
+        ui_stage="FAILED",
+        message="BACKUP FAILED",
+        error="worker crashed",
+    )
+    assert clear_stale_progress(cfg) is False
+    leftover = ProgressReporter(progress_path()).read()
+    assert leftover["status"] == "failed"
+    assert leftover["error"] == "worker crashed"
+
+
 def test_test_connection_does_not_write_progress(tmp_path: Path):
     cfg = make_config(tmp_path)
     reporter = ProgressReporter(runtime_dir() / "progress.json")

@@ -33,14 +33,16 @@ def test_measurable_percent_is_absent_without_a_real_total():
 
 
 def test_dump_percent_does_not_claim_complete_when_output_exceeds_estimate():
-    assert measurable_percent(400, 300, stage=STAGE_DUMPING) == 99
-    assert measurable_percent(300, 300, stage=STAGE_DUMPING) == 99
+    assert measurable_percent(400, 300, stage=STAGE_DUMPING) == 99.9
+    assert measurable_percent(300, 300, stage=STAGE_DUMPING) == 99.9
     assert measurable_percent(300, 300, stage=STAGE_COMPLETE) == 100
 
 
 def test_progress_label_stays_preparing_until_bytes_are_known():
     assert progress_label(done=None, total=None, stage=STAGE_DUMP_PREPARING) == "Preparing..."
     assert progress_label(done=None, total=None, stage=STAGE_FINGERPRINT) == "Preparing..."
+    assert progress_label(done=0, total=0, ui_stage="PREPARING") == "Preparing..."
+    assert progress_label(done=0, total=0, ui_stage="INVENTORY") == "Scanning..."
     assert progress_label(done=0, total=None, stage=STAGE_DUMPING) == "Calculating..."
     assert " / " in progress_label(done=180 * 1024 * 1024, total=319 * 1024 * 1024, stage=STAGE_DUMPING)
     assert "produced" in progress_label(done=400, total=300, stage=STAGE_DUMPING)
@@ -78,15 +80,17 @@ def test_live_panel_omits_invented_percent_and_shows_current_database():
         now=1_078,
     )
     assert "BACKUP — FULL MASTER BASELINE" in panel
-    assert "Overall: 34%" in panel
+    assert "Overall: 34.0%" in panel
     assert "Application: journal.50sea.com" in panel
     assert "Database: journal50_ojs" in panel
-    assert "Stage: DATABASE DUMPING" in panel
+    assert "DATABASE DUMPING" in panel
     assert "180.0 MB / 319.0 MB" in panel
     assert "Elapsed: 00:01:18" in panel
     assert "ETA: 00:01:01" in panel
-    assert "Files: 12 / 40" in panel
-    assert "0%" not in panel.split("Overall:", 1)[1].splitlines()[0]
+    assert "Files processed: 12 / 40" in panel
+    overall_line = panel.split("Overall:", 1)[1].splitlines()[0].strip()
+    assert overall_line == "34.0%"
+    assert overall_line != "0%"
 
     preparing = format_live_backup_panel(
         {
@@ -319,3 +323,139 @@ def test_dashboard_does_not_show_zero_percent_when_bytes_are_unknown(tmp_path: P
     assert "Overall: 0%" not in text
     assert window.dashboard.progress_bar.format() == "Preparing..."
     window.close()
+
+
+def test_live_panel_stays_visible_after_backup_failure_without_lock(tmp_path: Path):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.gui.main_window import MainWindow
+    from tests.helpers import make_config
+
+    qt = QApplication.instance() or QApplication([])
+    cfg = make_config(tmp_path)
+    Path(cfg.backup_destination).mkdir(parents=True, exist_ok=True)
+    window = MainWindow(cfg, ssh_password="in-memory")
+    window.timer.stop()
+    window.show()
+    qt.processEvents()
+    window.dashboard.render(
+        {
+            "backup_running": False,
+            "backup_active": False,
+            "show_live_panel": True,
+            "live_message": "SSH connection timed out.",
+            "progress": {
+                "status": "failed",
+                "operation": "BACKUP — FULL MASTER BASELINE",
+                "ui_stage": "FAILED",
+                "error": "SSH connection timed out.",
+                "message": "BACKUP FAILED",
+                "backup_id": "2026-09-09_010000",
+                "head_state": "UNCHANGED",
+                "staging_state": "CLEANED",
+                "overall": {"percent": None, "label": "Preparing...", "bytes_done": 0, "bytes_total": 0},
+            },
+        }
+    )
+    qt.processEvents()
+    assert not window.dashboard.live_panel.isHidden()
+    text = window.dashboard.live_panel.text()
+    assert "BACKUP FAILED" in text
+    assert "SSH connection timed out." in text
+    assert "HEAD: UNCHANGED" in text
+    window.close()
+
+
+def test_worker_exception_reaches_gui_without_hiding_panel(tmp_path: Path):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from app.backup.progress import ProgressReporter
+    from app.engine.status import progress_path
+    from app.gui.main_window import MainWindow
+    from tests.helpers import make_config
+
+    qt = QApplication.instance() or QApplication([])
+    cfg = make_config(tmp_path)
+    Path(cfg.backup_destination).mkdir(parents=True, exist_ok=True)
+    window = MainWindow(cfg, ssh_password="in-memory")
+    window.timer.stop()
+    window.show()
+    boxes: list[str] = []
+
+    def fake_critical(_parent, title, text):
+        boxes.append(f"{title}:{text}")
+        return QMessageBox.StandardButton.Ok
+
+    from unittest.mock import patch
+
+    ProgressReporter(progress_path()).write(
+        status="failed",
+        operation="BACKUP",
+        ui_stage="FAILED",
+        message="BACKUP FAILED",
+        error="simulated worker crash",
+        head_state="UNCHANGED",
+        staging_state="CLEANED",
+    )
+    with patch.object(QMessageBox, "critical", fake_critical):
+        window._on_backup_finished(False, "simulated worker crash")
+    qt.processEvents()
+    assert boxes
+    assert "BACKUP FAILED" in boxes[0]
+    assert not window.dashboard.live_panel.isHidden()
+    assert "simulated worker crash" in window.dashboard.live_panel.text()
+    window.close()
+
+
+def test_stage_change_does_not_reset_measured_bytes(tmp_path: Path):
+    reporter = ProgressReporter(tmp_path / "progress.json")
+    reporter.begin(operation="BACKUP")
+    live = BackupLiveSession(reporter, operation="BACKUP")
+    live.set_file_totals(files_total=10, bytes_total=1000)
+    live.file_progress(files_done=4, objects_done=4, bytes_done=400, current_object="/var/www/a")
+    live.set_ui_stage("VERIFYING", "Verifying transferred objects…", phase="verify")
+    data = reporter.read()
+    assert data["bytes_done"] == 400
+    assert data["bytes_total"] == 1000
+    assert data["ui_stage"] == "VERIFYING"
+    assert data["overall"]["bytes_done"] == 400
+
+
+def test_show_live_panel_helper_keeps_backup_failure():
+    from app.backup.live import show_live_backup_panel
+
+    assert show_live_backup_panel({"status": "failed", "message": "timeout"}, running=False) is False
+    assert (
+        show_live_backup_panel(
+            {"status": "failed", "operation": "BACKUP", "error": "timeout"},
+            running=False,
+        )
+        is True
+    )
+    assert show_live_backup_panel({"status": "running", "operation": "BACKUP"}, running=False, backup_active=True) is True
+
+
+def test_failed_transfer_records_unchanged_head_in_progress(tmp_path: Path):
+    from app.engine.backup_engine import BackupEngine, BackupError
+    from app.master.store import MasterStore
+
+    remote = seed_remote_tree(tmp_path / "remote")
+    cfg = master_config(tmp_path, remote)
+    enable_backup(cfg, LocalMasterSSH(tmp_path / "remote"))
+    ssh = LocalMasterSSH(tmp_path / "remote")
+    ssh.truncate_stream = True
+    engine = BackupEngine(cfg, ssh=ssh)
+    try:
+        engine.run()
+        assert False
+    except BackupError:
+        pass
+    assert not MasterStore(cfg.backup_destination).has_head()
+    data = engine.progress.read()
+    assert data.get("status") == "failed"
+    assert data.get("head_state") == "UNCHANGED"
+    assert data.get("ui_stage") == "FAILED"

@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.backup.live import is_backup_operation, show_live_backup_panel
 from app.backup.lock import BackupLock
 from app.backup.progress import ProgressReporter
 from app.backup.retention import list_history, list_successful_backups
@@ -28,13 +29,19 @@ def live_dashboard_message(progress: Mapping[str, Any] | None, *, running: bool)
     """Banner text for the dashboard.
 
     Failed leftover messages such as "SSH connection timed out." stay in
-    progress.json after an earlier BACKUP NOW / DRY RUN. They must not be
-    shown as live status once no backup is running.
+    progress.json after an earlier TEST CONNECTION. They must not be shown
+    as live status once no backup is running — unless they belong to BACKUP NOW.
     """
     data = dict(progress or {})
     if running:
         return str(data.get("message") or "BACKUP IN PROGRESS")
     status = str(data.get("status") or "idle").lower()
+    if is_backup_operation(data) and status in {"failed", "cancelled", "running", "success"}:
+        if status == "failed":
+            return str(data.get("error") or data.get("message") or "BACKUP FAILED")
+        if status == "cancelled":
+            return str(data.get("message") or "BACKUP CANCELLED")
+        return str(data.get("message") or "BACKUP IN PROGRESS")
     if status == "success":
         return str(data.get("message") or "Ready.")
     return "Ready."
@@ -46,6 +53,8 @@ def clear_stale_progress(config: AppConfig) -> bool:
         return False
     reporter = ProgressReporter(progress_path())
     data = reporter.read()
+    if is_backup_operation(data) and str(data.get("status") or "").lower() in {"failed", "cancelled", "success"}:
+        return False
     status = str(data.get("status") or "idle").lower()
     if status not in {"failed", "cancelled", "running"}:
         return False
@@ -84,7 +93,9 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
     drive = drive_status(dest)
     lock = BackupLock(dest)
     progress = ProgressReporter(progress_path()).read()
-    running = lock.is_locked()
+    running = lock.is_locked() or (
+        str(progress.get("status") or "").lower() == "running" and is_backup_operation(progress)
+    )
     successful = list_successful_backups(dest)
     history = list_history(dest)
     last = history[0] if history else None
@@ -140,6 +151,7 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
         "automatic_backup": "ON" if config.automatic_backup else "OFF",
         "next_automatic_backup": next_auto if config.automatic_backup else "—",
         "backup_running": running,
+        "show_live_panel": show_live_backup_panel(progress, running=running),
         "live_message": live_dashboard_message(progress, running=running),
         "progress": progress,
         "destination": str(dest),

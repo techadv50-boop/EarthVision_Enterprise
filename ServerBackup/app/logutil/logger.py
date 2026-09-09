@@ -45,6 +45,9 @@ class BackupLogger:
     def error(self, message: str) -> None:
         self.logger.error(redact_secrets(message))
 
+    def exception(self, message: str) -> None:
+        self.logger.exception(redact_secrets(message))
+
     def debug(self, message: str) -> None:
         self.logger.debug(redact_secrets(message))
 

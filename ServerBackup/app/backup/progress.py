@@ -78,6 +78,17 @@ class ProgressReporter:
             "application": None,
             "database": {},
             "overall": {"label": "Preparing...", "percent": None, "bytes_done": 0, "bytes_total": 0},
+            "ui_stage": "PREPARING",
+            "head_state": "UNCHANGED",
+            "staging_state": "—",
+            "master": {
+                "current_size": 0,
+                "write_bytes": 0,
+                "write_objects": 0,
+                "staged_bytes": 0,
+                "committed_bytes": 0,
+                "head_state": "UNCHANGED",
+            },
         }
         current.update(updates)
         return self.write(**current)
@@ -92,3 +103,30 @@ class ProgressReporter:
 
     def request_cancel(self) -> None:
         self.write(cancel_requested=True, message="Cancel requested…")
+
+    def finish(
+        self,
+        *,
+        status: str,
+        ui_stage: str,
+        message: str,
+        error: str | None = None,
+        head_state: str = "UNCHANGED",
+        staging_state: str = "CLEANED",
+    ) -> dict[str, Any]:
+        """End an operation without wiping measured byte counts."""
+        current = self.read()
+        overall = current.get("overall") if isinstance(current.get("overall"), dict) else {}
+        return self.write(
+            status=status,
+            ui_stage=ui_stage,
+            phase=ui_stage.lower(),
+            message=message,
+            error=error,
+            head_state=head_state,
+            staging_state=staging_state,
+            overall=overall,
+            bytes_done=int(current.get("bytes_done") or overall.get("bytes_done") or 0),
+            bytes_total=int(current.get("bytes_total") or overall.get("bytes_total") or 0),
+            speed_bps=int(current.get("speed_bps") or 0),
+        )

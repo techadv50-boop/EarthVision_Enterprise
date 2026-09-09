@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import __app_name__, __version__
-from app.backup.live import format_live_backup_panel, measurable_percent
+from app.backup.live import format_live_backup_panel, measurable_percent, show_live_backup_panel
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.progress import ProgressReporter
 from app.config.schema import AppConfig
@@ -259,7 +259,11 @@ class DashboardPage(QWidget):
             ]
         )
         progress = status.get("progress") or {}
-        running = bool(status.get("backup_running"))
+        running = bool(status.get("backup_running") or status.get("backup_active"))
+        show_live = bool(
+            status.get("show_live_panel")
+            or show_live_backup_panel(progress, running=running, backup_active=bool(status.get("backup_active")))
+        )
         self.cancel_button.setVisible(running)
         self.backup_button.setEnabled(not running)
         self.rebuild_button.setEnabled(not running)
@@ -275,10 +279,13 @@ class DashboardPage(QWidget):
             total = progress.get("bytes_total")
         percent = overall.get("percent")
         if percent is None:
-            percent = measurable_percent(done, total, stage=str(database.get("stage") or progress.get("phase") or ""))
+            percent = measurable_percent(
+                done,
+                total,
+                stage=str(database.get("stage") or progress.get("ui_stage") or progress.get("phase") or ""),
+            )
         progress_status = str(progress.get("status") or "idle").lower()
-        show_details = running or progress_status == "success"
-        if running:
+        if show_live:
             self.live_panel.setVisible(True)
             self.live_panel.setText(format_live_backup_panel(progress, now=time.time()))
         else:
@@ -286,17 +293,25 @@ class DashboardPage(QWidget):
             self.live_panel.setText("")
         if running and percent is None:
             self.progress_bar.setRange(0, 0)
-            self.progress_bar.setFormat(str(overall.get("label") or "Preparing..."))
-        elif percent is not None and show_details:
+            label = str(overall.get("label") or progress.get("ui_stage") or "Preparing...")
+            self.progress_bar.setFormat(label)
+        elif percent is not None and show_live:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(int(percent))
+            self.progress_bar.setFormat(f"{float(percent):.1f}%")
+        elif progress_status == "success" and show_live:
+            self.progress_bar.setRange(0, 100)
             self.progress_bar.setFormat("%p%")
+            self.progress_bar.setValue(100)
+        elif show_live:
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setFormat(str(progress.get("ui_stage") or progress_status or "Preparing..."))
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setFormat("%p%")
-            self.progress_bar.setValue(100 if progress_status == "success" else 0)
+            self.progress_bar.setValue(0)
         bits = []
-        if show_details:
+        if show_live:
             speed = int(overall.get("speed_bps") or progress.get("speed_bps") or 0)
             eta = overall.get("eta_seconds")
             if eta is None:
@@ -327,12 +342,14 @@ class DashboardPage(QWidget):
 class MainWindow(QMainWindow):
     _dry_run_finished = Signal(bool, str)
     _discover_finished = Signal(bool, str)
+    _backup_finished = Signal(bool, str)
 
     def __init__(self, config: AppConfig, ssh_password: str = "") -> None:
         super().__init__()
         self.config = config
         self._ssh_password = ssh_password or ""
         self._ssh_state = ("UNKNOWN", "UNKNOWN")
+        self._backup_active = False
         self.setWindowTitle(f"{__app_name__}  {__version__}")
         self.resize(1100, 780)
         root = QWidget()
@@ -361,6 +378,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{__app_name__} Version {__version__}")
         self._dry_run_finished.connect(self._on_dry_run_finished, Qt.ConnectionType.QueuedConnection)
         self._discover_finished.connect(self._on_discover_finished, Qt.ConnectionType.QueuedConnection)
+        self._backup_finished.connect(self._on_backup_finished, Qt.ConnectionType.QueuedConnection)
         self.discover_page.rediscover_requested.connect(self.discover_server)
         self.discover_page.cancelled.connect(self.show_dashboard)
         self.discover_page.approved.connect(self._on_applications_approved)
@@ -517,6 +535,10 @@ class MainWindow(QMainWindow):
         status = collect_dashboard_status(self.config)
         status["connection"] = self._ssh_state[0]
         status["ssh"] = self._ssh_state[1]
+        status["backup_active"] = bool(self._backup_active)
+        if status.get("backup_active"):
+            status["backup_running"] = True
+            status["show_live_panel"] = True
         self.dashboard.render(status, self._ssh_state)
 
     def confirm_backup(self) -> None:
@@ -545,14 +567,41 @@ class MainWindow(QMainWindow):
         save_config(self.config)
         config = self.config
         password = self._ssh_password
+        window = self
+        window._backup_active = True
+        self.refresh()
 
         def work() -> None:
             from app.engine.backup_engine import BackupEngine, BackupError
 
+            ok = False
+            message = "BACKUP FAILED"
             try:
                 BackupEngine(config, ssh=SSHClient(config, password=password or None), mode="manual").run()
-            except (BackupError, SSHError, OSError) as exc:
-                ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
+                ok = True
+                message = "MASTER BACKUP STATUS=SUCCESS"
+            except (BackupError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("BACKUP_FAILED")
+                try:
+                    ProgressReporter(progress_path()).finish(
+                        status="failed",
+                        ui_stage="FAILED",
+                        message="BACKUP FAILED",
+                        error=str(exc),
+                    )
+                    ProgressReporter(progress_path()).write(operation="BACKUP", head_state="UNCHANGED")
+                except Exception:
+                    ProgressReporter(progress_path()).write(
+                        status="failed",
+                        message="BACKUP FAILED",
+                        error=str(exc),
+                        ui_stage="FAILED",
+                        operation="BACKUP",
+                        head_state="UNCHANGED",
+                    )
+                message = str(exc)
+            finally:
+                window._backup_finished.emit(ok, message)
 
         threading.Thread(target=work, daemon=True).start()
         self.statusBar().showMessage("Backup started.")
@@ -581,17 +630,53 @@ class MainWindow(QMainWindow):
         save_config(self.config)
         config = self.config
         password = self._ssh_password
+        window = self
+        window._backup_active = True
+        self.refresh()
 
         def work() -> None:
             from app.engine.backup_engine import BackupEngine, BackupError
 
+            ok = False
+            message = "BACKUP FAILED"
             try:
                 BackupEngine(config, ssh=SSHClient(config, password=password or None), mode="manual").rebuild_master()
-            except (BackupError, SSHError, OSError) as exc:
-                ProgressReporter(progress_path()).write(status="failed", message=str(exc), error=str(exc))
+                ok = True
+                message = "MASTER BACKUP STATUS=SUCCESS"
+            except (BackupError, SSHError, OSError, Exception) as exc:
+                _LOG.exception("BACKUP_FAILED")
+                try:
+                    ProgressReporter(progress_path()).finish(
+                        status="failed",
+                        ui_stage="FAILED",
+                        message="BACKUP FAILED",
+                        error=str(exc),
+                    )
+                    ProgressReporter(progress_path()).write(operation="BACKUP", head_state="UNCHANGED")
+                except Exception:
+                    ProgressReporter(progress_path()).write(
+                        status="failed",
+                        message="BACKUP FAILED",
+                        error=str(exc),
+                        ui_stage="FAILED",
+                        operation="BACKUP",
+                        head_state="UNCHANGED",
+                    )
+                message = str(exc)
+            finally:
+                window._backup_finished.emit(ok, message)
 
         threading.Thread(target=work, daemon=True).start()
         self.statusBar().showMessage("Master rebuild started.")
+
+    def _on_backup_finished(self, ok: bool, text: str) -> None:
+        self._backup_active = False
+        self.refresh()
+        if ok:
+            self.statusBar().showMessage(text)
+            return
+        self.statusBar().showMessage("BACKUP FAILED")
+        QMessageBox.critical(self, "BACKUP FAILED", text or "Backup failed. HEAD is unchanged.")
 
     def cancel_backup(self) -> None:
         ProgressReporter(progress_path()).request_cancel()
