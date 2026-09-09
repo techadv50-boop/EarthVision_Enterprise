@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, Loader2 } from 'lucide-react';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import { useAuthStore } from '@/store/authStore';
 import { authApi } from '@/services/api';
 
 export default function LoginPage() {
@@ -22,8 +22,7 @@ export default function LoginPage() {
     setInfo('');
     try {
       await login(username, password);
-      const signedIn = useAuthStore.getState().user;
-      navigate(isCitationAdmin(signedIn) ? '/' : '/manuscripts');
+      navigate('/');
     } catch (err: unknown) {
       const detail =
         err && typeof err === 'object' && 'response' in err

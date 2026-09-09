@@ -12,6 +12,8 @@ import ManuscriptsPage from '@/pages/ManuscriptsPage';
 import ManuscriptReviewPage from '@/pages/ManuscriptReviewPage';
 import ArchiveSearchPage from '@/pages/ArchiveSearchPage';
 import UsersPage from '@/pages/UsersPage';
+import HomePage from '@/pages/HomePage';
+import ReviewHubPage from '@/pages/ReviewHubPage';
 import ReferenceCheckPage from '@/pages/ReferenceCheckPage';
 import LanguageReviewPage from '@/pages/LanguageReviewPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
@@ -48,14 +50,6 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function HomeRoute() {
-  const user = useAuthStore((s) => s.user);
-  if (!isCitationAdmin(user)) {
-    return <Navigate to="/manuscripts" replace />;
-  }
-  return <DashboardPage />;
-}
-
 export default function App() {
   return (
     <Routes>
@@ -71,7 +65,15 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<HomeRoute />} />
+        <Route path="/" element={<HomePage />} />
+        <Route
+          path="/journals"
+          element={
+            <AdminRoute>
+              <DashboardPage />
+            </AdminRoute>
+          }
+        />
         <Route
           path="/journals/:journalId"
           element={
@@ -98,6 +100,7 @@ export default function App() {
         />
         <Route path="/manuscripts" element={<ManuscriptsPage />} />
         <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
+        <Route path="/review" element={<ReviewHubPage />} />
         <Route path="/review/references" element={<ReferenceCheckPage />} />
         <Route path="/review/language" element={<LanguageReviewPage />} />
         <Route

@@ -165,7 +165,7 @@ export default function IssueArticlesPage() {
   return (
     <div>
       <p className="text-sm text-gray-500 mb-2">
-        <Link to="/">Journals</Link> / <Link to={`/journals/${id}`}>Journal</Link> /{' '}
+        <Link to="/journals">Journals</Link> / <Link to={`/journals/${id}`}>Journal</Link> /{' '}
         <Link to={`/journals/${id}/volumes/${vol}`}>Vol. {vol}</Link> / Issue {iss}
       </p>
       <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
