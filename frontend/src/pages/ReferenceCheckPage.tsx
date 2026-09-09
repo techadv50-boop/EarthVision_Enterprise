@@ -72,7 +72,6 @@ function RefLine({ item, tone }: { item?: RefItem | null; tone?: 'bad' | 'good' 
     tone === 'bad' ? 'text-red-300' : tone === 'warn' ? 'text-amber-200' : 'text-gray-200';
   return (
     <p className={`text-sm leading-relaxed ${color}`}>
-      {item.number != null ? <span className="text-gray-500 mr-2">[{item.number}]</span> : null}
       {item.text}
     </p>
   );
