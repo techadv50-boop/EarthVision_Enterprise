@@ -6,6 +6,7 @@ interface RefItem {
   text: string;
   body: string;
   doi?: string | null;
+  index?: number;
 }
 
 interface DiffRow {
@@ -16,8 +17,20 @@ interface DiffRow {
 }
 
 interface IntegrityResult {
-  status: 'pass' | 'fail';
+  status: 'pass' | 'warn' | 'fail';
   summary: string;
+  overall?: {
+    original: number;
+    returned: number;
+    unchanged: number;
+    removed: number;
+    added: number;
+    amended: number;
+    style_changed: number;
+    place_changed: number;
+    verdict: string;
+    lines: string[];
+  };
   order_changed: boolean;
   original_count: number;
   returned_count: number;
@@ -25,6 +38,9 @@ interface IntegrityResult {
   removed: DiffRow[];
   added: DiffRow[];
   changed: DiffRow[];
+  amended?: DiffRow[];
+  style_changed?: DiffRow[];
+  place_changed?: DiffRow[];
   renumbered: DiffRow[];
   warnings: string[];
   original: { filename: string; heading?: string | null; count: number; items: RefItem[] };
@@ -70,11 +86,7 @@ function RefLine({ item, tone }: { item?: RefItem | null; tone?: 'bad' | 'good' 
   if (!item) return <p className="text-gray-600 text-sm">—</p>;
   const color =
     tone === 'bad' ? 'text-red-300' : tone === 'warn' ? 'text-amber-200' : 'text-gray-200';
-  return (
-    <p className={`text-sm leading-relaxed ${color}`}>
-      {item.text}
-    </p>
-  );
+  return <p className={`text-sm leading-relaxed ${color}`}>{item.text}</p>;
 }
 
 function DiffSection({
@@ -146,13 +158,25 @@ export default function ReferenceCheckPage() {
     }
   };
 
+  const overall = result?.overall;
+  const amended = result?.amended || result?.changed || [];
+  const styleChanged = result?.style_changed || [];
+  const placeChanged = result?.place_changed || result?.renumbered || [];
+  const statusColor =
+    result?.status === 'pass'
+      ? 'border-emerald-700 text-emerald-400'
+      : result?.status === 'warn'
+        ? 'border-amber-700 text-amber-300'
+        : 'border-red-700 text-red-400';
+
   return (
     <div>
       <h2 className="text-2xl font-semibold mb-2">Reference check</h2>
       <p className="text-gray-400 mb-5 max-w-3xl">
-        Upload the Word file you sent to staff, then the file they returned. The check reads only
-        the References section. A shuffled list is acceptable when each reference keeps the same
-        number and the same work. Removed, added, rewritten, or renumbered items are flagged.
+        Upload the Word file you sent to staff, then the file they returned. The check splits the
+        References section into individual works and reports what was removed, newly added,
+        amended, style-only changed, or moved in place. A shuffled list is reported as a place
+        change; it is not treated as a deletion.
       </p>
       <div className="grid md:grid-cols-2 gap-4 max-w-4xl">
         <FilePick
@@ -184,24 +208,30 @@ export default function ReferenceCheckPage() {
 
       {result && (
         <div className="mt-8 space-y-4">
-          <div
-            className={`panel p-4 ${
-              result.status === 'pass' ? 'border-emerald-700' : 'border-red-700'
-            }`}
-          >
-            <p className={`text-sm font-semibold ${result.status === 'pass' ? 'text-emerald-400' : 'text-red-400'}`}>
-              {result.status === 'pass' ? 'References intact' : 'References do not match'}
+          <div className={`panel p-4 ${statusColor.split(' ').slice(0, 1).join(' ')}`}>
+            <p className={`text-sm font-semibold ${statusColor.split(' ').slice(1).join(' ')}`}>
+              Overall report
             </p>
-            <p className="text-gray-300 mt-1">{result.summary}</p>
-            {result.order_changed && (
-              <p className="text-amber-300 text-sm mt-2">
-                List order differs, but each number still points to the same reference.
-              </p>
+            <p className="text-gray-200 mt-2">{overall?.verdict || result.summary}</p>
+            {overall?.lines && (
+              <ul className="mt-3 text-sm text-gray-300 space-y-1 list-disc pl-5">
+                {overall.lines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
             )}
-            <p className="text-xs text-gray-500 mt-2">
-              Original {result.original_count} · Returned {result.returned_count} · Unchanged{' '}
-              {result.unchanged_count}
-            </p>
+            {overall && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4 text-xs">
+                <span className="bg-gray-800 rounded px-2 py-1">Removed {overall.removed}</span>
+                <span className="bg-gray-800 rounded px-2 py-1">Added {overall.added}</span>
+                <span className="bg-gray-800 rounded px-2 py-1">Amended {overall.amended}</span>
+                <span className="bg-gray-800 rounded px-2 py-1">Style {overall.style_changed}</span>
+                <span className="bg-gray-800 rounded px-2 py-1">Place {overall.place_changed}</span>
+                <span className="bg-gray-800 rounded px-2 py-1">Unchanged {overall.unchanged}</span>
+                <span className="bg-gray-800 rounded px-2 py-1">Original {overall.original}</span>
+                <span className="bg-gray-800 rounded px-2 py-1">Returned {overall.returned}</span>
+              </div>
+            )}
           </div>
           {result.warnings.length > 0 && (
             <div className="panel p-4 border-amber-800">
@@ -219,26 +249,32 @@ export default function ReferenceCheckPage() {
             tone="bad"
           />
           <DiffSection
-            title="Added"
+            title="Newly added"
             rows={result.added}
             empty="No extra reference was introduced."
             tone="warn"
           />
           <DiffSection
-            title="Changed"
-            rows={result.changed}
-            empty="No numbered reference was rewritten."
+            title="Amended (content)"
+            rows={amended}
+            empty="No reference was rewritten."
             tone="bad"
           />
           <DiffSection
-            title="Renumbered"
-            rows={result.renumbered}
-            empty="Every surviving reference kept its original number."
+            title="Style only"
+            rows={styleChanged}
+            empty="No punctuation / italic / spacing-only edits."
+            tone="warn"
+          />
+          <DiffSection
+            title="Place / order / number"
+            rows={placeChanged}
+            empty="Every surviving reference stayed in the same place with the same number."
             tone="warn"
           />
           <div className="grid md:grid-cols-2 gap-4">
             <section className="panel p-4">
-              <h3 className="font-medium mb-3">Original list</h3>
+              <h3 className="font-medium mb-3">Original list ({result.original.count})</h3>
               <div className="space-y-2 max-h-[28rem] overflow-auto pr-1">
                 {result.original.items.map((item, i) => (
                   <RefLine key={`o-${i}`} item={item} />
@@ -246,7 +282,7 @@ export default function ReferenceCheckPage() {
               </div>
             </section>
             <section className="panel p-4">
-              <h3 className="font-medium mb-3">Returned list</h3>
+              <h3 className="font-medium mb-3">Returned list ({result.returned.count})</h3>
               <div className="space-y-2 max-h-[28rem] overflow-auto pr-1">
                 {result.returned.items.map((item, i) => (
                   <RefLine key={`r-${i}`} item={item} />

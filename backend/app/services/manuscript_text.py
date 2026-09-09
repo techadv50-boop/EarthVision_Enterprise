@@ -66,6 +66,86 @@ def extract_docx_paragraphs(data: bytes) -> list[str]:
     return paragraphs
 
 
+def _inside_tags(node, tags: set[str]) -> bool:
+    parent = node.getparent()
+    while parent is not None:
+        if etree.QName(parent).localname in tags:
+            return True
+        parent = parent.getparent()
+    return False
+
+
+def _list_num_id(para) -> str | None:
+    p_pr = para.find("w:pPr", W_NS)
+    if p_pr is None:
+        return None
+    num_pr = p_pr.find("w:numPr", W_NS)
+    if num_pr is None:
+        return None
+    num_id = num_pr.find("w:numId", W_NS)
+    if num_id is None:
+        return None
+    value = num_id.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val")
+    return value or None
+
+
+def review_paragraph_text(para) -> str:
+    """Visible paragraph text for operator review: keep insertions, drop deletions.
+
+    Line breaks inside a paragraph are preserved so bibliography entries that
+    staff separated with Shift+Enter are not glued into one reference.
+    """
+    pieces: list[str] = []
+    for node in para.iter():
+        try:
+            tag = etree.QName(node).localname
+        except Exception:
+            continue
+        if tag in {"br", "cr"}:
+            if not _inside_tags(node, {"del", "endnoteReference", "footnoteReference", "commentReference"}):
+                pieces.append("\n")
+            continue
+        if tag == "tab":
+            pieces.append("\t")
+            continue
+        if tag != "t":
+            continue
+        if _inside_tags(node, {"del", "endnoteReference", "footnoteReference", "commentReference"}):
+            continue
+        pieces.append(node.text or "")
+    text = "".join(pieces)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip()
+
+
+def extract_review_paragraphs(data: bytes) -> list[str]:
+    """Paragraphs for Reference check / English review, including Word list numbers."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            xml = archive.read("word/document.xml")
+    except Exception:
+        return []
+    try:
+        root = etree.fromstring(xml)
+    except Exception:
+        return []
+    counters: dict[str, int] = {}
+    paragraphs: list[str] = []
+    for para in root.findall(".//w:p", W_NS):
+        line = review_paragraph_text(para)
+        num_id = _list_num_id(para)
+        if num_id:
+            counters[num_id] = counters.get(num_id, 0) + 1
+            n = counters[num_id]
+            stripped = line.lstrip()
+            if stripped and not re.match(r"^(\[\d+\]|\(\d+\)|\d{1,3}[\.\)])\s", stripped):
+                line = f"[{n}] {stripped}" if stripped else f"[{n}]"
+        if line:
+            paragraphs.append(line)
+    return paragraphs
+
+
 def extract_docx_text(data: bytes) -> str:
     return "\n\n".join(extract_docx_paragraphs(data))
 

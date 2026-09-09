@@ -18,13 +18,131 @@ from app.services.matcher import is_references_heading, section_heading_kind
 from app.services.reference_integrity import NUMBER_RE, paragraphs_from_upload
 
 CATEGORIES = (
-    "english",
+    "grammar",
+    "spelling",
+    "punctuation",
     "sentence_structure",
     "broken_sentence",
+    "run_on",
     "slang",
+    "formality",
+    "conciseness",
+    "clarity",
     "ambiguity",
+    "word_choice",
+    "repetition",
+    "capitalization",
+    "passive_voice",
     "irrelevant_word",
 )
+
+CATEGORY_ALIASES = {
+    "english": "grammar",
+    "wordiness": "conciseness",
+    "tone": "formality",
+    "informal": "slang",
+    "filler": "irrelevant_word",
+}
+
+MISSPELLINGS: dict[str, str] = {
+    "recieve": "receive",
+    "recieved": "received",
+    "seperate": "separate",
+    "seperately": "separately",
+    "occured": "occurred",
+    "occurence": "occurrence",
+    "definately": "definitely",
+    "enviroment": "environment",
+    "enviromental": "environmental",
+    "measurment": "measurement",
+    "analyis": "analysis",
+    "analize": "analyze",
+    "untill": "until",
+    "wich": "which",
+    "becuase": "because",
+    "teh": "the",
+    "adress": "address",
+    "calender": "calendar",
+    "existance": "existence",
+    "independant": "independent",
+    "neccessary": "necessary",
+    "successfull": "successful",
+    "accross": "across",
+    "alot": "a lot",
+    "publically": "publicly",
+    "refered": "referred",
+    "transfered": "transferred",
+    "usefull": "useful",
+    "arguement": "argument",
+    "begining": "beginning",
+    "catagory": "category",
+    "commited": "committed",
+    "comparision": "comparison",
+    "concious": "conscious",
+    "dissapear": "disappear",
+    "embarras": "embarrass",
+    "foriegn": "foreign",
+    "goverment": "government",
+    "hight": "height",
+    "knowlege": "knowledge",
+    "liason": "liaison",
+    "maintainance": "maintenance",
+    "noticable": "noticeable",
+    "occassion": "occasion",
+    "posession": "possession",
+    "privelege": "privilege",
+    "pronounciation": "pronunciation",
+    "recomend": "recommend",
+    "relevent": "relevant",
+    "rythm": "rhythm",
+    "sieze": "seize",
+    "similiar": "similar",
+    "strenght": "strength",
+    "sucess": "success",
+    "thier": "their",
+    "tommorrow": "tomorrow",
+    "truely": "truly",
+    "unfortunatly": "unfortunately",
+    "wether": "whether",
+    "whereever": "wherever",
+    "writting": "writing",
+}
+
+WORD_CHOICE: dict[str, str] = {
+    "irregardless": "regardless",
+    "utilize": "use",
+    "utilized": "used",
+    "utilization": "use",
+    "amongst": "among",
+    "whilst": "while",
+    "towards": "toward",
+    "impacted": "affected",
+    "very unique": "unique",
+    "could of": "could have",
+    "should of": "should have",
+    "would of": "would have",
+    "must of": "must have",
+}
+
+CONTRACTIONS: dict[str, str] = {
+    "don't": "do not",
+    "doesn't": "does not",
+    "didn't": "did not",
+    "can't": "cannot",
+    "won't": "will not",
+    "isn't": "is not",
+    "aren't": "are not",
+    "wasn't": "was not",
+    "weren't": "were not",
+    "it's": "it is / it has",
+    "they're": "they are",
+    "we're": "we are",
+    "you're": "you are",
+    "there's": "there is",
+    "let's": "let us",
+    "that's": "that is",
+    "who's": "who is",
+}
 
 SLANG: dict[str, str] = {
     "gonna": "going to",
@@ -213,7 +331,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 issues,
                 paragraph_index=index,
                 quote=phrase,
-                category="irrelevant_word",
+                category="conciseness",
                 severity="medium",
                 suggestion=replacement,
                 explanation="Filler phrasing weakens academic English; prefer a direct wording.",
@@ -270,7 +388,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 issues,
                 paragraph_index=index,
                 quote=dup.group(0),
-                category="english",
+                category="repetition",
                 severity="high",
                 suggestion=dup.group(1),
                 explanation="Repeated word; keep a single copy.",
@@ -332,7 +450,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 issues,
                 paragraph_index=index,
                 quote=stripped[:220],
-                category="sentence_structure",
+                category="run_on",
                 severity="medium",
                 suggestion="Break the run-on into separate sentences.",
                 explanation="Stacked conjunctions usually signal a run-on sentence.",
@@ -354,11 +472,154 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
             issues,
             paragraph_index=index,
             quote=re.search(r",[A-Za-z]", compact).group(0) if re.search(r",[A-Za-z]", compact) else ",",
-            category="english",
+            category="punctuation",
             severity="low",
             suggestion="Add a space after the comma.",
             explanation="Missing space after a comma.",
         )
+
+    for wrong, right in MISSPELLINGS.items():
+        if re.search(rf"\b{re.escape(wrong)}\b", compact, re.I):
+            found = re.search(rf"\b{re.escape(wrong)}\b", compact, re.I)
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=found.group(0) if found else wrong,
+                category="spelling",
+                severity="high",
+                suggestion=right,
+                explanation="Likely spelling error.",
+            )
+
+    for wrong, right in WORD_CHOICE.items():
+        if wrong in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=wrong,
+                category="word_choice",
+                severity="medium",
+                suggestion=right,
+                explanation="Prefer the precise academic wording.",
+            )
+
+    for wrong, right in CONTRACTIONS.items():
+        if re.search(rf"\b{re.escape(wrong)}\b", compact, re.I):
+            found = re.search(rf"\b{re.escape(wrong)}\b", compact, re.I)
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=found.group(0) if found else wrong,
+                category="formality",
+                severity="medium",
+                suggestion=right,
+                explanation="Contractions are too informal for a journal manuscript.",
+            )
+
+    if re.search(r"\s{2,}", text or ""):
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote="  ",
+            category="punctuation",
+            severity="low",
+            suggestion="Use a single space.",
+            explanation="Double spaces should be removed.",
+        )
+    if re.search(r"\s+[,.;:]", compact):
+        hit = re.search(r"\s+[,.;:]", compact)
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote=hit.group(0) if hit else " ,",
+            category="punctuation",
+            severity="low",
+            suggestion="Remove the space before the punctuation mark.",
+            explanation="English punctuation sits against the preceding word.",
+        )
+    if re.search(r"[!?]{2,}|\.{4,}", compact):
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote=re.search(r"[!?]{2,}|\.{4,}", compact).group(0),
+            category="punctuation",
+            severity="medium",
+            suggestion="Use a single period or question mark.",
+            explanation="Repeated punctuation is not used in academic prose.",
+        )
+
+    for match in re.finditer(r"\b(a|an)\s+([A-Za-z]+)", compact, re.I):
+        article, noun = match.group(1).lower(), match.group(2)
+        starts_vowel = noun[0].lower() in "aeiou"
+        if article == "a" and starts_vowel and noun.lower() not in {"one", "once", "unit", "use", "used", "european", "university"}:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=match.group(0),
+                category="grammar",
+                severity="high",
+                suggestion=f"an {noun}",
+                explanation="Use 'an' before a vowel sound.",
+            )
+        if article == "an" and not starts_vowel and noun[0].lower() not in "aeiou":
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=match.group(0),
+                category="grammar",
+                severity="high",
+                suggestion=f"a {noun}",
+                explanation="Use 'a' before a consonant sound.",
+            )
+
+    if re.search(r"\b(data is|this data was)\b", compact, re.I):
+        hit = re.search(r"\b(data is|this data was)\b", compact, re.I)
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote=hit.group(0) if hit else "data is",
+            category="grammar",
+            severity="low",
+            suggestion="data are / these data were (if treating data as plural)",
+            explanation="In many journals 'data' is treated as a plural noun.",
+        )
+
+    if re.search(r"\b(very|really|quite|extremely)\s+\w+", compact, re.I):
+        hits = list(re.finditer(r"\b(very|really|quite|extremely)\s+\w+", compact, re.I))
+        if len(hits) >= 2:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=hits[0].group(0),
+                category="conciseness",
+                severity="low",
+                suggestion="Replace intensifiers with a precise measure or omit them.",
+                explanation="Repeated intensifiers weaken academic tone.",
+            )
+
+    if re.search(r"\b(was|were|been|being)\s+\w+ed\b", compact, re.I) and _word_count(compact) >= 12:
+        hit = re.search(r"\b(?:was|were|been|being)\s+\w+ed\b", compact, re.I)
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote=hit.group(0) if hit else "was performed",
+            category="passive_voice",
+            severity="low",
+            suggestion="Prefer an active verb where the actor is known.",
+            explanation="Passive voice is common in methods, but overuse hides who did the work.",
+        )
+
+    if re.search(r"^[A-Za-z].+,[A-Za-z].+\s+(and|but)\s+[a-z]", compact) and compact.count(",") >= 1:
+        if re.search(r",[A-Za-z].{10,}(and|but)\s", compact):
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=compact[:160],
+                category="run_on",
+                severity="medium",
+                suggestion="Split the comma splice into two sentences, or use a semicolon.",
+                explanation="Two independent clauses joined by only a comma form a comma splice.",
+            )
 
     return issues
 
@@ -386,17 +647,35 @@ def _summarize(paragraphs: list[str], issues: list[dict[str, Any]]) -> dict[str,
     by_category = {key: 0 for key in CATEGORIES}
     by_severity = {"high": 0, "medium": 0, "low": 0}
     for issue in issues:
-        cat = issue.get("category") or "english"
+        cat = issue.get("category") or "grammar"
+        cat = CATEGORY_ALIASES.get(cat, cat)
+        issue["category"] = cat
         if cat not in by_category:
             by_category[cat] = 0
         by_category[cat] += 1
         sev = issue.get("severity") or "medium"
         by_severity[sev] = by_severity.get(sev, 0) + 1
+    penalty = by_severity.get("high", 0) * 6 + by_severity.get("medium", 0) * 3 + by_severity.get("low", 0)
+    score = max(0, min(100, 100 - penalty))
+    if score >= 90:
+        band = "Excellent"
+    elif score >= 75:
+        band = "Good"
+    elif score >= 55:
+        band = "Needs revision"
+    else:
+        band = "Poor"
     return {
         "paragraph_count": len(paragraphs),
         "issue_count": len(issues),
         "by_category": by_category,
         "by_severity": by_severity,
+        "score": score,
+        "band": band,
+        "verdict": (
+            f"Overall English score {score}/100 ({band}). "
+            f"{len(issues)} suggestion(s) across grammar, style, and clarity."
+        ),
     }
 
 
@@ -437,13 +716,16 @@ async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], O
 
     collected: list[dict[str, Any]] = []
     system = (
-        "You are an academic English editor for a scientific journal manuscript. "
-        "Check only for: English usage, sentence structure, broken/incomplete sentences, "
-        "slang or informal wording, ambiguity, and irrelevant/filler words. "
+        "You are a Grammarly-style academic English editor for a scientific journal. "
+        "Check grammar, spelling, punctuation, sentence structure, broken sentences, "
+        "run-ons / comma splices, slang, formality / contractions, conciseness, clarity, "
+        "ambiguity, word choice, repetition, capitalization, passive voice, and filler. "
         "Do not rewrite the whole paper. Do not comment on scientific correctness. "
         "Quotes MUST be exact substrings of the given paragraph. "
         "Return JSON: {\"issues\":[{\"paragraph_index\":0,\"quote\":\"...\",\"category\":"
-        "\"english|sentence_structure|broken_sentence|slang|ambiguity|irrelevant_word\","
+        "\"grammar|spelling|punctuation|sentence_structure|broken_sentence|run_on|slang|"
+        "formality|conciseness|clarity|ambiguity|word_choice|repetition|capitalization|"
+        "passive_voice|irrelevant_word\","
         "\"severity\":\"high|medium|low\",\"suggestion\":\"...\",\"explanation\":\"...\"}]}"
     )
     timeout = httpx.Timeout(90.0, connect=20.0)
@@ -501,9 +783,10 @@ async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], O
                 quote = str(row.get("quote") or "").strip()
                 if not quote:
                     continue
-                cat = str(row.get("category") or "english").strip().lower().replace(" ", "_")
+                cat = str(row.get("category") or "grammar").strip().lower().replace(" ", "_")
+                cat = CATEGORY_ALIASES.get(cat, cat)
                 if cat not in CATEGORIES:
-                    cat = "english"
+                    cat = "grammar"
                 sev = str(row.get("severity") or "medium").strip().lower()
                 if sev not in {"high", "medium", "low"}:
                     sev = "medium"
