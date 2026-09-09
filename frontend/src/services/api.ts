@@ -225,4 +225,21 @@ export const citationApi = {
   searchArchive: (params: Record<string, string | number | undefined>) =>
     api.get('/archive/search', { params }),
   getArticle: (id: number) => api.get(`/articles/${id}`),
+  review: {
+    referenceIntegrity: (original: File, returned: File) => {
+      const form = new FormData();
+      form.append('original', original);
+      form.append('returned', returned);
+      return api.post('/review/reference-integrity', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    },
+    language: (file: File) => {
+      const form = new FormData();
+      form.append('file', file);
+      return api.post('/review/language', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    },
+  },
 };

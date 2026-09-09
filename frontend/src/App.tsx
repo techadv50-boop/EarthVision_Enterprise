@@ -12,6 +12,8 @@ import ManuscriptsPage from '@/pages/ManuscriptsPage';
 import ManuscriptReviewPage from '@/pages/ManuscriptReviewPage';
 import ArchiveSearchPage from '@/pages/ArchiveSearchPage';
 import UsersPage from '@/pages/UsersPage';
+import ReferenceCheckPage from '@/pages/ReferenceCheckPage';
+import LanguageReviewPage from '@/pages/LanguageReviewPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
 import BillingSuccessPage from '@/pages/BillingSuccessPage';
 import BillingCancelPage from '@/pages/BillingCancelPage';
@@ -96,6 +98,8 @@ export default function App() {
         />
         <Route path="/manuscripts" element={<ManuscriptsPage />} />
         <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
+        <Route path="/review/references" element={<ReferenceCheckPage />} />
+        <Route path="/review/language" element={<LanguageReviewPage />} />
         <Route
           path="/archive"
           element={

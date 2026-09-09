@@ -34,6 +34,9 @@ services:
       OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-pak123}
       MASTER_RESET_PASSWORD: ${MASTER_RESET_PASSWORD:-NTZHSS}
       PUBLIC_HOST: citation.xdgen.com
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     volumes:
       - ./cache:/app/cache
       - ./uploads:/app/uploads

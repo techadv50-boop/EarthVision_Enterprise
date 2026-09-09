@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { BookOpen, FilePlus, LogOut, Shield } from 'lucide-react';
+import { BookOpen, FilePlus, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 export default function AppLayout() {
@@ -18,7 +18,7 @@ export default function AppLayout() {
             <p className="text-xs text-gray-500">IJIST archive · house citations</p>
           </div>
         </Link>
-        <nav className="flex items-center gap-4 text-sm">
+        <nav className="flex items-center gap-3 text-sm flex-wrap justify-end">
           {admin && (
             <>
               <NavLink
@@ -48,6 +48,26 @@ export default function AppLayout() {
           >
             <span className="inline-flex items-center gap-1">
               <FilePlus className="w-4 h-4" /> New manuscript
+            </span>
+          </NavLink>
+          <NavLink
+            to="/review/references"
+            className={({ isActive }) =>
+              isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white'
+            }
+          >
+            <span className="inline-flex items-center gap-1">
+              <GitCompare className="w-4 h-4" /> Reference check
+            </span>
+          </NavLink>
+          <NavLink
+            to="/review/language"
+            className={({ isActive }) =>
+              isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white'
+            }
+          >
+            <span className="inline-flex items-center gap-1">
+              <Languages className="w-4 h-4" /> English review
             </span>
           </NavLink>
           {admin && (
@@ -80,7 +100,7 @@ export default function AppLayout() {
           </button>
         </nav>
       </header>
-      <main className="max-w-6xl mx-auto px-6 py-6">
+      <main className="max-w-7xl mx-auto px-6 py-6">
         <Outlet />
       </main>
     </div>
