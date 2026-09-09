@@ -38,8 +38,21 @@ def test_local_checker_flags_slang_broken_and_filler():
     assert "slang" in cats
     assert "gonna" in quotes or "kids" in quotes or "stuff" in quotes or "a lot of" in quotes
     assert "broken_sentence" in cats or "sentence_structure" in cats
-    assert "irrelevant_word" in cats
+    assert "conciseness" in cats or "irrelevant_word" in cats
     assert not any(item["paragraph_index"] == 6 for item in issues)
+
+
+def test_local_checker_flags_spelling_and_article():
+    issues = review_local(
+        [
+            "The recieve of an sample was seperate from the control.",
+        ]
+    )
+    cats = {item["category"] for item in issues}
+    quotes = " ".join(item["quote"].lower() for item in issues)
+    assert "spelling" in cats
+    assert "recieve" in quotes or "seperate" in quotes
+    assert "grammar" in cats
 
 
 async def test_review_document_returns_highlighted_payload():

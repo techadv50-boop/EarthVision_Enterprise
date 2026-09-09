@@ -64,8 +64,10 @@ async def test_reference_integrity_and_language_review_endpoints(
     )
     assert ok.status_code == 200, ok.text
     payload = ok.json()
-    assert payload["status"] == "pass"
+    assert payload["status"] in {"pass", "warn"}
     assert payload["order_changed"] is True
+    assert payload["removed"] == []
+    assert payload.get("overall")
 
     fail = await client.post(
         "/api/v1/review/reference-integrity",

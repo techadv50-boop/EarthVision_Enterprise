@@ -36,18 +36,32 @@ interface LanguageResult {
     issue_count: number;
     by_category: Record<string, number>;
     by_severity: Record<string, number>;
+    score?: number;
+    band?: string;
+    verdict?: string;
   };
   paragraphs: Paragraph[];
   issues: Issue[];
 }
 
 const CATEGORY_LABEL: Record<string, string> = {
-  english: 'English',
+  grammar: 'Grammar',
+  spelling: 'Spelling',
+  punctuation: 'Punctuation',
   sentence_structure: 'Sentence structure',
   broken_sentence: 'Broken sentence',
+  run_on: 'Run-on / comma splice',
   slang: 'Slang / informal',
+  formality: 'Formality',
+  conciseness: 'Conciseness',
+  clarity: 'Clarity',
   ambiguity: 'Ambiguity',
-  irrelevant_word: 'Irrelevant / filler',
+  word_choice: 'Word choice',
+  repetition: 'Repetition',
+  capitalization: 'Capitalization',
+  passive_voice: 'Passive voice',
+  irrelevant_word: 'Filler',
+  english: 'Grammar',
 };
 
 function categoryLabel(value: string) {
@@ -181,10 +195,10 @@ export default function LanguageReviewPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">English review</h2>
       <p className="text-gray-400 mb-5 max-w-3xl">
-        Upload the manuscript that will be published. The reviewer flags English usage, sentence
-        structure, broken sentences, slang, ambiguity, and irrelevant wording. The full document
-        appears below with corrections marked in place — click a mark or a suggestion card to jump
-        between them.
+        Upload the manuscript that will be published. The reviewer works like a professional
+        English checker: grammar, spelling, punctuation, sentence structure, run-ons, slang,
+        formality, conciseness, clarity, word choice, repetition, and passive voice. The full
+        document appears below with marks in place; the overall score is at the top.
       </p>
       <form className="panel p-4 max-w-xl space-y-3" onSubmit={(e) => e.preventDefault()}>
         <label className="block text-sm text-gray-300" htmlFor="language-upload">
@@ -214,9 +228,16 @@ export default function LanguageReviewPage() {
           <div className="panel p-4 flex flex-wrap gap-4 items-start justify-between">
             <div>
               <p className="font-medium">{result.filename}</p>
-              <p className="text-sm text-gray-400 mt-1">{result.engine_note}</p>
+              {result.summary.score != null && (
+                <p className="text-2xl font-semibold text-earth-400 mt-2">
+                  {result.summary.score}/100
+                  {result.summary.band ? <span className="text-sm text-gray-400 ml-2">{result.summary.band}</span> : null}
+                </p>
+              )}
+              <p className="text-sm text-gray-300 mt-2">{result.summary.verdict || result.engine_note}</p>
               <p className="text-xs text-gray-500 mt-2">
-                {result.summary.paragraph_count} paragraphs · {result.summary.issue_count} suggestions
+                {result.engine_note} · {result.summary.paragraph_count} paragraphs ·{' '}
+                {result.summary.issue_count} suggestions
               </p>
             </div>
             <div className="flex flex-wrap gap-2 text-xs">
