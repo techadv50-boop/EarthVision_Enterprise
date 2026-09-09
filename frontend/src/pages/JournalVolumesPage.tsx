@@ -301,7 +301,7 @@ export default function JournalVolumesPage() {
   return (
     <div>
       <p className="text-sm text-gray-500 mb-2">
-        <Link to="/">Journals</Link> / {journal?.name}
+        <Link to="/journals">Journals</Link> / {journal?.name}
       </p>
       <h2 className="text-2xl font-semibold mb-2">{journal?.name}</h2>
       <p className="text-gray-400 mb-6">Volumes and article totals. Missing volume numbers are flagged.</p>

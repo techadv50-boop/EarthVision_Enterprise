@@ -47,7 +47,7 @@ export default function VolumeIssuesPage() {
   return (
     <div>
       <p className="text-sm text-gray-500 mb-2">
-        <Link to="/">Journals</Link> / <Link to={`/journals/${id}`}>Journal</Link> / Vol. {vol}
+        <Link to="/journals">Journals</Link> / <Link to={`/journals/${id}`}>Journal</Link> / Vol. {vol}
       </p>
       <h2 className="text-2xl font-semibold mb-2">Volume {vol}</h2>
       <p className="text-gray-400 mb-6">
