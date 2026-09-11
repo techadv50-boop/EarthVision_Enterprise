@@ -48,7 +48,7 @@ export default function PredictMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const overlayRef = useRef<L.LayerGroup | null>(null);
-  const fittedRef = useRef<PredictResult | null>(null);
+  const fittedKeyRef = useRef<string>('');
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -93,9 +93,9 @@ export default function PredictMap({
           }),
         style: {
           color: '#fbbf24',
-          weight: 2,
+          weight: 3,
           fillColor: '#fbbf24',
-          fillOpacity: 0.2,
+          fillOpacity: 0.35,
         },
       }).bindTooltip(target.name, { sticky: true });
       overlay.addLayer(layer);
@@ -120,7 +120,12 @@ export default function PredictMap({
         bounds.push(...seg.map((p) => L.latLng(p.lat, p.lon)));
       }
       if (showLabels) {
+        const nearTarget = (lat: number, lon: number) => {
+          if (!target) return true;
+          return Math.abs(lat - target.lat) < 12 && Math.abs(((lon - target.lon + 540) % 360) - 180) < 12;
+        };
         for (const lab of track.labels) {
+          if (!nearTarget(lab.lat, lab.lon)) continue;
           overlay.addLayer(
             L.marker([lab.lat, lab.lon], {
               interactive: false,
@@ -131,9 +136,20 @@ export default function PredictMap({
       }
     }
 
-    if (bounds.length && result !== fittedRef.current) {
-      map.fitBounds(L.latLngBounds(bounds), { padding: [24, 24], maxZoom: 6 });
-      fittedRef.current = result;
+    const fitKey = `${target?.kind}:${target?.lat}:${target?.lon}:${result?.passes.length ?? 0}:${result?.tracks.length ?? 0}`;
+    if (target && fitKey !== fittedKeyRef.current) {
+      const pad = 8;
+      map.fitBounds(
+        L.latLngBounds(
+          [target.lat - pad, target.lon - pad],
+          [target.lat + pad, target.lon + pad],
+        ),
+        { padding: [28, 28], maxZoom: 5 },
+      );
+      fittedKeyRef.current = fitKey;
+    } else if (!target && bounds.length && fitKey !== fittedKeyRef.current) {
+      map.fitBounds(L.latLngBounds(bounds), { padding: [24, 24], maxZoom: 5 });
+      fittedKeyRef.current = fitKey;
     }
   }, [target, result, hiddenSats, showLabels, showTarget]);
 

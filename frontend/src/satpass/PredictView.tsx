@@ -262,7 +262,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <aside className="flex h-full w-[380px] max-w-[92vw] shrink-0 flex-col border-r border-white/10 bg-gray-950">
-        <div className="space-y-4 overflow-y-auto px-4 py-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
           <section>
             <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-cyan-400">
               A. Target location / area
@@ -408,6 +408,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                     onClick={() => {
                       addSat(h.name, h.line1, h.line2);
                       setSearchHits([]);
+                      setSearchQ('');
                     }}
                   >
                     <span>{h.name}</span>
@@ -567,14 +568,14 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               </label>
             </div>
           </section>
-
+        </div>
+        <div className="space-y-2 border-t border-white/10 px-4 py-3">
           {error && <p className="text-xs text-red-400">{error}</p>}
-          {result?.warnings.map((w) => (
+          {result?.warnings.slice(0, 3).map((w) => (
             <p key={w} className="text-[11px] text-amber-400">
               {w}
             </p>
           ))}
-
           <button
             onClick={compute}
             disabled={computing}
@@ -615,7 +616,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 showTarget={showTarget}
                 onCursor={setCursor}
               />
-              <div className="pointer-events-auto absolute right-3 top-3 w-52 space-y-2 rounded bg-gray-950/90 p-2 text-[11px] ring-1 ring-white/10">
+              <div className="pointer-events-auto absolute right-3 top-3 z-[1000] w-52 space-y-2 rounded bg-gray-950/90 p-2 text-[11px] ring-1 ring-white/10">
                 <p className="font-semibold text-gray-300">Layers</p>
                 <label className="flex items-center gap-1.5 text-gray-300">
                   <input
