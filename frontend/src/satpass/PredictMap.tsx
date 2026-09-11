@@ -176,7 +176,7 @@ export default function PredictMap({
       let bounds: L.LatLngBounds;
       if (target.kind === 'area') {
         bounds = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject).getBounds();
-        if (bounds.isValid()) bounds = bounds.pad(0.35);
+        if (bounds.isValid()) bounds = bounds.pad(1.6);
       } else {
         const pad = 1.4;
         bounds = L.latLngBounds(
@@ -185,7 +185,7 @@ export default function PredictMap({
         );
       }
       if (bounds && bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 8 });
+        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 6 });
       }
       fittedKeyRef.current = fitKey;
     }
