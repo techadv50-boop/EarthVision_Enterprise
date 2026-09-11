@@ -52,8 +52,22 @@ function toTracked(s: SavedSatellite, color: string): TrackedSat {
   };
 }
 
+function noradFromLine1(line1: string): number | null {
+  const n = parseInt(line1.slice(2, 7).trim(), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isPlaceholderName(name: string | null | undefined): boolean {
+  const n = (name || '').trim().toLowerCase();
+  if (!n) return true;
+  if (/^norad\s+\d+$/i.test(n)) return true;
+  return ['custom satellite', 'custom sat', 'customsat', 'custom', 'unnamed', 'unknown'].includes(
+    n,
+  );
+}
+
 /** Parse a pasted TLE block (optional name line + the two element lines). */
-function parseTleBlock(text: string): { name: string; line1: string; line2: string } | null {
+function parseTleBlock(text: string): { name: string | null; line1: string; line2: string } | null {
   const lines = text
     .split('\n')
     .map((l) => l.trim())
@@ -62,7 +76,7 @@ function parseTleBlock(text: string): { name: string; line1: string; line2: stri
   const l2 = lines.find((l) => l.startsWith('2 '));
   if (!l1 || !l2) return null;
   const nameLine = lines.find((l) => !l.startsWith('1 ') && !l.startsWith('2 '));
-  return { name: nameLine || 'Custom satellite', line1: l1, line2: l2 };
+  return { name: nameLine || null, line1: l1, line2: l2 };
 }
 
 export default function SatPassPage() {
@@ -167,10 +181,32 @@ export default function SatPassPage() {
       setError('Paste a valid TLE — a line starting with "1 " and one starting with "2 ".');
       return;
     }
-    const ok = await addFromTle(parsed.name, parsed.line1, parsed.line2);
-    if (ok) {
-      setTleText('');
-      setShowPaste(false);
+    const norad = noradFromLine1(parsed.line1);
+    let name = parsed.name?.trim() || '';
+    setSearching(true);
+    setError('');
+    try {
+      if (norad && isPlaceholderName(name)) {
+        try {
+          const { data } = await satelliteApi.fetch(String(norad));
+          const catalogName = data[0]?.name?.trim();
+          if (catalogName && !isPlaceholderName(catalogName)) {
+            name = catalogName;
+          }
+        } catch {
+          /* keep pasted/fallback name if Celestrak is unreachable */
+        }
+      }
+      if (isPlaceholderName(name)) {
+        name = norad ? `NORAD ${norad}` : 'Custom satellite';
+      }
+      const ok = await addFromTle(name, parsed.line1, parsed.line2, norad);
+      if (ok) {
+        setTleText('');
+        setShowPaste(false);
+      }
+    } finally {
+      setSearching(false);
     }
   };
 
@@ -272,9 +308,11 @@ export default function SatPassPage() {
                 />
                 <button
                   type="submit"
-                  className="inline-flex items-center gap-1 rounded bg-cyan-600 px-3 py-1.5 text-sm font-medium hover:bg-cyan-500"
+                  disabled={searching}
+                  className="inline-flex items-center gap-1 rounded bg-cyan-600 px-3 py-1.5 text-sm font-medium hover:bg-cyan-500 disabled:opacity-50"
                 >
-                  <Plus className="h-4 w-4" /> Add satellite
+                  {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{' '}
+                  Add satellite
                 </button>
               </form>
             )}
