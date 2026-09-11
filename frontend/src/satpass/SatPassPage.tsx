@@ -84,7 +84,7 @@ function parseTleBlock(text: string): { name: string | null; line1: string; line
 }
 
 export default function SatPassPage() {
-  const [mode, setMode] = useState<'track' | 'predict'>('track');
+  const [mode, setMode] = useState<'track' | 'predict'>('predict');
   const [sats, setSats] = useState<TrackedSat[]>([]);
   const [states, setStates] = useState<Record<number, SatState>>({});
   const [focusId, setFocusId] = useState<number | null>(null);
@@ -266,7 +266,7 @@ export default function SatPassPage() {
       </header>
 
       {mode === 'predict' ? (
-        <PredictView trackedSats={sats} />
+        <PredictView key={user?.id ?? 'predict'} trackedSats={sats} />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* Control panel (sidebar) */}

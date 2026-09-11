@@ -87,6 +87,13 @@ export function dateFromLocalInput(value: string, timeZone = 'UTC'): Date {
   return new Date(utc);
 }
 
+/** Today's calendar day as datetime-local 12:00 AM → 11:59 PM in `timeZone`. */
+export function calendarDayRange(timeZone: string, at: Date = new Date()): { start: string; end: string } {
+  const p = zoneParts(at, timeZone);
+  const date = `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+  return { start: `${date}T00:00`, end: `${date}T23:59` };
+}
+
 export const COMMON_TIMEZONES = [
   'UTC',
   'Asia/Karachi',
