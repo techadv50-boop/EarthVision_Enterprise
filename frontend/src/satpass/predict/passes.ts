@@ -35,7 +35,9 @@ import type {
   TrackSample,
 } from './types';
 
-const SAMPLE_MS = 15_000;
+const SAMPLE_MS = 10_000;
+const FINE_MS = 1_000;
+const FINE_WHEN_KM = 250;
 const TRACK_MS = 20_000;
 const TLE_STALE_DAYS = 14;
 
@@ -117,25 +119,33 @@ export function sunElevationDeg(date: Date, lat: number, lon: number): number {
 }
 
 /**
- * Geometric coverage: can the satellite see / overfly the target at `date`?
- * Imaging eligibility (optical daylight, future sensor limits) is applied later.
+ * Imaging coverage: the catalog swath must actually contain the target.
+ * Horizon / min-elevation visibility alone is not an imaging pass — that was
+ * counting tracks that miss Karachi (or any point) by hundreds of kilometres.
  */
+export function targetInSwath(
+  sspLat: number,
+  sspLon: number,
+  target: PredictTarget,
+  swathKm: number,
+): boolean {
+  const dist = minDistanceToGeometryKm(sspLat, sspLon, target.geometry);
+  return dist <= swathKm / 2;
+}
+
 function covers(
   satrec: SatRec,
   date: Date,
   target: PredictTarget,
   sensor: SensorParams,
-): { covered: boolean; elevationDeg: number | null } {
+): { covered: boolean; elevationDeg: number | null; distKm: number } {
   const ssp = subpoint(satrec, date);
   const elevationDeg = lookElevationDeg(satrec, date, target.lat, target.lon);
-  if (!ssp) return { covered: false, elevationDeg };
-  if (target.kind === 'point') {
-    return { covered: (elevationDeg ?? -90) >= sensor.minElevationDeg, elevationDeg };
-  }
-  const dist = minDistanceToGeometryKm(ssp.lat, ssp.lon, target.geometry);
-  const imaging = dist <= sensor.swathKm / 2;
-  const tracking = (elevationDeg ?? -90) >= sensor.minElevationDeg;
-  return { covered: imaging || tracking, elevationDeg };
+  if (!ssp) return { covered: false, elevationDeg, distKm: Infinity };
+  const distKm = minDistanceToGeometryKm(ssp.lat, ssp.lon, target.geometry);
+  const inSwath = distKm <= sensor.swathKm / 2;
+  const highEnough = (elevationDeg ?? -90) >= sensor.minElevationDeg;
+  return { covered: inSwath && highEnough, elevationDeg, distKm };
 }
 
 function iso(ms: number): string {
@@ -246,9 +256,9 @@ export function computePasses(
     }
 
     const flags: Flag[] = [];
-    for (let t = startMs; t <= endMs; t += SAMPLE_MS) {
+    for (let t = startMs; t <= endMs; ) {
       const date = new Date(t);
-      const { covered, elevationDeg } = covers(satrec, date, target, sensor);
+      const { covered, elevationDeg, distKm } = covers(satrec, date, target, sensor);
       const sunEl = sunElevationDeg(date, target.lat, target.lon);
       flags.push({
         ms: t,
@@ -257,6 +267,7 @@ export function computePasses(
         sunEl,
         imaging: covered && isImagingSample(kind, imaging, sunEl),
       });
+      t += distKm < FINE_WHEN_KM ? FINE_MS : SAMPLE_MS;
     }
 
     const geometric = contiguousRanges(flags, (f) => f.covered);
@@ -340,8 +351,10 @@ export function computePasses(
     }
   }
 
-  if (!passes.length && !warnings.length) {
-    warnings.push('No valid imaging passes in the selected window. Try a longer range, a lower minimum elevation, or (for optical) a daylight period.');
+  if (!passes.length) {
+    warnings.push(
+      'No imaging passes over the target in this window. A pass is counted only when the catalog swath covers the site — not merely when the satellite is above the horizon. Try a longer range or a satellite with a wider swath.',
+    );
   }
 
   return { warnings, passes, tracks };

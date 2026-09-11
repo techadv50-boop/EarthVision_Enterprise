@@ -118,7 +118,7 @@ export default function PredictMap({
           fillColor: '#fbbf24',
           fillOpacity: 0.35,
         },
-      }).bindTooltip(target.name, { sticky: true });
+      }).bindTooltip(target.name, { sticky: true, permanent: true, direction: 'top', offset: [0, -8] });
       overlay.addLayer(layer);
     }
 
@@ -171,16 +171,22 @@ export default function PredictMap({
       }
     }
 
-    const fitKey = `${target?.kind}:${target?.lat}:${target?.lon}:${result?.passes.length ?? 0}:${result?.tracks.length ?? 0}`;
+    const fitKey = `${target?.kind}:${target?.name}:${target?.lat}:${target?.lon}:${result?.passes.length ?? 0}:${result?.tracks.length ?? 0}`;
     if (target && fitKey !== fittedKeyRef.current) {
-      const pad = 8;
-      map.fitBounds(
-        L.latLngBounds(
+      let bounds: L.LatLngBounds;
+      if (target.kind === 'area') {
+        bounds = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject).getBounds();
+        if (bounds.isValid()) bounds = bounds.pad(0.35);
+      } else {
+        const pad = 1.4;
+        bounds = L.latLngBounds(
           [target.lat - pad, target.lon - pad],
           [target.lat + pad, target.lon + pad],
-        ),
-        { padding: [28, 28], maxZoom: 5 },
-      );
+        );
+      }
+      if (bounds && bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 8 });
+      }
       fittedKeyRef.current = fitKey;
     }
   }, [target, result, hiddenSats, hiddenPasses, showLabels, showTarget, showFootprints, timeZone]);

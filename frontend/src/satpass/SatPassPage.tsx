@@ -17,6 +17,7 @@ import SatPassMap, { type TrackedSat } from './SatPassMap';
 import SatPassUsersModal from './SatPassUsersModal';
 import PredictView from './PredictView';
 import type { SatState } from './orbit';
+import { catalogSensor } from './predict/catalog';
 
 const PALETTE = [
   '#22d3ee',
@@ -41,6 +42,8 @@ const PRESETS: { name: string; q: string }[] = [
 const DEFAULT_SWATH_KM = 60;
 
 function toTracked(s: SavedSatellite, color: string): TrackedSat {
+  const norad = s.norad_id ?? noradFromLine1(s.tle_line1);
+  const sensor = catalogSensor(s.name, norad);
   return {
     id: s.id,
     name: s.name,
@@ -48,7 +51,7 @@ function toTracked(s: SavedSatellite, color: string): TrackedSat {
     line2: s.tle_line2,
     color: s.color || color,
     visible: true,
-    swathKm: DEFAULT_SWATH_KM,
+    swathKm: sensor.swathKm ?? DEFAULT_SWATH_KM,
     noradId: s.norad_id,
   };
 }

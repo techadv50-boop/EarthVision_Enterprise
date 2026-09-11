@@ -66,20 +66,21 @@ interface CatalogEntry {
 }
 
 const S1_NORADS = new Set([39634, 41456, 58261]);
+const CARTOSAT3_NORADS = new Set([44804]);
 
 const CATALOG: CatalogEntry[] = [
   {
     test: (n) => /\bprss\b/i.test(n),
     kind: 'optical',
     color: '#facc15',
-    sensor: { swathKm: 60, minElevationDeg: 10 },
+    sensor: { swathKm: 60, minElevationDeg: 15, spatialResolutionM: 1 },
     slug: 'PRSS',
   },
   {
     test: (n) => /landsat/i.test(n),
     kind: 'optical',
     color: '#22c55e',
-    sensor: { swathKm: 185, minElevationDeg: 10 },
+    sensor: { swathKm: 185, minElevationDeg: 10, spatialResolutionM: 15 },
     slug: 'Landsat',
   },
   {
@@ -92,18 +93,74 @@ const CATALOG: CatalogEntry[] = [
   {
     test: (n) => /sentinel[- ]?2/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 290, minElevationDeg: 10 },
+    sensor: { swathKm: 290, minElevationDeg: 10, spatialResolutionM: 10 },
     slug: 'Sentinel-2',
+  },
+  {
+    test: (n, norad) => /cartosat[- ]?3/i.test(n) || (norad != null && CARTOSAT3_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 17, minElevationDeg: 15, maxOffNadirDeg: 45, spatialResolutionM: 0.28 },
+    slug: 'CARTOSAT-3',
+  },
+  {
+    test: (n) => /cartosat[- ]?2[cdef]/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 10, minElevationDeg: 15, spatialResolutionM: 0.65 },
+    slug: 'CARTOSAT-2',
+  },
+  {
+    test: (n) => /cartosat[- ]?2/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 9.6, minElevationDeg: 15, spatialResolutionM: 0.8 },
+    slug: 'CARTOSAT-2',
+  },
+  {
+    test: (n) => /cartosat[- ]?1/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 30, minElevationDeg: 15, spatialResolutionM: 2.5 },
+    slug: 'CARTOSAT-1',
   },
   {
     test: (n) => /cartosat/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 30, minElevationDeg: 10 },
+    sensor: { swathKm: 16, minElevationDeg: 15, spatialResolutionM: 0.8 },
+    slug: 'CARTOSAT',
+  },
+  {
+    test: (n) => /worldview[- ]?3/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 13.1, minElevationDeg: 15, maxOffNadirDeg: 40, spatialResolutionM: 0.31 },
+  },
+  {
+    test: (n) => /worldview[- ]?2/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 16.4, minElevationDeg: 15, spatialResolutionM: 0.46 },
+  },
+  {
+    test: (n) => /geoeye/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 15.2, minElevationDeg: 15, spatialResolutionM: 0.41 },
+  },
+  {
+    test: (n) => /pleiades/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 20, minElevationDeg: 15, spatialResolutionM: 0.5 },
+  },
+  {
+    test: (n) => /spot[- ]?[67]/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 60, minElevationDeg: 15, spatialResolutionM: 1.5 },
+  },
+  {
+    test: (n) => /kompsat[- ]?3/i.test(n),
+    kind: 'optical',
+    sensor: { swathKm: 16, minElevationDeg: 15, spatialResolutionM: 0.5 },
   },
   {
     test: (n) => /radarsat|alos[- ]?2|cosmo[- ]?skymed|iceye|capella|umbra|risat|\bsar\b/i.test(n),
     kind: 'sar',
     color: '#3b82f6',
+    sensor: { swathKm: 50, minElevationDeg: 10 },
   },
   {
     test: (n) =>
@@ -111,8 +168,20 @@ const CATALOG: CatalogEntry[] = [
         n,
       ),
     kind: 'optical',
+    sensor: { swathKm: 20, minElevationDeg: 15 },
   },
 ];
+
+export function describeSensor(sensor: Partial<SensorParams> | undefined): string {
+  if (!sensor?.swathKm) return '';
+  const bits = [`${sensor.swathKm} km swath`];
+  if (sensor.minElevationDeg != null) bits.push(`min el ${sensor.minElevationDeg}°`);
+  if (sensor.spatialResolutionM != null) {
+    const r = sensor.spatialResolutionM;
+    bits.push(r < 1 ? `${r} m GSD` : `${r} m`);
+  }
+  return bits.join(' · ');
+}
 
 export function inferSatelliteKind(name: string, norad: number | null): SatelliteKind {
   for (const entry of CATALOG) {

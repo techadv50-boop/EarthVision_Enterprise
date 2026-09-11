@@ -11,10 +11,17 @@ import { geoApi, satelliteApi, type TleResult } from '@/services/api';
 import type { TrackedSat } from './SatPassMap';
 import PredictMap from './PredictMap';
 import PredictReport from './PredictReport';
-import { colorForSatellite, inferSatelliteKind, noradFromLine1, catalogSensor } from './predict/catalog';
+import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, catalogSensor } from './predict/catalog';
 import { parseKmlToGeoJSON } from './predict/kml';
 import { uploadGeometryFiles } from './predict/export';
 import { computePasses, targetFromGeometry, validateTle } from './predict/passes';
+import {
+  lookupGazetteer,
+  mergePlaceHits,
+  normalizeGeoHits,
+  targetFromPlace,
+  type PlaceHit,
+} from './predict/places';
 import {
   COMMON_TIMEZONES,
   dateFromLocalInput,
@@ -60,7 +67,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [lon, setLon] = useState('73.0479');
   const [place, setPlace] = useState('Islamabad');
   const [placeQuery, setPlaceQuery] = useState('');
-  const [placeHits, setPlaceHits] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
+  const [placeHits, setPlaceHits] = useState<PlaceHit[]>([]);
   const [target, setTarget] = useState<PredictTarget | null>({
     kind: 'point',
     name: 'Islamabad',
@@ -100,22 +107,31 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
 
   const usedColors = useMemo(() => new Set(sats.map((s) => s.color)), [sats]);
 
+  const applyTarget = (t: PredictTarget) => {
+    setError('');
+    setLat(t.lat.toFixed(5));
+    setLon(t.lon.toFixed(5));
+    setPlace(t.name);
+    setTarget(t);
+  };
+
   const applyPoint = (la: number, lo: number, name: string) => {
     if (!Number.isFinite(la) || !Number.isFinite(lo) || la < -90 || la > 90 || lo < -180 || lo > 180) {
       setError('Enter a valid latitude and longitude.');
       return;
     }
-    setError('');
-    setLat(String(la));
-    setLon(String(lo));
-    setPlace(name);
-    setTarget({
+    applyTarget({
       kind: 'point',
       name: name || 'Point',
       lon: lo,
       lat: la,
       geometry: { type: 'Point', coordinates: [lo, la] },
     });
+  };
+
+  const applyPlaceHit = (hit: PlaceHit) => {
+    applyTarget(targetFromPlace(hit));
+    setPlaceQuery(hit.name);
   };
 
   const applyGeoJSON = (fc: GeoJSON.FeatureCollection, fallbackName: string) => {
@@ -130,29 +146,46 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
           };
     const t = targetFromGeometry(geom, String(feats[0].properties?.name || fallbackName));
     if (!t) throw new Error('Could not read coordinates from the file.');
-    setTarget(t);
-    setLat(t.lat.toFixed(5));
-    setLon(t.lon.toFixed(5));
-    setPlace(t.name);
+    applyTarget(t);
+    setPlaceQuery('');
     setFileNote(`${feats.length} feature(s) · ${t.kind}`);
   };
 
-  const searchPlace = async () => {
-    if (!placeQuery.trim()) return;
+  const resolvePlaces = async (query: string): Promise<PlaceHit[]> => {
+    const q = query.trim();
+    if (!q) return [];
+    const local = lookupGazetteer(q);
+    try {
+      const { data } = await geoApi.search(q);
+      const remote = normalizeGeoHits(
+        data as {
+          name?: string;
+          display_name?: string;
+          latitude: number;
+          longitude: number;
+          bounding_box?: number[] | null;
+        }[],
+        q,
+      );
+      return mergePlaceHits(local, remote);
+    } catch {
+      return local;
+    }
+  };
+
+  const searchPlace = async (query = placeQuery): Promise<PlaceHit[] | null> => {
+    const q = query.trim();
+    if (!q) return [];
     setBusy('place');
     try {
-      const { data } = await geoApi.search(placeQuery.trim());
-      const hits = (data as { name?: string; display_name?: string; latitude: number; longitude: number }[]).map(
-        (h) => ({
-          name: h.name || h.display_name || placeQuery,
-          latitude: h.latitude,
-          longitude: h.longitude,
-        }),
-      );
+      const hits = await resolvePlaces(q);
       setPlaceHits(hits);
-      if (hits[0]) applyPoint(hits[0].latitude, hits[0].longitude, hits[0].name);
+      if (hits[0]) applyPlaceHit(hits[0]);
+      else setError(`No location found for "${q}". Try another spelling or lat/lng.`);
+      return hits;
     } catch {
       setError('Location search failed.');
+      return null;
     } finally {
       setBusy('');
     }
@@ -202,7 +235,15 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     const inferred = inferSatelliteKind(n, norad);
     const kind = kindOverride ?? (pendingKind === 'auto' ? inferred : pendingKind);
     const color = colorForSatellite(n, usedColors);
-    const sensor = catalogSensor(n, norad);
+    const catalog = catalogSensor(n, norad);
+    const sensor = {
+      swathKm: catalog.swathKm ?? swathKm,
+      minElevationDeg: catalog.minElevationDeg ?? minEl,
+      maxOffNadirDeg: catalog.maxOffNadirDeg,
+      spatialResolutionM: catalog.spatialResolutionM,
+    };
+    if (catalog.swathKm) setSwathKm(catalog.swathKm);
+    if (catalog.minElevationDeg) setMinEl(catalog.minElevationDeg);
     setSats((prev) => [
       ...prev,
       {
@@ -213,7 +254,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
         color,
         kind,
         noradId: norad,
-        sensor: { swathKm, minElevationDeg: minEl, ...sensor },
+        sensor,
       },
     ]);
     setSatName('');
@@ -238,10 +279,15 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     }
   };
 
-  const compute = () => {
+  const compute = async () => {
     setError('');
     let t = target;
-    if (!t || t.kind === 'point') {
+    const q = placeQuery.trim();
+    if (q) {
+      const hits = await searchPlace(q);
+      if (!hits || !hits.length) return;
+      t = targetFromPlace(hits[0]);
+    } else if (!t || t.kind === 'point') {
       const la = Number(lat);
       const lo = Number(lon);
       if (!Number.isFinite(la) || !Number.isFinite(lo) || la < -90 || la > 90 || lo < -180 || lo > 180) {
@@ -309,15 +355,18 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 {busy === 'place' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Go'}
               </button>
             </div>
-            {placeHits.length > 1 && (
-              <div className="mt-1 max-h-24 overflow-auto rounded bg-gray-900 text-[11px] ring-1 ring-white/10">
+            {placeHits.length > 0 && (
+              <div className="mt-1 max-h-28 overflow-auto rounded bg-gray-900 text-[11px] ring-1 ring-white/10">
                 {placeHits.map((h) => (
                   <button
-                    key={`${h.latitude}-${h.longitude}`}
+                    key={`${h.latitude}-${h.longitude}-${h.name}`}
                     className="block w-full truncate px-2 py-1 text-left hover:bg-white/10"
-                    onClick={() => applyPoint(h.latitude, h.longitude, h.name)}
+                    onClick={() => applyPlaceHit(h)}
                   >
                     {h.name}
+                    {h.displayName && h.displayName !== h.name ? (
+                      <span className="text-gray-500"> — {h.displayName}</span>
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -349,7 +398,10 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               />
             </label>
             <button
-              onClick={() => applyPoint(Number(lat), Number(lon), place || 'Point')}
+              onClick={() => {
+                setPlaceQuery('');
+                applyPoint(Number(lat), Number(lon), place || 'Point');
+              }}
               className="mt-2 inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-[11px] text-cyan-300 ring-1 ring-cyan-500/40 hover:bg-white/10"
             >
               <MapPin className="h-3.5 w-3.5" /> Use lat/lng
@@ -385,7 +437,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
             {fileNote && <p className="mt-1 text-[11px] text-emerald-400">{fileNote}</p>}
             {target && (
               <p className="mt-1 text-[11px] text-gray-500">
-                Target: {target.name} ({target.kind}) {target.lat.toFixed(3)}, {target.lon.toFixed(3)}
+                Target: {target.name} ({target.kind}) {target.lat.toFixed(4)}, {target.lon.toFixed(4)}
               </p>
             )}
           </section>
@@ -503,13 +555,24 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               {sats.length === 0 && (
                 <p className="text-[11px] text-gray-500">No satellites selected yet.</p>
               )}
-              {sats.map((s) => (
+              {sats.map((s) => {
+                const osint = catalogSensor(s.name, s.noradId ?? null);
+                const sensorNote = describeSensor(s.sensor) || describeSensor(osint);
+                return (
                 <div
                   key={s.id}
                   className="flex items-center gap-2 rounded bg-gray-900/70 px-2 py-1.5 text-sm ring-1 ring-white/10"
                 >
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />
-                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate">{s.name}</div>
+                    {sensorNote ? (
+                      <div className="truncate text-[10px] text-cyan-400/90" title="From satellite catalog / OSINT">
+                        {osint.swathKm ? 'OSINT · ' : ''}
+                        {sensorNote}
+                      </div>
+                    ) : null}
+                  </div>
                   <select
                     value={s.kind}
                     onChange={(e) =>
@@ -528,7 +591,8 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                     <Trash2 className="h-3.5 w-3.5 text-gray-400 hover:text-red-400" />
                   </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
@@ -601,7 +665,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
             </label>
             <div className="mt-2 grid grid-cols-2 gap-2">
               <label className="text-[11px] text-gray-400">
-                Min elevation °
+                Fallback min elevation °
                 <input
                   type="number"
                   value={minEl}
@@ -610,7 +674,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 />
               </label>
               <label className="text-[11px] text-gray-400">
-                Swath km
+                Fallback swath km
                 <input
                   type="number"
                   value={swathKm}
@@ -619,6 +683,10 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 />
               </label>
             </div>
+            <p className="mt-1 text-[10px] text-gray-500">
+              Known satellites (CARTOSAT-3, Landsat, Sentinel, PRSS, …) use published swath and
+              elevation automatically. These fields apply only when the satellite is not in the catalog.
+            </p>
           </section>
         </div>
         <div className="space-y-2 border-t border-white/10 px-4 py-3">

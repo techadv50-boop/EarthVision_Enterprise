@@ -12,8 +12,10 @@ export interface ImagingRules {
 export interface SensorParams {
   /** Ground swath width in km. Used for area coverage and pass footprints. */
   swathKm: number;
-  /** Minimum elevation (deg) at a point target for AOS. Default 10. */
+  /** Minimum elevation (deg) at the target for a usable imaging pass. */
   minElevationDeg: number;
+  /** Published max off-nadir / body-pointing angle (deg), when known. */
+  maxOffNadirDeg?: number;
   // Reserved for later imaging modes without changing the Predict API:
   fovDeg?: number;
   offNadirDeg?: number;
