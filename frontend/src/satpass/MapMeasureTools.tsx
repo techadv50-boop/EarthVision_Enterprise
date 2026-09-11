@@ -329,7 +329,7 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
           <Trash2 className="h-4 w-4" />
         </button>
       </div>
-      {(hint || readout) && (
+      {(readout || tool !== 'navigate') && (
         <div className="pointer-events-none max-w-[220px] rounded bg-gray-950/90 px-2 py-1 text-[10px] leading-snug text-gray-300 ring-1 ring-white/10">
           {readout ? <div className="font-medium text-cyan-300">{readout}</div> : null}
           {tool !== 'navigate' ? <div className="text-gray-500">{hint}</div> : null}
