@@ -29,6 +29,7 @@ const DRAW = {
   fillColor: '#22d3ee',
   fillOpacity: 0.18,
   dashArray: undefined as string | undefined,
+  interactive: false,
 };
 
 function labelIcon(text: string) {
@@ -132,7 +133,6 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
         clearDraft();
         const line = L.polyline(pts, DRAW);
         const len = formatLength(pathLengthKm(pts.map(ll)));
-        line.bindPopup(`Distance ${len}`);
         groupRef.current?.addLayer(line);
         groupRef.current?.addLayer(
           L.marker(pts[pts.length - 1], { icon: labelIcon(len), interactive: false }),
@@ -144,7 +144,6 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
         const area = formatArea(polygonAreaKm2(pts.map(ll)));
         const peri = formatLength(pathLengthKm([...pts.map(ll), ll(pts[0])]));
         const label = `${area} · peri ${peri}`;
-        poly.bindPopup(`Area ${label}`);
         groupRef.current?.addLayer(poly);
         groupRef.current?.addLayer(
           L.marker(poly.getBounds().getCenter(), { icon: labelIcon(label), interactive: false }),
@@ -206,7 +205,6 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
           const w = formatLength(pathLengthKm([ll(sw), ll(se)]));
           const h = formatLength(pathLengthKm([ll(sw), ll(nw)]));
           const label = `${area} · ${w} × ${h}`;
-          rect.bindPopup(label);
           groupRef.current?.addLayer(rect);
           groupRef.current?.addLayer(
             L.marker(bounds.getCenter(), { icon: labelIcon(label), interactive: false }),
@@ -217,7 +215,6 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
           const circ = L.circle(a, { ...DRAW, radius: rKm * 1000 });
           const area = formatArea(Math.PI * rKm * rKm);
           const label = `r ${formatLength(rKm)} · ${area}`;
-          circ.bindPopup(label);
           groupRef.current?.addLayer(circ);
           groupRef.current?.addLayer(L.marker(a, { icon: labelIcon(label), interactive: false }));
           setReadout(`Circle ${label}`);
