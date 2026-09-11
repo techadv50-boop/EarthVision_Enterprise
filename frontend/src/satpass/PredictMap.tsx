@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { addBaseMap, createSatPassMap } from './baseMap';
+import MapMeasureTools from './MapMeasureTools';
 import type { PassRow, PredictResult, PredictTarget } from './predict/types';
 import { formatPassPopup, leafletDashArray } from './predict/catalog';
 import { durationLabel, formatInZone, formatUtc } from './predict/time';
@@ -66,11 +67,13 @@ export default function PredictMap({
   const mapRef = useRef<L.Map | null>(null);
   const overlayRef = useRef<L.LayerGroup | null>(null);
   const fittedKeyRef = useRef<string>('');
+  const [leafletMap, setLeafletMap] = useState<L.Map | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = createSatPassMap(containerRef.current);
     mapRef.current = map;
+    setLeafletMap(map);
     addBaseMap(map);
     overlayRef.current = L.layerGroup().addTo(map);
     const onMove = (e: L.LeafletMouseEvent) => {
@@ -88,6 +91,7 @@ export default function PredictMap({
       map.remove();
       mapRef.current = null;
       overlayRef.current = null;
+      setLeafletMap(null);
     };
   }, [onCursor]);
 
@@ -182,6 +186,9 @@ export default function PredictMap({
   }, [target, result, hiddenSats, hiddenPasses, showLabels, showTarget, showFootprints, timeZone]);
 
   return (
-    <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />
+    <>
+      <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />
+      <MapMeasureTools map={leafletMap} />
+    </>
   );
 }

@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { parseTle, getState, groundTrack, footprintRadiusMeters, type SatState } from './orbit';
 import { addBaseMap } from './baseMap';
+import MapMeasureTools from './MapMeasureTools';
 import type { SatRec } from 'satellite.js';
 
 export interface TrackedSat {
@@ -51,6 +52,7 @@ function setLayerVisible(map: L.Map, layer: L.Layer, visible: boolean) {
 export default function SatPassMap({ sats, onStates, focusId, showVisibility = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const [leafletMap, setLeafletMap] = useState<L.Map | null>(null);
   const runtimeRef = useRef<Map<number, SatRuntime>>(new Map());
   const onStatesRef = useRef(onStates);
   onStatesRef.current = onStates;
@@ -76,6 +78,7 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
       maxBoundsViscosity: 1,
     });
     mapRef.current = map;
+    setLeafletMap(map);
 
     // Lightweight offline base map: bundled Natural Earth countries + labels.
     addBaseMap(map);
@@ -122,6 +125,7 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
       resizeObserver?.disconnect();
       map.remove();
       mapRef.current = null;
+      setLeafletMap(null);
       runtimeRef.current.clear();
     };
   }, []);
@@ -207,7 +211,12 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
     map.setView(rt.marker.getLatLng(), 3, { animate: true });
   }, [focusId]);
 
-  return <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />;
+  return (
+    <>
+      <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />
+      <MapMeasureTools map={leafletMap} />
+    </>
+  );
 }
 
 function refreshTrack(map: L.Map, rt: SatRuntime, date: Date) {
