@@ -1,5 +1,8 @@
 /** Build a closed imaging-corridor polygon around a ground-track segment. */
 
+import { geodesicCirclePolygon, minDistanceToGeometryKm } from './geometry';
+import type { PredictTarget } from './types';
+
 const R_KM = 6371;
 
 export function destinationPoint(
@@ -73,4 +76,61 @@ export function corridorPolygon(
   ring.push([first[0], first[1]]);
   if (ring.length < 4) return null;
   return { type: 'Polygon', coordinates: [ring] };
+}
+
+/**
+ * Keep only the portion of a corridor that lies within swath reach of the
+ * Target AOI so footprints cannot stretch across unrelated countries.
+ */
+export function clipPolygonToAoiCoverage(
+  poly: GeoJSON.Polygon,
+  target: PredictTarget,
+  swathKm: number,
+): GeoJSON.Polygon | null {
+  const maxDist = swathKm / 2 + 1;
+  const ring = poly.coordinates[0] || [];
+  if (ring.length < 4) return null;
+  const kept: [number, number][] = [];
+  const inside = (lon: number, lat: number) => minDistanceToGeometryKm(lat, lon, target.geometry) <= maxDist;
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const a = ring[i];
+    const b = ring[i + 1];
+    const ain = inside(a[0], a[1]);
+    const bin = inside(b[0], b[1]);
+    if (ain) kept.push([a[0], a[1]]);
+    if (ain !== bin) {
+      let lo = 0;
+      let hi = 1;
+      for (let k = 0; k < 14; k += 1) {
+        const m = (lo + hi) / 2;
+        const lon = a[0] + (b[0] - a[0]) * m;
+        const lat = a[1] + (b[1] - a[1]) * m;
+        if (inside(lon, lat) === ain) lo = m;
+        else hi = m;
+      }
+      const m = (lo + hi) / 2;
+      kept.push([a[0] + (b[0] - a[0]) * m, a[1] + (b[1] - a[1]) * m]);
+    }
+  }
+  if (kept.length < 3) {
+    return geodesicCirclePolygon(target.lat, target.lon, (target.bufferKm || 0) + swathKm / 2);
+  }
+  const closed = [...kept, kept[0]];
+  return { type: 'Polygon', coordinates: [closed] };
+}
+
+/** Sensor corridor along the clipped pass, then clipped to AOI coverage. */
+export function imagingFootprint(
+  samples: { lat: number; lon: number }[],
+  swathKm: number,
+  target: PredictTarget,
+): GeoJSON.Polygon | null {
+  const reach = swathKm / 2 + 2;
+  const near = samples.filter((s) => minDistanceToGeometryKm(s.lat, s.lon, target.geometry) <= reach);
+  const poly = corridorPolygon(near.length >= 2 ? near : samples, swathKm);
+  if (!poly) {
+    if (near.length === 1) return geodesicCirclePolygon(near[0].lat, near[0].lon, Math.min(swathKm / 2, 30));
+    return null;
+  }
+  return clipPolygonToAoiCoverage(poly, target, swathKm);
 }

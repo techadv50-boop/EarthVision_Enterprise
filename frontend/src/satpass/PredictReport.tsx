@@ -8,23 +8,31 @@ type Col =
   | 'passId'
   | 'satelliteName'
   | 'satelliteKind'
+  | 'targetName'
   | 'passDateUtc'
   | 'startLocal'
   | 'endLocal'
   | 'duration'
   | 'maxElevationDeg'
-  | 'visibility';
+  | 'minElevationDeg'
+  | 'swathKm'
+  | 'visibility'
+  | 'eligibility';
 
 const COLS: { key: Col; label: string }[] = [
   { key: 'passId', label: 'Pass ID' },
   { key: 'satelliteName', label: 'Satellite' },
   { key: 'satelliteKind', label: 'Type' },
+  { key: 'targetName', label: 'Target' },
   { key: 'passDateUtc', label: 'Date' },
   { key: 'startLocal', label: 'Start Tracking' },
   { key: 'endLocal', label: 'End Tracking' },
   { key: 'duration', label: 'Duration' },
   { key: 'maxElevationDeg', label: 'Max Elevation' },
-  { key: 'visibility', label: 'Status' },
+  { key: 'minElevationDeg', label: 'Min Required El.' },
+  { key: 'swathKm', label: 'Swath' },
+  { key: 'visibility', label: 'Day/Night' },
+  { key: 'eligibility', label: 'Imaging Eligibility' },
 ];
 
 function cell(p: PassRow, key: Col, tz: string): string {
@@ -39,8 +47,14 @@ function cell(p: PassRow, key: Col, tz: string): string {
       return `${formatInZone(p.endUtc, tz, false)}\n${formatUtc(p.endUtc, false)}`;
     case 'maxElevationDeg':
       return p.maxElevationDeg == null ? '—' : `${p.maxElevationDeg.toFixed(1)}°`;
+    case 'minElevationDeg':
+      return p.minElevationDeg == null ? '—' : `${p.minElevationDeg.toFixed(1)}°`;
+    case 'swathKm':
+      return p.swathKm == null ? '—' : `${p.swathKm} km`;
     case 'visibility':
-      return p.imagingStatus;
+      return p.visibility;
+    case 'eligibility':
+      return p.imagingEligible ? p.imagingStatus : p.imagingStatus;
     default:
       return String(p[key] ?? '');
   }
@@ -60,9 +74,23 @@ export default function PredictReport({
   const sorted = useMemo(() => {
     const copy = [...passes];
     copy.sort((a, b) => {
-      if (sortKey === 'maxElevationDeg' || sortKey === 'duration') {
-        const an = sortKey === 'duration' ? a.durationSec : Number(a.maxElevationDeg ?? 0);
-        const bn = sortKey === 'duration' ? b.durationSec : Number(b.maxElevationDeg ?? 0);
+      if (sortKey === 'maxElevationDeg' || sortKey === 'duration' || sortKey === 'minElevationDeg' || sortKey === 'swathKm') {
+        const an =
+          sortKey === 'duration'
+            ? a.durationSec
+            : sortKey === 'swathKm'
+              ? Number(a.swathKm ?? 0)
+              : sortKey === 'minElevationDeg'
+                ? Number(a.minElevationDeg ?? 0)
+                : Number(a.maxElevationDeg ?? 0);
+        const bn =
+          sortKey === 'duration'
+            ? b.durationSec
+            : sortKey === 'swathKm'
+              ? Number(b.swathKm ?? 0)
+              : sortKey === 'minElevationDeg'
+                ? Number(b.minElevationDeg ?? 0)
+                : Number(b.maxElevationDeg ?? 0);
         return asc ? an - bn : bn - an;
       }
       if (sortKey === 'startLocal') {

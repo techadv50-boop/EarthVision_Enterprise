@@ -12,11 +12,11 @@ import type {
   SatelliteKind,
   SensorParams,
 } from './types';
-import { DEFAULT_SENSOR } from './types';
 
 export const PASS_DASHES: PassDash[] = ['solid', 'dashed', 'dotted'];
 
 const NAMED_COLORS: { test: RegExp; color: string }[] = [
+  { test: /cartosat[- ]?3/i, color: '#facc15' },
   { test: /\bprss\b/i, color: '#facc15' },
   { test: /landsat/i, color: '#22c55e' },
   { test: /sentinel[- ]?1/i, color: '#3b82f6' },
@@ -73,7 +73,7 @@ const CATALOG: CatalogEntry[] = [
     test: (n) => /\bprss\b/i.test(n),
     kind: 'optical',
     color: '#facc15',
-    sensor: { swathKm: 60, minElevationDeg: 15, spatialResolutionM: 1 },
+    sensor: { swathKm: 60, minElevationDeg: 20, spatialResolutionM: 1, maxOffNadirDeg: 30 },
     slug: 'PRSS',
   },
   {
@@ -99,62 +99,63 @@ const CATALOG: CatalogEntry[] = [
   {
     test: (n, norad) => /cartosat[- ]?3/i.test(n) || (norad != null && CARTOSAT3_NORADS.has(norad)),
     kind: 'optical',
-    sensor: { swathKm: 17, minElevationDeg: 15, maxOffNadirDeg: 45, spatialResolutionM: 0.28 },
+    color: '#facc15',
+    sensor: { swathKm: 17, minElevationDeg: 20, maxOffNadirDeg: 45, spatialResolutionM: 0.28 },
     slug: 'CARTOSAT-3',
   },
   {
     test: (n) => /cartosat[- ]?2[cdef]/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 10, minElevationDeg: 15, spatialResolutionM: 0.65 },
+    sensor: { swathKm: 10, minElevationDeg: 20, spatialResolutionM: 0.65 },
     slug: 'CARTOSAT-2',
   },
   {
     test: (n) => /cartosat[- ]?2/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 9.6, minElevationDeg: 15, spatialResolutionM: 0.8 },
+    sensor: { swathKm: 9.6, minElevationDeg: 20, spatialResolutionM: 0.8 },
     slug: 'CARTOSAT-2',
   },
   {
     test: (n) => /cartosat[- ]?1/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 30, minElevationDeg: 15, spatialResolutionM: 2.5 },
+    sensor: { swathKm: 30, minElevationDeg: 20, spatialResolutionM: 2.5 },
     slug: 'CARTOSAT-1',
   },
   {
     test: (n) => /cartosat/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 16, minElevationDeg: 15, spatialResolutionM: 0.8 },
+    sensor: { swathKm: 16, minElevationDeg: 20, spatialResolutionM: 0.8 },
     slug: 'CARTOSAT',
   },
   {
     test: (n) => /worldview[- ]?3/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 13.1, minElevationDeg: 15, maxOffNadirDeg: 40, spatialResolutionM: 0.31 },
+    sensor: { swathKm: 13.1, minElevationDeg: 20, maxOffNadirDeg: 40, spatialResolutionM: 0.31 },
   },
   {
     test: (n) => /worldview[- ]?2/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 16.4, minElevationDeg: 15, spatialResolutionM: 0.46 },
+    sensor: { swathKm: 16.4, minElevationDeg: 20, spatialResolutionM: 0.46 },
   },
   {
     test: (n) => /geoeye/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 15.2, minElevationDeg: 15, spatialResolutionM: 0.41 },
+    sensor: { swathKm: 15.2, minElevationDeg: 20, spatialResolutionM: 0.41 },
   },
   {
     test: (n) => /pleiades/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 20, minElevationDeg: 15, spatialResolutionM: 0.5 },
+    sensor: { swathKm: 20, minElevationDeg: 20, spatialResolutionM: 0.5 },
   },
   {
     test: (n) => /spot[- ]?[67]/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 60, minElevationDeg: 15, spatialResolutionM: 1.5 },
+    sensor: { swathKm: 60, minElevationDeg: 20, spatialResolutionM: 1.5 },
   },
   {
     test: (n) => /kompsat[- ]?3/i.test(n),
     kind: 'optical',
-    sensor: { swathKm: 16, minElevationDeg: 15, spatialResolutionM: 0.5 },
+    sensor: { swathKm: 16, minElevationDeg: 20, spatialResolutionM: 0.5 },
   },
   {
     test: (n) => /radarsat|alos[- ]?2|cosmo[- ]?skymed|iceye|capella|umbra|risat|\bsar\b/i.test(n),
@@ -168,7 +169,7 @@ const CATALOG: CatalogEntry[] = [
         n,
       ),
     kind: 'optical',
-    sensor: { swathKm: 20, minElevationDeg: 15 },
+    sensor: { swathKm: 20, minElevationDeg: 20 },
   },
 ];
 
@@ -197,6 +198,20 @@ export function catalogSensor(name: string, norad: number | null): Partial<Senso
   return {};
 }
 
+/** Complete imaging parameters, or null if this satellite is not in the catalog. */
+export function knownSensor(name: string, norad: number | null): SensorParams | null {
+  const s = catalogSensor(name, norad);
+  if (s.swathKm == null || s.minElevationDeg == null) return null;
+  return {
+    swathKm: s.swathKm,
+    minElevationDeg: s.minElevationDeg,
+    maxOffNadirDeg: s.maxOffNadirDeg,
+    fovDeg: s.fovDeg,
+    spatialResolutionM: s.spatialResolutionM,
+    lookDirection: s.lookDirection,
+  };
+}
+
 export function catalogColor(name: string): string | undefined {
   for (const entry of CATALOG) {
     if (entry.test(name, null) && entry.color) return entry.color;
@@ -220,8 +235,8 @@ export function passSlug(name: string): string {
   return (cleaned || 'SAT').slice(0, 18);
 }
 
-export function makePassId(name: string, passNumber: number, dateUtc: string): string {
-  return `${passSlug(name)}-P${String(passNumber).padStart(3, '0')}-${dateUtc}`;
+export function makePassId(name: string, passNumber: number, _dateUtc?: string): string {
+  return `${passSlug(name)}-P${String(passNumber).padStart(3, '0')}`;
 }
 
 export function resolveImagingRules(
@@ -234,15 +249,18 @@ export function resolveImagingRules(
 export function resolveSensor(
   name: string,
   norad: number | null,
-  uiDefault: SensorParams,
   satOverride?: Partial<SensorParams>,
-): SensorParams {
-  return {
-    ...DEFAULT_SENSOR,
-    ...uiDefault,
-    ...catalogSensor(name, norad),
-    ...satOverride,
-  };
+  fallback?: SensorParams,
+): { sensor: SensorParams; source: 'catalog' | 'fallback' } | null {
+  const known = knownSensor(name, norad);
+  if (known) {
+    return { sensor: { ...known, ...satOverride }, source: 'catalog' };
+  }
+  if (fallback && satOverride?.swathKm != null && satOverride?.minElevationDeg != null) {
+    return { sensor: { ...fallback, ...satOverride }, source: 'fallback' };
+  }
+  if (fallback) return { sensor: fallback, source: 'fallback' };
+  return null;
 }
 
 export function isImagingSample(kind: SatelliteKind, rules: ImagingRules, sunElevationDeg: number): boolean {
@@ -282,22 +300,24 @@ export function formatPassPopup(pass: PassRow, timeZone: string, fmt: {
 }): string {
   const maxEl = pass.maxElevationDeg == null ? '—' : `${pass.maxElevationDeg.toFixed(1)}°`;
   const maxElT = pass.maxElevationUtc ? `${fmt.zone(pass.maxElevationUtc, timeZone)}<br>${fmt.utc(pass.maxElevationUtc)}` : '—';
+  const minReq = pass.minElevationDeg == null ? '—' : `${pass.minElevationDeg}°`;
+  const swath = pass.swathKm == null ? '—' : `${pass.swathKm} km`;
   return `
     <div style="min-width:220px;font:12px Inter,sans-serif;line-height:1.45">
       <div><b>Satellite:</b> ${escapeHtml(pass.satelliteName)}</div>
       <div><b>Type:</b> ${pass.satelliteKind === 'sar' ? 'SAR' : 'Optical'}</div>
       <div><b>Pass ID:</b> ${escapeHtml(pass.passId)}</div>
+      <div><b>Target:</b> ${escapeHtml(pass.targetName)}</div>
       <div><b>Date:</b> ${escapeHtml(pass.passDateUtc)}</div>
-      <div><b>Start:</b> ${fmt.utc(pass.startUtc)}<br>${fmt.zone(pass.startUtc, timeZone)}</div>
-      <div><b>End:</b> ${fmt.utc(pass.endUtc)}<br>${fmt.zone(pass.endUtc, timeZone)}</div>
+      <div><b>Start tracking:</b> ${fmt.utc(pass.startUtc)}<br>${fmt.zone(pass.startUtc, timeZone)}</div>
+      <div><b>End tracking:</b> ${fmt.utc(pass.endUtc)}<br>${fmt.zone(pass.endUtc, timeZone)}</div>
       <div><b>Duration:</b> ${fmt.duration(pass.durationSec)}</div>
-      <div><b>Maximum Elevation:</b> ${maxEl}</div>
+      <div><b>Maximum elevation:</b> ${maxEl}</div>
       <div><b>Max elevation time:</b> ${maxElT}</div>
-      <div><b>AOS:</b> ${fmt.utc(pass.aosUtc)}</div>
-      <div><b>LOS:</b> ${fmt.utc(pass.losUtc)}</div>
+      <div><b>Min required elevation:</b> ${minReq}</div>
+      <div><b>Swath:</b> ${swath}</div>
       <div><b>Day/Night:</b> ${pass.visibility}</div>
       <div><b>Imaging eligibility:</b> ${escapeHtml(pass.imagingStatus)}</div>
-      <div><b>AOS–LOS:</b> full pass ground track</div>
     </div>
   `;
 }

@@ -72,6 +72,7 @@ export default function PredictMap({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = createSatPassMap(containerRef.current);
+    map.setMaxZoom(11);
     mapRef.current = map;
     setLeafletMap(map);
     addBaseMap(map);
@@ -167,14 +168,12 @@ export default function PredictMap({
       }
     }
 
-    const fitKey = `${target?.kind}:${target?.name}:${target?.lat}:${target?.lon}:${result?.passes.length ?? 0}:${result?.tracks.length ?? 0}`;
+    const fitKey = `${target?.kind}:${target?.name}:${target?.lat}:${target?.lon}:${target?.bufferKm ?? ''}:${result?.passes.map((p) => p.passId).join(',') || 'none'}`;
     if (target && fitKey !== fittedKeyRef.current) {
       const pts: L.LatLng[] = [];
-      if (target.kind === 'area') {
-        const gb = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject).getBounds();
-        if (gb.isValid()) {
-          pts.push(gb.getSouthWest(), gb.getNorthEast());
-        }
+      const gb = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject).getBounds();
+      if (gb.isValid()) {
+        pts.push(gb.getSouthWest(), gb.getNorthEast());
       } else {
         pts.push(L.latLng(target.lat, target.lon));
       }
@@ -187,9 +186,9 @@ export default function PredictMap({
         const hasTrack = (result?.tracks || []).some(
           (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
         );
-        map.fitBounds(bounds.pad(hasTrack ? 0.12 : 1.6), {
-          padding: [36, 36],
-          maxZoom: hasTrack ? 5 : 6,
+        map.fitBounds(bounds.pad(hasTrack ? 0.45 : 0.7), {
+          padding: [40, 40],
+          maxZoom: hasTrack ? 9 : 10,
         });
       }
       fittedKeyRef.current = fitKey;

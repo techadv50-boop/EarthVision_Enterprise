@@ -31,6 +31,21 @@ export const DEFAULT_SENSOR: SensorParams = {
   minElevationDeg: 10,
 };
 
+export interface PredictTarget {
+  kind: 'point' | 'area';
+  name: string;
+  /** WGS84 GeoJSON geometry (Point, Polygon, MultiPolygon, or GeometryCollection). */
+  geometry: GeoJSON.Geometry;
+  /** Representative point used for elevation / AOS (centroid for areas). */
+  lon: number;
+  lat: number;
+  /** Geodesic buffer applied around a place/point, if any. */
+  bufferKm?: number;
+  source?: 'place' | 'coordinates' | 'upload';
+}
+
+export type SensorSource = 'catalog' | 'fallback' | 'none';
+
 export interface PredictSatellite {
   id: string;
   name: string;
@@ -41,16 +56,8 @@ export interface PredictSatellite {
   noradId?: number | null;
   sensor?: Partial<SensorParams>;
   imaging?: Partial<ImagingRules>;
-}
-
-export interface PredictTarget {
-  kind: 'point' | 'area';
-  name: string;
-  /** WGS84 GeoJSON geometry (Point, Polygon, MultiPolygon, or GeometryCollection). */
-  geometry: GeoJSON.Geometry;
-  /** Representative point used for elevation / AOS (centroid for areas). */
-  lon: number;
-  lat: number;
+  paramsKnown?: boolean;
+  sensorSource?: SensorSource;
 }
 
 export interface PassRow {
@@ -73,6 +80,10 @@ export interface PassRow {
   visibility: DayNightStatus;
   imagingEligible: boolean;
   imagingStatus: string;
+  targetName: string;
+  minElevationDeg: number | null;
+  swathKm: number | null;
+  sensorSource?: SensorSource;
 }
 
 export interface TrackLabel {
@@ -112,5 +123,7 @@ export interface ComputeOptions {
   endUtc: Date;
   timeZone: string;
   labelIntervalMin: 1 | 2 | 5 | 10;
-  sensor: SensorParams;
+  /** Emergency fallback for satellites with no catalog parameters. */
+  fallbackSensor?: SensorParams;
+  allowFallback?: boolean;
 }

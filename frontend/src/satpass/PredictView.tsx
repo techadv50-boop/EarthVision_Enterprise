@@ -11,17 +11,20 @@ import { geoApi, satelliteApi, type TleResult } from '@/services/api';
 import type { TrackedSat } from './SatPassMap';
 import PredictMap from './PredictMap';
 import PredictReport from './PredictReport';
-import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, catalogSensor } from './predict/catalog';
+import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, knownSensor } from './predict/catalog';
 import { parseKmlToGeoJSON } from './predict/kml';
 import { uploadGeometryFiles } from './predict/export';
 import { computePasses, targetFromGeometry, validateTle } from './predict/passes';
 import {
+  DEFAULT_TARGET_BUFFER_KM,
   lookupGazetteer,
   mergePlaceHits,
   normalizeGeoHits,
+  targetFromLatLon,
   targetFromPlace,
   type PlaceHit,
 } from './predict/places';
+import { expandPolygonKm } from './predict/geometry';
 import {
   COMMON_TIMEZONES,
   dateFromLocalInput,
@@ -29,7 +32,6 @@ import {
   localInputFromDate,
 } from './predict/time';
 import {
-  DEFAULT_SENSOR,
   type PredictResult,
   type PredictSatellite,
   type PredictTarget,
@@ -63,18 +65,16 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const tzDefault = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const range0 = useMemo(() => defaultRange(tzDefault), [tzDefault]);
 
-  const [lat, setLat] = useState('33.6844');
-  const [lon, setLon] = useState('73.0479');
-  const [place, setPlace] = useState('Islamabad');
-  const [placeQuery, setPlaceQuery] = useState('');
+  const [lat, setLat] = useState('24.8607');
+  const [lon, setLon] = useState('67.0011');
+  const [place, setPlace] = useState('Karachi');
+  const [placeQuery, setPlaceQuery] = useState('Karachi');
   const [placeHits, setPlaceHits] = useState<PlaceHit[]>([]);
-  const [target, setTarget] = useState<PredictTarget | null>({
-    kind: 'point',
-    name: 'Islamabad',
-    lat: 33.6844,
-    lon: 73.0479,
-    geometry: { type: 'Point', coordinates: [73.0479, 33.6844] },
-  });
+  const [bufferKm, setBufferKm] = useState(DEFAULT_TARGET_BUFFER_KM);
+  const [polygonBuffer, setPolygonBuffer] = useState(false);
+  const [target, setTarget] = useState<PredictTarget | null>(() =>
+    targetFromLatLon(24.8607, 67.0011, 'Karachi', DEFAULT_TARGET_BUFFER_KM),
+  );
   const [fileNote, setFileNote] = useState('');
 
   const [sats, setSats] = useState<PredictSatellite[]>([]);
@@ -92,6 +92,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [labelMin, setLabelMin] = useState<1 | 2 | 5 | 10>(2);
   const [minEl, setMinEl] = useState(10);
   const [swathKm, setSwathKm] = useState(60);
+  const [allowFallback, setAllowFallback] = useState(false);
 
   const [computing, setComputing] = useState(false);
   const [error, setError] = useState('');
@@ -120,17 +121,11 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
       setError('Enter a valid latitude and longitude.');
       return;
     }
-    applyTarget({
-      kind: 'point',
-      name: name || 'Point',
-      lon: lo,
-      lat: la,
-      geometry: { type: 'Point', coordinates: [lo, la] },
-    });
+    applyTarget(targetFromLatLon(la, lo, name || 'Point', bufferKm));
   };
 
   const applyPlaceHit = (hit: PlaceHit) => {
-    applyTarget(targetFromPlace(hit));
+    applyTarget(targetFromPlace(hit, bufferKm));
     setPlaceQuery(hit.name);
   };
 
@@ -144,11 +139,16 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
             type: 'GeometryCollection' as const,
             geometries: feats.map((f) => f.geometry!),
           };
-    const t = targetFromGeometry(geom, String(feats[0].properties?.name || fallbackName));
-    if (!t) throw new Error('Could not read coordinates from the file.');
+    const t0 = targetFromGeometry(geom, String(feats[0].properties?.name || fallbackName));
+    if (!t0) throw new Error('Could not read coordinates from the file.');
+    const t = polygonBuffer && t0.kind === 'area'
+      ? { ...t0, bufferKm, geometry: expandPolygonKm(t0.geometry, bufferKm) }
+      : t0;
     applyTarget(t);
     setPlaceQuery('');
-    setFileNote(`${feats.length} feature(s) · ${t.kind}`);
+    setFileNote(
+      `${feats.length} feature(s) · ${t.kind}${polygonBuffer && t0.kind === 'area' ? ` · ${bufferKm} km buffer` : ''}`,
+    );
   };
 
   const resolvePlaces = async (query: string): Promise<PlaceHit[]> => {
@@ -235,15 +235,12 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     const inferred = inferSatelliteKind(n, norad);
     const kind = kindOverride ?? (pendingKind === 'auto' ? inferred : pendingKind);
     const color = colorForSatellite(n, usedColors);
-    const catalog = catalogSensor(n, norad);
-    const sensor = {
-      swathKm: catalog.swathKm ?? swathKm,
-      minElevationDeg: catalog.minElevationDeg ?? minEl,
-      maxOffNadirDeg: catalog.maxOffNadirDeg,
-      spatialResolutionM: catalog.spatialResolutionM,
-    };
-    if (catalog.swathKm) setSwathKm(catalog.swathKm);
-    if (catalog.minElevationDeg) setMinEl(catalog.minElevationDeg);
+    const known = knownSensor(n, norad);
+    const sensor = known
+      ? known
+      : allowFallback
+        ? { swathKm, minElevationDeg: minEl }
+        : undefined;
     setSats((prev) => [
       ...prev,
       {
@@ -255,13 +252,21 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
         kind,
         noradId: norad,
         sensor,
+        paramsKnown: Boolean(known),
+        sensorSource: known ? 'catalog' : allowFallback ? 'fallback' : 'none',
       },
     ]);
     setSatName('');
     setLine1('');
     setLine2('');
     setTlePaste('');
-    setError('');
+    if (!known && !allowFallback) {
+      setError(
+        `${n}: Satellite imaging parameters unavailable. Enable emergency fallback to predict with generic values.`,
+      );
+    } else {
+      setError('');
+    }
   };
 
   const addFromSearch = async (q: string) => {
@@ -283,41 +288,47 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     setError('');
     let t = target;
     const q = placeQuery.trim();
-    if (q) {
+    if (t?.source === 'upload') {
+      /* keep the uploaded polygon as the primary AOI */
+    } else if (q && t && t.name.trim().toLowerCase() === q.toLowerCase()) {
+      t = targetFromLatLon(t.lat, t.lon, t.name, bufferKm);
+      applyTarget(t);
+    } else if (q) {
       const hits = await searchPlace(q);
       if (!hits || !hits.length) return;
-      t = targetFromPlace(hits[0]);
-    } else if (!t || t.kind === 'point') {
+      t = targetFromPlace(hits[0], bufferKm);
+      applyTarget(t);
+    } else {
       const la = Number(lat);
       const lo = Number(lon);
       if (!Number.isFinite(la) || !Number.isFinite(lo) || la < -90 || la > 90 || lo < -180 || lo > 180) {
         setError('Enter a valid latitude and longitude, or upload KML/shapefile.');
         return;
       }
-      t = {
-        kind: 'point',
-        name: place || 'Point',
-        lat: la,
-        lon: lo,
-        geometry: { type: 'Point', coordinates: [lo, la] },
-      };
+      t = targetFromLatLon(la, lo, place || 'Point', bufferKm);
       setTarget(t);
+    }
+    if (!t) {
+      setError('Set a target location or upload a polygon.');
+      return;
     }
     if (!sats.length) {
       setError('Add at least one satellite TLE.');
       return;
     }
+    const usedTarget = t;
     const startUtc = dateFromLocalInput(startLocal, timeZone);
     const endUtc = dateFromLocalInput(endLocal, timeZone);
     setComputing(true);
     window.setTimeout(() => {
       try {
-        const out = computePasses(sats, t, {
+        const out = computePasses(sats, usedTarget, {
           startUtc,
           endUtc,
           timeZone,
           labelIntervalMin: labelMin,
-          sensor: { ...DEFAULT_SENSOR, minElevationDeg: minEl, swathKm },
+          allowFallback,
+          fallbackSensor: allowFallback ? { swathKm, minElevationDeg: minEl } : undefined,
         });
         setResult(out);
         setHiddenSats(new Set());
@@ -397,6 +408,19 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10 focus:ring-cyan-500"
               />
             </label>
+            <label className="mt-2 block text-[11px] text-gray-400">
+              Target buffer (km)
+              <input
+                type="number"
+                min={1}
+                value={bufferKm}
+                onChange={(e) => setBufferKm(Math.max(1, Number(e.target.value) || DEFAULT_TARGET_BUFFER_KM))}
+                className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
+              />
+            </label>
+            <p className="mt-1 text-[10px] text-gray-500">
+              Cities and landmarks become a geodesic {bufferKm} km AOI around the geocoded point.
+            </p>
             <button
               onClick={() => {
                 setPlaceQuery('');
@@ -433,11 +457,22 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                   }}
                 />
               </label>
+              <label className="inline-flex items-center gap-1 text-gray-400">
+                <input
+                  type="checkbox"
+                  checked={polygonBuffer}
+                  onChange={() => setPolygonBuffer((v) => !v)}
+                  className="accent-cyan-500"
+                />
+                Buffer uploaded polygon {bufferKm} km
+              </label>
             </div>
             {fileNote && <p className="mt-1 text-[11px] text-emerald-400">{fileNote}</p>}
             {target && (
               <p className="mt-1 text-[11px] text-gray-500">
-                Target: {target.name} ({target.kind}) {target.lat.toFixed(4)}, {target.lon.toFixed(4)}
+                Target: {target.name} ({target.kind}
+                {target.bufferKm ? ` · ${target.bufferKm} km buffer` : ''}
+                {target.source === 'upload' ? ' · uploaded polygon' : ''}) {target.lat.toFixed(4)}, {target.lon.toFixed(4)}
               </p>
             )}
           </section>
@@ -556,8 +591,8 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 <p className="text-[11px] text-gray-500">No satellites selected yet.</p>
               )}
               {sats.map((s) => {
-                const osint = catalogSensor(s.name, s.noradId ?? null);
-                const sensorNote = describeSensor(s.sensor) || describeSensor(osint);
+                const known = knownSensor(s.name, s.noradId ?? null);
+                const catalogNote = describeSensor(s.sensor || known || undefined);
                 return (
                 <div
                   key={s.id}
@@ -566,12 +601,19 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                   <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} />
                   <div className="min-w-0 flex-1">
                     <div className="truncate">{s.name}</div>
-                    {sensorNote ? (
-                      <div className="truncate text-[10px] text-cyan-400/90" title="From satellite catalog / OSINT">
-                        {osint.swathKm ? 'OSINT · ' : ''}
-                        {sensorNote}
+                    {s.sensorSource === 'catalog' || known ? (
+                      <div className="truncate text-[10px] text-cyan-400/90" title="Satellite-specific catalog parameters">
+                        Catalog · {catalogNote}
                       </div>
-                    ) : null}
+                    ) : s.sensorSource === 'fallback' ? (
+                      <div className="truncate text-[10px] text-amber-400">
+                        Emergency fallback · {describeSensor(s.sensor)}
+                      </div>
+                    ) : (
+                      <div className="truncate text-[10px] text-red-400">
+                        Satellite imaging parameters unavailable
+                      </div>
+                    )}
                   </div>
                   <select
                     value={s.kind}
@@ -663,30 +705,46 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 <option value={10}>10 minutes</option>
               </select>
             </label>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <label className="text-[11px] text-gray-400">
-                Fallback min elevation °
-                <input
-                  type="number"
-                  value={minEl}
-                  onChange={(e) => setMinEl(Number(e.target.value))}
-                  className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
-                />
-              </label>
-              <label className="text-[11px] text-gray-400">
-                Fallback swath km
-                <input
-                  type="number"
-                  value={swathKm}
-                  onChange={(e) => setSwathKm(Number(e.target.value))}
-                  className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
-                />
-              </label>
-            </div>
-            <p className="mt-1 text-[10px] text-gray-500">
-              Known satellites (CARTOSAT-3, Landsat, Sentinel, PRSS, …) use published swath and
-              elevation automatically. These fields apply only when the satellite is not in the catalog.
-            </p>
+            <label className="mt-2 flex items-start gap-2 text-[11px] text-gray-400">
+              <input
+                type="checkbox"
+                checked={allowFallback}
+                onChange={() => setAllowFallback((v) => !v)}
+                className="mt-0.5 accent-amber-500"
+              />
+              <span>
+                Emergency fallback for unknown satellites only. Known satellites always use catalog
+                min elevation and swath. Do not use generic 15° / 17 km values for catalogued sensors.
+              </span>
+            </label>
+            {allowFallback && (
+              <>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <label className="text-[11px] text-amber-300/90">
+                    Emergency min elevation °
+                    <input
+                      type="number"
+                      value={minEl}
+                      onChange={(e) => setMinEl(Number(e.target.value))}
+                      className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-amber-500/40"
+                    />
+                  </label>
+                  <label className="text-[11px] text-amber-300/90">
+                    Emergency swath km
+                    <input
+                      type="number"
+                      value={swathKm}
+                      onChange={(e) => setSwathKm(Number(e.target.value))}
+                      className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-amber-500/40"
+                    />
+                  </label>
+                </div>
+                <p className="mt-1 text-[10px] text-amber-400">
+                  Fallback is an emergency mechanism. Predictions for unknown satellites will be
+                  labelled as fallback, not satellite-specific.
+                </p>
+              </>
+            )}
           </section>
         </div>
         <div className="space-y-2 border-t border-white/10 px-4 py-3">
@@ -713,7 +771,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
             onClick={() => setView('map')}
             className={`rounded px-2 py-1 ${view === 'map' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10'}`}
           >
-            Ground-track map
+            Predict map
           </button>
           <button
             onClick={() => setView('report')}

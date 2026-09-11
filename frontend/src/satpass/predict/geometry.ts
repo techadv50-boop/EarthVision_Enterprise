@@ -110,3 +110,51 @@ export function geometryKind(geom: GeoJSON.Geometry): 'point' | 'area' {
   if (geom.type === 'Point' || geom.type === 'MultiPoint') return 'point';
   return 'area';
 }
+
+/** Default geodesic buffer around a named place / lat-lng point (km). */
+export const DEFAULT_TARGET_BUFFER_KM = 20;
+
+/** Regular geodesic circle as a GeoJSON polygon (lon, lat rings). */
+export function geodesicCirclePolygon(
+  lat: number,
+  lon: number,
+  radiusKm: number,
+  steps = 64,
+): GeoJSON.Polygon {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const toDeg = (r: number) => (r * 180) / Math.PI;
+  const ring: [number, number][] = [];
+  const δ = radiusKm / R_KM;
+  const φ1 = toRad(lat);
+  const λ1 = toRad(lon);
+  for (let i = 0; i <= steps; i += 1) {
+    const θ = toRad((i / steps) * 360);
+    const sinφ2 = Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ);
+    const φ2 = Math.asin(Math.min(1, Math.max(-1, sinφ2)));
+    const λ2 =
+      λ1 +
+      Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
+    let lon2 = toDeg(λ2);
+    lon2 = ((((lon2 + 180) % 360) + 360) % 360) - 180;
+    ring.push([lon2, toDeg(φ2)]);
+  }
+  return { type: 'Polygon', coordinates: [ring] };
+}
+
+/** Radial expansion of a polygon away from its centroid (approximate outward buffer). */
+export function expandPolygonKm(geom: GeoJSON.Geometry, km: number): GeoJSON.Geometry {
+  if (km <= 0) return geom;
+  if (geom.type === 'Point') {
+    return geodesicCirclePolygon(geom.coordinates[1], geom.coordinates[0], km);
+  }
+  const c = centroidOfGeometry(geom);
+  if (!c || geom.type !== 'Polygon') return geom;
+  const ring = geom.coordinates[0].map(([lon, lat]) => {
+    const d = haversineKm(c.lat, c.lon, lat, lon);
+    const scale = d > 0.05 ? (d + km) / d : 1;
+    const nlat = c.lat + (lat - c.lat) * scale;
+    const nlon = c.lon + (lon - c.lon) * scale;
+    return [nlon, nlat] as [number, number];
+  });
+  return { type: 'Polygon', coordinates: [ring] };
+}
