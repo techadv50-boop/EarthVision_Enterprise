@@ -11,7 +11,7 @@ import { geoApi, satelliteApi, type TleResult } from '@/services/api';
 import type { TrackedSat } from './SatPassMap';
 import PredictMap from './PredictMap';
 import PredictReport from './PredictReport';
-import { colorForSatellite } from './predict/colors';
+import { colorForSatellite, inferSatelliteKind, noradFromLine1, catalogSensor } from './predict/catalog';
 import { parseKmlToGeoJSON } from './predict/kml';
 import { uploadGeometryFiles } from './predict/export';
 import { computePasses, targetFromGeometry, validateTle } from './predict/passes';
@@ -21,7 +21,13 @@ import {
   formatUtc,
   localInputFromDate,
 } from './predict/time';
-import { DEFAULT_SENSOR, type PredictResult, type PredictSatellite, type PredictTarget } from './predict/types';
+import {
+  DEFAULT_SENSOR,
+  type PredictResult,
+  type PredictSatellite,
+  type PredictTarget,
+  type SatelliteKind,
+} from './predict/types';
 
 function parseTleBlock(text: string): { name: string | null; line1: string; line2: string } | null {
   const lines = text
@@ -71,6 +77,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [tlePaste, setTlePaste] = useState('');
   const [searchQ, setSearchQ] = useState('');
   const [searchHits, setSearchHits] = useState<TleResult[]>([]);
+  const [pendingKind, setPendingKind] = useState<'auto' | SatelliteKind>('auto');
 
   const [startLocal, setStartLocal] = useState(range0.start);
   const [endLocal, setEndLocal] = useState(range0.end);
@@ -84,8 +91,10 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [result, setResult] = useState<PredictResult | null>(null);
   const [view, setView] = useState<'map' | 'report'>('map');
   const [hiddenSats, setHiddenSats] = useState<Set<string>>(new Set());
+  const [hiddenPasses, setHiddenPasses] = useState<Set<string>>(new Set());
   const [showLabels, setShowLabels] = useState(true);
   const [showTarget, setShowTarget] = useState(true);
+  const [showFootprints, setShowFootprints] = useState(true);
   const [cursor, setCursor] = useState('');
   const [busy, setBusy] = useState('');
 
@@ -182,15 +191,31 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     }
   };
 
-  const addSat = (name: string, l1: string, l2: string) => {
+  const addSat = (name: string, l1: string, l2: string, kindOverride?: SatelliteKind) => {
     const n = name.trim() || 'Satellite';
     const invalid = validateTle(n, l1, l2);
     if (invalid) {
       setError(invalid);
       return;
     }
+    const norad = noradFromLine1(l1);
+    const inferred = inferSatelliteKind(n, norad);
+    const kind = kindOverride ?? (pendingKind === 'auto' ? inferred : pendingKind);
     const color = colorForSatellite(n, usedColors);
-    setSats((prev) => [...prev, { id: newId(), name: n, line1: l1.trim(), line2: l2.trim(), color }]);
+    const sensor = catalogSensor(n, norad);
+    setSats((prev) => [
+      ...prev,
+      {
+        id: newId(),
+        name: n,
+        line1: l1.trim(),
+        line2: l2.trim(),
+        color,
+        kind,
+        noradId: norad,
+        sensor: { swathKm, minElevationDeg: minEl, ...sensor },
+      },
+    ]);
     setSatName('');
     setLine1('');
     setLine2('');
@@ -250,6 +275,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
         });
         setResult(out);
         setHiddenSats(new Set());
+        setHiddenPasses(new Set());
         setView('map');
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Compute failed.');
@@ -444,6 +470,18 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               rows={3}
               className="mt-1 w-full rounded bg-gray-900 px-2 py-1 font-mono text-[11px] outline-none ring-1 ring-white/10 focus:ring-cyan-500"
             />
+            <div className="mt-2 flex gap-2">
+              <select
+                value={pendingKind}
+                onChange={(e) => setPendingKind(e.target.value as 'auto' | SatelliteKind)}
+                className="rounded bg-gray-900 px-2 py-1.5 text-[11px] outline-none ring-1 ring-white/10"
+                title="Satellite type used for imaging rules"
+              >
+                <option value="auto">Type: Auto</option>
+                <option value="optical">Type: Optical</option>
+                <option value="sar">Type: SAR</option>
+              </select>
+            </div>
             <button
               onClick={() => {
                 if (tlePaste.trim()) {
@@ -471,7 +509,21 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                   className="flex items-center gap-2 rounded bg-gray-900/70 px-2 py-1.5 text-sm ring-1 ring-white/10"
                 >
                   <span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />
-                  <span className="flex-1 truncate">{s.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                  <select
+                    value={s.kind}
+                    onChange={(e) =>
+                      setSats((prev) =>
+                        prev.map((x) =>
+                          x.id === s.id ? { ...x, kind: e.target.value as SatelliteKind } : x,
+                        ),
+                      )
+                    }
+                    className="rounded bg-gray-950 px-1 py-0.5 text-[10px] text-gray-300 ring-1 ring-white/10"
+                  >
+                    <option value="optical">Optical</option>
+                    <option value="sar">SAR</option>
+                  </select>
                   <button onClick={() => setSats((p) => p.filter((x) => x.id !== s.id))}>
                     <Trash2 className="h-3.5 w-3.5 text-gray-400 hover:text-red-400" />
                   </button>
@@ -612,12 +664,15 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 target={target}
                 result={result}
                 hiddenSats={hiddenSats}
+                hiddenPasses={hiddenPasses}
                 showLabels={showLabels}
                 showTarget={showTarget}
+                showFootprints={showFootprints}
+                timeZone={timeZone}
                 onCursor={setCursor}
               />
-              <div className="pointer-events-auto absolute right-3 top-3 z-[1000] w-52 space-y-2 rounded bg-gray-950/90 p-2 text-[11px] ring-1 ring-white/10">
-                <p className="font-semibold text-gray-300">Layers</p>
+              <div className="pointer-events-auto absolute right-3 top-3 z-[1000] max-h-[calc(100%-1.5rem)] w-64 overflow-y-auto space-y-2 rounded bg-gray-950/90 p-2 text-[11px] ring-1 ring-white/10">
+                <p className="font-semibold uppercase tracking-wide text-gray-300">Layers</p>
                 <label className="flex items-center gap-1.5 text-gray-300">
                   <input
                     type="checkbox"
@@ -630,32 +685,84 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 <label className="flex items-center gap-1.5 text-gray-300">
                   <input
                     type="checkbox"
+                    checked={showFootprints}
+                    onChange={() => setShowFootprints((v) => !v)}
+                    className="accent-cyan-500"
+                  />
+                  Pass footprints
+                </label>
+                <label className="flex items-center gap-1.5 text-gray-300">
+                  <input
+                    type="checkbox"
                     checked={showLabels}
                     onChange={() => setShowLabels((v) => !v)}
                     className="accent-cyan-500"
                   />
                   Time labels
                 </label>
-                <p className="pt-1 font-semibold text-gray-300">Legend</p>
-                {sats.map((s) => (
-                  <label key={s.id} className="flex items-center gap-1.5 text-gray-300">
-                    <input
-                      type="checkbox"
-                      checked={!hiddenSats.has(s.id)}
-                      onChange={() => {
-                        setHiddenSats((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(s.id)) next.delete(s.id);
-                          else next.add(s.id);
-                          return next;
-                        });
-                      }}
-                      className="accent-cyan-500"
-                    />
-                    <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
-                    <span className="truncate">{s.name}</span>
-                  </label>
-                ))}
+                <p className="pt-1 font-semibold uppercase tracking-wide text-gray-300">Satellites</p>
+                {sats.map((s) => {
+                  const satPasses = (result?.passes || []).filter((p) => p.satelliteId === s.id);
+                  return (
+                    <div key={s.id} className="space-y-0.5">
+                      <label className="flex items-center gap-1.5 text-gray-200">
+                        <input
+                          type="checkbox"
+                          checked={!hiddenSats.has(s.id)}
+                          onChange={() => {
+                            setHiddenSats((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(s.id)) next.delete(s.id);
+                              else next.add(s.id);
+                              return next;
+                            });
+                          }}
+                          className="accent-cyan-500"
+                        />
+                        <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
+                        <span className="truncate">
+                          {s.name} — {s.kind === 'sar' ? 'SAR' : 'Optical'}
+                        </span>
+                      </label>
+                      {satPasses.map((p) => (
+                        <label key={p.passId} className="ml-5 flex items-start gap-1.5 text-[10px] text-gray-400">
+                          <input
+                            type="checkbox"
+                            checked={!hiddenPasses.has(p.passId)}
+                            onChange={() => {
+                              setHiddenPasses((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(p.passId)) next.delete(p.passId);
+                                else next.add(p.passId);
+                                return next;
+                              });
+                            }}
+                            className="mt-0.5 accent-cyan-500"
+                          />
+                          <span>
+                            <span className="font-mono text-gray-300">P{String(p.passNumber).padStart(3, '0')}</span>
+                            {' — '}
+                            {p.passDateUtc}
+                            {' — '}
+                            {new Intl.DateTimeFormat('en-GB', {
+                              timeZone,
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              hour12: false,
+                            }).format(new Date(p.startUtc))}
+                            –
+                            {new Intl.DateTimeFormat('en-GB', {
+                              timeZone,
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              hour12: false,
+                            }).format(new Date(p.endUtc))}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  );
+                })}
                 {sats.length === 0 && <p className="text-gray-500">Add satellites to see tracks.</p>}
               </div>
             </>

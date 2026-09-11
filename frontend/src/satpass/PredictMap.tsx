@@ -2,14 +2,19 @@ import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { addBaseMap, createSatPassMap } from './baseMap';
-import type { PredictResult, PredictTarget } from './predict/types';
+import type { PassRow, PredictResult, PredictTarget } from './predict/types';
+import { formatPassPopup, leafletDashArray } from './predict/catalog';
+import { durationLabel, formatInZone, formatUtc } from './predict/time';
 
 interface Props {
   target: PredictTarget | null;
   result: PredictResult | null;
   hiddenSats: Set<string>;
+  hiddenPasses: Set<string>;
   showLabels: boolean;
   showTarget: boolean;
+  showFootprints: boolean;
+  timeZone: string;
   onCursor?: (text: string) => void;
 }
 
@@ -37,12 +42,24 @@ function splitLon(samples: { lat: number; lon: number }[]) {
   return segs;
 }
 
+function popupHtml(pass: PassRow | undefined, timeZone: string, fallback: string): string {
+  if (!pass) return fallback;
+  return formatPassPopup(pass, timeZone, {
+    zone: formatInZone,
+    utc: formatUtc,
+    duration: durationLabel,
+  });
+}
+
 export default function PredictMap({
   target,
   result,
   hiddenSats,
+  hiddenPasses,
   showLabels,
   showTarget,
+  showFootprints,
+  timeZone,
   onCursor,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,7 +96,7 @@ export default function PredictMap({
     const overlay = overlayRef.current;
     if (!map || !overlay) return;
     overlay.clearLayers();
-    const bounds: L.LatLng[] = [];
+    const passById = new Map((result?.passes || []).map((p) => [p.passId, p]));
 
     if (target && showTarget) {
       const layer = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject, {
@@ -99,26 +116,40 @@ export default function PredictMap({
         },
       }).bindTooltip(target.name, { sticky: true });
       overlay.addLayer(layer);
-      layer.eachLayer((l) => {
-        if (l instanceof L.Marker || l instanceof L.CircleMarker) bounds.push(l.getLatLng());
-        else if ('getBounds' in l) {
-          const b = (l as L.Polygon).getBounds();
-          bounds.push(b.getSouthWest(), b.getNorthEast());
-        }
-      });
     }
 
     for (const track of result?.tracks || []) {
-      if (hiddenSats.has(track.satelliteId) || hiddenSats.has(track.satelliteName)) continue;
+      if (hiddenSats.has(track.satelliteId) || hiddenPasses.has(track.passId)) continue;
+      const pass = passById.get(track.passId);
+      const dash = leafletDashArray(track.dash);
+      const html = popupHtml(pass, timeZone, `${track.satelliteName} ${track.passId}`);
+      const fillOpacity = 0.16 + ((pass?.passNumber ?? 1) % 3) * 0.05;
+
+      if (showFootprints && track.footprint) {
+        const poly = L.geoJSON(track.footprint as GeoJSON.GeoJsonObject, {
+          style: {
+            color: track.color,
+            weight: 2,
+            dashArray: dash,
+            fillColor: track.color,
+            fillOpacity,
+          },
+        });
+        poly.bindPopup(html);
+        poly.bindTooltip(track.passId, { sticky: true, opacity: 0.9 });
+        overlay.addLayer(poly);
+      }
+
       for (const seg of splitLon(track.samples)) {
         if (seg.length < 2) continue;
         const line = L.polyline(
           seg.map((p) => L.latLng(p.lat, p.lon)),
-          { color: track.color, weight: 2.5, opacity: 0.95 },
+          { color: track.color, weight: 2, opacity: 0.95, dashArray: dash },
         );
+        line.bindPopup(html);
         overlay.addLayer(line);
-        bounds.push(...seg.map((p) => L.latLng(p.lat, p.lon)));
       }
+
       if (showLabels) {
         const nearTarget = (lat: number, lon: number) => {
           if (!target) return true;
@@ -129,7 +160,7 @@ export default function PredictMap({
           overlay.addLayer(
             L.marker([lab.lat, lab.lon], {
               interactive: false,
-              icon: timeIcon(lab.text, track.color),
+              icon: timeIcon(`${lab.text}`, track.color),
             }),
           );
         }
@@ -147,11 +178,8 @@ export default function PredictMap({
         { padding: [28, 28], maxZoom: 5 },
       );
       fittedKeyRef.current = fitKey;
-    } else if (!target && bounds.length && fitKey !== fittedKeyRef.current) {
-      map.fitBounds(L.latLngBounds(bounds), { padding: [24, 24], maxZoom: 5 });
-      fittedKeyRef.current = fitKey;
     }
-  }, [target, result, hiddenSats, showLabels, showTarget]);
+  }, [target, result, hiddenSats, hiddenPasses, showLabels, showTarget, showFootprints, timeZone]);
 
   return (
     <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />

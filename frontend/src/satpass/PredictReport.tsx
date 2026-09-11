@@ -4,40 +4,43 @@ import type { PassRow } from './predict/types';
 import { durationLabel, formatInZone, formatUtc } from './predict/time';
 import { downloadCsv, downloadServerReport, passExportRows } from './predict/export';
 
-type Col = keyof PassRow | 'duration' | 'startLocal' | 'endLocal';
+type Col =
+  | 'passId'
+  | 'satelliteName'
+  | 'satelliteKind'
+  | 'passDateUtc'
+  | 'startLocal'
+  | 'endLocal'
+  | 'duration'
+  | 'maxElevationDeg'
+  | 'visibility';
 
 const COLS: { key: Col; label: string }[] = [
-  { key: 'passNumber', label: 'Pass #' },
-  { key: 'satelliteName', label: 'Satellite Name' },
-  { key: 'passDateUtc', label: 'Pass date' },
-  { key: 'startLocal', label: 'Start Tracking Time' },
-  { key: 'endLocal', label: 'End Tracking Time' },
+  { key: 'passId', label: 'Pass ID' },
+  { key: 'satelliteName', label: 'Satellite' },
+  { key: 'satelliteKind', label: 'Type' },
+  { key: 'passDateUtc', label: 'Date' },
+  { key: 'startLocal', label: 'Start Tracking' },
+  { key: 'endLocal', label: 'End Tracking' },
   { key: 'duration', label: 'Duration' },
-  { key: 'maxElevationDeg', label: 'Max elevation' },
-  { key: 'maxElevationUtc', label: 'Max elevation time' },
-  { key: 'aosUtc', label: 'AOS' },
-  { key: 'losUtc', label: 'LOS' },
-  { key: 'visibility', label: 'Visibility' },
+  { key: 'maxElevationDeg', label: 'Max Elevation' },
+  { key: 'visibility', label: 'Status' },
 ];
 
 function cell(p: PassRow, key: Col, tz: string): string {
   switch (key) {
+    case 'satelliteKind':
+      return p.satelliteKind === 'sar' ? 'SAR' : 'Optical';
     case 'duration':
       return durationLabel(p.durationSec);
     case 'startLocal':
-      return `${formatInZone(p.startUtc, tz)}\n${formatUtc(p.startUtc)}`;
+      return `${formatInZone(p.startUtc, tz, false)}\n${formatUtc(p.startUtc, false)}`;
     case 'endLocal':
-      return `${formatInZone(p.endUtc, tz)}\n${formatUtc(p.endUtc)}`;
+      return `${formatInZone(p.endUtc, tz, false)}\n${formatUtc(p.endUtc, false)}`;
     case 'maxElevationDeg':
       return p.maxElevationDeg == null ? '—' : `${p.maxElevationDeg.toFixed(1)}°`;
-    case 'maxElevationUtc':
-      return p.maxElevationUtc
-        ? `${formatInZone(p.maxElevationUtc, tz)}\n${formatUtc(p.maxElevationUtc)}`
-        : '—';
-    case 'aosUtc':
-      return formatUtc(p.aosUtc);
-    case 'losUtc':
-      return formatUtc(p.losUtc);
+    case 'visibility':
+      return p.imagingStatus;
     default:
       return String(p[key] ?? '');
   }
@@ -57,24 +60,20 @@ export default function PredictReport({
   const sorted = useMemo(() => {
     const copy = [...passes];
     copy.sort((a, b) => {
-      const av = cell(a, sortKey, timeZone);
-      const bv = cell(b, sortKey, timeZone);
-      if (sortKey === 'passNumber' || sortKey === 'maxElevationDeg' || sortKey === 'duration') {
-        const an = sortKey === 'duration' ? a.durationSec : Number(a[sortKey as keyof PassRow] ?? 0);
-        const bn = sortKey === 'duration' ? b.durationSec : Number(b[sortKey as keyof PassRow] ?? 0);
+      if (sortKey === 'maxElevationDeg' || sortKey === 'duration') {
+        const an = sortKey === 'duration' ? a.durationSec : Number(a.maxElevationDeg ?? 0);
+        const bn = sortKey === 'duration' ? b.durationSec : Number(b.maxElevationDeg ?? 0);
         return asc ? an - bn : bn - an;
       }
       if (sortKey === 'startLocal') {
-        return asc
-          ? a.startUtc.localeCompare(b.startUtc)
-          : b.startUtc.localeCompare(a.startUtc);
+        return asc ? a.startUtc.localeCompare(b.startUtc) : b.startUtc.localeCompare(a.startUtc);
       }
+      const av = cell(a, sortKey, timeZone);
+      const bv = cell(b, sortKey, timeZone);
       return asc ? av.localeCompare(bv) : bv.localeCompare(av);
     });
     return copy;
   }, [passes, sortKey, asc, timeZone]);
-
-  const exportData = () => passExportRows(sorted, timeZone);
 
   const onSort = (key: Col) => {
     if (sortKey === key) setAsc((v) => !v);
@@ -85,7 +84,7 @@ export default function PredictReport({
   };
 
   const doExport = async (kind: 'csv' | 'xlsx' | 'pdf') => {
-    const { headers, rows } = exportData();
+    const { headers, rows } = passExportRows(sorted, timeZone);
     setBusy(kind);
     try {
       if (kind === 'csv') downloadCsv('satpass-prediction.csv', headers, rows);
@@ -100,7 +99,7 @@ export default function PredictReport({
   if (!passes.length) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-gray-500">
-        Click Compute to generate the pass / tracking report.
+        Click Compute to generate valid imaging passes (optical: daylight only; SAR: day and night).
       </div>
     );
   }
@@ -138,17 +137,16 @@ export default function PredictReport({
           </thead>
           <tbody>
             {sorted.map((p) => (
-              <tr key={`${p.satelliteName}-${p.startUtc}`} className="border-t border-white/5">
+              <tr key={p.passId} className="border-t border-white/5">
                 {COLS.map((c) => (
                   <td key={c.key} className="whitespace-pre-line px-2 py-1.5 align-top text-gray-200">
                     {c.key === 'satelliteName' ? (
                       <span className="inline-flex items-center gap-1.5">
-                        <span
-                          className="h-2 w-2 rounded-full"
-                          style={{ background: p.color }}
-                        />
+                        <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
                         {p.satelliteName}
                       </span>
+                    ) : c.key === 'passId' ? (
+                      <span className="font-mono text-[10px]">{p.passId}</span>
                     ) : (
                       cell(p, c.key, timeZone)
                     )}

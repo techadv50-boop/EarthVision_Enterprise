@@ -3,24 +3,26 @@ import { durationLabel, formatInZone, formatUtc } from './time';
 
 export function passExportRows(passes: PassRow[], timeZone: string): { headers: string[]; rows: string[][] } {
   const headers = [
-    'Pass number',
-    'Satellite Name',
-    'Pass date',
-    'Start Tracking Time (local)',
-    'Start Tracking Time (UTC)',
-    'End Tracking Time (local)',
-    'End Tracking Time (UTC)',
+    'Pass ID',
+    'Satellite',
+    'Type',
+    'Date',
+    'Start Tracking (local)',
+    'Start Tracking (UTC)',
+    'End Tracking (local)',
+    'End Tracking (UTC)',
     'Duration',
-    'Maximum elevation (deg)',
-    'Maximum elevation time (local)',
-    'Maximum elevation time (UTC)',
+    'Max elevation (deg)',
+    'Max elevation time (UTC)',
     'AOS',
     'LOS',
-    'Visibility status',
+    'Day/Night',
+    'Imaging eligibility',
   ];
   const rows = passes.map((p) => [
-    String(p.passNumber),
+    p.passId,
     p.satelliteName,
+    p.satelliteKind === 'sar' ? 'SAR' : 'Optical',
     p.passDateUtc,
     formatInZone(p.startUtc, timeZone),
     formatUtc(p.startUtc),
@@ -28,11 +30,11 @@ export function passExportRows(passes: PassRow[], timeZone: string): { headers: 
     formatUtc(p.endUtc),
     durationLabel(p.durationSec),
     p.maxElevationDeg == null ? '' : String(p.maxElevationDeg),
-    p.maxElevationUtc ? formatInZone(p.maxElevationUtc, timeZone) : '',
     p.maxElevationUtc ? formatUtc(p.maxElevationUtc) : '',
     formatUtc(p.aosUtc),
     formatUtc(p.losUtc),
     p.visibility,
+    p.imagingStatus,
   ]);
   return { headers, rows };
 }
