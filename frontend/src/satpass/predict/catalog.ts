@@ -23,17 +23,15 @@ const NAMED_COLORS: { test: RegExp; color: string }[] = [
 ];
 
 const AUTO_COLORS = [
-  '#38bdf8',
-  '#f472b6',
-  '#a78bfa',
-  '#fb7185',
-  '#2dd4bf',
   '#f97316',
   '#e879f9',
+  '#fb7185',
+  '#2dd4bf',
+  '#a78bfa',
   '#34d399',
-  '#60a5fa',
-  '#fbbf24',
   '#ef4444',
+  '#38bdf8',
+  '#fbbf24',
 ];
 
 export function colorForSatellite(name: string, used: Set<string>): string {
