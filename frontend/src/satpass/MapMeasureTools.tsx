@@ -105,10 +105,10 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
     clearDraft();
 
     const onClick = (e: L.LeafletMouseEvent) => {
-      L.DomEvent.stopPropagation(e);
       const t = toolRef.current;
       const pts = pointsRef.current;
       if (t === 'navigate') return;
+      L.DomEvent.stopPropagation(e);
 
       if (t === 'marker') {
         const m = L.marker(e.latlng, { icon: vertexIcon() }).bindPopup(
