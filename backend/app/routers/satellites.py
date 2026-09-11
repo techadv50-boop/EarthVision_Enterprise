@@ -22,6 +22,15 @@ router = APIRouter(prefix="/satellites", tags=["SatPass"])
 
 CELESTRAK_GP_URL = "https://celestrak.org/NORAD/elements/gp.php"
 
+_PLACEHOLDER_NAMES = {
+    "custom satellite",
+    "custom sat",
+    "customsat",
+    "custom",
+    "unnamed",
+    "unknown",
+}
+
 
 def _norad_from_line1(line1: str) -> Optional[int]:
     """Satellite catalog number lives in columns 3-7 of TLE line 1."""
@@ -29,6 +38,38 @@ def _norad_from_line1(line1: str) -> Optional[int]:
         return int(line1[2:7])
     except (ValueError, IndexError):
         return None
+
+
+def _is_placeholder_name(name: str) -> bool:
+    n = (name or "").strip().lower()
+    if not n:
+        return True
+    if n.startswith("norad "):
+        return True
+    return n in _PLACEHOLDER_NAMES
+
+
+async def _celestrak_name_for_norad(norad: int) -> Optional[str]:
+    """Return the catalog object name for a NORAD id, or None if lookup fails."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(
+                CELESTRAK_GP_URL,
+                params={"FORMAT": "TLE", "CATNR": str(norad)},
+            )
+            resp.raise_for_status()
+            text = resp.text
+    except httpx.HTTPError:
+        return None
+    if "No GP data found" in text or not text.strip():
+        return None
+    results = _parse_tle_text(text)
+    if not results:
+        return None
+    name = results[0].name.strip()
+    if _is_placeholder_name(name):
+        return None
+    return name
 
 
 def _parse_tle_text(text: str) -> list[TleResult]:
@@ -102,8 +143,15 @@ async def add_satellite(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     norad = payload.norad_id or _norad_from_line1(payload.line1)
+    name = payload.name
+    if norad and _is_placeholder_name(name):
+        resolved = await _celestrak_name_for_norad(norad)
+        if resolved:
+            name = resolved
+        else:
+            name = f"NORAD {norad}"
     satellite = Satellite(
-        name=payload.name,
+        name=name,
         norad_id=norad,
         tle_line1=payload.line1,
         tle_line2=payload.line2,
