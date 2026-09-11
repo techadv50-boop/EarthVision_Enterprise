@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import {
+  Check,
   Circle,
   MapPin,
   Navigation,
@@ -15,8 +16,8 @@ export type MeasureTool = 'navigate' | 'distance' | 'polygon' | 'rectangle' | 'c
 
 const TOOLS: { id: MeasureTool; icon: typeof Ruler; label: string; hint: string }[] = [
   { id: 'navigate', icon: Navigation, label: 'Pan', hint: 'Pan and zoom the map' },
-  { id: 'distance', icon: Ruler, label: 'Distance', hint: 'Click points · double-click to finish' },
-  { id: 'polygon', icon: Pentagon, label: 'Area', hint: 'Click vertices · double-click to close' },
+  { id: 'distance', icon: Ruler, label: 'Distance', hint: 'Click points · double-click or Finish' },
+  { id: 'polygon', icon: Pentagon, label: 'Area', hint: 'Click vertices · double-click or Finish' },
   { id: 'rectangle', icon: Square, label: 'Rectangle', hint: 'Click two opposite corners' },
   { id: 'circle', icon: Circle, label: 'Circle', hint: 'Click center, then the edge' },
   { id: 'marker', icon: MapPin, label: 'Marker', hint: 'Click to drop a coordinate marker' },
@@ -55,11 +56,14 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
   const [tool, setTool] = useState<MeasureTool>('navigate');
   const [hint, setHint] = useState(TOOLS[0].hint);
   const [readout, setReadout] = useState('');
+  const [vertexCount, setVertexCount] = useState(0);
   const groupRef = useRef<L.LayerGroup | null>(null);
   const draftRef = useRef<L.Layer[]>([]);
   const previewRef = useRef<L.Layer | null>(null);
   const pointsRef = useRef<L.LatLng[]>([]);
   const toolRef = useRef(tool);
+  const lastClickAt = useRef(0);
+  const finishRef = useRef<() => void>(() => undefined);
   toolRef.current = tool;
 
   const clearDraft = () => {
@@ -69,17 +73,13 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
     draftRef.current = [];
     previewRef.current = null;
     pointsRef.current = [];
+    setVertexCount(0);
   };
 
   const addDraft = (layer: L.Layer) => {
     draftRef.current.push(layer);
     groupRef.current?.addLayer(layer);
     return layer;
-  };
-
-  const commitDraft = () => {
-    draftRef.current = [];
-    pointsRef.current = [];
   };
 
   useEffect(() => {
@@ -103,12 +103,76 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
     el.style.cursor = drawing ? 'crosshair' : '';
     setHint(TOOLS.find((t) => t.id === tool)?.hint || '');
     clearDraft();
+    lastClickAt.current = 0;
+
+    const addVertex = (latlng: L.LatLng) => {
+      const t = toolRef.current;
+      const pts = pointsRef.current;
+      pts.push(latlng);
+      addDraft(L.marker(latlng, { icon: vertexIcon(), interactive: false }));
+      setVertexCount(pts.length);
+      if (t === 'distance' && pts.length >= 2) {
+        const last = pts[pts.length - 2];
+        addDraft(L.polyline([last, latlng], { ...DRAW, dashArray: '6 4' }));
+        setReadout(formatLength(pathLengthKm(pts.map(ll))));
+      }
+      if (t === 'polygon' && pts.length >= 2) {
+        setReadout(
+          pts.length >= 3
+            ? formatArea(polygonAreaKm2(pts.map(ll)))
+            : formatLength(pathLengthKm(pts.map(ll))),
+        );
+      }
+    };
+
+    const finishPoly = () => {
+      const t = toolRef.current;
+      const pts = [...pointsRef.current];
+      if (t === 'distance' && pts.length >= 2) {
+        clearDraft();
+        const line = L.polyline(pts, DRAW);
+        const len = formatLength(pathLengthKm(pts.map(ll)));
+        line.bindPopup(`Distance ${len}`);
+        groupRef.current?.addLayer(line);
+        groupRef.current?.addLayer(
+          L.marker(pts[pts.length - 1], { icon: labelIcon(len), interactive: false }),
+        );
+        setReadout(`Distance ${len}`);
+      } else if (t === 'polygon' && pts.length >= 3) {
+        clearDraft();
+        const poly = L.polygon(pts, DRAW);
+        const area = formatArea(polygonAreaKm2(pts.map(ll)));
+        const peri = formatLength(pathLengthKm([...pts.map(ll), ll(pts[0])]));
+        const label = `${area} · peri ${peri}`;
+        poly.bindPopup(`Area ${label}`);
+        groupRef.current?.addLayer(poly);
+        groupRef.current?.addLayer(
+          L.marker(poly.getBounds().getCenter(), { icon: labelIcon(label), interactive: false }),
+        );
+        setReadout(`Area ${label}`);
+      }
+    };
+    finishRef.current = finishPoly;
 
     const onClick = (e: L.LeafletMouseEvent) => {
       const t = toolRef.current;
       const pts = pointsRef.current;
       if (t === 'navigate') return;
       L.DomEvent.stopPropagation(e);
+
+      const now = performance.now();
+      const isDbl = now - lastClickAt.current < 350;
+      lastClickAt.current = now;
+
+      if (t === 'distance' || t === 'polygon') {
+        const last = pts[pts.length - 1];
+        if (last && last.distanceTo(e.latlng) < 40) {
+          if (isDbl) finishPoly();
+          return;
+        }
+        addVertex(e.latlng);
+        return;
+      }
 
       if (t === 'marker') {
         const m = L.marker(e.latlng, { icon: vertexIcon() }).bindPopup(
@@ -124,6 +188,7 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
         if (pts.length === 0) {
           pts.push(e.latlng);
           addDraft(L.marker(e.latlng, { icon: vertexIcon(), interactive: false }));
+          setVertexCount(1);
           return;
         }
         const a = pts[0];
@@ -157,22 +222,6 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
           groupRef.current?.addLayer(L.marker(a, { icon: labelIcon(label), interactive: false }));
           setReadout(`Circle ${label}`);
         }
-        return;
-      }
-
-      pts.push(e.latlng);
-      addDraft(L.marker(e.latlng, { icon: vertexIcon(), interactive: false }));
-      if (t === 'distance' && pts.length >= 2) {
-        const last = pts[pts.length - 2];
-        addDraft(L.polyline([last, e.latlng], { ...DRAW, dashArray: '6 4' }));
-        setReadout(formatLength(pathLengthKm(pts.map(ll))));
-      }
-      if (t === 'polygon' && pts.length >= 2) {
-        setReadout(
-          pts.length >= 3
-            ? formatArea(polygonAreaKm2(pts.map(ll)))
-            : formatLength(pathLengthKm(pts.map(ll))),
-        );
       }
     };
 
@@ -199,39 +248,12 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
       }
     };
 
-    const finishPoly = () => {
-      const t = toolRef.current;
-      const pts = [...pointsRef.current];
-      if (t === 'distance' && pts.length >= 2) {
-        clearDraft();
-        const line = L.polyline(pts, DRAW);
-        const len = formatLength(pathLengthKm(pts.map(ll)));
-        line.bindPopup(`Distance ${len}`);
-        groupRef.current?.addLayer(line);
-        groupRef.current?.addLayer(
-          L.marker(pts[pts.length - 1], { icon: labelIcon(len), interactive: false }),
-        );
-        setReadout(`Distance ${len}`);
-        commitDraft();
-      } else if (t === 'polygon' && pts.length >= 3) {
-        clearDraft();
-        const poly = L.polygon(pts, DRAW);
-        const area = formatArea(polygonAreaKm2(pts.map(ll)));
-        const peri = formatLength(pathLengthKm([...pts.map(ll), ll(pts[0])]));
-        const label = `${area} · peri ${peri}`;
-        poly.bindPopup(`Area ${label}`);
-        groupRef.current?.addLayer(poly);
-        groupRef.current?.addLayer(
-          L.marker(poly.getBounds().getCenter(), { icon: labelIcon(label), interactive: false }),
-        );
-        setReadout(`Area ${label}`);
-        commitDraft();
-      }
-    };
-
     const onDbl = (e: L.LeafletMouseEvent) => {
       if (toolRef.current === 'distance' || toolRef.current === 'polygon') {
         L.DomEvent.stop(e);
+        if (pointsRef.current.length === 0) return;
+        const last = pointsRef.current[pointsRef.current.length - 1];
+        if (!last || last.distanceTo(e.latlng) > 40) addVertex(e.latlng);
         finishPoly();
       }
     };
@@ -265,17 +287,22 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
     groupRef.current?.clearLayers();
     draftRef.current = [];
     pointsRef.current = [];
+    setVertexCount(0);
     setReadout('');
   };
 
+  const canFinish =
+    (tool === 'distance' && vertexCount >= 2) || (tool === 'polygon' && vertexCount >= 3);
+
   return (
-    <div className="pointer-events-none absolute left-2 top-14 z-[1100] flex flex-col gap-1">
-      <div className="pointer-events-auto flex flex-col gap-0.5 rounded bg-gray-950/90 p-1 ring-1 ring-white/10">
+    <div className="pointer-events-none absolute left-2 top-[72px] z-[1100] flex flex-col items-start gap-1">
+      <div className="pointer-events-auto flex w-9 flex-col gap-0.5 rounded bg-gray-950/90 p-1 ring-1 ring-white/10">
         {TOOLS.map(({ id, icon: Icon, label }) => (
           <button
             key={id}
             type="button"
             title={label}
+            aria-label={label}
             onClick={() => setTool(id)}
             className={`rounded p-1.5 ${
               tool === id ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10 hover:text-white'
@@ -284,9 +311,21 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
             <Icon className="h-4 w-4" />
           </button>
         ))}
+        {canFinish ? (
+          <button
+            type="button"
+            title="Finish measurement"
+            aria-label="Finish measurement"
+            onClick={() => finishRef.current()}
+            className="rounded p-1.5 text-cyan-300 hover:bg-cyan-600 hover:text-white"
+          >
+            <Check className="h-4 w-4" />
+          </button>
+        ) : null}
         <button
           type="button"
           title="Clear measurements"
+          aria-label="Clear measurements"
           onClick={clearAll}
           className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-red-400"
         >

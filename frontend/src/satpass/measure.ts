@@ -35,6 +35,6 @@ export function formatArea(km2: number): string {
   if (!Number.isFinite(km2)) return '—';
   if (km2 < 0.01) return `${Math.round(km2 * 1e6)} m²`;
   if (km2 < 1) return `${(km2 * 100).toFixed(1)} ha`;
-  if (km2 < 100) return `${km2.toFixed(2)} km²`;
-  return `${km2.toFixed(1)} km²`;
+  const digits = km2 >= 100 ? 0 : 2;
+  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: digits }).format(km2)} km²`;
 }
