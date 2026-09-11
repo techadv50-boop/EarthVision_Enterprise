@@ -85,9 +85,9 @@ export function corridorPolygon(
 export function clipPolygonToAoiCoverage(
   poly: GeoJSON.Polygon,
   target: PredictTarget,
-  swathKm: number,
+  maxDistKm: number,
 ): GeoJSON.Polygon | null {
-  const maxDist = swathKm / 2 + 1;
+  const maxDist = maxDistKm;
   const ring = poly.coordinates[0] || [];
   if (ring.length < 4) return null;
   const kept: [number, number][] = [];
@@ -113,24 +113,48 @@ export function clipPolygonToAoiCoverage(
     }
   }
   if (kept.length < 3) {
-    return geodesicCirclePolygon(target.lat, target.lon, (target.bufferKm || 0) + swathKm / 2);
+    return geodesicCirclePolygon(target.lat, target.lon, (target.bufferKm || 0) + Math.min(maxDist, 30));
   }
   const closed = [...kept, kept[0]];
   return { type: 'Polygon', coordinates: [closed] };
 }
 
-/** Sensor corridor along the clipped pass, then clipped to AOI coverage. */
+/** Sensor coverage for the clipped pass, tied to the Target AOI. */
 export function imagingFootprint(
   samples: { lat: number; lon: number }[],
   swathKm: number,
   target: PredictTarget,
+  clipKm?: number,
 ): GeoJSON.Polygon | null {
-  const reach = swathKm / 2 + 2;
+  const reach = clipKm ?? swathKm / 2 + 2;
   const near = samples.filter((s) => minDistanceToGeometryKm(s.lat, s.lon, target.geometry) <= reach);
+  const headingPts = near.length >= 2 ? near : samples;
+  let lookStrip: GeoJSON.Polygon | null = null;
+  if (headingPts.length >= 2) {
+    const hdg = bearingDeg(
+      headingPts[0].lat,
+      headingPts[0].lon,
+      headingPts[headingPts.length - 1].lat,
+      headingPts[headingPts.length - 1].lon,
+    );
+    const halfLen = (target.bufferKm || 20) + swathKm;
+    const a = destinationPoint(target.lat, target.lon, hdg, halfLen);
+    const b = destinationPoint(target.lat, target.lon, hdg + 180, halfLen);
+    lookStrip = corridorPolygon(
+      [
+        { lat: b.lat, lon: b.lon },
+        { lat: a.lat, lon: a.lon },
+      ],
+      swathKm,
+    );
+  }
+  if (lookStrip) {
+    return clipPolygonToAoiCoverage(lookStrip, target, (target.bufferKm || 20) + swathKm / 2 + 4);
+  }
   const poly = corridorPolygon(near.length >= 2 ? near : samples, swathKm);
   if (!poly) {
     if (near.length === 1) return geodesicCirclePolygon(near[0].lat, near[0].lon, Math.min(swathKm / 2, 30));
     return null;
   }
-  return clipPolygonToAoiCoverage(poly, target, swathKm);
+  return clipPolygonToAoiCoverage(poly, target, reach);
 }

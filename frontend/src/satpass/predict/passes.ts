@@ -10,7 +10,7 @@ import {
   ecfToLookAngles,
   type SatRec,
 } from 'satellite.js';
-import { centroidOfGeometry, geometryKind, minDistanceToGeometryKm } from './geometry';
+import { centroidOfGeometry, geometryKind, haversineKm, minDistanceToGeometryKm } from './geometry';
 import { imagingFootprint } from './footprint';
 import {
   classifyDayNight,
@@ -133,6 +133,16 @@ export function targetInSwath(
   return dist <= swathKm / 2;
 }
 
+function displayClipKm(target: PredictTarget, sensor: SensorParams): number {
+  const buf = target.bufferKm && target.bufferKm > 0 ? target.bufferKm : 20;
+  if (sensor.maxOffNadirDeg != null && sensor.maxOffNadirDeg > 0) {
+    // Pointable sensors: keep the nadir track only where it is still a local
+    // imaging opportunity, never the full elevation/AOS arc.
+    return buf + Math.max(sensor.swathKm, 90);
+  }
+  return sensor.swathKm / 2 + 2;
+}
+
 function covers(
   satrec: SatRec,
   date: Date,
@@ -143,9 +153,9 @@ function covers(
   const elevationDeg = lookElevationDeg(satrec, date, target.lat, target.lon);
   if (!ssp) return { covered: false, elevationDeg, distKm: Infinity };
   const distKm = minDistanceToGeometryKm(ssp.lat, ssp.lon, target.geometry);
-  const inSwath = distKm <= sensor.swathKm / 2;
+  const inReach = distKm <= displayClipKm(target, sensor);
   const highEnough = (elevationDeg ?? -90) >= sensor.minElevationDeg;
-  return { covered: inSwath && highEnough, elevationDeg, distKm };
+  return { covered: inReach && highEnough, elevationDeg, distKm };
 }
 
 function iso(ms: number): string {
@@ -338,7 +348,7 @@ export function computePasses(
       else if (slice.some((f) => f.visible) && !slice.some((f) => f.covered)) skippedGeometry += 1;
     }
 
-    const reachKm = sensor.swathKm / 2 + 2;
+    const reachKm = displayClipKm(target, sensor);
 
     for (const win of imagingWindows) {
       if (win.b < win.a) continue;
@@ -358,6 +368,35 @@ export function computePasses(
         (l) => minDistanceToGeometryKm(l.lat, l.lon, target.geometry) <= reachKm,
       );
       if (samples.length < 1) continue;
+      const spanKm =
+        samples.length >= 2
+          ? haversineKm(
+              samples[0].lat,
+              samples[0].lon,
+              samples[samples.length - 1].lat,
+              samples[samples.length - 1].lon,
+            )
+          : 0;
+      if (spanKm > 280) {
+        let best = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < samples.length; i += 1) {
+          const d = minDistanceToGeometryKm(samples[i].lat, samples[i].lon, target.geometry);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        }
+        const keep = samples.filter(
+          (s) => haversineKm(s.lat, s.lon, samples[best].lat, samples[best].lon) <= 140,
+        );
+        samples.length = 0;
+        samples.push(...keep);
+      }
+      if (samples.length < 1) continue;
+      const startMsClip = samples[0].utcMs;
+      const endMsClip = samples[samples.length - 1].utcMs;
+      const labelsKept = labels.filter((l) => l.utcMs >= startMsClip && l.utcMs <= endMsClip);
 
       satPass += 1;
       const start = samples[0].utcMs;
@@ -413,8 +452,8 @@ export function computePasses(
         color: sat.color,
         dash,
         samples,
-        labels,
-        footprint: imagingFootprint(samples, sensor.swathKm, target),
+        labels: labelsKept,
+        footprint: imagingFootprint(samples, sensor.swathKm, target, reachKm),
       });
     }
 

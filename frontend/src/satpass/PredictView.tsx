@@ -57,7 +57,7 @@ function newId() {
 function defaultRange(timeZone: string) {
   const start = new Date();
   start.setUTCMinutes(0, 0, 0);
-  const end = new Date(start.getTime() + 3 * 86400000);
+    const end = new Date(start.getTime() + 7 * 86400000);
   return { start: localInputFromDate(start, timeZone), end: localInputFromDate(end, timeZone) };
 }
 
@@ -661,7 +661,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               />
             </label>
             <div className="mt-2 flex gap-1">
-              {[1, 3, 7].map((d) => (
+              {[1, 3, 7, 14].map((d) => (
                 <button
                   key={d}
                   onClick={() => {
