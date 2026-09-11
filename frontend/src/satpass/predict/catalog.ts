@@ -297,6 +297,7 @@ export function formatPassPopup(pass: PassRow, timeZone: string, fmt: {
       <div><b>LOS:</b> ${fmt.utc(pass.losUtc)}</div>
       <div><b>Day/Night:</b> ${pass.visibility}</div>
       <div><b>Imaging eligibility:</b> ${escapeHtml(pass.imagingStatus)}</div>
+      <div><b>AOS–LOS:</b> full pass ground track</div>
     </div>
   `;
 }

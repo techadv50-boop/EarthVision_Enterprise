@@ -38,7 +38,7 @@ import type {
 const SAMPLE_MS = 10_000;
 const FINE_MS = 1_000;
 const FINE_WHEN_KM = 250;
-const TRACK_MS = 20_000;
+const TRACK_MS = 10_000;
 const TLE_STALE_DAYS = 14;
 
 function satrecFromTle(line1: string, line2: string): SatRec {
@@ -161,7 +161,14 @@ function downsample<T>(items: T[], max: number): T[] {
   return out;
 }
 
-type Flag = { ms: number; covered: boolean; el: number | null; sunEl: number; imaging: boolean };
+type Flag = {
+  ms: number;
+  visible: boolean;
+  covered: boolean;
+  el: number | null;
+  sunEl: number;
+  imaging: boolean;
+};
 
 function contiguousRanges(flags: Flag[], pred: (f: Flag) => boolean): { a: number; b: number }[] {
   const ranges: { a: number; b: number }[] = [];
@@ -260,8 +267,10 @@ export function computePasses(
       const date = new Date(t);
       const { covered, elevationDeg, distKm } = covers(satrec, date, target, sensor);
       const sunEl = sunElevationDeg(date, target.lat, target.lon);
+      const visible = (elevationDeg ?? -90) >= 0;
       flags.push({
         ms: t,
+        visible,
         covered,
         el: elevationDeg,
         sunEl,
@@ -270,91 +279,93 @@ export function computePasses(
       t += distKm < FINE_WHEN_KM ? FINE_MS : SAMPLE_MS;
     }
 
-    const geometric = contiguousRanges(flags, (f) => f.covered);
-    let excludedNight = 0;
+    // Horizon-to-horizon visibility is the complete pass we draw.
+    // Swath coverage only decides imaging eligibility — not how much track to plot.
+    const geometric = contiguousRanges(flags, (f) => f.visible);
     let satPass = 0;
+    let missedSwath = 0;
 
     for (const geo of geometric) {
-      const imagingRanges = imaging.requiresDaylight
-        ? contiguousRanges(flags.slice(geo.a, geo.b + 1), (f) => f.imaging).map((r) => ({
-            a: geo.a + r.a,
-            b: geo.a + r.b,
-          }))
-        : [geo];
-      if (imaging.requiresDaylight && imagingRanges.length === 0) {
-        excludedNight += 1;
-        continue;
-      }
-      for (const win of imagingRanges) {
-        if (win.b < win.a) continue;
-        satPass += 1;
-        let maxEl = -Infinity;
-        let maxElMs = flags[win.a].ms;
-        for (let k = win.a; k <= win.b; k += 1) {
-          if (flags[k].el != null && flags[k].el! > maxEl) {
-            maxEl = flags[k].el!;
-            maxElMs = flags[k].ms;
-          }
+      const slice = flags.slice(geo.a, geo.b + 1);
+      const images = slice.some((f) => f.imaging);
+      const swathHit = slice.some((f) => f.covered);
+      satPass += 1;
+      let maxEl = -Infinity;
+      let maxElMs = flags[geo.a].ms;
+      for (let k = geo.a; k <= geo.b; k += 1) {
+        if (flags[k].el != null && flags[k].el! > maxEl) {
+          maxEl = flags[k].el!;
+          maxElMs = flags[k].ms;
         }
-        const start = flags[win.a].ms;
-        const end = flags[win.b].ms;
-        const vis = classifyDayNight(
-          sunElevationDeg(new Date(maxElMs), target.lat, target.lon),
-          target.lon,
-          new Date(maxElMs),
-        );
-        const dateUtc = iso(start).slice(0, 10);
-        const passId = makePassId(sat.name, satPass, dateUtc);
-        const dash = passDashForIndex(satPass);
-        const eligible = true;
-        passes.push({
-          passId,
-          passNumber: satPass,
-          satelliteId: sat.id,
-          satelliteName: sat.name,
-          satelliteKind: kind,
-          noradId: norad,
-          color: sat.color,
-          dash,
-          passDateUtc: dateUtc,
-          startUtc: iso(start),
-          endUtc: iso(end),
-          durationSec: Math.max(0, (end - start) / 1000),
-          maxElevationDeg: Number.isFinite(maxEl) ? Math.round(maxEl * 10) / 10 : null,
-          maxElevationUtc: Number.isFinite(maxEl) ? iso(maxElMs) : null,
-          aosUtc: iso(flags[geo.a].ms),
-          losUtc: iso(flags[geo.b].ms),
-          visibility: vis,
-          imagingEligible: eligible,
-          imagingStatus: imagingStatusLabel(kind, vis, eligible),
-        });
-
-        const { samples, labels } = buildTrack(satrec, start, end, options.labelIntervalMin * 60_000, options.timeZone);
-        tracks.push({
-          passId,
-          satelliteId: sat.id,
-          satelliteName: sat.name,
-          satelliteKind: kind,
-          color: sat.color,
-          dash,
-          samples,
-          labels,
-          footprint: corridorPolygon(samples, sensor.swathKm),
-        });
       }
+      const start = flags[geo.a].ms;
+      const end = flags[geo.b].ms;
+      const vis = classifyDayNight(
+        sunElevationDeg(new Date(maxElMs), target.lat, target.lon),
+        target.lon,
+        new Date(maxElMs),
+      );
+      const dateUtc = iso(start).slice(0, 10);
+      const passId = makePassId(sat.name, satPass, dateUtc);
+      const dash = passDashForIndex(satPass);
+      const eligible = images;
+      if (!swathHit) missedSwath += 1;
+      const status = eligible
+        ? imagingStatusLabel(kind, vis, true)
+        : !swathHit
+          ? `${vis === 'daylight' ? 'Daylight' : vis === 'night' ? 'Night' : vis === 'dawn' ? 'Dawn' : vis === 'dusk' ? 'Dusk' : 'Mixed'} / swath does not cover target`
+          : imagingStatusLabel(kind, vis, false);
+      passes.push({
+        passId,
+        passNumber: satPass,
+        satelliteId: sat.id,
+        satelliteName: sat.name,
+        satelliteKind: kind,
+        noradId: norad,
+        color: sat.color,
+        dash,
+        passDateUtc: dateUtc,
+        startUtc: iso(start),
+        endUtc: iso(end),
+        durationSec: Math.max(0, (end - start) / 1000),
+        maxElevationDeg: Number.isFinite(maxEl) ? Math.round(maxEl * 10) / 10 : null,
+        maxElevationUtc: Number.isFinite(maxEl) ? iso(maxElMs) : null,
+        aosUtc: iso(start),
+        losUtc: iso(end),
+        visibility: vis,
+        imagingEligible: eligible,
+        imagingStatus: status,
+      });
+
+      const { samples, labels } = buildTrack(
+        satrec,
+        start,
+        end,
+        options.labelIntervalMin * 60_000,
+        options.timeZone,
+      );
+      tracks.push({
+        passId,
+        satelliteId: sat.id,
+        satelliteName: sat.name,
+        satelliteKind: kind,
+        color: sat.color,
+        dash,
+        samples,
+        labels,
+        footprint: corridorPolygon(samples, sensor.swathKm),
+      });
     }
 
-    if (excludedNight) {
+    if (missedSwath && missedSwath === satPass) {
       warnings.push(
-        `${sat.name}: ${excludedNight} nighttime orbital pass(es) excluded (optical imaging requires daylight at the target).`,
+        `${sat.name}: ${missedSwath} complete pass(es) are drawn AOS–LOS; none have the ${sensor.swathKm} km catalog swath over the target.`,
       );
     }
   }
 
   if (!passes.length) {
-    warnings.push(
-      'No imaging passes over the target in this window. A pass is counted only when the catalog swath covers the site — not merely when the satellite is above the horizon. Try a longer range or a satellite with a wider swath.',
-    );
+    warnings.push('No satellite passes above the horizon at the target in this window. Try a longer range.');
   }
 
   return { warnings, passes, tracks };

@@ -128,6 +128,7 @@ export default function PredictMap({
       const dash = leafletDashArray(track.dash);
       const html = popupHtml(pass, timeZone, `${track.satelliteName} ${track.passId}`);
       const fillOpacity = 0.16 + ((pass?.passNumber ?? 1) % 3) * 0.05;
+      const trackOpacity = pass?.imagingEligible === false ? 0.55 : 0.95;
 
       if (showFootprints && track.footprint) {
         const poly = L.geoJSON(track.footprint as GeoJSON.GeoJsonObject, {
@@ -148,19 +149,14 @@ export default function PredictMap({
         if (seg.length < 2) continue;
         const line = L.polyline(
           seg.map((p) => L.latLng(p.lat, p.lon)),
-          { color: track.color, weight: 2, opacity: 0.95, dashArray: dash },
+          { color: track.color, weight: 2.5, opacity: trackOpacity, dashArray: dash },
         );
         line.bindPopup(html);
         overlay.addLayer(line);
       }
 
       if (showLabels) {
-        const nearTarget = (lat: number, lon: number) => {
-          if (!target) return true;
-          return Math.abs(lat - target.lat) < 12 && Math.abs(((lon - target.lon + 540) % 360) - 180) < 12;
-        };
         for (const lab of track.labels) {
-          if (!nearTarget(lab.lat, lab.lon)) continue;
           overlay.addLayer(
             L.marker([lab.lat, lab.lon], {
               interactive: false,
@@ -173,19 +169,28 @@ export default function PredictMap({
 
     const fitKey = `${target?.kind}:${target?.name}:${target?.lat}:${target?.lon}:${result?.passes.length ?? 0}:${result?.tracks.length ?? 0}`;
     if (target && fitKey !== fittedKeyRef.current) {
-      let bounds: L.LatLngBounds;
+      const pts: L.LatLng[] = [];
       if (target.kind === 'area') {
-        bounds = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject).getBounds();
-        if (bounds.isValid()) bounds = bounds.pad(1.6);
+        const gb = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject).getBounds();
+        if (gb.isValid()) {
+          pts.push(gb.getSouthWest(), gb.getNorthEast());
+        }
       } else {
-        const pad = 1.4;
-        bounds = L.latLngBounds(
-          [target.lat - pad, target.lon - pad],
-          [target.lat + pad, target.lon + pad],
-        );
+        pts.push(L.latLng(target.lat, target.lon));
       }
-      if (bounds && bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 6 });
+      for (const track of result?.tracks || []) {
+        if (hiddenSats.has(track.satelliteId) || hiddenPasses.has(track.passId)) continue;
+        for (const s of track.samples) pts.push(L.latLng(s.lat, s.lon));
+      }
+      if (pts.length) {
+        const bounds = L.latLngBounds(pts);
+        const hasTrack = (result?.tracks || []).some(
+          (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
+        );
+        map.fitBounds(bounds.pad(hasTrack ? 0.12 : 1.6), {
+          padding: [36, 36],
+          maxZoom: hasTrack ? 5 : 6,
+        });
       }
       fittedKeyRef.current = fitKey;
     }
