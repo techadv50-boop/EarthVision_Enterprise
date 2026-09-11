@@ -67,6 +67,7 @@ export default function PredictMap({
   const mapRef = useRef<L.Map | null>(null);
   const overlayRef = useRef<L.LayerGroup | null>(null);
   const fittedKeyRef = useRef<string>('');
+  const lastFitRef = useRef<{ bounds: L.LatLngBounds; maxZoom: number } | null>(null);
   const [leafletMap, setLeafletMap] = useState<L.Map | null>(null);
 
   useEffect(() => {
@@ -74,6 +75,8 @@ export default function PredictMap({
     const map = createSatPassMap(containerRef.current);
     map.setMaxZoom(11);
     mapRef.current = map;
+    fittedKeyRef.current = '';
+    lastFitRef.current = null;
     setLeafletMap(map);
     addBaseMap(map);
     overlayRef.current = L.layerGroup().addTo(map);
@@ -81,9 +84,17 @@ export default function PredictMap({
       onCursor?.(`${e.latlng.lat.toFixed(4)}°, ${e.latlng.lng.toFixed(4)}°`);
     };
     map.on('mousemove', onMove);
-    const invalidate = () => map.invalidateSize();
-    const raf = window.setTimeout(invalidate, 0);
-    const ro = new ResizeObserver(invalidate);
+    const applyStoredFit = () => {
+      map.invalidateSize();
+      const stored = lastFitRef.current;
+      const size = map.getSize();
+      if (!stored || size.x < 80 || size.y < 80) return;
+      const c = stored.bounds.getCenter();
+      map.setView(c, stored.maxZoom, { animate: false });
+      map.fitBounds(stored.bounds, { padding: [40, 40], maxZoom: stored.maxZoom, animate: false });
+    };
+    const raf = window.setTimeout(applyStoredFit, 50);
+    const ro = new ResizeObserver(applyStoredFit);
     ro.observe(containerRef.current);
     return () => {
       map.off('mousemove', onMove);
@@ -92,6 +103,7 @@ export default function PredictMap({
       map.remove();
       mapRef.current = null;
       overlayRef.current = null;
+      lastFitRef.current = null;
       setLeafletMap(null);
     };
   }, [onCursor]);
@@ -186,14 +198,23 @@ export default function PredictMap({
         const hasTrack = (result?.tracks || []).some(
           (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
         );
-        map.fitBounds(bounds.pad(hasTrack ? 0.45 : 0.7), {
-          padding: [40, 40],
-          maxZoom: hasTrack ? 9 : 10,
-        });
+        const maxZoom = hasTrack ? 9 : 10;
+        const padded = bounds.pad(hasTrack ? 0.45 : 0.7);
+        lastFitRef.current = { bounds: padded, maxZoom };
+        const apply = () => {
+          map.invalidateSize();
+          const size = map.getSize();
+          if (size.x < 80 || size.y < 80) return;
+          map.setView([target.lat, target.lon], hasTrack ? 8 : 9, { animate: false });
+          map.fitBounds(padded, { padding: [40, 40], maxZoom, animate: false });
+        };
+        apply();
+        window.setTimeout(apply, 80);
+        window.setTimeout(apply, 250);
       }
       fittedKeyRef.current = fitKey;
     }
-  }, [target, result, hiddenSats, hiddenPasses, showLabels, showTarget, showFootprints, timeZone]);
+  }, [target, result, hiddenSats, hiddenPasses, showLabels, showTarget, showFootprints, timeZone, leafletMap]);
 
   return (
     <>
