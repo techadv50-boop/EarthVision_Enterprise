@@ -28,24 +28,33 @@ export function parseTle(line1: string, line2: string): SatRec {
   return satrec;
 }
 
+function isVec(v: unknown): v is { x: number; y: number; z: number } {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as { x?: unknown; y?: unknown; z?: unknown };
+  return Number.isFinite(o.x) && Number.isFinite(o.y) && Number.isFinite(o.z);
+}
+
 /** Propagate the satellite to `date` and return its geodetic state, or null on failure. */
 export function getState(satrec: SatRec, date: Date): SatState | null {
-  const pv = propagate(satrec, date);
-  if (!pv || typeof pv.position === 'boolean' || typeof pv.velocity === 'boolean') {
+  try {
+    const pv = propagate(satrec, date);
+    if (!pv || !isVec(pv.position) || !isVec(pv.velocity)) return null;
+    const gmst = gstime(date);
+    const geo = eciToGeodetic(pv.position, gmst);
+    const { velocity } = pv;
+    const speedKmS = Math.sqrt(
+      velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z,
+    );
+    if (!Number.isFinite(geo.latitude) || !Number.isFinite(geo.longitude)) return null;
+    return {
+      lon: degreesLong(geo.longitude),
+      lat: degreesLat(geo.latitude),
+      altKm: geo.height,
+      speedKmS,
+    };
+  } catch {
     return null;
   }
-  const gmst = gstime(date);
-  const geo = eciToGeodetic(pv.position, gmst);
-  const { velocity } = pv;
-  const speedKmS = Math.sqrt(
-    velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z,
-  );
-  return {
-    lon: degreesLong(geo.longitude),
-    lat: degreesLat(geo.latitude),
-    altKm: geo.height,
-    speedKmS,
-  };
 }
 
 /** Orbital period in minutes derived from the TLE mean motion. */

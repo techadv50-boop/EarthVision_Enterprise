@@ -86,6 +86,8 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
     // The map lives next to a sidebar; make sure Leaflet re-measures its box.
     const invalidate = () => map.invalidateSize();
     const raf = window.setTimeout(invalidate, 0);
+    const raf2 = window.setTimeout(invalidate, 200);
+    const raf3 = window.setTimeout(invalidate, 600);
     const resizeObserver =
       typeof ResizeObserver !== 'undefined' && containerRef.current
         ? new ResizeObserver(invalidate)
@@ -113,7 +115,13 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
         );
         rt.swath.setLatLng(ll);
         rt.vis.setLatLng(ll).setRadius(footprintRadiusMeters(s.altKm));
-        if (refreshTracks && mapRef.current) refreshTrack(mapRef.current, rt, date);
+        if (refreshTracks && mapRef.current) {
+          try {
+            refreshTrack(mapRef.current, rt, date);
+          } catch {
+            /* keep the marker moving even if the trail cannot refresh */
+          }
+        }
       });
       onStatesRef.current?.(states);
     }, 1000);
@@ -121,6 +129,8 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
     return () => {
       window.clearInterval(timer);
       window.clearTimeout(raf);
+      window.clearTimeout(raf2);
+      window.clearTimeout(raf3);
       window.removeEventListener('resize', invalidate);
       resizeObserver?.disconnect();
       map.remove();
@@ -155,7 +165,8 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
         }
         const date = new Date();
         const s = getState(satrec, date);
-        const ll = L.latLng(s?.lat ?? 0, s?.lon ?? 0);
+        if (!s) continue;
+        const ll = L.latLng(s.lat, s.lon);
         const marker = L.marker(ll, { icon: dotIcon(sat.color) }).bindTooltip(sat.name, {
           permanent: true,
           direction: 'top',
