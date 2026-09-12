@@ -2,7 +2,14 @@ import { useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
 import type { PassRow } from './predict/types';
 import { durationLabel, formatDateInZone, formatInZone } from './predict/time';
-import { downloadCsv, downloadServerReport, downloadXlsx, passExportRows } from './predict/export';
+import {
+  downloadCsv,
+  downloadPdf,
+  downloadServerReport,
+  downloadXlsx,
+  fileStem,
+  passExportRows,
+} from './predict/export';
 
 type Col = 'passDateUtc' | 'satelliteName' | 'startLocal' | 'endLocal' | 'duration' | 'swathKm';
 
@@ -42,6 +49,9 @@ export default function PredictReport({
   const [sortKey, setSortKey] = useState<Col>('startLocal');
   const [asc, setAsc] = useState(true);
   const [busy, setBusy] = useState('');
+  const [exportKind, setExportKind] = useState<'csv' | 'xlsx' | 'pdf' | null>(null);
+  const [reportTitle, setReportTitle] = useState('');
+  const [exportError, setExportError] = useState('');
 
   const sorted = useMemo(() => {
     const copy = [...passes];
@@ -71,20 +81,42 @@ export default function PredictReport({
     }
   };
 
-  const doExport = async (kind: 'csv' | 'xlsx' | 'pdf') => {
+  const askTitle = (kind: 'csv' | 'xlsx' | 'pdf') => {
+    setExportError('');
+    setReportTitle((cur) => cur.trim() || passes[0]?.targetName || 'SatPass AOI report');
+    setExportKind(kind);
+  };
+
+  const doExport = async () => {
+    const kind = exportKind;
+    const title = reportTitle.trim();
+    if (!kind) return;
+    if (!title) {
+      setExportError('Enter a report title before export.');
+      return;
+    }
     const { headers, rows } = passExportRows(sorted, timeZone);
+    const stem = fileStem(title);
     setBusy(kind);
+    setExportError('');
     try {
-      if (kind === 'csv') downloadCsv('satpass-aoi-passes.csv', headers, rows);
+      if (kind === 'csv') downloadCsv(`${stem}.csv`, title, headers, rows);
       else if (kind === 'xlsx') {
         try {
-          await downloadServerReport('xlsx', 'satpass-aoi-passes', headers, rows);
+          await downloadServerReport('xlsx', title, headers, rows);
         } catch {
-          await downloadXlsx('satpass-aoi-passes.xlsx', headers, rows);
+          await downloadXlsx(`${stem}.xlsx`, headers, rows);
         }
-      } else await downloadServerReport(kind, 'satpass-aoi-passes', headers, rows);
+      } else {
+        try {
+          await downloadServerReport('pdf', title, headers, rows);
+        } catch {
+          downloadPdf(`${stem}.pdf`, title, headers, rows);
+        }
+      }
+      setExportKind(null);
     } catch {
-      if (kind === 'xlsx') await downloadXlsx('satpass-aoi-passes.xlsx', headers, rows);
+      setExportError('Export failed. Try again.');
     } finally {
       setBusy('');
     }
@@ -104,7 +136,7 @@ export default function PredictReport({
         <h3 className="text-sm font-semibold">Satellite pass / tracking report</h3>
         <div className="flex gap-1.5">
           <button
-            onClick={() => void doExport('xlsx')}
+            onClick={() => askTitle('xlsx')}
             disabled={!!busy}
             className="inline-flex items-center gap-1 rounded bg-cyan-600 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-cyan-500 disabled:opacity-50"
           >
@@ -113,7 +145,7 @@ export default function PredictReport({
           {(['csv', 'pdf'] as const).map((k) => (
             <button
               key={k}
-              onClick={() => void doExport(k)}
+              onClick={() => askTitle(k)}
               disabled={!!busy}
               className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-[11px] uppercase tracking-wide text-gray-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
             >
@@ -122,6 +154,40 @@ export default function PredictReport({
           ))}
         </div>
       </div>
+      {exportKind ? (
+        <div className="border-b border-white/10 bg-gray-900 px-3 py-2">
+          <p className="mb-1 text-[11px] font-medium text-gray-200">
+            Enter a title for the {exportKind.toUpperCase()} report
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              autoFocus
+              value={reportTitle}
+              onChange={(e) => setReportTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void doExport();
+                if (e.key === 'Escape') setExportKind(null);
+              }}
+              placeholder="Report title"
+              className="min-w-[220px] flex-1 rounded bg-gray-950 px-2 py-1.5 text-sm text-gray-100 outline-none ring-1 ring-cyan-500/50"
+            />
+            <button
+              onClick={() => void doExport()}
+              disabled={!!busy}
+              className="rounded bg-cyan-600 px-2.5 py-1 text-[11px] font-semibold uppercase text-white hover:bg-cyan-500 disabled:opacity-50"
+            >
+              {busy ? '…' : `Export ${exportKind}`}
+            </button>
+            <button
+              onClick={() => setExportKind(null)}
+              className="rounded px-2 py-1 text-[11px] text-gray-400 hover:text-gray-200"
+            >
+              Cancel
+            </button>
+          </div>
+          {exportError ? <p className="mt-1 text-[11px] text-red-400">{exportError}</p> : null}
+        </div>
+      ) : null}
       <div className="flex-1 overflow-auto">
         <table className="min-w-full text-left text-[11px]">
           <thead className="sticky top-0 bg-gray-900">

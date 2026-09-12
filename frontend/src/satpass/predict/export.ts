@@ -141,6 +141,118 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
+export function fileStem(title: string, fallback = 'satpass-report'): string {
+  return title.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || fallback;
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  window.setTimeout(() => {
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, 2500);
+}
+
+function pdfEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+/** Browser-side PDF so the PDF button keeps working if the API download is blocked. */
+export function downloadPdf(filename: string, title: string, headers: string[], rows: string[][]) {
+  const pageW = 842;
+  const pageH = 595;
+  const margin = 28;
+  const font = 8;
+  const lineH = 12;
+  const cols = Math.max(headers.length, 1);
+  const usable = pageW - margin * 2;
+  const colW = usable / cols;
+  const maxRows = Math.floor((pageH - margin * 2 - 36) / lineH);
+  const pages: string[][][] = [];
+  const body = [headers, ...rows];
+  for (let i = 0; i < body.length; i += maxRows) pages.push(body.slice(i, i + maxRows));
+  if (!pages.length) pages.push([headers]);
+
+  const objects: string[] = [];
+  const add = (s: string) => {
+    objects.push(s);
+    return objects.length;
+  };
+  const pageIds: number[] = [];
+  const contentIds: number[] = [];
+
+  pages.forEach((pageRows, pi) => {
+    const cmds: string[] = [
+      'BT',
+      '/F1 14 Tf',
+      `1 0 0 1 ${margin} ${pageH - margin - 14} Tm`,
+      `(${pdfEscape(title)}) Tj`,
+      'ET',
+    ];
+    pageRows.forEach((row, ri) => {
+      const y = pageH - margin - 36 - ri * lineH;
+      row.forEach((cell, ci) => {
+        const x = margin + ci * colW;
+        const text = String(cell ?? '').slice(0, 42);
+        cmds.push('BT', `/F1 ${font} Tf`, `1 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)} Tm`, `(${pdfEscape(text)}) Tj`, 'ET');
+      });
+    });
+    cmds.push(
+      'BT',
+      '/F1 8 Tf',
+      `1 0 0 1 ${margin} ${18} Tm`,
+      `(${pdfEscape(`Page ${pi + 1} of ${pages.length}`)}) Tj`,
+      'ET',
+    );
+    const stream = cmds.join('\n');
+    contentIds.push(
+      add(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`),
+    );
+  });
+
+  contentIds.forEach((cid) => {
+    pageIds.push(
+      add(`<< /Type /Page /Parent 0 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Contents ${cid} 0 R /Resources << /Font << /F1 0 0 R >> >> >>`),
+    );
+  });
+  const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  const kids = pageIds.map((id) => `${id} 0 R`).join(' ');
+  const pagesId = add(`<< /Type /Pages /Count ${pageIds.length} /Kids [${kids}] >>`);
+  const catalogId = add(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
+
+  const patched = objects.map((obj, i) => {
+    const id = i + 1;
+    return obj
+      .replace('/Parent 0 0 R', `/Parent ${pagesId} 0 R`)
+      .replace('/F1 0 0 R', `/F1 ${fontId} 0 R`)
+      .replace(`/Pages ${pagesId} 0 R`, id === catalogId ? `/Pages ${pagesId} 0 R` : `/Pages ${pagesId} 0 R`);
+  });
+
+  let offset = 0;
+  const chunks: string[] = ['%PDF-1.4\n'];
+  offset = chunks[0].length;
+  const xref: number[] = [0];
+  patched.forEach((obj, i) => {
+    xref.push(offset);
+    const block = `${i + 1} 0 obj\n${obj}\nendobj\n`;
+    chunks.push(block);
+    offset += block.length;
+  });
+  const xrefStart = offset;
+  let xrefTable = `xref\n0 ${patched.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i < xref.length; i += 1) xrefTable += `${String(xref[i]).padStart(10, '0')} 00000 n \n`;
+  chunks.push(xrefTable);
+  chunks.push(`trailer\n<< /Size ${patched.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
+  saveBlob(new Blob(chunks, { type: 'application/pdf' }), filename.endsWith('.pdf') ? filename : `${filename}.pdf`);
+}
+
 /** Browser-side .xlsx so Excel export works even if the API is unreachable. */
 export async function downloadXlsx(filename: string, headers: string[], rows: string[][]) {
   const enc = new TextEncoder();
@@ -186,22 +298,13 @@ export async function downloadXlsx(filename: string, headers: string[], rows: st
     },
     { name: 'xl/worksheets/sheet1.xml', data: enc.encode(sheet) },
   ]);
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  saveBlob(blob, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`);
 }
 
-export function downloadCsv(filename: string, headers: string[], rows: string[][]) {
+export function downloadCsv(filename: string, title: string, headers: string[], rows: string[][]) {
   const esc = (c: string) => `"${c.replace(/"/g, '""')}"`;
-  const text = [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n');
-  const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  const text = [[title], [], headers, ...rows].map((r) => r.map(esc).join(',')).join('\n');
+  saveBlob(new Blob([text], { type: 'text/csv;charset=utf-8' }), filename.endsWith('.csv') ? filename : `${filename}.csv`);
 }
 
 export async function downloadServerReport(
@@ -221,11 +324,8 @@ export async function downloadServerReport(
   });
   if (!resp.ok) throw new Error('Export failed');
   const blob = await resp.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = format === 'pdf' ? `${title}.pdf` : `${title}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  const stem = fileStem(title);
+  saveBlob(blob, format === 'pdf' ? `${stem}.pdf` : `${stem}.xlsx`);
 }
 
 export async function uploadGeometryFiles(files: File[]): Promise<GeoJSON.FeatureCollection> {

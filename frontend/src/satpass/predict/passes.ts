@@ -133,23 +133,14 @@ export function targetInSwath(
   return dist <= swathKm / 2;
 }
 
-function offNadirGroundRangeKm(altKm: number, offNadirDeg: number): number {
-  if (!(altKm > 50) || !(offNadirDeg > 0)) return 0;
-  const η = Math.min(offNadirDeg, 50) * (Math.PI / 180);
-  return altKm * Math.tan(η);
-}
-
 /**
- * Eligibility look-reach. Catalog swath (e.g. PRSS 60 km) stays the
- * published footprint width; pointable sensors also use off-nadir ground
- * range. The drawn pass is the full pole-to-pole orbit of that revolution.
+ * A pass counts only when the catalog swath actually intersects the AOI.
+ * Off-nadir field-of-regard is not used — that pulled in nadir tracks that
+ * miss the polygon by hundreds of kilometres.
  */
-function imagingReachKm(target: PredictTarget, sensor: SensorParams, altKm: number): number {
-  const nadir = sensor.swathKm / 2 + (target.bufferKm || 0) + 4;
-  if (sensor.maxOffNadirDeg != null && sensor.maxOffNadirDeg > 0) {
-    return Math.max(nadir, offNadirGroundRangeKm(altKm > 50 ? altKm : 620, sensor.maxOffNadirDeg) + 8);
-  }
-  return nadir;
+function imagingReachKm(target: PredictTarget, sensor: SensorParams): number {
+  // +8 km covers 1-second LEO sampling, not off-nadir look.
+  return sensor.swathKm / 2 + (target.bufferKm || 0) + 8;
 }
 
 function covers(
@@ -162,7 +153,7 @@ function covers(
   const elevationDeg = lookElevationDeg(satrec, date, target.lat, target.lon);
   if (!ssp) return { covered: false, elevationDeg, distKm: Infinity };
   const distKm = minDistanceToGeometryKm(ssp.lat, ssp.lon, target.geometry);
-  const inReach = distKm <= imagingReachKm(target, sensor, ssp.altKm);
+  const inReach = distKm <= imagingReachKm(target, sensor);
   const highEnough = (elevationDeg ?? -90) >= sensor.minElevationDeg;
   return { covered: inReach && highEnough, elevationDeg, distKm };
 }
@@ -491,19 +482,15 @@ export function computePasses(
       );
     }
     if (skippedGeometry && !satPass) {
-      const look =
-        sensor.maxOffNadirDeg != null
-          ? `${sensor.swathKm} km swath / ${sensor.maxOffNadirDeg}° off-nadir look`
-          : `${sensor.swathKm} km swath`;
       warnings.push(
-        `${sat.name}: ${skippedGeometry} horizon pass(es) did not cover the target AOI with the ${look} and ${sensor.minElevationDeg}° min elevation.`,
+        `${sat.name}: ${skippedGeometry} horizon pass(es) did not intersect the target AOI with the ${sensor.swathKm} km swath and ${sensor.minElevationDeg}° min elevation.`,
       );
     }
   }
 
   if (!passes.length) {
     warnings.push(
-      'No imaging-eligible passes cover the target AOI in this window. A pass is reported only when the catalog swath, off-nadir look (when published), and minimum elevation cover the AOI (optical: daylight only). Try a longer range.',
+      'No imaging-eligible passes intersect the target AOI in this window. A pass is reported only when the catalog swath covers the AOI (optical: daylight only). Try a longer range.',
     );
   }
 
