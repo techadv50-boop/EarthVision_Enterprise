@@ -20,6 +20,7 @@ const NAMED_COLORS: { test: RegExp; color: string }[] = [
   { test: /\bprss\b/i, color: '#facc15' },
   { test: /landsat/i, color: '#22c55e' },
   { test: /sentinel[- ]?1/i, color: '#3b82f6' },
+  { test: /\bnisar\b/i, color: '#38bdf8' },
 ];
 
 const AUTO_COLORS = [
@@ -68,8 +69,17 @@ interface CatalogEntry {
 const S1_NORADS = new Set([39634, 41456, 58261]);
 const CARTOSAT3_NORADS = new Set([44804]);
 const PRSS_NORADS = new Set([43530]);
+const NISAR_NORADS = new Set([65053]);
 
 const CATALOG: CatalogEntry[] = [
+  {
+    test: (n, norad) => /\bnisar\b/i.test(n) || (norad != null && NISAR_NORADS.has(norad)),
+    kind: 'sar',
+    color: '#38bdf8',
+    // NASA/ISRO SweepSAR: 242 km swath, 7 m azimuth, incidence ~33–47°, day and night.
+    sensor: { swathKm: 242, minElevationDeg: 10, spatialResolutionM: 7, lookDirection: 'left' },
+    slug: 'NISAR',
+  },
   {
     test: (n, norad) => /\bprss\b/i.test(n) || (norad != null && PRSS_NORADS.has(norad)),
     kind: 'optical',

@@ -37,6 +37,7 @@ const PRESETS: { name: string; q: string }[] = [
   { name: 'NOAA-19', q: '33591' },
   { name: 'Landsat-9', q: '49260' },
   { name: 'Sentinel-2A', q: '40697' },
+  { name: 'NISAR', q: '65053' },
 ];
 
 const DEFAULT_SWATH_KM = 60;
