@@ -34,6 +34,7 @@ import type {
   TrackLabel,
   TrackSample,
 } from './types';
+import { canonicalizeTle } from '../tle';
 
 const SAMPLE_MS = 10_000;
 const FINE_MS = 1_000;
@@ -42,7 +43,8 @@ const TRACK_MS = 10_000;
 const TLE_STALE_DAYS = 14;
 
 function satrecFromTle(line1: string, line2: string): SatRec {
-  const satrec = twoline2satrec(line1.trim(), line2.trim());
+  const tle = canonicalizeTle(line1, line2);
+  const satrec = twoline2satrec(tle.line1, tle.line2);
   if ((satrec as unknown as { error: number }).error) {
     throw new Error('Invalid TLE — could not parse the orbital elements.');
   }

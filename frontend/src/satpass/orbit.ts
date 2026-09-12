@@ -9,6 +9,7 @@ import {
   degreesLat,
   type SatRec,
 } from 'satellite.js';
+import { canonicalizeTle } from './tle';
 
 const EARTH_RADIUS_KM = 6371;
 
@@ -20,7 +21,8 @@ export interface SatState {
 }
 
 export function parseTle(line1: string, line2: string): SatRec {
-  const satrec = twoline2satrec(line1.trim(), line2.trim());
+  const tle = canonicalizeTle(line1, line2);
+  const satrec = twoline2satrec(tle.line1, tle.line2);
   // satellite.js sets a non-zero error code on invalid element sets.
   if ((satrec as unknown as { error: number }).error) {
     throw new Error('Invalid TLE — could not parse the orbital elements.');
