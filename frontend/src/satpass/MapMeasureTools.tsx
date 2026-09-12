@@ -53,7 +53,13 @@ function ll(p: L.LatLng) {
   return { lat: p.lat, lon: p.lng };
 }
 
-export default function MapMeasureTools({ map }: { map: L.Map | null }) {
+export default function MapMeasureTools({
+  map,
+  disabled = false,
+}: {
+  map: L.Map | null;
+  disabled?: boolean;
+}) {
   const [tool, setTool] = useState<MeasureTool>('navigate');
   const [hint, setHint] = useState(TOOLS[0].hint);
   const [readout, setReadout] = useState('');
@@ -97,6 +103,12 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
 
   useEffect(() => {
     if (!map) return;
+    if (disabled) {
+      map.dragging.enable();
+      map.doubleClickZoom.enable();
+      map.getContainer().style.cursor = '';
+      return;
+    }
     const drawing = tool !== 'navigate';
     map.dragging[drawing ? 'disable' : 'enable']();
     map.doubleClickZoom[drawing ? 'disable' : 'enable']();
@@ -278,7 +290,7 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
       map.doubleClickZoom.enable();
       map.getContainer().style.cursor = '';
     };
-  }, [map, tool]);
+  }, [map, tool, disabled]);
 
   const clearAll = () => {
     groupRef.current?.clearLayers();
@@ -292,7 +304,11 @@ export default function MapMeasureTools({ map }: { map: L.Map | null }) {
     (tool === 'distance' && vertexCount >= 2) || (tool === 'polygon' && vertexCount >= 3);
 
   return (
-    <div className="pointer-events-none absolute left-2 top-[72px] z-[1100] flex flex-col items-start gap-1">
+    <div
+      className={`pointer-events-none absolute left-2 top-[72px] z-[1100] flex flex-col items-start gap-1 ${
+        disabled ? 'hidden' : ''
+      }`}
+    >
       <div className="pointer-events-auto flex w-9 flex-col gap-0.5 rounded bg-gray-950/90 p-1 ring-1 ring-white/10">
         {TOOLS.map(({ id, icon: Icon, label }) => (
           <button

@@ -6,10 +6,11 @@ import {
   Upload,
   MapPin,
   Calculator,
+  Pentagon,
 } from 'lucide-react';
 import { geoApi, satelliteApi, type TleResult } from '@/services/api';
 import type { TrackedSat } from './SatPassMap';
-import PredictMap from './PredictMap';
+import PredictMap, { type AoiDrawMode } from './PredictMap';
 import PredictReport from './PredictReport';
 import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, knownSensor } from './predict/catalog';
 import { parseKmlToGeoJSON } from './predict/kml';
@@ -98,6 +99,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [showFootprints, setShowFootprints] = useState(true);
   const [cursor, setCursor] = useState('');
   const [busy, setBusy] = useState('');
+  const [aoiDraw, setAoiDraw] = useState<AoiDrawMode>('off');
 
   const usedColors = useMemo(() => new Set(sats.map((s) => s.color)), [sats]);
 
@@ -120,6 +122,37 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const applyPlaceHit = (hit: PlaceHit) => {
     applyTarget(targetFromPlace(hit, bufferKm));
     setPlaceQuery(hit.name);
+  };
+
+  const applyDrawnAoi = (t: PredictTarget) => {
+    const next =
+      t.kind === 'area' && t.bufferKm == null && polygonBuffer
+        ? { ...t, bufferKm, geometry: expandPolygonKm(t.geometry, bufferKm) }
+        : t;
+    applyTarget({ ...next, source: 'map' });
+    setPlaceQuery('');
+    setFileNote(next.kind === 'area' ? 'Polygon drawn on the map' : `Point drawn on the map · ${bufferKm} km AOI`);
+    setAoiDraw('off');
+    setResult(null);
+    setView('map');
+  };
+
+  const clearTarget = () => {
+    setTarget(null);
+    setLat('');
+    setLon('');
+    setPlace('');
+    setPlaceQuery('');
+    setPlaceHits([]);
+    setFileNote('');
+    setResult(null);
+    setAoiDraw('off');
+  };
+
+  const startAoiDraw = (mode: AoiDrawMode) => {
+    setView('map');
+    setAoiDraw((cur) => (cur === mode ? 'off' : mode));
+    setError('');
   };
 
   const applyGeoJSON = (fc: GeoJSON.FeatureCollection, fallbackName: string) => {
@@ -420,15 +453,50 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
             <p className="mt-1 text-[10px] text-gray-500">
               Cities and landmarks become a geodesic {bufferKm} km AOI around the geocoded point.
             </p>
-            <button
-              onClick={() => {
-                setPlaceQuery('');
-                applyPoint(Number(lat), Number(lon), place || 'Point');
-              }}
-              className="mt-2 inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-[11px] text-cyan-300 ring-1 ring-cyan-500/40 hover:bg-white/10"
-            >
-              <MapPin className="h-3.5 w-3.5" /> Use lat/lng
-            </button>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button
+                onClick={() => {
+                  setPlaceQuery('');
+                  applyPoint(Number(lat), Number(lon), place || 'Point');
+                }}
+                className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-[11px] text-cyan-300 ring-1 ring-cyan-500/40 hover:bg-white/10"
+              >
+                <MapPin className="h-3.5 w-3.5" /> Use lat/lng
+              </button>
+              <button
+                onClick={() => startAoiDraw('point')}
+                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] ring-1 ${
+                  aoiDraw === 'point'
+                    ? 'bg-amber-500 text-black ring-amber-400'
+                    : 'bg-white/5 text-amber-200 ring-amber-500/40 hover:bg-white/10'
+                }`}
+              >
+                <MapPin className="h-3.5 w-3.5" /> Point on map
+              </button>
+              <button
+                onClick={() => startAoiDraw('polygon')}
+                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] ring-1 ${
+                  aoiDraw === 'polygon'
+                    ? 'bg-amber-500 text-black ring-amber-400'
+                    : 'bg-white/5 text-amber-200 ring-amber-500/40 hover:bg-white/10'
+                }`}
+              >
+                <Pentagon className="h-3.5 w-3.5" /> Draw polygon
+              </button>
+              {target ? (
+                <button
+                  onClick={clearTarget}
+                  className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-[11px] text-gray-400 ring-1 ring-white/10 hover:bg-white/10 hover:text-red-300"
+                >
+                  Clear AOI
+                </button>
+              ) : null}
+            </div>
+            <p className="mt-1 text-[10px] text-gray-500">
+              Place a point or polygon anywhere on the globe. Points use the {bufferKm} km target
+              buffer. Drawn polygons keep their shape
+              {polygonBuffer ? ` and can be buffered ${bufferKm} km` : ''}.
+            </p>
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               <label className="inline-flex cursor-pointer items-center gap-1 rounded bg-white/5 px-2 py-1 ring-1 ring-white/10 hover:bg-white/10">
                 <Upload className="h-3.5 w-3.5" /> KML
@@ -471,7 +539,12 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               <p className="mt-1 text-[11px] text-gray-500">
                 Target: {target.name} ({target.kind}
                 {target.bufferKm ? ` · ${target.bufferKm} km buffer` : ''}
-                {target.source === 'upload' ? ' · uploaded polygon' : ''}) {target.lat.toFixed(4)}, {target.lon.toFixed(4)}
+                {target.source === 'upload'
+                  ? ' · uploaded polygon'
+                  : target.source === 'map'
+                    ? ' · drawn on map'
+                    : ''}
+                ) {target.lat.toFixed(4)}, {target.lon.toFixed(4)}
               </p>
             )}
           </section>
@@ -817,6 +890,11 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 hiddenSats={hiddenSats}
                 hiddenPasses={hiddenPasses}
                 showLabels={showLabels}
+                aoiDraw={aoiDraw}
+                bufferKm={bufferKm}
+                aoiName={place}
+                onAoiDrawn={applyDrawnAoi}
+                onAoiCancel={() => setAoiDraw('off')}
                 showTarget={showTarget}
                 showFootprints={showFootprints}
                 timeZone={timeZone}
