@@ -57,22 +57,17 @@ function newId() {
 
 const DEFAULT_PREDICT_TZ = 'Asia/Karachi';
 
-function karachiTarget() {
-  return targetFromLatLon(24.8607, 67.0011, 'Karachi', DEFAULT_TARGET_BUFFER_KM);
-}
-
 export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[] }) {
   const tzDefault = DEFAULT_PREDICT_TZ;
-  const range0 = useMemo(() => defaultPredictWindow(tzDefault, 7), [tzDefault]);
 
-  const [lat, setLat] = useState('24.8607');
-  const [lon, setLon] = useState('67.0011');
-  const [place, setPlace] = useState('Karachi');
-  const [placeQuery, setPlaceQuery] = useState('Karachi');
+  const [lat, setLat] = useState('');
+  const [lon, setLon] = useState('');
+  const [place, setPlace] = useState('');
+  const [placeQuery, setPlaceQuery] = useState('');
   const [placeHits, setPlaceHits] = useState<PlaceHit[]>([]);
   const [bufferKm, setBufferKm] = useState(DEFAULT_TARGET_BUFFER_KM);
   const [polygonBuffer, setPolygonBuffer] = useState(false);
-  const [target, setTarget] = useState<PredictTarget | null>(() => karachiTarget());
+  const [target, setTarget] = useState<PredictTarget | null>(null);
   const [fileNote, setFileNote] = useState('');
 
   const [sats, setSats] = useState<PredictSatellite[]>([]);
@@ -84,8 +79,8 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [searchHits, setSearchHits] = useState<TleResult[]>([]);
   const [pendingKind, setPendingKind] = useState<'auto' | SatelliteKind>('auto');
 
-  const [startLocal, setStartLocal] = useState(range0.start);
-  const [endLocal, setEndLocal] = useState(range0.end);
+  const [startLocal, setStartLocal] = useState('');
+  const [endLocal, setEndLocal] = useState('');
   const [timeZone, setTimeZone] = useState(tzDefault);
   const [labelMin, setLabelMin] = useState<1 | 2 | 5 | 10>(5);
   const [minEl, setMinEl] = useState(10);
@@ -314,6 +309,10 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
       setError('Add at least one satellite TLE.');
       return;
     }
+    if (!startLocal || !endLocal) {
+      setError('Set a start and end time.');
+      return;
+    }
     const usedTarget = t;
     const startUtc = dateFromLocalInput(startLocal, timeZone);
     const endUtc = dateFromLocalInput(endLocal, timeZone);
@@ -386,6 +385,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 <input
                   value={lat}
                   onChange={(e) => setLat(e.target.value)}
+                  placeholder="—"
                   className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                 />
               </label>
@@ -394,6 +394,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 <input
                   value={lon}
                   onChange={(e) => setLon(e.target.value)}
+                  placeholder="—"
                   className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                 />
               </label>
@@ -673,10 +674,11 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 <button
                   key={d}
                   onClick={() => {
-                    const s = dateFromLocalInput(`${startLocal.slice(0, 10)}T00:00`, timeZone);
+                    const startDay = startLocal.slice(0, 10) || calendarDayRange(timeZone).start.slice(0, 10);
+                    const s = dateFromLocalInput(`${startDay}T00:00`, timeZone);
                     const endAt = new Date(s.getTime() + d * 86400000);
                     const endDay = calendarDayRange(timeZone, endAt);
-                    setStartLocal(`${startLocal.slice(0, 10)}T00:00`);
+                    setStartLocal(`${startDay}T00:00`);
                     setEndLocal(endDay.end);
                   }}
                   className="rounded bg-white/5 px-2 py-0.5 text-[11px] ring-1 ring-white/10 hover:bg-white/10"
@@ -706,9 +708,14 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               </select>
             </label>
             <p className="mt-1 text-[11px] text-gray-500">
-              Set window: 12:00 AM → 11:59 PM. UTC:{' '}
-              {formatUtc(dateFromLocalInput(startLocal, timeZone).toISOString(), false)} →{' '}
-              {formatUtc(dateFromLocalInput(endLocal, timeZone).toISOString(), false)}
+              Set window: 12:00 AM → 11:59 PM.
+              {startLocal && endLocal ? (
+                <>
+                  {' '}
+                  UTC: {formatUtc(dateFromLocalInput(startLocal, timeZone).toISOString(), false)} →{' '}
+                  {formatUtc(dateFromLocalInput(endLocal, timeZone).toISOString(), false)}
+                </>
+              ) : null}
             </p>
             <label className="mt-2 block text-[11px] text-gray-400">
               Track time-label interval
