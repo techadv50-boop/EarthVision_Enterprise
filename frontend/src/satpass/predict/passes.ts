@@ -79,11 +79,27 @@ export function validateTle(name: string, line1: string, line2: string): string 
   return null;
 }
 
+function isEciVec(v: unknown): v is { x: number; y: number; z: number } {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as { x?: unknown; y?: unknown; z?: unknown };
+  return Number.isFinite(o.x) && Number.isFinite(o.y) && Number.isFinite(o.z);
+}
+
+function eciPosition(satrec: SatRec, date: Date): { x: number; y: number; z: number } | null {
+  try {
+    const pv = propagate(satrec, date);
+    if (!pv || !isEciVec(pv.position)) return null;
+    return pv.position;
+  } catch {
+    return null;
+  }
+}
+
 function lookElevationDeg(satrec: SatRec, date: Date, lat: number, lon: number): number | null {
-  const pv = propagate(satrec, date);
-  if (!pv || typeof pv.position === 'boolean') return null;
+  const position = eciPosition(satrec, date);
+  if (!position) return null;
   const gmst = gstime(date);
-  const ecf = eciToEcf(pv.position, gmst);
+  const ecf = eciToEcf(position, gmst);
   const observer = {
     longitude: degreesToRadians(lon),
     latitude: degreesToRadians(lat),
@@ -94,9 +110,10 @@ function lookElevationDeg(satrec: SatRec, date: Date, lat: number, lon: number):
 }
 
 function subpoint(satrec: SatRec, date: Date): { lat: number; lon: number; altKm: number } | null {
-  const pv = propagate(satrec, date);
-  if (!pv || typeof pv.position === 'boolean') return null;
-  const geo = eciToGeodetic(pv.position, gstime(date));
+  const position = eciPosition(satrec, date);
+  if (!position) return null;
+  const geo = eciToGeodetic(position, gstime(date));
+  if (!Number.isFinite(geo.latitude) || !Number.isFinite(geo.longitude)) return null;
   return { lat: degreesLat(geo.latitude), lon: degreesLong(geo.longitude), altKm: geo.height };
 }
 
@@ -335,6 +352,7 @@ export function computePasses(
   const tracks: SatelliteTrack[] = [];
 
   for (const sat of satellites) {
+    try {
     const invalid = validateTle(sat.name, sat.line1, sat.line2);
     if (invalid) {
       warnings.push(invalid);
@@ -387,6 +405,12 @@ export function computePasses(
         imaging: covered && isImagingSample(kind, imaging, sunEl),
       });
       t += distKm < FINE_WHEN_KM ? FINE_MS : SAMPLE_MS;
+    }
+    if (flags.length && flags.every((f) => f.el == null)) {
+      warnings.push(
+        `${sat.name}: could not propagate this TLE across the selected dates (SGP4 returned no position).`,
+      );
+      continue;
     }
 
     // Report only imaging-eligible AOI intersections; draw each as a pole-to-pole pass.
@@ -484,6 +508,11 @@ export function computePasses(
     if (skippedGeometry && !satPass) {
       warnings.push(
         `${sat.name}: ${skippedGeometry} horizon pass(es) did not intersect the target AOI with the ${sensor.swathKm} km swath and ${sensor.minElevationDeg}° min elevation.`,
+      );
+    }
+    } catch (err) {
+      warnings.push(
+        `${sat.name}: could not propagate this TLE (${err instanceof Error ? err.message : 'orbit error'}).`,
       );
     }
   }
