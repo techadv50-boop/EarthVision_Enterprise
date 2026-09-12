@@ -119,6 +119,42 @@ export function clipPolygonToAoiCoverage(
   return { type: 'Polygon', coordinates: [closed] };
 }
 
+/**
+ * Ground-track drawn ON the Target AOI along the pass heading.
+ * Off-nadir looks still report a line through the selected place, not a
+ * nadir track sitting tens of kilometres away.
+ */
+export function trackThroughTarget(
+  headingSamples: { lat: number; lon: number }[],
+  target: PredictTarget,
+  halfLengthKm: number,
+  startMs: number,
+  endMs: number,
+): { lat: number; lon: number; utcMs: number }[] {
+  let hdg = 0;
+  if (headingSamples.length >= 2) {
+    hdg = bearingDeg(
+      headingSamples[0].lat,
+      headingSamples[0].lon,
+      headingSamples[headingSamples.length - 1].lat,
+      headingSamples[headingSamples.length - 1].lon,
+    );
+  }
+  const half = Math.max(halfLengthKm, 18);
+  const a = destinationPoint(target.lat, target.lon, hdg + 180, half);
+  const b = destinationPoint(target.lat, target.lon, hdg, half);
+  const course = bearingDeg(a.lat, a.lon, b.lat, b.lon);
+  const span = Math.max(0, endMs - startMs);
+  const n = 16;
+  const out: { lat: number; lon: number; utcMs: number }[] = [];
+  for (let i = 0; i <= n; i += 1) {
+    const t = i / n;
+    const pt = destinationPoint(a.lat, a.lon, course, half * 2 * t);
+    out.push({ lat: pt.lat, lon: pt.lon, utcMs: startMs + span * t });
+  }
+  return out;
+}
+
 /** Sensor coverage for the clipped pass, tied to the Target AOI. */
 export function imagingFootprint(
   samples: { lat: number; lon: number }[],

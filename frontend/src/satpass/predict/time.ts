@@ -94,6 +94,14 @@ export function calendarDayRange(timeZone: string, at: Date = new Date()): { sta
   return { start: `${date}T00:00`, end: `${date}T23:59` };
 }
 
+/** Start 12:00 AM today through 11:59 PM of today + `days`. */
+export function defaultPredictWindow(timeZone: string, days = 7): { start: string; end: string } {
+  const today = calendarDayRange(timeZone);
+  const startUtc = dateFromLocalInput(today.start, timeZone);
+  const endAt = new Date(startUtc.getTime() + days * 86400000);
+  return { start: today.start, end: calendarDayRange(timeZone, endAt).end };
+}
+
 export const COMMON_TIMEZONES = [
   'UTC',
   'Asia/Karachi',

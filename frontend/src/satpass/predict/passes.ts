@@ -10,8 +10,8 @@ import {
   ecfToLookAngles,
   type SatRec,
 } from 'satellite.js';
-import { centroidOfGeometry, geometryKind, haversineKm, minDistanceToGeometryKm } from './geometry';
-import { imagingFootprint } from './footprint';
+import { centroidOfGeometry, geometryKind, minDistanceToGeometryKm } from './geometry';
+import { imagingFootprint, trackThroughTarget } from './footprint';
 import {
   classifyDayNight,
   imagingStatusLabel,
@@ -361,42 +361,57 @@ export function computePasses(
         options.labelIntervalMin * 60_000,
         options.timeZone,
       );
-      const samples = built.samples.filter(
+      const nadir = built.samples.filter(
         (s) => minDistanceToGeometryKm(s.lat, s.lon, target.geometry) <= reachKm,
       );
-      const labels = built.labels.filter(
-        (l) => minDistanceToGeometryKm(l.lat, l.lon, target.geometry) <= reachKm,
+      if (nadir.length < 1 && built.samples.length < 1) continue;
+      const halfLen = (target.bufferKm || 20) + sensor.swathKm / 2 + 10;
+      const projected = trackThroughTarget(
+        nadir.length >= 2 ? nadir : built.samples,
+        target,
+        halfLen,
+        rawStart,
+        rawEnd,
       );
-      if (samples.length < 1) continue;
-      const spanKm =
-        samples.length >= 2
-          ? haversineKm(
-              samples[0].lat,
-              samples[0].lon,
-              samples[samples.length - 1].lat,
-              samples[samples.length - 1].lon,
-            )
-          : 0;
-      if (spanKm > 280) {
-        let best = 0;
-        let bestD = Infinity;
-        for (let i = 0; i < samples.length; i += 1) {
-          const d = minDistanceToGeometryKm(samples[i].lat, samples[i].lon, target.geometry);
-          if (d < bestD) {
-            bestD = d;
-            best = i;
-          }
-        }
-        const keep = samples.filter(
-          (s) => haversineKm(s.lat, s.lon, samples[best].lat, samples[best].lon) <= 140,
-        );
-        samples.length = 0;
-        samples.push(...keep);
-      }
-      if (samples.length < 1) continue;
+      const samples: TrackSample[] = projected.map((p) => ({ utcMs: p.utcMs, lat: p.lat, lon: p.lon }));
+      if (samples.length < 2) continue;
       const startMsClip = samples[0].utcMs;
       const endMsClip = samples[samples.length - 1].utcMs;
-      const labelsKept = labels.filter((l) => l.utcMs >= startMsClip && l.utcMs <= endMsClip);
+      const span = Math.max(0, endMsClip - startMsClip);
+      const labelStep = span <= 180_000 ? Math.max(2_000, Math.floor(span / 4) || 2_000) : options.labelIntervalMin * 60_000;
+      const labelsKept: TrackLabel[] = [];
+      for (const s of samples) {
+        const nearestTick = Math.round(s.utcMs / labelStep) * labelStep;
+        if (Math.abs(s.utcMs - nearestTick) > labelStep / 2) continue;
+        if (labelsKept.some((l) => Math.abs(l.utcMs - s.utcMs) < labelStep * 0.6)) continue;
+        labelsKept.push({
+          utcMs: s.utcMs,
+          lat: s.lat,
+          lon: s.lon,
+          text: new Intl.DateTimeFormat('en-GB', {
+            timeZone: options.timeZone,
+            hour: '2-digit',
+            minute: '2-digit',
+            ...(span <= 180_000 ? { second: '2-digit' as const } : {}),
+            hour12: false,
+          }).format(new Date(s.utcMs)),
+        });
+      }
+      if (!labelsKept.length) {
+        const mid = samples[Math.floor(samples.length / 2)];
+        labelsKept.push({
+          utcMs: mid.utcMs,
+          lat: mid.lat,
+          lon: mid.lon,
+          text: new Intl.DateTimeFormat('en-GB', {
+            timeZone: options.timeZone,
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+          }).format(new Date(mid.utcMs)),
+        });
+      }
 
       satPass += 1;
       const start = samples[0].utcMs;

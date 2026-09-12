@@ -29,6 +29,7 @@ import {
   COMMON_TIMEZONES,
   calendarDayRange,
   dateFromLocalInput,
+  defaultPredictWindow,
   formatUtc,
 } from './predict/time';
 import {
@@ -62,7 +63,7 @@ function karachiTarget() {
 
 export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[] }) {
   const tzDefault = DEFAULT_PREDICT_TZ;
-  const range0 = useMemo(() => calendarDayRange(tzDefault), [tzDefault]);
+  const range0 = useMemo(() => defaultPredictWindow(tzDefault, 7), [tzDefault]);
 
   const [lat, setLat] = useState('24.8607');
   const [lon, setLon] = useState('67.0011');
@@ -691,9 +692,9 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 onChange={(e) => {
                   const tz = e.target.value;
                   setTimeZone(tz);
-                  const day = calendarDayRange(tz);
-                  setStartLocal(day.start);
-                  setEndLocal(day.end);
+                  const win = defaultPredictWindow(tz, 7);
+                  setStartLocal(win.start);
+                  setEndLocal(win.end);
                 }}
                 className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
               >
