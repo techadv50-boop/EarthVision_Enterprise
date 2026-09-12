@@ -18,12 +18,32 @@ function textIcon(text: string, style: string) {
   });
 }
 
+/** Keep country fills under tracks even when the GeoJSON arrives late. */
+export function ensureBaseMapPanes(map: L.Map) {
+  if (!map.getPane('basemapPane')) {
+    const pane = map.createPane('basemapPane');
+    pane.style.zIndex = '250';
+    pane.style.pointerEvents = 'none';
+  }
+  if (!map.getPane('basemapLabelsPane')) {
+    const pane = map.createPane('basemapLabelsPane');
+    pane.style.zIndex = '260';
+    pane.style.pointerEvents = 'none';
+  }
+  const overlay = map.getPane('overlayPane');
+  if (overlay) overlay.style.zIndex = '450';
+  const marker = map.getPane('markerPane');
+  if (marker) marker.style.zIndex = '600';
+}
+
 /** Offline Natural Earth countries + labels used by Track and Predict maps. */
 export function addBaseMap(map: L.Map) {
+  ensureBaseMapPanes(map);
   fetch('/world-countries-110m.geojson')
     .then((r) => r.json())
     .then((geo: GeoJSON.FeatureCollection) => {
       L.geoJSON(geo, {
+        pane: 'basemapPane',
         interactive: false,
         style: {
           color: '#3d5670',
@@ -41,6 +61,7 @@ export function addBaseMap(map: L.Map) {
         const name = String(p.NAME ?? '');
         if (!name || Number.isNaN(lon) || Number.isNaN(lat) || rank > 2) continue;
         L.marker([lat, lon], {
+          pane: 'basemapLabelsPane',
           interactive: false,
           keyboard: false,
           icon: textIcon(
@@ -52,6 +73,7 @@ export function addBaseMap(map: L.Map) {
 
       for (const o of OCEANS) {
         L.marker([o.lat, o.lon], {
+          pane: 'basemapLabelsPane',
           interactive: false,
           keyboard: false,
           icon: textIcon(
@@ -65,7 +87,7 @@ export function addBaseMap(map: L.Map) {
 }
 
 export function createSatPassMap(container: HTMLElement): L.Map {
-  return L.map(container, {
+  const map = L.map(container, {
     crs: L.CRS.EPSG4326,
     center: [20, 0],
     zoom: 2,
@@ -79,4 +101,6 @@ export function createSatPassMap(container: HTMLElement): L.Map {
     ],
     maxBoundsViscosity: 1,
   });
+  ensureBaseMapPanes(map);
+  return map;
 }

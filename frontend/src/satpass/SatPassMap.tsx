@@ -227,7 +227,7 @@ function refreshTrack(map: L.Map, rt: SatRuntime, date: Date) {
   for (const seg of segments) {
     if (seg.length < 2) continue;
     const latlngs = seg.map((p) => L.latLng(p.lat, p.lon));
-    const line = L.polyline(latlngs, { color: rt.color, weight: 2, opacity: 0.85 });
+    const line = L.polyline(latlngs, { pane: 'overlayPane', color: rt.color, weight: 2, opacity: 0.85 });
     rt.trackLayers.push(line);
     if (visible) line.addTo(map);
   }

@@ -145,8 +145,10 @@ export default function PredictMap({
 
     if (target && showTarget) {
       const layer = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject, {
+        pane: 'overlayPane',
         pointToLayer: (_f, latlng) =>
           L.circleMarker(latlng, {
+            pane: 'overlayPane',
             radius: 7,
             color: '#fbbf24',
             fillColor: '#fbbf24',
@@ -177,6 +179,7 @@ export default function PredictMap({
 
       if (showFootprints && track.footprint) {
         const poly = L.geoJSON(track.footprint as GeoJSON.GeoJsonObject, {
+          pane: 'overlayPane',
           style: {
             color: track.color,
             weight: 2,
@@ -194,7 +197,7 @@ export default function PredictMap({
         if (seg.length < 2) continue;
         const line = L.polyline(
           seg.map((p) => L.latLng(p.lat, p.lon)),
-          { color: track.color, weight: 2.5, opacity: trackOpacity, dashArray: dash },
+          { pane: 'overlayPane', color: track.color, weight: 2.5, opacity: trackOpacity, dashArray: dash },
         );
         line.bindPopup(html);
         overlay.addLayer(line);
@@ -204,6 +207,7 @@ export default function PredictMap({
         for (const lab of track.labels) {
           overlay.addLayer(
             L.marker([lab.lat, lab.lon], {
+              pane: 'markerPane',
               interactive: false,
               icon: timeIcon(`${lab.text}`, track.color, 'right'),
             }),
