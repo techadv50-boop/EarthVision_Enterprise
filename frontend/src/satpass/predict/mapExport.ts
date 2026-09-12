@@ -34,8 +34,8 @@ function bboxOfGeometry(geom: GeoJSON.Geometry): BBox | null {
 function padBbox(b: BBox): BBox {
   const latSpan = Math.max(northSpan(b), 0.22);
   const lonSpan = Math.max(b.east - b.west, 0.22);
-  const padLat = Math.max(0.55, latSpan * 0.85);
-  const padLon = Math.max(0.7, lonSpan * 0.85);
+  const padLat = Math.max(1.6, latSpan * 1.4);
+  const padLon = Math.max(2.0, lonSpan * 1.4);
   return {
     west: Math.max(-180, b.west - padLon),
     east: Math.min(180, b.east + padLon),
@@ -152,20 +152,22 @@ function drawTrack(ctx: CanvasRenderingContext2D, track: SatelliteTrack, b: BBox
   if (cur.length >= 2) segs.push(cur);
   ctx.save();
   ctx.strokeStyle = track.color;
-  ctx.lineWidth = 2.6;
+  ctx.lineWidth = 3.2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   ctx.setLineDash(dashFor(track.dash));
   for (const seg of segs) {
-    ctx.beginPath();
-    let started = false;
-    for (const s of seg) {
-      if (!inView(s.lon, s.lat, b) && !started) continue;
-      const p = project(s.lon, s.lat, b);
-      if (!started) {
-        ctx.moveTo(p.x, p.y);
-        started = true;
-      } else ctx.lineTo(p.x, p.y);
+    for (let i = 1; i < seg.length; i += 1) {
+      const a = seg[i - 1];
+      const c = seg[i];
+      if (!inView(a.lon, a.lat, b) && !inView(c.lon, c.lat, b)) continue;
+      const p0 = project(a.lon, a.lat, b);
+      const p1 = project(c.lon, c.lat, b);
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.stroke();
     }
-    if (started) ctx.stroke();
   }
   ctx.restore();
 }
@@ -227,9 +229,35 @@ export async function downloadAoiMapPng(opts: {
   if (world) {
     for (const f of world.features) {
       if (!f.geometry) continue;
-      drawGeometry(ctx, f.geometry, view, { fill: '#1c2c3d', stroke: '#3d5670', width: 0.7 });
+      drawGeometry(ctx, f.geometry, view, { fill: '#24384c', stroke: '#6f8aa3', width: 1 });
     }
   }
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(148,163,184,0.22)';
+  ctx.lineWidth = 1;
+  ctx.font = '500 10px Inter, system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(148,163,184,0.7)';
+  const step = view.east - view.west > 8 ? 2 : 1;
+  for (let lon = Math.ceil(view.west); lon < view.east; lon += step) {
+    const a = project(lon, view.south, view);
+    const c = project(lon, view.north, view);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(c.x, c.y);
+    ctx.stroke();
+    ctx.fillText(`${lon}°`, a.x + 3, H - 10);
+  }
+  for (let lat = Math.ceil(view.south); lat < view.north; lat += step) {
+    const a = project(view.west, lat, view);
+    const c = project(view.east, lat, view);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(c.x, c.y);
+    ctx.stroke();
+    ctx.fillText(`${lat}°`, 6, a.y - 3);
+  }
+  ctx.restore();
 
   const tracks = (result?.tracks || []).filter(
     (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
@@ -238,38 +266,39 @@ export async function downloadAoiMapPng(opts: {
     (p) => !hiddenSats.has(p.satelliteId) && !hiddenPasses.has(p.passId),
   );
 
-  for (const tr of tracks) {
-    if (!tr.footprint) continue;
-    drawGeometry(ctx, tr.footprint, view, { fill: `${tr.color}33`, stroke: `${tr.color}88`, width: 1.2 });
-  }
+  drawGeometry(ctx, target.geometry, view, { fill: 'rgba(251,191,36,0.32)', stroke: '#fbbf24', width: 3 });
   for (const tr of tracks) drawTrack(ctx, tr, view);
 
-  drawGeometry(ctx, target.geometry, view, { fill: 'rgba(251,191,36,0.38)', stroke: '#fbbf24', width: 3 });
-
   const used: { x: number; y: number }[] = [];
-  const far = (x: number, y: number) => used.every((u) => Math.hypot(u.x - x, u.y - y) > 36);
+  const far = (x: number, y: number) => used.every((u) => Math.hypot(u.x - x, u.y - y) > 40);
 
   for (const tr of tracks) {
+    const pass = passes.find((p) => p.passId === tr.passId);
     const near = tr.samples.filter((s) => inView(s.lon, s.lat, view));
     if (!near.length) continue;
-    const mid = near[Math.floor(near.length / 2)];
-    const p = project(mid.lon, mid.lat, view);
-    if (far(p.x, p.y + 16)) {
-      labelBox(ctx, p.x + 8, p.y + 16, tr.satelliteName, tr.color);
-      used.push({ x: p.x, y: p.y + 16 });
+    const closest = near.reduce((best, s) => {
+      const d = Math.hypot(s.lat - target.lat, s.lon - target.lon);
+      const bd = Math.hypot(best.lat - target.lat, best.lon - target.lon);
+      return d < bd ? s : best;
+    });
+    const nameAt = project(closest.lon, closest.lat, view);
+    if (far(nameAt.x, nameAt.y)) {
+      labelBox(ctx, nameAt.x + 10, nameAt.y - 14, tr.satelliteName, tr.color);
+      used.push({ x: nameAt.x, y: nameAt.y });
     }
-    const labs = tr.labels.filter((l) => inView(l.lon, l.lat, view));
-    const extra = labs.length
-      ? labs
-      : near.filter((_, i) => i === 0 || i === near.length - 1 || i % 8 === 0).map((s) => ({
-          lon: s.lon,
-          lat: s.lat,
-          text: formatInZone(new Date(s.utcMs).toISOString(), timeZone, false),
-        }));
-    for (const lab of extra) {
-      const q = project(lab.lon, lab.lat, view);
+    const timed = [
+      near[0],
+      near[Math.floor(near.length / 2)],
+      near[near.length - 1],
+    ].filter(Boolean);
+    if (pass) {
+      timed[0] = { ...timed[0], utcMs: Date.parse(pass.startUtc) };
+      timed[timed.length - 1] = { ...timed[timed.length - 1], utcMs: Date.parse(pass.endUtc) };
+    }
+    for (const s of timed) {
+      const q = project(s.lon, s.lat, view);
       if (!far(q.x, q.y)) continue;
-      labelBox(ctx, q.x + 8, q.y, lab.text, tr.color);
+      labelBox(ctx, q.x + 10, q.y + 8, formatInZone(new Date(s.utcMs).toISOString(), timeZone, false), tr.color);
       used.push({ x: q.x, y: q.y });
     }
   }
