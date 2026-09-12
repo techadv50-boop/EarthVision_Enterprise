@@ -136,12 +136,16 @@ export default function PredictMap({
       overlay.addLayer(layer);
     }
 
-    for (const track of result?.tracks || []) {
-      if (hiddenSats.has(track.satelliteId) || hiddenPasses.has(track.passId)) continue;
+    const visibleTracks = (result?.tracks || []).filter(
+      (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
+    );
+    const labeledPassId = visibleTracks[0]?.passId;
+
+    for (const track of visibleTracks) {
       const pass = passById.get(track.passId);
       const dash = leafletDashArray(track.dash);
       const html = popupHtml(pass, timeZone, `${track.satelliteName} ${track.passId}`);
-      const fillOpacity = 0.16 + ((pass?.passNumber ?? 1) % 3) * 0.05;
+      const fillOpacity = 0.22 + ((pass?.passNumber ?? 1) % 3) * 0.06;
       const trackOpacity = pass?.imagingEligible === false ? 0.55 : 0.95;
 
       if (showFootprints && track.footprint) {
@@ -169,13 +173,12 @@ export default function PredictMap({
         overlay.addLayer(line);
       }
 
-      if (showLabels) {
-        const side = (pass?.passNumber ?? 1) % 2 === 0 ? 'right' : 'left';
+      if (showLabels && track.passId === labeledPassId) {
         for (const lab of track.labels) {
           overlay.addLayer(
             L.marker([lab.lat, lab.lon], {
               interactive: false,
-              icon: timeIcon(`${lab.text}`, track.color, side),
+              icon: timeIcon(`${lab.text}`, track.color, 'right'),
             }),
           );
         }
@@ -193,15 +196,34 @@ export default function PredictMap({
       }
       for (const track of result?.tracks || []) {
         if (hiddenSats.has(track.satelliteId) || hiddenPasses.has(track.passId)) continue;
-        for (const s of track.samples) pts.push(L.latLng(s.lat, s.lon));
+        for (const s of track.samples) {
+          if (Math.abs(s.lat) > 78) continue;
+          let lon = s.lon;
+          let d = lon - target.lon;
+          while (d > 180) {
+            lon -= 360;
+            d = lon - target.lon;
+          }
+          while (d < -180) {
+            lon += 360;
+            d = lon - target.lon;
+          }
+          if (Math.abs(d) > 42) continue;
+          pts.push(L.latLng(s.lat, lon));
+        }
       }
       if (pts.length) {
-        const bounds = L.latLngBounds(pts);
         const hasTrack = (result?.tracks || []).some(
           (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
         );
-        const maxZoom = hasTrack ? 4 : 8;
-        const padded = bounds.pad(hasTrack ? 0.08 : 0.35);
+        const bounds = hasTrack
+          ? L.latLngBounds(
+              [85, Math.min(...pts.map((p) => p.lng), target.lon) - 6],
+              [-85, Math.max(...pts.map((p) => p.lng), target.lon) + 6],
+            )
+          : L.latLngBounds(pts);
+        const maxZoom = hasTrack ? 3 : 8;
+        const padded = bounds.pad(hasTrack ? 0.02 : 0.35);
         lastFitRef.current = { bounds: padded, maxZoom };
         const apply = () => {
           map.invalidateSize();

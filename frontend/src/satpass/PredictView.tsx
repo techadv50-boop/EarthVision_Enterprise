@@ -87,7 +87,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [startLocal, setStartLocal] = useState(range0.start);
   const [endLocal, setEndLocal] = useState(range0.end);
   const [timeZone, setTimeZone] = useState(tzDefault);
-  const [labelMin, setLabelMin] = useState<1 | 2 | 5 | 10>(2);
+  const [labelMin, setLabelMin] = useState<1 | 2 | 5 | 10>(5);
   const [minEl, setMinEl] = useState(10);
   const [swathKm, setSwathKm] = useState(60);
   const [allowFallback, setAllowFallback] = useState(false);
