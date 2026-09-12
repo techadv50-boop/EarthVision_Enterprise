@@ -155,6 +155,42 @@ export function trackThroughTarget(
   return out;
 }
 
+/**
+ * Full-orbit imaging swath: a long parallelogram (catalog swath width)
+ * along the pole-to-pole ground track. Split at the antimeridian.
+ */
+export function orbitSwathPolygon(
+  samples: { lat: number; lon: number }[],
+  swathKm: number,
+): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+  if (samples.length < 2 || !(swathKm > 0)) return null;
+  const raw: { lat: number; lon: number }[][] = [];
+  let cur: { lat: number; lon: number }[] = [];
+  let prev: number | null = null;
+  for (const s of samples) {
+    if (prev !== null && Math.abs(s.lon - prev) > 180) {
+      if (cur.length >= 2) raw.push(cur);
+      cur = [];
+    }
+    cur.push(s);
+    prev = s.lon;
+  }
+  if (cur.length >= 2) raw.push(cur);
+
+  const CHUNK = 18;
+  const segs: { lat: number; lon: number }[][] = [];
+  for (const run of raw) {
+    for (let i = 0; i < run.length - 1; i += CHUNK - 1) {
+      const slice = run.slice(i, Math.min(run.length, i + CHUNK));
+      if (slice.length >= 2) segs.push(slice);
+    }
+  }
+  const polys = segs.map((seg) => corridorPolygon(seg, swathKm)).filter((p): p is GeoJSON.Polygon => p != null);
+  if (!polys.length) return null;
+  if (polys.length === 1) return polys[0];
+  return { type: 'MultiPolygon', coordinates: polys.map((p) => p.coordinates) };
+}
+
 /** Sensor coverage for the clipped pass, tied to the Target AOI. */
 export function imagingFootprint(
   samples: { lat: number; lon: number }[],

@@ -109,7 +109,7 @@ export interface SatelliteTrack {
   dash: PassDash;
   samples: TrackSample[];
   labels: TrackLabel[];
-  footprint: GeoJSON.Polygon | null;
+  footprint: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
 }
 
 export interface PredictResult {

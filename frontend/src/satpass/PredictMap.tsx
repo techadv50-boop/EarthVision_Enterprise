@@ -19,11 +19,12 @@ interface Props {
   onCursor?: (text: string) => void;
 }
 
-function timeIcon(text: string, color: string) {
+function timeIcon(text: string, color: string, side: 'left' | 'right') {
+  const shift = side === 'left' ? 'translate(-108%,-50%)' : 'translate(8%,-50%)';
   return L.divIcon({
     className: '',
     iconSize: [0, 0],
-    html: `<div style="position:absolute;transform:translate(-50%,-110%);white-space:nowrap;pointer-events:none;color:${color};font:600 10px Inter,sans-serif;text-shadow:0 1px 2px #000">${text}</div>`,
+    html: `<div style="position:absolute;transform:${shift};white-space:nowrap;pointer-events:none;color:${color};font:600 10px Inter,sans-serif;background:rgba(7,12,18,.78);padding:1px 5px;border-radius:3px;border:1px solid ${color}66">${text}</div>`,
   });
 }
 
@@ -73,7 +74,7 @@ export default function PredictMap({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = createSatPassMap(containerRef.current);
-    map.setMaxZoom(11);
+    map.setMaxZoom(8);
     mapRef.current = map;
     fittedKeyRef.current = '';
     lastFitRef.current = null;
@@ -169,11 +170,12 @@ export default function PredictMap({
       }
 
       if (showLabels) {
+        const side = (pass?.passNumber ?? 1) % 2 === 0 ? 'right' : 'left';
         for (const lab of track.labels) {
           overlay.addLayer(
             L.marker([lab.lat, lab.lon], {
               interactive: false,
-              icon: timeIcon(`${lab.text}`, track.color),
+              icon: timeIcon(`${lab.text}`, track.color, side),
             }),
           );
         }
@@ -198,15 +200,14 @@ export default function PredictMap({
         const hasTrack = (result?.tracks || []).some(
           (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
         );
-        const maxZoom = hasTrack ? 9 : 10;
-        const padded = bounds.pad(hasTrack ? 0.45 : 0.7);
+        const maxZoom = hasTrack ? 4 : 8;
+        const padded = bounds.pad(hasTrack ? 0.08 : 0.35);
         lastFitRef.current = { bounds: padded, maxZoom };
         const apply = () => {
           map.invalidateSize();
           const size = map.getSize();
           if (size.x < 80 || size.y < 80) return;
-          map.setView([target.lat, target.lon], hasTrack ? 8 : 9, { animate: false });
-          map.fitBounds(padded, { padding: [40, 40], maxZoom, animate: false });
+          map.fitBounds(padded, { padding: [28, 28], maxZoom, animate: false });
         };
         apply();
         window.setTimeout(apply, 80);

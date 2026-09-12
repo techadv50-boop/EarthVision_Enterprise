@@ -10,8 +10,8 @@ import {
   ecfToLookAngles,
   type SatRec,
 } from 'satellite.js';
-import { centroidOfGeometry, geometryKind, minDistanceToGeometryKm } from './geometry';
-import { imagingFootprint, trackThroughTarget } from './footprint';
+import { centroidOfGeometry, geometryKind, haversineKm, minDistanceToGeometryKm } from './geometry';
+import { orbitSwathPolygon } from './footprint';
 import {
   classifyDayNight,
   imagingStatusLabel,
@@ -142,7 +142,7 @@ function offNadirGroundRangeKm(altKm: number, offNadirDeg: number): number {
 /**
  * Eligibility look-reach. Catalog swath (e.g. PRSS 60 km) stays the
  * published footprint width; pointable sensors also use off-nadir ground
- * range. The drawn track/footprint stays on the Target AOI.
+ * range. The drawn pass is the full pole-to-pole orbit of that revolution.
  */
 function imagingReachKm(target: PredictTarget, sensor: SensorParams, altKm: number): number {
   const nadir = sensor.swathKm / 2 + (target.bufferKm || 0) + 4;
@@ -261,16 +261,69 @@ function buildTrack(
   return { samples: downsample(samples, 400), labels };
 }
 
+const POLE_STEP_MS = 20_000;
+const POLE_HALF_MS = 70 * 60_000;
+
+function sspLat(satrec: SatRec, ms: number): number | null {
+  const ssp = subpoint(satrec, new Date(ms));
+  return ssp ? ssp.lat : null;
+}
+
+/** Walk toward a latitude turning point (near-polar extreme of this revolution). */
+function latExtremumMs(satrec: SatRec, fromMs: number, dir: -1 | 1): number {
+  let t = fromMs;
+  let prev = sspLat(satrec, t);
+  if (prev == null) return fromMs;
+  let prevD = 0;
+  let haveD = false;
+  const limit = fromMs + dir * POLE_HALF_MS;
+  for (let i = 0; i < 240; i += 1) {
+    t += dir * POLE_STEP_MS;
+    if ((dir > 0 && t > limit) || (dir < 0 && t < limit)) break;
+    const lat = sspLat(satrec, t);
+    if (lat == null) continue;
+    const d = lat - prev;
+    if (haveD && prevD !== 0 && d !== 0 && Math.sign(d) !== Math.sign(prevD)) {
+      return t - dir * (POLE_STEP_MS / 2);
+    }
+    if (d !== 0) {
+      prevD = d;
+      haveD = true;
+    }
+    prev = lat;
+  }
+  return t;
+}
+
+/** North-extreme → south-extreme (or vice versa) of the revolution that images the target. */
+function poleToPoleWindow(satrec: SatRec, midMs: number): { startMs: number; endMs: number } {
+  const startMs = latExtremumMs(satrec, midMs, -1);
+  const endMs = latExtremumMs(satrec, midMs, 1);
+  if (endMs > startMs + 60_000) return { startMs, endMs };
+  return { startMs: midMs - 25 * 60_000, endMs: midMs + 25 * 60_000 };
+}
+
+const LABEL_MIN_SEP_KM = 650;
+
+function spaceLabels(labels: TrackLabel[]): TrackLabel[] {
+  const out: TrackLabel[] = [];
+  for (const lab of labels) {
+    if (out.some((k) => haversineKm(k.lat, k.lon, lab.lat, lab.lon) < LABEL_MIN_SEP_KM)) continue;
+    out.push(lab);
+  }
+  return out;
+}
+
 /**
  * Pipeline (kept distinct on purpose):
  *   A. Orbital pass        — TLE propagation
  *   B. Visibility pass     — elevation above horizon (internal only)
  *   C. Imaging-eligible    — min elevation + catalog swath / off-nadir look
  *   D. Target-AOI intersect — SSP within imaging reach of the AOI
- *   E. Imaging footprint   — catalog swath strip on the Target AOI
- *   F. Displayed segment   — track projected through the AOI (not the nadir miss)
+ *   E. Displayed pass      — pole-to-pole ground track of that revolution
+ *   F. Imaging footprint   — catalog-swath parallelogram along that track
  *
- * The map and pass report publish only (C ∩ D), never the full AOS–LOS arc.
+ * Only imaging-eligible revolutions are published; each is drawn in full.
  */
 export function computePasses(
   satellites: PredictSatellite[],
@@ -345,7 +398,7 @@ export function computePasses(
       t += distKm < FINE_WHEN_KM ? FINE_MS : SAMPLE_MS;
     }
 
-    // Display + report only imaging-eligible AOI intersections, clipped to that window.
+    // Report only imaging-eligible AOI intersections; draw each as a pole-to-pole pass.
     const imagingWindows = contiguousRanges(flags, (f) => f.imaging);
     let satPass = 0;
     let skippedNight = 0;
@@ -357,78 +410,29 @@ export function computePasses(
       else if (slice.some((f) => f.visible) && !slice.some((f) => f.covered)) skippedGeometry += 1;
     }
 
-    const reachKm = imagingReachKm(target, sensor, 620);
-
     for (const win of imagingWindows) {
       if (win.b < win.a) continue;
       const rawStart = flags[win.a].ms;
       const rawEnd = flags[win.b].ms;
+      const midMs = rawStart + Math.max(0, (rawEnd - rawStart) / 2);
+      const orbit = poleToPoleWindow(satrec, midMs);
       const built = buildTrack(
         satrec,
-        rawStart,
-        rawEnd,
+        orbit.startMs,
+        orbit.endMs,
         options.labelIntervalMin * 60_000,
         options.timeZone,
       );
-      const nadir = built.samples.filter(
-        (s) => minDistanceToGeometryKm(s.lat, s.lon, target.geometry) <= reachKm,
-      );
-      if (nadir.length < 1 && built.samples.length < 1) continue;
-      const halfLen = (target.bufferKm || 20) + sensor.swathKm / 2 + 10;
-      const projected = trackThroughTarget(
-        nadir.length >= 2 ? nadir : built.samples,
-        target,
-        halfLen,
-        rawStart,
-        rawEnd,
-      );
-      const samples: TrackSample[] = projected.map((p) => ({ utcMs: p.utcMs, lat: p.lat, lon: p.lon }));
+      const samples = built.samples;
       if (samples.length < 2) continue;
-      const startMsClip = samples[0].utcMs;
-      const endMsClip = samples[samples.length - 1].utcMs;
-      const span = Math.max(0, endMsClip - startMsClip);
-      const labelStep = span <= 180_000 ? Math.max(2_000, Math.floor(span / 4) || 2_000) : options.labelIntervalMin * 60_000;
-      const labelsKept: TrackLabel[] = [];
-      for (const s of samples) {
-        const nearestTick = Math.round(s.utcMs / labelStep) * labelStep;
-        if (Math.abs(s.utcMs - nearestTick) > labelStep / 2) continue;
-        if (labelsKept.some((l) => Math.abs(l.utcMs - s.utcMs) < labelStep * 0.6)) continue;
-        labelsKept.push({
-          utcMs: s.utcMs,
-          lat: s.lat,
-          lon: s.lon,
-          text: new Intl.DateTimeFormat('en-GB', {
-            timeZone: options.timeZone,
-            hour: '2-digit',
-            minute: '2-digit',
-            ...(span <= 180_000 ? { second: '2-digit' as const } : {}),
-            hour12: false,
-          }).format(new Date(s.utcMs)),
-        });
-      }
-      if (!labelsKept.length) {
-        const mid = samples[Math.floor(samples.length / 2)];
-        labelsKept.push({
-          utcMs: mid.utcMs,
-          lat: mid.lat,
-          lon: mid.lon,
-          text: new Intl.DateTimeFormat('en-GB', {
-            timeZone: options.timeZone,
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false,
-          }).format(new Date(mid.utcMs)),
-        });
-      }
+      const labelsKept = spaceLabels(built.labels);
 
       satPass += 1;
       const start = samples[0].utcMs;
       const end = samples[samples.length - 1].utcMs;
       let maxEl = -Infinity;
-      let maxElMs = start;
+      let maxElMs = midMs;
       for (let k = win.a; k <= win.b; k += 1) {
-        if (flags[k].ms < start || flags[k].ms > end) continue;
         if (flags[k].el != null && flags[k].el! > maxEl) {
           maxEl = flags[k].el!;
           maxElMs = flags[k].ms;
@@ -477,12 +481,7 @@ export function computePasses(
         dash,
         samples,
         labels: labelsKept,
-        footprint: imagingFootprint(
-          samples,
-          sensor.swathKm,
-          target,
-          (target.bufferKm || 20) + sensor.swathKm / 2 + 4,
-        ),
+        footprint: orbitSwathPolygon(samples, sensor.swathKm),
       });
     }
 
