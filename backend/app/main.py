@@ -9,7 +9,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging, get_logger
 from app.database.session import init_db, AsyncSessionLocal
 from app.middleware import RequestLoggingMiddleware
-from app.routers import admin, analytics, auth, billing, citations, geo, imagery, raster, satellites
+from app.routers import admin, analytics, auth, billing, citations, geo, imagery, raster, satellites, predict
 from app.services.auth_service import AuthService
 
 setup_logging()
@@ -62,6 +62,7 @@ app.include_router(raster.router, prefix=API_PREFIX)
 app.include_router(billing.router, prefix=API_PREFIX)
 app.include_router(citations.router, prefix=API_PREFIX)
 app.include_router(satellites.router, prefix=API_PREFIX)
+app.include_router(predict.router, prefix=API_PREFIX)
 
 
 @app.get("/api/health")

@@ -15,7 +15,9 @@ import { satelliteApi, type SavedSatellite, type TleResult } from '@/services/ap
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import SatPassMap, { type TrackedSat } from './SatPassMap';
 import SatPassUsersModal from './SatPassUsersModal';
+import PredictView from './PredictView';
 import type { SatState } from './orbit';
+import { catalogSensor } from './predict/catalog';
 
 const PALETTE = [
   '#22d3ee',
@@ -35,11 +37,14 @@ const PRESETS: { name: string; q: string }[] = [
   { name: 'NOAA-19', q: '33591' },
   { name: 'Landsat-9', q: '49260' },
   { name: 'Sentinel-2A', q: '40697' },
+  { name: 'NISAR', q: '65053' },
 ];
 
 const DEFAULT_SWATH_KM = 60;
 
 function toTracked(s: SavedSatellite, color: string): TrackedSat {
+  const norad = s.norad_id ?? noradFromLine1(s.tle_line1);
+  const sensor = catalogSensor(s.name, norad);
   return {
     id: s.id,
     name: s.name,
@@ -47,7 +52,7 @@ function toTracked(s: SavedSatellite, color: string): TrackedSat {
     line2: s.tle_line2,
     color: s.color || color,
     visible: true,
-    swathKm: DEFAULT_SWATH_KM,
+    swathKm: sensor.swathKm ?? DEFAULT_SWATH_KM,
     noradId: s.norad_id,
   };
 }
@@ -80,6 +85,7 @@ function parseTleBlock(text: string): { name: string | null; line1: string; line
 }
 
 export default function SatPassPage() {
+  const [mode, setMode] = useState<'track' | 'predict'>('predict');
   const [sats, setSats] = useState<TrackedSat[]>([]);
   const [states, setStates] = useState<Record<number, SatState>>({});
   const [focusId, setFocusId] = useState<number | null>(null);
@@ -210,18 +216,34 @@ export default function SatPassPage() {
     }
   };
 
+  const tabBtn = (id: 'track' | 'predict', label: string) => (
+    <button
+      onClick={() => setMode(id)}
+      className={`rounded px-3 py-1.5 text-sm font-medium ${
+        mode === id ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10 hover:text-white'
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-black text-gray-100">
-      {/* Control panel (sidebar) */}
-      <aside className="flex h-full w-[360px] max-w-[92vw] shrink-0 flex-col border-r border-white/10 bg-gray-950">
-        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
-          <Satellite className="h-6 w-6 text-cyan-400" />
-          <div className="min-w-0 flex-1">
-            <h1 className="text-base font-bold tracking-wide">SatPass</h1>
-            <p className="truncate text-[11px] text-gray-500">
-              satpass.xdgen.com · live satellite tracker
-            </p>
-          </div>
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-black text-gray-100">
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 bg-gray-950 px-4">
+        <Satellite className="h-6 w-6 text-cyan-400" />
+        <div className="min-w-0">
+          <h1 className="text-base font-bold tracking-wide">SatPass</h1>
+        </div>
+        <nav className="ml-2 flex items-center gap-1 rounded-md bg-white/5 p-0.5 ring-1 ring-white/10">
+          {tabBtn('track', 'Track')}
+          {tabBtn('predict', 'Predict')}
+        </nav>
+        <p className="hidden truncate text-[11px] text-gray-500 sm:block">
+          {mode === 'predict'
+            ? 'When will this satellite pass over a location or area?'
+            : 'satpass.xdgen.com · live satellite tracker'}
+        </p>
+        <div className="ml-auto flex items-center gap-1">
           {admin && (
             <button
               onClick={() => setShowUsers(true)}
@@ -242,7 +264,14 @@ export default function SatPassPage() {
             <LogOut className="h-4 w-4" />
           </button>
         </div>
+      </header>
 
+      {mode === 'predict' ? (
+        <PredictView key={user?.id ?? 'predict'} trackedSats={sats} />
+      ) : (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+      {/* Control panel (sidebar) */}
+      <aside className="flex h-full w-[360px] max-w-[92vw] shrink-0 flex-col border-r border-white/10 bg-gray-950">
         {user && (
           <div className="border-b border-white/10 px-4 py-1.5 text-[11px] text-gray-500">
             Signed in as <span className="text-gray-300">{user.full_name || user.username}</span>
@@ -444,6 +473,8 @@ export default function SatPassPage() {
           showVisibility={showVisibility}
         />
       </div>
+        </div>
+      )}
 
       {showUsers && <SatPassUsersModal onClose={() => setShowUsers(false)} />}
     </div>

@@ -5,9 +5,11 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from app.services.tle import canonicalize_tle_line
+
 
 def _clean_tle_line(value: str) -> str:
-    line = (value or "").strip()
+    line = canonicalize_tle_line(value or "")
     if len(line) < 60:
         raise ValueError("TLE line looks too short (expected ~69 characters)")
     return line
