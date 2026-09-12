@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
 import type { PassRow } from './predict/types';
 import { durationLabel, formatInZone, formatUtc } from './predict/time';
-import { downloadCsv, downloadServerReport, passExportRows } from './predict/export';
+import { downloadCsv, downloadServerReport, downloadXlsx, passExportRows } from './predict/export';
 
 type Col =
   | 'passId'
@@ -25,9 +25,9 @@ const COLS: { key: Col; label: string }[] = [
   { key: 'satelliteKind', label: 'Type' },
   { key: 'targetName', label: 'Target' },
   { key: 'passDateUtc', label: 'Date' },
-  { key: 'startLocal', label: 'Start Tracking' },
-  { key: 'endLocal', label: 'End Tracking' },
-  { key: 'duration', label: 'Duration' },
+  { key: 'startLocal', label: 'Entered AOI' },
+  { key: 'endLocal', label: 'Left AOI' },
+  { key: 'duration', label: 'Duration over AOI' },
   { key: 'maxElevationDeg', label: 'Max Elevation' },
   { key: 'minElevationDeg', label: 'Min Required El.' },
   { key: 'swathKm', label: 'Swath' },
@@ -115,10 +115,16 @@ export default function PredictReport({
     const { headers, rows } = passExportRows(sorted, timeZone);
     setBusy(kind);
     try {
-      if (kind === 'csv') downloadCsv('satpass-prediction.csv', headers, rows);
-      else await downloadServerReport(kind, 'satpass-prediction', headers, rows);
+      if (kind === 'csv') downloadCsv('satpass-aoi-passes.csv', headers, rows);
+      else if (kind === 'xlsx') {
+        try {
+          await downloadServerReport('xlsx', 'satpass-aoi-passes', headers, rows);
+        } catch {
+          await downloadXlsx('satpass-aoi-passes.xlsx', headers, rows);
+        }
+      } else await downloadServerReport(kind, 'satpass-aoi-passes', headers, rows);
     } catch {
-      /* ignore */
+      if (kind === 'xlsx') await downloadXlsx('satpass-aoi-passes.xlsx', headers, rows);
     } finally {
       setBusy('');
     }
@@ -137,7 +143,14 @@ export default function PredictReport({
       <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
         <h3 className="text-sm font-semibold">Satellite pass / tracking report</h3>
         <div className="flex gap-1.5">
-          {(['csv', 'xlsx', 'pdf'] as const).map((k) => (
+          <button
+            onClick={() => void doExport('xlsx')}
+            disabled={!!busy}
+            className="inline-flex items-center gap-1 rounded bg-cyan-600 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white hover:bg-cyan-500 disabled:opacity-50"
+          >
+            <Download className="h-3 w-3" /> {busy === 'xlsx' ? '…' : 'Excel'}
+          </button>
+          {(['csv', 'pdf'] as const).map((k) => (
             <button
               key={k}
               onClick={() => void doExport(k)}

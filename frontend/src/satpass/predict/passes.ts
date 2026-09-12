@@ -428,8 +428,8 @@ export function computePasses(
       const labelsKept = spaceLabels(built.labels);
 
       satPass += 1;
-      const start = samples[0].utcMs;
-      const end = samples[samples.length - 1].utcMs;
+      const start = rawStart;
+      const end = rawEnd;
       let maxEl = -Infinity;
       let maxElMs = midMs;
       for (let k = win.a; k <= win.b; k += 1) {
@@ -443,7 +443,7 @@ export function computePasses(
         target.lon,
         new Date(maxElMs),
       );
-      const dateUtc = iso(start).slice(0, 10);
+      const dateUtc = iso(maxElMs).slice(0, 10);
       const passId = makePassId(sat.name, satPass, dateUtc);
       const dash = passDashForIndex(satPass);
       passes.push({

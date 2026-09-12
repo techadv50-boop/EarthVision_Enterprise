@@ -312,8 +312,8 @@ export function formatPassPopup(pass: PassRow, timeZone: string, fmt: {
       <div><b>Pass ID:</b> ${escapeHtml(pass.passId)}</div>
       <div><b>Target:</b> ${escapeHtml(pass.targetName)}</div>
       <div><b>Date:</b> ${escapeHtml(pass.passDateUtc)}</div>
-      <div><b>Start tracking:</b> ${fmt.utc(pass.startUtc)}<br>${fmt.zone(pass.startUtc, timeZone)}</div>
-      <div><b>End tracking:</b> ${fmt.utc(pass.endUtc)}<br>${fmt.zone(pass.endUtc, timeZone)}</div>
+      <div><b>Entered AOI:</b> ${fmt.utc(pass.startUtc)}<br>${fmt.zone(pass.startUtc, timeZone)}</div>
+      <div><b>Left AOI:</b> ${fmt.utc(pass.endUtc)}<br>${fmt.zone(pass.endUtc, timeZone)}</div>
       <div><b>Duration:</b> ${fmt.duration(pass.durationSec)}</div>
       <div><b>Maximum elevation:</b> ${maxEl}</div>
       <div><b>Max elevation time:</b> ${maxElT}</div>

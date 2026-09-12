@@ -25,7 +25,6 @@ import {
   targetFromPlace,
   type PlaceHit,
 } from './predict/places';
-import { expandPolygonKm } from './predict/geometry';
 import {
   COMMON_TIMEZONES,
   calendarDayRange,
@@ -67,7 +66,6 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [placeQuery, setPlaceQuery] = useState('');
   const [placeHits, setPlaceHits] = useState<PlaceHit[]>([]);
   const [bufferKm, setBufferKm] = useState(DEFAULT_TARGET_BUFFER_KM);
-  const [polygonBuffer, setPolygonBuffer] = useState(false);
   const [target, setTarget] = useState<PredictTarget | null>(null);
   const [fileNote, setFileNote] = useState('');
 
@@ -125,13 +123,13 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   };
 
   const applyDrawnAoi = (t: PredictTarget) => {
-    const next =
-      t.kind === 'area' && t.bufferKm == null && polygonBuffer
-        ? { ...t, bufferKm, geometry: expandPolygonKm(t.geometry, bufferKm) }
-        : t;
-    applyTarget({ ...next, source: 'map' });
+    applyTarget({ ...t, source: 'map' });
     setPlaceQuery('');
-    setFileNote(next.kind === 'area' ? 'Polygon drawn on the map' : `Point drawn on the map · ${bufferKm} km AOI`);
+    setFileNote(
+      t.kind === 'area' && t.bufferKm == null
+        ? 'Polygon drawn on the map (shape kept, no buffer)'
+        : `Point drawn on the map · ${bufferKm} km AOI`,
+    );
     setAoiDraw('off');
     setResult(null);
     setView('map');
@@ -167,14 +165,9 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
           };
     const t0 = targetFromGeometry(geom, String(feats[0].properties?.name || fallbackName));
     if (!t0) throw new Error('Could not read coordinates from the file.');
-    const t = polygonBuffer && t0.kind === 'area'
-      ? { ...t0, bufferKm, geometry: expandPolygonKm(t0.geometry, bufferKm) }
-      : t0;
-    applyTarget(t);
+    applyTarget(t0);
     setPlaceQuery('');
-    setFileNote(
-      `${feats.length} feature(s) · ${t.kind}${polygonBuffer && t0.kind === 'area' ? ` · ${bufferKm} km buffer` : ''}`,
-    );
+    setFileNote(`${feats.length} feature(s) · ${t0.kind === 'area' ? 'polygon kept as drawn' : 'point'}`);
   };
 
   const resolvePlaces = async (query: string): Promise<PlaceHit[]> => {
@@ -314,8 +307,10 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     setError('');
     let t = target;
     const q = placeQuery.trim();
-    if (t?.source === 'upload') {
-      /* keep the uploaded polygon as the primary AOI */
+    if (t && (t.source === 'upload' || t.source === 'map') && t.kind === 'area') {
+      /* keep the drawn/uploaded polygon — never replace it with a buffered centroid */
+    } else if (t?.kind === 'area' && t.geometry?.type !== 'Point') {
+      /* keep any existing polygon AOI */
     } else if (q && t && t.name.trim().toLowerCase() === q.toLowerCase()) {
       t = targetFromLatLon(t.lat, t.lon, t.name, bufferKm);
       applyTarget(t);
@@ -441,7 +436,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               />
             </label>
             <label className="mt-2 block text-[11px] text-gray-400">
-              Target buffer (km)
+              Point buffer (km)
               <input
                 type="number"
                 min={1}
@@ -451,7 +446,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               />
             </label>
             <p className="mt-1 text-[10px] text-gray-500">
-              Cities and landmarks become a geodesic {bufferKm} km AOI around the geocoded point.
+              Buffer applies to points only (search, lat/lng, or a map click). Polygons keep their drawn shape.
             </p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               <button
@@ -493,9 +488,8 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               ) : null}
             </div>
             <p className="mt-1 text-[10px] text-gray-500">
-              Place a point or polygon anywhere on the globe. Points use the {bufferKm} km target
-              buffer. Drawn polygons keep their shape
-              {polygonBuffer ? ` and can be buffered ${bufferKm} km` : ''}.
+              Place a point or polygon anywhere on the globe. Points use the {bufferKm} km buffer.
+              Polygons stay exactly as drawn.
             </p>
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               <label className="inline-flex cursor-pointer items-center gap-1 rounded bg-white/5 px-2 py-1 ring-1 ring-white/10 hover:bg-white/10">
@@ -523,15 +517,6 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                     e.target.value = '';
                   }}
                 />
-              </label>
-              <label className="inline-flex items-center gap-1 text-gray-400">
-                <input
-                  type="checkbox"
-                  checked={polygonBuffer}
-                  onChange={() => setPolygonBuffer((v) => !v)}
-                  className="accent-cyan-500"
-                />
-                Buffer uploaded polygon {bufferKm} km
               </label>
             </div>
             {fileNote && <p className="mt-1 text-[11px] text-emerald-400">{fileNote}</p>}
