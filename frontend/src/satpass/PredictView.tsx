@@ -7,6 +7,7 @@ import {
   MapPin,
   Calculator,
   Pentagon,
+  ImageDown,
 } from 'lucide-react';
 import { geoApi, satelliteApi, type TleResult } from '@/services/api';
 import type { TrackedSat } from './SatPassMap';
@@ -15,6 +16,7 @@ import PredictReport from './PredictReport';
 import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, knownSensor } from './predict/catalog';
 import { parseKmlToGeoJSON } from './predict/kml';
 import { uploadGeometryFiles } from './predict/export';
+import { downloadAoiMapPng } from './predict/mapExport';
 import { computePasses, targetFromGeometry, validateTle } from './predict/passes';
 import {
   DEFAULT_TARGET_BUFFER_KM,
@@ -29,7 +31,6 @@ import {
   COMMON_TIMEZONES,
   calendarDayRange,
   dateFromLocalInput,
-  defaultPredictWindow,
   formatUtc,
 } from './predict/time';
 import {
@@ -98,6 +99,49 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [cursor, setCursor] = useState('');
   const [busy, setBusy] = useState('');
   const [aoiDraw, setAoiDraw] = useState<AoiDrawMode>('off');
+  const [mapExporting, setMapExporting] = useState(false);
+
+  const startDate = startLocal.slice(0, 10);
+  const endDate = endLocal.slice(0, 10);
+
+  const setStartDate = (d: string) => {
+    if (!d) {
+      setStartLocal('');
+      return;
+    }
+    setStartLocal(`${d}T00:00`);
+    if (!endLocal) setEndLocal(`${d}T23:59`);
+  };
+
+  const setEndDate = (d: string) => {
+    if (!d) {
+      setEndLocal('');
+      return;
+    }
+    setEndLocal(`${d}T23:59`);
+  };
+
+  const exportMap = async () => {
+    if (!target) {
+      setError('Set a target AOI before exporting the map.');
+      return;
+    }
+    setError('');
+    setMapExporting(true);
+    try {
+      await downloadAoiMapPng({
+        target,
+        result,
+        hiddenSats,
+        hiddenPasses,
+        timeZone,
+      });
+    } catch {
+      setError('Could not export the map.');
+    } finally {
+      setMapExporting(false);
+    }
+  };
 
   const usedColors = useMemo(() => new Set(sats.map((s) => s.color)), [sats]);
 
@@ -338,12 +382,16 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
       return;
     }
     if (!startLocal || !endLocal) {
-      setError('Set a start and end time.');
+      setError('Select a start date and an end date. Times are 12:00 AM and 11:59 PM.');
       return;
     }
     const usedTarget = t;
     const startUtc = dateFromLocalInput(startLocal, timeZone);
     const endUtc = dateFromLocalInput(endLocal, timeZone);
+    if (endUtc.getTime() <= startUtc.getTime()) {
+      setError('End date must be on or after the start date.');
+      return;
+    }
     setComputing(true);
     window.setTimeout(() => {
       try {
@@ -700,23 +748,36 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               Time window
             </h2>
             <label className="block text-[11px] text-gray-400">
-              Start (12:00 AM)
-              <input
-                type="datetime-local"
-                value={startLocal}
-                onChange={(e) => setStartLocal(e.target.value)}
-                className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
-              />
+              Start date
+              <div className="mt-0.5 flex items-center gap-2">
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
+                />
+                <span className="shrink-0 rounded bg-white/5 px-2 py-1.5 text-[11px] text-gray-300 ring-1 ring-white/10">
+                  12:00 AM
+                </span>
+              </div>
             </label>
             <label className="mt-2 block text-[11px] text-gray-400">
-              End (11:59 PM)
-              <input
-                type="datetime-local"
-                value={endLocal}
-                onChange={(e) => setEndLocal(e.target.value)}
-                className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
-              />
+              End date
+              <div className="mt-0.5 flex items-center gap-2">
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
+                />
+                <span className="shrink-0 rounded bg-white/5 px-2 py-1.5 text-[11px] text-gray-300 ring-1 ring-white/10">
+                  11:59 PM
+                </span>
+              </div>
             </label>
+            <p className="mt-1 text-[10px] text-gray-500">
+              Choose the date(s). Start is always 12:00 AM and end is always 11:59 PM in the selected time zone.
+            </p>
             <div className="mt-2 flex flex-wrap gap-1">
               <button
                 onClick={() => {
@@ -726,18 +787,22 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 }}
                 className="rounded bg-white/5 px-2 py-0.5 text-[11px] ring-1 ring-white/10 hover:bg-white/10"
               >
-                Today 12:00 AM–11:59 PM
+                Today
               </button>
               {[1, 3, 7, 14].map((d) => (
                 <button
                   key={d}
                   onClick={() => {
-                    const startDay = startLocal.slice(0, 10) || calendarDayRange(timeZone).start.slice(0, 10);
-                    const s = dateFromLocalInput(`${startDay}T00:00`, timeZone);
+                    if (!startDate) {
+                      setError('Select a start date first, or click Today.');
+                      return;
+                    }
+                    const s = dateFromLocalInput(`${startDate}T00:00`, timeZone);
                     const endAt = new Date(s.getTime() + d * 86400000);
                     const endDay = calendarDayRange(timeZone, endAt);
-                    setStartLocal(`${startDay}T00:00`);
+                    setStartLocal(`${startDate}T00:00`);
                     setEndLocal(endDay.end);
+                    setError('');
                   }}
                   className="rounded bg-white/5 px-2 py-0.5 text-[11px] ring-1 ring-white/10 hover:bg-white/10"
                 >
@@ -749,13 +814,7 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               Time zone
               <select
                 value={timeZone}
-                onChange={(e) => {
-                  const tz = e.target.value;
-                  setTimeZone(tz);
-                  const win = defaultPredictWindow(tz, 7);
-                  setStartLocal(win.start);
-                  setEndLocal(win.end);
-                }}
+                onChange={(e) => setTimeZone(e.target.value)}
                 className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
               >
                 {[timeZone, ...COMMON_TIMEZONES.filter((z) => z !== timeZone)].map((z) => (
@@ -766,14 +825,14 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
               </select>
             </label>
             <p className="mt-1 text-[11px] text-gray-500">
-              Set window: 12:00 AM → 11:59 PM.
               {startLocal && endLocal ? (
                 <>
-                  {' '}
                   UTC: {formatUtc(dateFromLocalInput(startLocal, timeZone).toISOString(), false)} →{' '}
                   {formatUtc(dateFromLocalInput(endLocal, timeZone).toISOString(), false)}
                 </>
-              ) : null}
+              ) : (
+                'No dates selected yet.'
+              )}
             </p>
             <label className="mt-2 block text-[11px] text-gray-400">
               Track time-label interval
@@ -861,6 +920,14 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
             className={`rounded px-2 py-1 ${view === 'report' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10'}`}
           >
             Pass report ({result?.passes.length ?? 0})
+          </button>
+          <button
+            onClick={() => void exportMap()}
+            disabled={mapExporting || !target}
+            className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-gray-200 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-40"
+          >
+            <ImageDown className="h-3.5 w-3.5" />
+            {mapExporting ? 'Exporting…' : 'Export map'}
           </button>
           <span className="ml-auto font-mono text-gray-500">{cursor}</span>
         </div>

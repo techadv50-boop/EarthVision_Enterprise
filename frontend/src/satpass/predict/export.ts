@@ -1,32 +1,22 @@
 import type { PassRow } from './types';
-import { durationLabel, formatInZone, formatUtc } from './time';
+import { durationLabel, formatDateInZone, formatInZone } from './time';
 
 export function passExportRows(passes: PassRow[], timeZone: string): { headers: string[]; rows: string[][] } {
   const headers = [
-    'Satellite',
-    'Pass ID',
-    'Target AOI',
+    'Date',
+    'Satellite name',
     'Start (entered AOI, local)',
-    'Start (entered AOI, UTC)',
-    'End (left AOI, local)',
-    'End (left AOI, UTC)',
-    'Duration over AOI',
-    'Max elevation (deg)',
-    'Swath (km)',
-    'Day/Night',
+    'End (Left AOI, local)',
+    'Duration',
+    'Swath',
   ];
   const rows = passes.map((p) => [
+    formatDateInZone(p.startUtc, timeZone),
     p.satelliteName,
-    p.passId,
-    p.targetName,
     formatInZone(p.startUtc, timeZone),
-    formatUtc(p.startUtc),
     formatInZone(p.endUtc, timeZone),
-    formatUtc(p.endUtc),
     durationLabel(p.durationSec),
-    p.maxElevationDeg == null ? '' : String(p.maxElevationDeg),
-    p.swathKm == null ? '' : String(p.swathKm),
-    p.visibility,
+    p.swathKm == null ? '' : `${p.swathKm} km`,
   ]);
   return { headers, rows };
 }

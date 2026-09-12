@@ -13,6 +13,15 @@ export function formatInZone(isoUtc: string, timeZone: string, withSeconds = tru
   return `${fmt.format(d)} ${timeZone}`;
 }
 
+export function formatDateInZone(isoUtc: string, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(isoUtc));
+}
+
 export function formatUtc(isoUtc: string, withSeconds = true): string {
   const d = new Date(isoUtc);
   const pad = (n: number) => String(n).padStart(2, '0');
