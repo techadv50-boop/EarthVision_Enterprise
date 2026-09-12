@@ -67,12 +67,14 @@ interface CatalogEntry {
 
 const S1_NORADS = new Set([39634, 41456, 58261]);
 const CARTOSAT3_NORADS = new Set([44804]);
+const PRSS_NORADS = new Set([43530]);
 
 const CATALOG: CatalogEntry[] = [
   {
-    test: (n) => /\bprss\b/i.test(n),
+    test: (n, norad) => /\bprss\b/i.test(n) || (norad != null && PRSS_NORADS.has(norad)),
     kind: 'optical',
     color: '#facc15',
+    // Published: 60 km dual-camera swath, 20° min imaging elevation, ±30° off-nadir.
     sensor: { swathKm: 60, minElevationDeg: 20, spatialResolutionM: 1, maxOffNadirDeg: 30 },
     slug: 'PRSS',
   },
@@ -177,6 +179,7 @@ export function describeSensor(sensor: Partial<SensorParams> | undefined): strin
   if (!sensor?.swathKm) return '';
   const bits = [`${sensor.swathKm} km swath`];
   if (sensor.minElevationDeg != null) bits.push(`min el ${sensor.minElevationDeg}°`);
+  if (sensor.maxOffNadirDeg != null) bits.push(`${sensor.maxOffNadirDeg}° off-nadir`);
   if (sensor.spatialResolutionM != null) {
     const r = sensor.spatialResolutionM;
     bits.push(r < 1 ? `${r} m GSD` : `${r} m`);

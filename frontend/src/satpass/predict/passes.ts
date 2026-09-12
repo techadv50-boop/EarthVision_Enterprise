@@ -133,14 +133,23 @@ export function targetInSwath(
   return dist <= swathKm / 2;
 }
 
-function displayClipKm(target: PredictTarget, sensor: SensorParams): number {
-  const buf = target.bufferKm && target.bufferKm > 0 ? target.bufferKm : 20;
+function offNadirGroundRangeKm(altKm: number, offNadirDeg: number): number {
+  if (!(altKm > 50) || !(offNadirDeg > 0)) return 0;
+  const η = Math.min(offNadirDeg, 50) * (Math.PI / 180);
+  return altKm * Math.tan(η);
+}
+
+/**
+ * Eligibility look-reach. Catalog swath (e.g. PRSS 60 km) stays the
+ * published footprint width; pointable sensors also use off-nadir ground
+ * range. The drawn track/footprint stays on the Target AOI.
+ */
+function imagingReachKm(target: PredictTarget, sensor: SensorParams, altKm: number): number {
+  const nadir = sensor.swathKm / 2 + (target.bufferKm || 0) + 4;
   if (sensor.maxOffNadirDeg != null && sensor.maxOffNadirDeg > 0) {
-    // Pointable sensors: keep the nadir track only where it is still a local
-    // imaging opportunity, never the full elevation/AOS arc.
-    return buf + Math.max(sensor.swathKm, 90);
+    return Math.max(nadir, offNadirGroundRangeKm(altKm > 50 ? altKm : 620, sensor.maxOffNadirDeg) + 8);
   }
-  return sensor.swathKm / 2 + 2;
+  return nadir;
 }
 
 function covers(
@@ -153,7 +162,7 @@ function covers(
   const elevationDeg = lookElevationDeg(satrec, date, target.lat, target.lon);
   if (!ssp) return { covered: false, elevationDeg, distKm: Infinity };
   const distKm = minDistanceToGeometryKm(ssp.lat, ssp.lon, target.geometry);
-  const inReach = distKm <= displayClipKm(target, sensor);
+  const inReach = distKm <= imagingReachKm(target, sensor, ssp.altKm);
   const highEnough = (elevationDeg ?? -90) >= sensor.minElevationDeg;
   return { covered: inReach && highEnough, elevationDeg, distKm };
 }
@@ -256,10 +265,10 @@ function buildTrack(
  * Pipeline (kept distinct on purpose):
  *   A. Orbital pass        — TLE propagation
  *   B. Visibility pass     — elevation above horizon (internal only)
- *   C. Imaging-eligible    — satellite min elevation + swath/footprint
- *   D. Target-AOI intersect — SSP within swath/2 of the AOI geometry
- *   E. Imaging footprint   — sensor corridor around the valid segment
- *   F. Displayed segment   — clipped track + labels + footprint (map/report)
+ *   C. Imaging-eligible    — min elevation + catalog swath / off-nadir look
+ *   D. Target-AOI intersect — SSP within imaging reach of the AOI
+ *   E. Imaging footprint   — catalog swath strip on the Target AOI
+ *   F. Displayed segment   — track projected through the AOI (not the nadir miss)
  *
  * The map and pass report publish only (C ∩ D), never the full AOS–LOS arc.
  */
@@ -348,7 +357,7 @@ export function computePasses(
       else if (slice.some((f) => f.visible) && !slice.some((f) => f.covered)) skippedGeometry += 1;
     }
 
-    const reachKm = displayClipKm(target, sensor);
+    const reachKm = imagingReachKm(target, sensor, 620);
 
     for (const win of imagingWindows) {
       if (win.b < win.a) continue;
@@ -468,7 +477,12 @@ export function computePasses(
         dash,
         samples,
         labels: labelsKept,
-        footprint: imagingFootprint(samples, sensor.swathKm, target, reachKm),
+        footprint: imagingFootprint(
+          samples,
+          sensor.swathKm,
+          target,
+          (target.bufferKm || 20) + sensor.swathKm / 2 + 4,
+        ),
       });
     }
 
@@ -478,15 +492,19 @@ export function computePasses(
       );
     }
     if (skippedGeometry && !satPass) {
+      const look =
+        sensor.maxOffNadirDeg != null
+          ? `${sensor.swathKm} km swath / ${sensor.maxOffNadirDeg}° off-nadir look`
+          : `${sensor.swathKm} km swath`;
       warnings.push(
-        `${sat.name}: ${skippedGeometry} horizon pass(es) did not reach the target AOI with the ${sensor.swathKm} km swath and ${sensor.minElevationDeg}° min elevation.`,
+        `${sat.name}: ${skippedGeometry} horizon pass(es) did not cover the target AOI with the ${look} and ${sensor.minElevationDeg}° min elevation.`,
       );
     }
   }
 
   if (!passes.length) {
     warnings.push(
-      'No imaging-eligible passes intersect the target AOI in this window. A pass is reported only when the satellite-specific swath and minimum elevation cover the AOI (optical: daylight only). Try a longer range.',
+      'No imaging-eligible passes cover the target AOI in this window. A pass is reported only when the catalog swath, off-nadir look (when published), and minimum elevation cover the AOI (optical: daylight only). Try a longer range.',
     );
   }
 
