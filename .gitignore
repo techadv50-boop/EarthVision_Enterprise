@@ -28,3 +28,7 @@ frontend/dist/
 frontend/tsconfig.tsbuildinfo
 *.pyc
 logs/
+
+# Local migration files
+backups/
+docker-compose.cursor.original.yml
