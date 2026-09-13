@@ -52,8 +52,15 @@ function toTracked(s: SavedSatellite, color: string): TrackedSat {
   };
 }
 
+function noradFromLine1(line1: string): number | null {
+  const n = parseInt(line1.slice(2, 7), 10);
+  return Number.isNaN(n) ? null : n;
+}
+
 /** Parse a pasted TLE block (optional name line + the two element lines). */
-function parseTleBlock(text: string): { name: string; line1: string; line2: string } | null {
+function parseTleBlock(
+  text: string,
+): { name: string; line1: string; line2: string; noradId: number | null } | null {
   const lines = text
     .split('\n')
     .map((l) => l.trim())
@@ -61,8 +68,10 @@ function parseTleBlock(text: string): { name: string; line1: string; line2: stri
   const l1 = lines.find((l) => l.startsWith('1 '));
   const l2 = lines.find((l) => l.startsWith('2 '));
   if (!l1 || !l2) return null;
-  const nameLine = lines.find((l) => !l.startsWith('1 ') && !l.startsWith('2 '));
-  return { name: nameLine || 'Custom satellite', line1: l1, line2: l2 };
+  let nameLine = lines.find((l) => !l.startsWith('1 ') && !l.startsWith('2 '));
+  // Some sources prefix the name line with "0 " (3LE format).
+  if (nameLine && nameLine.startsWith('0 ')) nameLine = nameLine.slice(2).trim();
+  return { name: (nameLine || '').trim(), line1: l1, line2: l2, noradId: noradFromLine1(l1) };
 }
 
 export default function SatPassPage() {
@@ -167,7 +176,19 @@ export default function SatPassPage() {
       setError('Paste a valid TLE — a line starting with "1 " and one starting with "2 ".');
       return;
     }
-    const ok = await addFromTle(parsed.name, parsed.line1, parsed.line2);
+    // If the paste has no name line, resolve the real satellite name from Celestrak
+    // by its NORAD catalog number instead of falling back to a generic name.
+    let name = parsed.name;
+    if (!name && parsed.noradId) {
+      try {
+        const { data } = await satelliteApi.fetch(String(parsed.noradId));
+        if (data[0]?.name) name = data[0].name;
+      } catch {
+        /* fall back below */
+      }
+    }
+    if (!name) name = parsed.noradId ? `NORAD ${parsed.noradId}` : 'Custom satellite';
+    const ok = await addFromTle(name, parsed.line1, parsed.line2, parsed.noradId);
     if (ok) {
       setTleText('');
       setShowPaste(false);
