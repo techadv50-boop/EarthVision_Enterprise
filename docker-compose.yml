@@ -44,7 +44,7 @@ services:
       - ./uploads:/data/uploads
       - ./logs:/data/logs
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8100:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -57,7 +57,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - "127.0.0.1:8081:80"
+      - "127.0.0.1:8101:80"
     depends_on:
       - backend
     restart: unless-stopped
@@ -67,7 +67,7 @@ services:
     volumes:
       - ./deployment/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8102:80"
     depends_on:
       - backend
       - frontend
