@@ -213,16 +213,24 @@ export default function PredictView({
     }
   };
 
-  const featuresForIds = (ids: Set<string>) => {
-    if (!libraryGeojson) return [];
-    return libraryGeojson.features.filter((f) => {
-      const fid = String((f.properties as { _satpass_id?: string } | null)?.['_satpass_id'] ?? '');
+  const featuresForIds = (ids: Set<string>, fc: GeoJSON.FeatureCollection | null = libraryGeojson) => {
+    if (!fc) return [];
+    return fc.features.filter((f) => {
+      const props = (f.properties || {}) as {
+        satpass_id?: string | number;
+        _satpass_id?: string | number;
+      };
+      const fid = String(props.satpass_id ?? props._satpass_id ?? f.id ?? '');
       return ids.has(fid);
     });
   };
 
-  const applyLayerAoiFromIds = (ids: Set<string>) => {
-    const feats = featuresForIds(ids);
+  const applyLayerAoiFromIds = (
+    ids: Set<string>,
+    fc: GeoJSON.FeatureCollection | null = libraryGeojson,
+  ) => {
+    if (!fc) return;
+    const feats = featuresForIds(ids, fc);
     if (!feats.length) {
       if (target?.source === 'layer') {
         setTarget(null);
@@ -258,6 +266,13 @@ export default function PredictView({
   };
 
   const applySelectedLayerAoi = () => applyLayerAoiFromIds(selectedFeatureIds);
+
+  useEffect(() => {
+    if (!libraryGeojson || !selectedFeatureIds.size) return;
+    applyLayerAoiFromIds(selectedFeatureIds, libraryGeojson);
+    // Apply once geometry arrives; selection changes also re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libraryGeojson, selectedFeatureIds]);
 
   const clearLayerSelection = () => {
     setSelectedFeatureIds(new Set());

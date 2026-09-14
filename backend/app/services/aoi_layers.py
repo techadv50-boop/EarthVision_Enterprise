@@ -103,9 +103,9 @@ def annotate_features(fc: dict[str, Any]) -> tuple[dict[str, Any], str | None, l
     for i, feat in enumerate(features):
         props = dict(feat.get("properties") or {})
         fid = str(i)
-        props["_satpass_id"] = fid
+        props["satpass_id"] = fid
         name = feature_name(props, name_field, f"Feature {i + 1}")
-        props["_satpass_name"] = name
+        props["satpass_name"] = name
         geom = feat["geometry"]
         out_features.append({"type": "Feature", "properties": props, "geometry": geom})
         index.append({"id": fid, "name": name})
@@ -125,7 +125,7 @@ def read_geojson(layer_id: int) -> dict[str, Any]:
     path = geojson_path(layer_id)
     if not path.exists():
         raise FileNotFoundError(f"Layer {layer_id} has no stored GeoJSON.")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return normalize_geojson(json.loads(path.read_text(encoding="utf-8")))
 
 
 def read_index(layer_id: int) -> list[dict[str, Any]]:
@@ -135,11 +135,38 @@ def read_index(layer_id: int) -> list[dict[str, Any]]:
     fc = read_geojson(layer_id)
     return [
         {
-            "id": str(f.get("properties", {}).get("_satpass_id", i)),
-            "name": str(f.get("properties", {}).get("_satpass_name") or f"Feature {i + 1}"),
+            "id": str(_feature_id(f, i)),
+            "name": str(_feature_label(f, i)),
         }
         for i, f in enumerate(fc.get("features") or [])
     ]
+
+
+def _feature_id(feat: dict[str, Any], index: int) -> str:
+    props = feat.get("properties") or {}
+    raw = props.get("satpass_id", props.get("_satpass_id", feat.get("id", index)))
+    return str(raw)
+
+
+def _feature_label(feat: dict[str, Any], index: int) -> str:
+    props = feat.get("properties") or {}
+    raw = props.get("satpass_name", props.get("_satpass_name"))
+    if raw not in (None, ""):
+        return str(raw)
+    return feature_name(props, None, f"Feature {index + 1}")
+
+
+def normalize_geojson(fc: dict[str, Any]) -> dict[str, Any]:
+    """Ensure feature ids survive FastAPI encoding (no underscore-prefixed keys)."""
+    features = []
+    for i, feat in enumerate(fc.get("features") or []):
+        props = dict(feat.get("properties") or {})
+        fid = str(props.get("satpass_id") or props.pop("_satpass_id", None) or i)
+        name = str(props.get("satpass_name") or props.pop("_satpass_name", None) or _feature_label({"properties": props}, i))
+        props["satpass_id"] = fid
+        props["satpass_name"] = name
+        features.append({"type": "Feature", "properties": props, "geometry": feat.get("geometry")})
+    return {"type": "FeatureCollection", "features": features}
 
 
 def features_by_ids(layer_id: int, ids: list[str]) -> list[dict[str, Any]]:
@@ -147,7 +174,7 @@ def features_by_ids(layer_id: int, ids: list[str]) -> list[dict[str, Any]]:
     fc = read_geojson(layer_id)
     out = []
     for feat in fc.get("features") or []:
-        fid = str((feat.get("properties") or {}).get("_satpass_id", ""))
+        fid = _feature_id(feat, -1)
         if fid in wanted:
             out.append(feat)
     return out

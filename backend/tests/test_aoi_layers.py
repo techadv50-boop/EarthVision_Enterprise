@@ -97,7 +97,10 @@ async def test_admin_upload_list_select_and_user_read(
 
     geo = await client.get(f"/api/v1/aoi-layers/{layer_id}/geojson", headers=auth_headers)
     assert geo.status_code == 200
-    assert geo.json()["features"][0]["geometry"]["type"] == "Polygon"
+    feat0 = geo.json()["features"][0]
+    assert feat0["geometry"]["type"] == "Polygon"
+    assert feat0["properties"]["satpass_id"] == "0"
+    assert feat0["properties"]["satpass_name"] == "Karachi"
 
     exported = await client.post(
         f"/api/v1/aoi-layers/{layer_id}/export-aoi",

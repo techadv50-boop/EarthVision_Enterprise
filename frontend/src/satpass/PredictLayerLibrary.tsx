@@ -113,13 +113,28 @@ export default function PredictLayerLibrary({
       {layers.length === 0 ? (
         <p className="text-[11px] text-gray-500">
           No library shapefiles yet. An admin can add zipped district or city layers from the Layers
-          button in the header.
+          button in the header.{' '}
+          <button type="button" onClick={() => void loadLayers()} className="text-cyan-400 hover:underline">
+            Refresh
+          </button>
         </p>
       ) : (
         <>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="text-[11px] text-gray-400" htmlFor="aoi-layer-select">
+              Layer
+            </label>
+            <button
+              type="button"
+              onClick={() => void loadLayers()}
+              className="text-[10px] text-cyan-400 hover:underline"
+            >
+              Refresh
+            </button>
+          </div>
           <label className="block text-[11px] text-gray-400">
-            Layer
             <select
+              id="aoi-layer-select"
               value={layerId ?? ''}
               onChange={(e) => onLayerId(e.target.value ? Number(e.target.value) : null)}
               className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"

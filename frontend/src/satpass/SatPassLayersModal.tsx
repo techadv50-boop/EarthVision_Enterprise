@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react';
 import { Loader2, Trash2, Upload, X } from 'lucide-react';
 import { aoiLayerApi, type AoiLayerSummary } from '@/services/api';
 
-export default function SatPassLayersModal({ onClose }: { onClose: () => void }) {
+export default function SatPassLayersModal({
+  onClose,
+  onChanged,
+}: {
+  onClose: () => void;
+  onChanged?: () => void;
+}) {
   const [layers, setLayers] = useState<AoiLayerSummary[]>([]);
   const [name, setName] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -34,6 +40,7 @@ export default function SatPassLayersModal({ onClose }: { onClose: () => void })
       setName('');
       setFile(null);
       await load();
+      onChanged?.();
     } catch (err) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(detail || 'Upload failed. Use a .zip that contains .shp, .shx, and .dbf.');
@@ -48,6 +55,7 @@ export default function SatPassLayersModal({ onClose }: { onClose: () => void })
     try {
       await aoiLayerApi.remove(id);
       await load();
+      onChanged?.();
     } catch {
       setError('Could not remove that layer.');
     } finally {
@@ -76,6 +84,7 @@ export default function SatPassLayersModal({ onClose }: { onClose: () => void })
             className="w-full rounded bg-black/40 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
           />
           <input
+            id="aoi-layer-zip"
             type="file"
             accept=".zip,application/zip"
             onChange={(e) => setFile(e.target.files?.[0] || null)}

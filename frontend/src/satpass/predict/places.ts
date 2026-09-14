@@ -131,7 +131,8 @@ export function rebufferPointTarget(t: PredictTarget, bufferKm: number): Predict
 
 export function layerFeatureName(feature: GeoJSON.Feature, fallback: string): string {
   const p = (feature.properties || {}) as Record<string, unknown>;
-  const raw = p._satpass_name ?? p.name ?? p.NAME ?? p.district ?? p.DISTRICT ?? p.city ?? p.CITY;
+  const raw =
+    p.satpass_name ?? p._satpass_name ?? p.name ?? p.NAME ?? p.district ?? p.DISTRICT ?? p.city ?? p.CITY;
   const text = raw == null ? '' : String(raw).trim();
   return text || fallback;
 }

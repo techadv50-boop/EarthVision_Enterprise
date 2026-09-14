@@ -492,6 +492,7 @@ export default function SatPassPage() {
       {showUsers && <SatPassUsersModal onClose={() => setShowUsers(false)} />}
       {showLayers && (
         <SatPassLayersModal
+          onChanged={() => setLayersEpoch((n) => n + 1)}
           onClose={() => {
             setShowLayers(false);
             setLayersEpoch((n) => n + 1);
