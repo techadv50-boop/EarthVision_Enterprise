@@ -41,7 +41,7 @@ export interface PredictTarget {
   lat: number;
   /** Geodesic buffer applied around a place/point, if any. */
   bufferKm?: number;
-  source?: 'place' | 'coordinates' | 'upload' | 'map';
+  source?: 'place' | 'coordinates' | 'upload' | 'map' | 'layer';
 }
 
 export type SensorSource = 'catalog' | 'fallback' | 'none';

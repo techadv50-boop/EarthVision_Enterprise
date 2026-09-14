@@ -10,11 +10,13 @@ import {
   X,
   Users,
   LogOut,
+  Layers,
 } from 'lucide-react';
 import { satelliteApi, type SavedSatellite, type TleResult } from '@/services/api';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import SatPassMap, { type TrackedSat } from './SatPassMap';
 import SatPassUsersModal from './SatPassUsersModal';
+import SatPassLayersModal from './SatPassLayersModal';
 import PredictView from './PredictView';
 import type { SatState } from './orbit';
 import { catalogSensor } from './predict/catalog';
@@ -99,6 +101,8 @@ export default function SatPassPage() {
   const [tleText, setTleText] = useState('');
   const [showVisibility, setShowVisibility] = useState(false);
   const [showUsers, setShowUsers] = useState(false);
+  const [showLayers, setShowLayers] = useState(false);
+  const [layersEpoch, setLayersEpoch] = useState(0);
 
   const navigate = useNavigate();
   // ProtectedRoute already loads the current user; here we only read it.
@@ -245,13 +249,22 @@ export default function SatPassPage() {
         </p>
         <div className="ml-auto flex items-center gap-1">
           {admin && (
-            <button
-              onClick={() => setShowUsers(true)}
-              title="Manage user access"
-              className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-cyan-400"
-            >
-              <Users className="h-4 w-4" />
-            </button>
+            <>
+              <button
+                onClick={() => setShowLayers(true)}
+                title="Manage shapefile layers"
+                className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-cyan-400"
+              >
+                <Layers className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => setShowUsers(true)}
+                title="Manage user access"
+                className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-cyan-400"
+              >
+                <Users className="h-4 w-4" />
+              </button>
+            </>
           )}
           <button
             onClick={() => {
@@ -267,7 +280,7 @@ export default function SatPassPage() {
       </header>
 
       {mode === 'predict' ? (
-        <PredictView key={user?.id ?? 'predict'} trackedSats={sats} />
+        <PredictView key={user?.id ?? 'predict'} trackedSats={sats} layersEpoch={layersEpoch} />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* Control panel (sidebar) */}
@@ -477,6 +490,14 @@ export default function SatPassPage() {
       )}
 
       {showUsers && <SatPassUsersModal onClose={() => setShowUsers(false)} />}
+      {showLayers && (
+        <SatPassLayersModal
+          onClose={() => {
+            setShowLayers(false);
+            setLayersEpoch((n) => n + 1);
+          }}
+        />
+      )}
     </div>
   );
 }

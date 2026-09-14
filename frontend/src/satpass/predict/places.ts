@@ -1,4 +1,4 @@
-import { DEFAULT_TARGET_BUFFER_KM, geodesicCirclePolygon } from './geometry';
+import { centroidOfGeometry, DEFAULT_TARGET_BUFFER_KM, geodesicCirclePolygon } from './geometry';
 import type { PredictTarget } from './types';
 
 export { DEFAULT_TARGET_BUFFER_KM };
@@ -127,4 +127,52 @@ export function isBufferedPointTarget(t: PredictTarget): boolean {
 export function rebufferPointTarget(t: PredictTarget, bufferKm: number): PredictTarget {
   const next = targetFromLatLon(t.lat, t.lon, t.name, bufferKm);
   return { ...next, source: t.source ?? next.source };
+}
+
+export function layerFeatureName(feature: GeoJSON.Feature, fallback: string): string {
+  const p = (feature.properties || {}) as Record<string, unknown>;
+  const raw = p._satpass_name ?? p.name ?? p.NAME ?? p.district ?? p.DISTRICT ?? p.city ?? p.CITY;
+  const text = raw == null ? '' : String(raw).trim();
+  return text || fallback;
+}
+
+/** Selected library districts/cities become the Predict AOI (no extra point buffer). */
+export function targetFromLayerFeatures(
+  features: GeoJSON.Feature[],
+  layerName: string,
+): PredictTarget | null {
+  const withGeom = features.filter((f) => f.geometry);
+  if (!withGeom.length) return null;
+  const names = withGeom.map((f, i) => layerFeatureName(f, `Feature ${i + 1}`));
+  const label =
+    names.length <= 3 ? names.join(', ') : `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+  let geometry: GeoJSON.Geometry;
+  if (withGeom.length === 1) {
+    geometry = withGeom[0].geometry!;
+  } else {
+    const polyCoords: GeoJSON.Position[][][] = [];
+    let allPoly = true;
+    for (const f of withGeom) {
+      const g = f.geometry!;
+      if (g.type === 'Polygon') polyCoords.push(g.coordinates);
+      else if (g.type === 'MultiPolygon') polyCoords.push(...g.coordinates);
+      else {
+        allPoly = false;
+        break;
+      }
+    }
+    geometry = allPoly
+      ? { type: 'MultiPolygon', coordinates: polyCoords }
+      : { type: 'GeometryCollection', geometries: withGeom.map((f) => f.geometry!) };
+  }
+  const c = centroidOfGeometry(geometry);
+  if (!c) return null;
+  return {
+    kind: geometry.type === 'Point' || geometry.type === 'MultiPoint' ? 'point' : 'area',
+    name: label || layerName,
+    lat: c.lat,
+    lon: c.lon,
+    source: 'layer',
+    geometry,
+  };
 }

@@ -23,6 +23,10 @@ interface Props {
   aoiDraw?: AoiDrawMode;
   bufferKm?: number;
   aoiName?: string;
+  libraryGeojson?: GeoJSON.FeatureCollection | null;
+  selectedFeatureIds?: Set<string>;
+  showLibrary?: boolean;
+  onLibraryFeatureClick?: (id: string) => void;
   onCursor?: (text: string) => void;
   onAoiDrawn?: (target: PredictTarget) => void;
   onAoiCancel?: () => void;
@@ -82,6 +86,10 @@ export default function PredictMap({
   aoiDraw = 'off',
   bufferKm = 20,
   aoiName = '',
+  libraryGeojson = null,
+  selectedFeatureIds,
+  showLibrary = false,
+  onLibraryFeatureClick,
   onCursor,
   onAoiDrawn,
   onAoiCancel,
@@ -142,6 +150,34 @@ export default function PredictMap({
     if (!map || !overlay) return;
     overlay.clearLayers();
     const passById = new Map((result?.passes || []).map((p) => [p.passId, p]));
+
+    if (showLibrary && libraryGeojson?.features?.length) {
+      const lib = L.geoJSON(libraryGeojson as GeoJSON.GeoJsonObject, {
+        pane: 'overlayPane',
+        style: (feat) => {
+          const fid = String((feat?.properties as { _satpass_id?: string } | null)?.['_satpass_id'] ?? '');
+          const on = selectedFeatureIds?.has(fid);
+          return {
+            color: on ? '#22d3ee' : '#64748b',
+            weight: on ? 2 : 1,
+            fillColor: on ? '#22d3ee' : '#334155',
+            fillOpacity: on ? 0.28 : 0.08,
+          };
+        },
+        onEachFeature: (feat, layer) => {
+          const fid = String((feat.properties as { _satpass_id?: string } | null)?.['_satpass_id'] ?? '');
+          const name = String(
+            (feat.properties as { _satpass_name?: string } | null)?.['_satpass_name'] || fid,
+          );
+          layer.bindTooltip(name, { sticky: true });
+          layer.on('click', (ev) => {
+            L.DomEvent.stopPropagation(ev);
+            if (fid) onLibraryFeatureClick?.(fid);
+          });
+        },
+      });
+      overlay.addLayer(lib);
+    }
 
     if (target && showTarget) {
       const layer = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject, {
@@ -268,7 +304,21 @@ export default function PredictMap({
       }
       fittedKeyRef.current = fitKey;
     }
-  }, [target, result, hiddenSats, hiddenPasses, showLabels, showTarget, showFootprints, timeZone, leafletMap]);
+  }, [
+    target,
+    result,
+    hiddenSats,
+    hiddenPasses,
+    showLabels,
+    showTarget,
+    showFootprints,
+    timeZone,
+    leafletMap,
+    libraryGeojson,
+    selectedFeatureIds,
+    showLibrary,
+    onLibraryFeatureClick,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;

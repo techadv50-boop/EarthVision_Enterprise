@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     imagery_cache_dir: Path = Field(default=PROJECT_ROOT / "cache" / "imagery")
     scene_cache_dir: Path = Field(default=PROJECT_ROOT / "cache" / "scenes")
     upload_dir: Path = Field(default=PROJECT_ROOT / "uploads")
+    aoi_layer_dir: Path = Field(default=PROJECT_ROOT / "backend" / "data" / "aoi_layers")
     max_upload_size_mb: int = 500
 
     cesium_ion_token: str = ""
@@ -85,7 +86,7 @@ class Settings(BaseSettings):
         return list(v)  # type: ignore[arg-type]
 
     @field_validator(
-        "imagery_cache_dir", "scene_cache_dir", "upload_dir", mode="after"
+        "imagery_cache_dir", "scene_cache_dir", "upload_dir", "aoi_layer_dir", mode="after"
     )
     @classmethod
     def ensure_dirs(cls, v: Path) -> Path:

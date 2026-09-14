@@ -36,6 +36,7 @@ frontend/.vite/
 cache/
 uploads/
 logs/
+backend/data/aoi_layers/*/
 *.tif
 *.tiff
 *.geotiff

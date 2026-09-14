@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Plus,
   Trash2,
@@ -9,9 +9,10 @@ import {
   Pentagon,
   ImageDown,
 } from 'lucide-react';
-import { geoApi, satelliteApi, type TleResult } from '@/services/api';
+import { aoiLayerApi, geoApi, satelliteApi, type AoiLayerDetail, type TleResult } from '@/services/api';
 import type { TrackedSat } from './SatPassMap';
 import PredictMap, { type AoiDrawMode } from './PredictMap';
+import PredictLayerLibrary from './PredictLayerLibrary';
 import PredictReport from './PredictReport';
 import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, knownSensor } from './predict/catalog';
 import { parseKmlToGeoJSON } from './predict/kml';
@@ -25,6 +26,7 @@ import {
   normalizeGeoHits,
   isBufferedPointTarget,
   rebufferPointTarget,
+  targetFromLayerFeatures,
   targetFromLatLon,
   targetFromPlace,
   type PlaceHit,
@@ -60,7 +62,13 @@ function newId() {
 
 const DEFAULT_PREDICT_TZ = 'Asia/Karachi';
 
-export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[] }) {
+export default function PredictView({
+  trackedSats,
+  layersEpoch = 0,
+}: {
+  trackedSats: TrackedSat[];
+  layersEpoch?: number;
+}) {
   const tzDefault = DEFAULT_PREDICT_TZ;
 
   const [lat, setLat] = useState('');
@@ -71,6 +79,12 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const [bufferKm, setBufferKm] = useState(DEFAULT_TARGET_BUFFER_KM);
   const [target, setTarget] = useState<PredictTarget | null>(null);
   const [fileNote, setFileNote] = useState('');
+  const [layerId, setLayerId] = useState<number | null>(null);
+  const [layerDetail, setLayerDetail] = useState<AoiLayerDetail | null>(null);
+  const [selectedFeatureIds, setSelectedFeatureIds] = useState<Set<string>>(new Set());
+  const [libraryGeojson, setLibraryGeojson] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [showLibrary, setShowLibrary] = useState(true);
+  const [exportingAoi, setExportingAoi] = useState(false);
 
   const [sats, setSats] = useState<PredictSatellite[]>([]);
   const [satName, setSatName] = useState('');
@@ -145,6 +159,25 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     }
   };
 
+  useEffect(() => {
+    if (layerId == null) {
+      setLibraryGeojson(null);
+      return;
+    }
+    let cancelled = false;
+    aoiLayerApi
+      .geojson(layerId)
+      .then(({ data }) => {
+        if (!cancelled) setLibraryGeojson(data);
+      })
+      .catch(() => {
+        if (!cancelled) setLibraryGeojson(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [layerId]);
+
   const usedColors = useMemo(() => new Set(sats.map((s) => s.color)), [sats]);
 
   const applyTarget = (t: PredictTarget) => {
@@ -177,6 +210,84 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     setResult(null);
     if (target.source === 'map') {
       setFileNote(`Point drawn on the map · ${next} km AOI`);
+    }
+  };
+
+  const featuresForIds = (ids: Set<string>) => {
+    if (!libraryGeojson) return [];
+    return libraryGeojson.features.filter((f) => {
+      const fid = String((f.properties as { _satpass_id?: string } | null)?.['_satpass_id'] ?? '');
+      return ids.has(fid);
+    });
+  };
+
+  const applyLayerAoiFromIds = (ids: Set<string>) => {
+    const feats = featuresForIds(ids);
+    if (!feats.length) {
+      if (target?.source === 'layer') {
+        setTarget(null);
+        setFileNote('');
+        setResult(null);
+      }
+      if (ids.size) setError('Select one or more districts or cities from the library layer.');
+      return;
+    }
+    const t = targetFromLayerFeatures(feats, layerDetail?.name || 'Layer AOI');
+    if (!t) {
+      setError('Select one or more districts or cities from the library layer.');
+      return;
+    }
+    applyTarget(t);
+    setPlaceQuery('');
+    setFileNote(
+      `${feats.length} library feature(s) · ${layerDetail?.name || 'layer'} · polygon AOI (no point buffer)`,
+    );
+    setResult(null);
+    setView('map');
+    setError('');
+  };
+
+  const toggleLayerFeature = (id: string, apply = true) => {
+    setSelectedFeatureIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      if (apply) queueMicrotask(() => applyLayerAoiFromIds(next));
+      return next;
+    });
+  };
+
+  const applySelectedLayerAoi = () => applyLayerAoiFromIds(selectedFeatureIds);
+
+  const clearLayerSelection = () => {
+    setSelectedFeatureIds(new Set());
+    if (target?.source === 'layer') {
+      setTarget(null);
+      setFileNote('');
+      setResult(null);
+    }
+  };
+
+  const exportSelectedAoiZip = async () => {
+    if (layerId == null || !selectedFeatureIds.size) return;
+    setExportingAoi(true);
+    setError('');
+    try {
+      const { data } = await aoiLayerApi.exportAoi(layerId, [...selectedFeatureIds]);
+      const url = URL.createObjectURL(data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(layerDetail?.name || 'aoi').replace(/\s+/g, '_')}-aoi.zip`;
+      document.body.appendChild(a);
+      a.click();
+      window.setTimeout(() => {
+        a.remove();
+        URL.revokeObjectURL(url);
+      }, 1500);
+    } catch {
+      setError('Could not export the selected districts as a shapefile zip.');
+    } finally {
+      setExportingAoi(false);
     }
   };
 
@@ -365,7 +476,11 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     setError('');
     let t = target;
     const q = placeQuery.trim();
-    const keepExactPolygon = t != null && !isBufferedPointTarget(t) && t.geometry?.type !== 'Point';
+    const keepExactPolygon =
+      t != null &&
+      (t.source === 'layer' ||
+        t.source === 'upload' ||
+        (!isBufferedPointTarget(t) && t.geometry?.type !== 'Point'));
     if (keepExactPolygon) {
       /* keep the drawn/uploaded polygon — never replace it with a buffered centroid */
     } else if (t && isBufferedPointTarget(t)) {
@@ -590,11 +705,30 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                   ? ' · uploaded polygon'
                   : target.source === 'map'
                     ? ' · drawn on map'
-                    : ''}
+                    : target.source === 'layer'
+                      ? ' · library district/city'
+                      : ''}
                 ) {target.lat.toFixed(4)}, {target.lon.toFixed(4)}
               </p>
             )}
           </section>
+
+          <PredictLayerLibrary
+            layersEpoch={layersEpoch}
+            selectedIds={selectedFeatureIds}
+            onToggle={toggleLayerFeature}
+            onUseSelected={applySelectedLayerAoi}
+            onClear={clearLayerSelection}
+            onExportAoi={() => void exportSelectedAoiZip()}
+            exporting={exportingAoi}
+            layerId={layerId}
+            onLayerId={(id) => {
+              setLayerId(id);
+              setSelectedFeatureIds(new Set());
+            }}
+            layerDetail={layerDetail}
+            onLayerDetail={setLayerDetail}
+          />
 
           <section>
             <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-cyan-400">
@@ -965,6 +1099,10 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 showFootprints={showFootprints}
                 timeZone={timeZone}
                 onCursor={setCursor}
+                libraryGeojson={libraryGeojson}
+                selectedFeatureIds={selectedFeatureIds}
+                showLibrary={showLibrary}
+                onLibraryFeatureClick={toggleLayerFeature}
               />
               <div className="pointer-events-auto absolute right-3 top-3 z-[1000] max-h-[calc(100%-1.5rem)] w-64 overflow-y-auto space-y-2 rounded bg-gray-950/90 p-2 text-[11px] ring-1 ring-white/10">
                 <p className="font-semibold uppercase tracking-wide text-gray-300">Layers</p>
@@ -976,6 +1114,15 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                     className="accent-cyan-500"
                   />
                   Target area
+                </label>
+                <label className="flex items-center gap-1.5 text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={showLibrary}
+                    onChange={() => setShowLibrary((v) => !v)}
+                    className="accent-cyan-500"
+                  />
+                  Library layer
                 </label>
                 <label className="flex items-center gap-1.5 text-gray-300">
                   <input
