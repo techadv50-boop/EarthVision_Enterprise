@@ -74,6 +74,30 @@ docker compose logs -f cloudflared
 
 Visit https://satpass.xdgen.com and sign in with `operator@satpass.xdgen.com` / `pak123`.
 
+## 3. Upload / update this Predict build
+
+`satpass.xdgen.com` is not published until **both** of these exist:
+
+1. Cloudflare Tunnel public hostname `satpass.xdgen.com` → `http://nginx:80` (section 1). Without that DNS record the name does not resolve.
+2. The VPS checkout at `/opt/xdgen` running the Predict branch.
+
+On the VPS, after `.env` is filled:
+
+```bash
+cd /opt/xdgen
+export DEPLOY_BRANCH=cursor/satpass-predict-tab-ea6c
+bash scripts/deploy_satpass_live.sh
+```
+
+That script:
+
+- fast-forwards `/opt/xdgen` to `cursor/satpass-predict-tab-ea6c` (does not merge to `master`)
+- leaves `.env` untouched (tunnel token and `SECRET_KEY` stay on the server)
+- rebuilds frontend + backend and starts `docker compose --profile tunnel`
+- never runs `docker compose down -v`
+
+This cloud agent cannot SSH to the VPS or create the Cloudflare hostname. Those two steps have to be done on the host / in the Cloudflare dashboard.
+
 ## SSL
 
 Cloudflare terminates HTTPS for `satpass.xdgen.com`. Keep the tunnel service as **HTTP** to nginx; you do not need Let's Encrypt on the VPS.

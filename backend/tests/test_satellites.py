@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.routers.satellites import _is_placeholder_name, _norad_from_line1, _parse_tle_text
+from app.services.tle import canonicalize_line1, canonicalize_line2
 
 CARTOSAT_2A_L1 = "1 32783U 08021A   26253.95111561  .00000270  00000+0  42947-4 0  9999"
 CARTOSAT_2A_L2 = "2 32783  97.7565 299.7008 0011387 185.6591 174.4494 14.79323197991484"
@@ -70,3 +71,23 @@ async def test_add_keeps_explicit_catalog_name(client, auth_headers):
     assert resp.status_code == 201, resp.text
     assert resp.json()["name"] == "CARTOSAT-2A"
     lookup.assert_not_awaited()
+
+
+def test_canonicalize_collapsed_tle_line1():
+    collapsed = "1 65053U 25163A   26253.27481087 .00000097  00000-0  42427-4 0  9990"
+    out = canonicalize_line1(collapsed)
+    assert len(out) == 69
+    assert out[18:32] == "26253.27481087"
+
+
+def test_canonicalize_collapsed_risat_line1():
+    collapsed = "1 46905U 20081A 26250.02052541 .00000101 00000-0 13953-4 0 9996"
+    out = canonicalize_line1(collapsed)
+    assert len(out) == 69
+    assert out[18:20] == "26"
+    assert out[20:32].startswith("250.")
+
+
+def test_canonicalize_keeps_aligned_line():
+    assert canonicalize_line1(CARTOSAT_2A_L1) == CARTOSAT_2A_L1
+    assert canonicalize_line2(CARTOSAT_2A_L2) == CARTOSAT_2A_L2
