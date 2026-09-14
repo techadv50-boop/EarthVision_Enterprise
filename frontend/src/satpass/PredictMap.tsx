@@ -6,7 +6,7 @@ import MapMeasureTools from './MapMeasureTools';
 import type { PassRow, PredictResult, PredictTarget } from './predict/types';
 import { formatPassPopup, leafletDashArray } from './predict/catalog';
 import { durationLabel, formatInZone, formatUtc } from './predict/time';
-import { targetFromLatLon } from './predict/places';
+import { libraryFeatureId, targetFromLatLon } from './predict/places';
 import { targetFromGeometry } from './predict/passes';
 
 export type AoiDrawMode = 'off' | 'point' | 'polygon';
@@ -155,11 +155,7 @@ export default function PredictMap({
       const lib = L.geoJSON(libraryGeojson as GeoJSON.GeoJsonObject, {
         pane: 'overlayPane',
         style: (feat) => {
-          const fid = String(
-            (feat?.properties as { satpass_id?: string; _satpass_id?: string } | null)?.satpass_id ??
-              (feat?.properties as { _satpass_id?: string } | null)?.['_satpass_id'] ??
-              '',
-          );
+          const fid = feat ? libraryFeatureId(feat as GeoJSON.Feature, 0) : '';
           const on = selectedFeatureIds?.has(fid);
           return {
             color: on ? '#22d3ee' : '#64748b',
@@ -169,14 +165,10 @@ export default function PredictMap({
           };
         },
         onEachFeature: (feat, layer) => {
-          const props = (feat.properties || {}) as {
-            satpass_id?: string;
-            _satpass_id?: string;
-            satpass_name?: string;
-            _satpass_name?: string;
-          };
-          const fid = String(props.satpass_id ?? props._satpass_id ?? '');
-          const name = String(props.satpass_name ?? props._satpass_name ?? fid);
+          const fid = libraryFeatureId(feat as GeoJSON.Feature, 0);
+          const name = String(
+            (feat.properties as { satpass_name?: string } | null)?.satpass_name || fid,
+          );
           layer.bindTooltip(name, { sticky: true });
           layer.on('click', (ev) => {
             L.DomEvent.stopPropagation(ev);

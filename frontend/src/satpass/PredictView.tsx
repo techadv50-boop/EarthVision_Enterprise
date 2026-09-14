@@ -27,6 +27,8 @@ import {
   isBufferedPointTarget,
   rebufferPointTarget,
   targetFromLayerFeatures,
+  libraryFeatureId,
+  layerFeatureName,
   targetFromLatLon,
   targetFromPlace,
   type PlaceHit,
@@ -168,7 +170,19 @@ export default function PredictView({
     aoiLayerApi
       .geojson(layerId)
       .then(({ data }) => {
-        if (!cancelled) setLibraryGeojson(data);
+        const features = (data.features || []).map((f, i) => {
+          const props = { ...(f.properties || {}) } as GeoJSON.GeoJsonProperties;
+          const bag = props || {};
+          return {
+            ...f,
+            properties: {
+              ...bag,
+              satpass_id: libraryFeatureId(f, i),
+              satpass_name: layerFeatureName(f, `Feature ${i + 1}`),
+            },
+          };
+        });
+        if (!cancelled) setLibraryGeojson({ type: 'FeatureCollection', features });
       })
       .catch(() => {
         if (!cancelled) setLibraryGeojson(null);
@@ -215,14 +229,7 @@ export default function PredictView({
 
   const featuresForIds = (ids: Set<string>, fc: GeoJSON.FeatureCollection | null = libraryGeojson) => {
     if (!fc) return [];
-    return fc.features.filter((f) => {
-      const props = (f.properties || {}) as {
-        satpass_id?: string | number;
-        _satpass_id?: string | number;
-      };
-      const fid = String(props.satpass_id ?? props._satpass_id ?? f.id ?? '');
-      return ids.has(fid);
-    });
+    return fc.features.filter((f, i) => ids.has(libraryFeatureId(f, i)));
   };
 
   const applyLayerAoiFromIds = (

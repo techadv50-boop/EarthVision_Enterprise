@@ -137,6 +137,12 @@ export function layerFeatureName(feature: GeoJSON.Feature, fallback: string): st
   return text || fallback;
 }
 
+export function libraryFeatureId(feature: GeoJSON.Feature, index = 0): string {
+  const p = (feature.properties || {}) as Record<string, unknown>;
+  const raw = p.satpass_id ?? p._satpass_id ?? feature.id ?? index;
+  return String(raw);
+}
+
 /** Selected library districts/cities become the Predict AOI (no extra point buffer). */
 export function targetFromLayerFeatures(
   features: GeoJSON.Feature[],
