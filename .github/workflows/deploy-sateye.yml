@@ -59,6 +59,7 @@ jobs:
           HEALTH_URL_PUBLIC: https://sateye.xdgen.com/health
           HEALTH_URL_PUBLIC_ROOT: https://sateye.xdgen.com/
           RESET_ADMIN_PASSWORD: "1"
+          ADMIN_EMAIL_RESET: admin@xdgen.com
           ADMIN_PASSWORD_RESET: Alihussain
         run: |
           set -euo pipefail
