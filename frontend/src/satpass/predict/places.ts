@@ -118,3 +118,13 @@ export function targetFromLatLon(
     geometry: geodesicCirclePolygon(lat, lon, km),
   };
 }
+
+/** Place / lat-lng / map-click AOIs are circles with a buffer; drawn/uploaded polygons are not. */
+export function isBufferedPointTarget(t: PredictTarget): boolean {
+  return t.bufferKm != null || t.kind === 'point' || t.geometry?.type === 'Point';
+}
+
+export function rebufferPointTarget(t: PredictTarget, bufferKm: number): PredictTarget {
+  const next = targetFromLatLon(t.lat, t.lon, t.name, bufferKm);
+  return { ...next, source: t.source ?? next.source };
+}

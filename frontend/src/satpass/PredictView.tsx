@@ -23,6 +23,8 @@ import {
   lookupGazetteer,
   mergePlaceHits,
   normalizeGeoHits,
+  isBufferedPointTarget,
+  rebufferPointTarget,
   targetFromLatLon,
   targetFromPlace,
   type PlaceHit,
@@ -164,6 +166,18 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
   const applyPlaceHit = (hit: PlaceHit) => {
     applyTarget(targetFromPlace(hit, bufferKm));
     setPlaceQuery(hit.name);
+  };
+
+  const applyPointBufferKm = (raw: number) => {
+    const next = Math.max(1, Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TARGET_BUFFER_KM);
+    setBufferKm(next);
+    if (!target || !isBufferedPointTarget(target)) return;
+    if (target.bufferKm === next) return;
+    applyTarget(rebufferPointTarget(target, next));
+    setResult(null);
+    if (target.source === 'map') {
+      setFileNote(`Point drawn on the map · ${next} km AOI`);
+    }
   };
 
   const applyDrawnAoi = (t: PredictTarget) => {
@@ -351,12 +365,11 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
     setError('');
     let t = target;
     const q = placeQuery.trim();
-    if (t && (t.source === 'upload' || t.source === 'map') && t.kind === 'area') {
+    const keepExactPolygon = t != null && !isBufferedPointTarget(t) && t.geometry?.type !== 'Point';
+    if (keepExactPolygon) {
       /* keep the drawn/uploaded polygon — never replace it with a buffered centroid */
-    } else if (t?.kind === 'area' && t.geometry?.type !== 'Point') {
-      /* keep any existing polygon AOI */
-    } else if (q && t && t.name.trim().toLowerCase() === q.toLowerCase()) {
-      t = targetFromLatLon(t.lat, t.lon, t.name, bufferKm);
+    } else if (t && isBufferedPointTarget(t)) {
+      t = rebufferPointTarget(t, bufferKm);
       applyTarget(t);
     } else if (q) {
       const hits = await searchPlace(q);
@@ -489,12 +502,13 @@ export default function PredictView({ trackedSats }: { trackedSats: TrackedSat[]
                 type="number"
                 min={1}
                 value={bufferKm}
-                onChange={(e) => setBufferKm(Math.max(1, Number(e.target.value) || DEFAULT_TARGET_BUFFER_KM))}
+                onChange={(e) => applyPointBufferKm(Number(e.target.value))}
                 className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
               />
             </label>
             <p className="mt-1 text-[10px] text-gray-500">
-              Buffer applies to points only (search, lat/lng, or a map click). Polygons keep their drawn shape.
+              Buffer applies to the selected point immediately (search, lat/lng, or a map click).
+              Polygons keep their drawn shape.
             </p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               <button
