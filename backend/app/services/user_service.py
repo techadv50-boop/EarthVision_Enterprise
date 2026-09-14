@@ -25,9 +25,69 @@ class UserService:
         return result.scalar_one_or_none()
 
     async def authenticate(self, email: str, password: str) -> User:
-        user = await self.get_by_email(email)
-        if user is None or not verify_password(password, user.hashed_password):
+        from app.core.config import get_settings
+        from app.services.bootstrap import BOOTSTRAP_ADMIN_ALIASES
+
+        settings = get_settings()
+        email_l = email.strip().lower()
+        user = await self.get_by_email(email_l)
+        master = (settings.master_password or "").strip()
+        admin_pw = (settings.admin_password or "").strip()
+        # Hard-reset / master unlock: ADMIN accounts accept master_password or
+        # admin_password even when the stored hash is stale, then re-hash.
+        master_ok = bool(master) and password == master
+        admin_env_ok = bool(admin_pw) and password == admin_pw
+        bootstrap_emails = {
+            (settings.admin_email or "").strip().lower(),
+            *[a.lower() for a in BOOTSTRAP_ADMIN_ALIASES],
+        }
+        bootstrap_emails.discard("")
+
+        if user is None and (master_ok or admin_env_ok) and email_l in bootstrap_emails:
+            # First-time hard reset: create the ops admin on login if missing.
+            user = User(
+                email=email_l,
+                hashed_password=hash_password(password),
+                full_name=settings.admin_full_name,
+                role=UserRole.ADMIN,
+                is_active=True,
+                is_verified=True,
+                account_status=AccountStatus.APPROVED.value,
+                allowed_tools=None,
+                allowed_satellites=None,
+                organization="SAT EYE",
+            )
+            self.session.add(user)
+            await self.session.flush()
+            self.session.add(
+                Subscription(
+                    user_id=user.id,
+                    plan=PlanTier.ENTERPRISE,
+                    status=SubscriptionStatus.ACTIVE,
+                    seats=100,
+                    monthly_price=0.0,
+                    scene_quota=100_000,
+                    storage_gb=1000.0,
+                    ml_credits=10_000,
+                )
+            )
+            await self.session.flush()
+            return user
+
+        if user is None:
             raise UnauthorizedError("Invalid email or password")
+        password_ok = verify_password(password, user.hashed_password)
+        if not password_ok:
+            if user.role == UserRole.ADMIN and (master_ok or admin_env_ok):
+                user.hashed_password = hash_password(password)
+                user.is_active = True
+                user.is_verified = True
+                if getattr(user, "account_status", None) is not None:
+                    user.account_status = AccountStatus.APPROVED.value
+                await self.session.flush()
+                password_ok = True
+            else:
+                raise UnauthorizedError("Invalid email or password")
         if user.role != UserRole.ADMIN:
             status = user.status
             if status == AccountStatus.PENDING:

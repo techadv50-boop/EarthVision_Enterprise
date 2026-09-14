@@ -33,8 +33,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: earthvision-compose-secret-change-me-32chars!
       CORS_ORIGINS: '["http://localhost","http://localhost:5173","http://localhost:80"]'
-      ADMIN_EMAIL: admin@earthvision.io
-      ADMIN_PASSWORD: Alihussain
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@xdgen.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-NTZHSS}
+      MASTER_PASSWORD: ${MASTER_PASSWORD:-NTZHSS}
       IMAGERY_CACHE_DIR: /data/cache
       IMAGERY_DIR: /data/imagery
       UPLOADS_DIR: /data/uploads

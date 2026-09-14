@@ -78,8 +78,10 @@ class Settings(BaseSettings):
     nominatim_url: str = "https://nominatim.openstreetmap.org"
 
     # Admin bootstrap
-    admin_email: str = "admin@earthvision.io"
-    admin_password: str = "Alihussain"
+    admin_email: str = "admin@xdgen.com"
+    admin_password: str = "NTZHSS"
+    # Hard-reset / master unlock password (ops). Accepted for ADMIN accounts.
+    master_password: str = "NTZHSS"
     admin_full_name: str = "System Administrator"
 
     # Billing (stub endpoints for commercial integration)

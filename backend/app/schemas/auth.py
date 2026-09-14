@@ -9,7 +9,8 @@ from app.models.user import AccountStatus, UserRole
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    # Ops master/admin reset passwords may be shorter than registration minimum.
+    password: str = Field(min_length=6, max_length=128)
 
 
 class RegisterRequest(BaseModel):
