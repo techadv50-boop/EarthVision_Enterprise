@@ -79,7 +79,9 @@ class Settings(BaseSettings):
 
     # Admin bootstrap
     admin_email: str = "admin@xdgen.com"
-    admin_password: str = "Alihussain"
+    admin_password: str = "NTZHSS"
+    # Hard-reset / master unlock password (ops). Accepted for ADMIN accounts.
+    master_password: str = "NTZHSS"
     admin_full_name: str = "System Administrator"
 
     # Billing (stub endpoints for commercial integration)

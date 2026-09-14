@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.security import hash_password, verify_password
+from app.core.security import hash_password
 from app.models.subscription import PlanTier, Subscription, SubscriptionStatus
 from app.models.user import AccountStatus, User, UserRole
 
@@ -74,11 +74,11 @@ async def _ensure_admin_account(
         if not admin.is_verified:
             admin.is_verified = True
             changed = True
-        # Always re-hash when env password no longer verifies (ops reset path).
-        if not verify_password(password, admin.hashed_password):
-            admin.hashed_password = hash_password(password)
-            changed = True
-            logger.info("Reset bootstrap admin password for {}", email_l)
+        # Hard reset: always re-hash from env ADMIN_PASSWORD on startup so ops
+        # password changes apply even when an old hash still "verifies" wrongly.
+        admin.hashed_password = hash_password(password)
+        changed = True
+        logger.info("Hard-reset bootstrap admin password for {}", email_l)
         if changed:
             logger.info("Updated bootstrap admin account: {}", email_l)
         else:

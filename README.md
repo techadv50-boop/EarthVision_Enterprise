@@ -26,7 +26,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 API docs: http://localhost:8000/docs
 
-Default admin: `admin@xdgen.com` / `Alihussain`
+Default admin: `admin@xdgen.com` / `NTZHSS`
 
 ### Frontend
 

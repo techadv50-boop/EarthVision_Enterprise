@@ -378,13 +378,13 @@ restart_backend_only() {
 }
 
 # Update ADMIN_EMAIL + ADMIN_PASSWORD in live .env and preserved compose.
-# Default login: admin@xdgen.com / Alihussain (override with ADMIN_*_RESET).
+# Default login: admin@xdgen.com / NTZHSS (override with ADMIN_*_RESET).
 # Set RESET_ADMIN_PASSWORD=0 to skip.
 # When reset is enabled we ALWAYS mark ADMIN_PASSWORD_SYNCED=1 so the backend
 # is recreated even if .env already matched (DB hash can still be stale).
 ADMIN_PASSWORD_SYNCED=0
 sync_admin_password_env() {
-  local new_pw="${ADMIN_PASSWORD_RESET:-Alihussain}"
+  local new_pw="${ADMIN_PASSWORD_RESET:-NTZHSS}"
   local new_email="${ADMIN_EMAIL_RESET:-admin@xdgen.com}"
   local do_sync="${RESET_ADMIN_PASSWORD:-1}"
   ADMIN_PASSWORD_SYNCED=0
@@ -429,8 +429,26 @@ sync_admin_password_env() {
   else
     printf '\nADMIN_EMAIL=%s\n' "$new_email" >> .env
   fi
+  # Master unlock password (same value as admin hard-reset by default).
+  if grep -qE '^MASTER_PASSWORD=' .env; then
+    awk -v pw="$new_pw" '
+      BEGIN { done=0 }
+      /^MASTER_PASSWORD=/ {
+        print "MASTER_PASSWORD=" pw
+        done=1
+        next
+      }
+      { print }
+      END {
+        if (!done) print "MASTER_PASSWORD=" pw
+      }
+    ' .env > .env.tmp_admin
+    mv .env.tmp_admin .env
+  else
+    printf '\nMASTER_PASSWORD=%s\n' "$new_pw" >> .env
+  fi
   chmod 600 .env || true
-  log "ADMIN_EMAIL/ADMIN_PASSWORD synced in .env (values not printed)"
+  log "ADMIN_EMAIL/ADMIN_PASSWORD/MASTER_PASSWORD synced in .env (values not printed)"
 
   # --- preserved / live docker-compose.yml (hardcoded env otherwise wins) ---
   if [[ -f docker-compose.yml ]]; then
@@ -441,7 +459,13 @@ sync_admin_password_env() {
     if grep -qE '^[[:space:]]*ADMIN_PASSWORD:' docker-compose.yml; then
       sed -i -E "s|^([[:space:]]*ADMIN_PASSWORD:).*|\1 \${ADMIN_PASSWORD:-$new_pw}|" docker-compose.yml
     fi
-    log "ADMIN_EMAIL/ADMIN_PASSWORD wired in docker-compose.yml via env substitution"
+    if grep -qE '^[[:space:]]*MASTER_PASSWORD:' docker-compose.yml; then
+      sed -i -E "s|^([[:space:]]*MASTER_PASSWORD:).*|\1 \${MASTER_PASSWORD:-$new_pw}|" docker-compose.yml
+    else
+      # Insert MASTER_PASSWORD under ADMIN_PASSWORD when missing on preserved live compose.
+      sed -i -E "/^[[:space:]]*ADMIN_PASSWORD:/a\\      MASTER_PASSWORD: \${MASTER_PASSWORD:-$new_pw}" docker-compose.yml
+    fi
+    log "ADMIN_EMAIL/ADMIN_PASSWORD/MASTER_PASSWORD wired in docker-compose.yml via env substitution"
   fi
 
   # Force backend recreate so bootstrap re-hashes even when .env was already correct.
