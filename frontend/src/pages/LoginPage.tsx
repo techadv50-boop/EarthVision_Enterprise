@@ -1,25 +1,31 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, Loader2 } from 'lucide-react';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import { authApi } from '@/services/api';
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('operator@satpass.xdgen.com');
-  const [password, setPassword] = useState('pak123');
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('Admin@123456');
   const [masterPassword, setMasterPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [showReset, setShowReset] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
-  const { login, isLoading } = useAuthStore();
+  const { login } = useAuthStore();
   const [resetting, setResetting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    useAuthStore.setState({ isLoading: false });
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setInfo('');
+    setSubmitting(true);
     try {
       await login(username, password);
       const signedIn = useAuthStore.getState().user;
@@ -32,8 +38,10 @@ export default function LoginPage() {
       setError(
         typeof detail === 'string'
           ? detail
-          : 'Invalid credentials. Use operator@satpass.xdgen.com / pak123',
+          : 'Invalid credentials. Use admin / Admin@123456',
       );
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -97,11 +105,12 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={submitting}
               className="btn-primary w-full flex items-center justify-center gap-2"
             >
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Sign In'}
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Sign In'}
             </button>
+            <p className="text-center text-xs text-gray-600">Default: admin / Admin@123456</p>
             <button
               type="button"
               className="w-full text-sm text-gray-500 hover:text-earth-400"

@@ -240,3 +240,21 @@ async def test_admin_creates_user_and_can_restrict_access(client):
     assert blocked.status_code == 403
     assert "restricted" in blocked.json()["detail"].lower()
 
+
+@pytest.mark.asyncio
+async def test_login_trailing_slash_does_not_redirect(client):
+    response = await client.post(
+        "/api/v1/auth/login/",
+        json={"username": "admin", "password": "Admin@123456"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 200, response.text
+    assert "access_token" in response.json()
+
+
+@pytest.mark.asyncio
+async def test_login_get_redirects_to_app(client):
+    response = await client.get("/api/v1/auth/login", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers.get("location") == "/login"
+

@@ -26,29 +26,37 @@ interface AuthState {
   fetchUser: () => Promise<void>;
 }
 
+function clearStoredTokens() {
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: !!localStorage.getItem('access_token'),
-  isLoading: !!localStorage.getItem('access_token'),
+  // Never start true: leftover tokens used to disable Sign In forever.
+  isLoading: false,
 
   login: async (username, password) => {
-    set({ isLoading: true });
     try {
       const { data } = await authApi.login(username, password);
+      if (!data?.access_token) {
+        throw new Error('Login did not return a token');
+      }
       localStorage.setItem('access_token', data.access_token);
       localStorage.setItem('refresh_token', data.refresh_token);
       const { data: user } = await authApi.me();
       set({ user, isAuthenticated: true, isLoading: false });
     } catch (error) {
-      set({ isLoading: false });
+      clearStoredTokens();
+      set({ user: null, isAuthenticated: false, isLoading: false });
       throw error;
     }
   },
 
   logout: () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    set({ user: null, isAuthenticated: false });
+    clearStoredTokens();
+    set({ user: null, isAuthenticated: false, isLoading: false });
   },
 
   fetchUser: async () => {
@@ -61,8 +69,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       const { data } = await authApi.me();
       set({ user: data, isAuthenticated: true, isLoading: false });
     } catch {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
+      clearStoredTokens();
       set({ user: null, isAuthenticated: false, isLoading: false });
     }
   },

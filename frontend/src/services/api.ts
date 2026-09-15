@@ -4,7 +4,9 @@ const API_BASE = '/api/v1';
 
 const api = axios.create({
   baseURL: API_BASE,
+  timeout: 20000,
   headers: { 'Content-Type': 'application/json' },
+  maxRedirects: 0,
 });
 
 api.interceptors.request.use((config) => {
@@ -15,30 +17,44 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+function isAuthEndpoint(url: string | undefined): boolean {
+  return /\/auth\/(login|register|refresh|reset-password)/.test(String(url || ''));
+}
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error.config;
-    if (error.response?.status === 401 && !original._retry) {
-      original._retry = true;
-      const refreshToken = localStorage.getItem('refresh_token');
-      if (refreshToken) {
-        try {
-          const { data } = await axios.post(`${API_BASE}/auth/refresh`, {
-            refresh_token: refreshToken,
-          });
-          localStorage.setItem('access_token', data.access_token);
-          localStorage.setItem('refresh_token', data.refresh_token);
-          original.headers.Authorization = `Bearer ${data.access_token}`;
-          return api(original);
-        } catch {
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
-          window.location.href = '/login';
-        }
-      }
+    if (!original || original._retry || isAuthEndpoint(original.url)) {
+      return Promise.reject(error);
     }
-    return Promise.reject(error);
+    if (error.response?.status !== 401) {
+      return Promise.reject(error);
+    }
+    original._retry = true;
+    const refreshToken = localStorage.getItem('refresh_token');
+    if (!refreshToken) {
+      return Promise.reject(error);
+    }
+    try {
+      const { data } = await axios.post(
+        `${API_BASE}/auth/refresh`,
+        { refresh_token: refreshToken },
+        { timeout: 15000, maxRedirects: 0 },
+      );
+      localStorage.setItem('access_token', data.access_token);
+      localStorage.setItem('refresh_token', data.refresh_token);
+      original.headers = original.headers || {};
+      original.headers.Authorization = `Bearer ${data.access_token}`;
+      return api(original);
+    } catch {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+      return Promise.reject(error);
+    }
   }
 );
 
@@ -52,6 +68,36 @@ export const authApi = {
   me: () => api.get('/auth/me'),
   resetPassword: (email: string, master_password: string, new_password: string) =>
     api.post('/auth/reset-password', { email, master_password, new_password }),
+};
+
+export interface TleResult {
+  name: string;
+  norad_id?: number | null;
+  line1: string;
+  line2: string;
+}
+
+export interface SavedSatellite {
+  id: number;
+  name: string;
+  norad_id?: number | null;
+  tle_line1: string;
+  tle_line2: string;
+  color?: string | null;
+  created_at: string;
+}
+
+export const satelliteApi = {
+  fetch: (q: string) => api.get<TleResult[]>('/satellites/fetch', { params: { q } }),
+  list: () => api.get<SavedSatellite[]>('/satellites'),
+  add: (data: {
+    name: string;
+    line1: string;
+    line2: string;
+    norad_id?: number | null;
+    color?: string | null;
+  }) => api.post<SavedSatellite>('/satellites', data),
+  remove: (id: number) => api.delete(`/satellites/${id}`),
 };
 
 export const geoApi = {
