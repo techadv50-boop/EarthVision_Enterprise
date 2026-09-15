@@ -4,7 +4,9 @@ WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
-RUN npm run build
+# Bust stale Dokploy layer cache when only login/nginx files change.
+ARG SATPASS_BUILD_ID=login-fix-2
+RUN npm run build && printf '%s\n' "$SATPASS_BUILD_ID" > /app/dist/satpass-build.txt
 
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html

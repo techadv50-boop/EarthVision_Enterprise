@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, Loader2 } from 'lucide-react';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
@@ -16,6 +16,10 @@ export default function LoginPage() {
   const [resetting, setResetting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    useAuthStore.setState({ isLoading: false });
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -106,6 +110,7 @@ export default function LoginPage() {
             >
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Sign In'}
             </button>
+            <p className="text-center text-xs text-gray-600">Default: admin / Admin@123456</p>
             <button
               type="button"
               className="w-full text-sm text-gray-500 hover:text-earth-400"

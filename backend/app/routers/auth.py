@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register/", response_model=UserResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 async def register(
     user_data: UserCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -49,11 +51,7 @@ async def register(
     )
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login(
-    credentials: UserLogin,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
+async def _login(credentials: UserLogin, db: AsyncSession) -> TokenResponse:
     service = AuthService(db)
     user = await service.authenticate(credentials.username, credentials.password)
     if user is None:
@@ -66,7 +64,24 @@ async def login(
     return TokenResponse(**service.create_tokens(user))
 
 
+@router.get("/login", include_in_schema=False)
+@router.get("/login/", include_in_schema=False)
+async def login_get():
+    """Browsers GET this URL and otherwise see FastAPI's Method Not Allowed JSON."""
+    return RedirectResponse(url="/login", status_code=303)
+
+
+@router.post("/login", response_model=TokenResponse)
+@router.post("/login/", response_model=TokenResponse, include_in_schema=False)
+async def login(
+    credentials: UserLogin,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    return await _login(credentials, db)
+
+
 @router.post("/reset-password")
+@router.post("/reset-password/", include_in_schema=False)
 async def reset_password(
     body: PasswordReset,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -86,6 +101,7 @@ async def reset_password(
 
 
 @router.post("/refresh", response_model=TokenResponse)
+@router.post("/refresh/", response_model=TokenResponse, include_in_schema=False)
 async def refresh_token(
     body: TokenRefresh,
     db: Annotated[AsyncSession, Depends(get_db)],

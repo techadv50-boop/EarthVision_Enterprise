@@ -20,13 +20,23 @@ const BillingSuccessPage = lazy(() => import('@/pages/BillingSuccessPage'));
 const BillingCancelPage = lazy(() => import('@/pages/BillingCancelPage'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, fetchUser, isLoading } = useAuthStore();
+  const { isAuthenticated, fetchUser, isLoading, user } = useAuthStore();
+  const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('access_token');
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const state = useAuthStore.getState();
+      if (state.isLoading) {
+        localStorage.removeItem('access_token');
+        localStorage.removeItem('refresh_token');
+        useAuthStore.setState({ user: null, isAuthenticated: false, isLoading: false });
+      }
+    }, 20000);
     void fetchUser();
+    return () => window.clearTimeout(timer);
   }, [fetchUser]);
 
-  if (isLoading) {
+  if (isLoading || (hasToken && !user && isAuthenticated)) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-400">
         Loading...
