@@ -12,6 +12,9 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    delete config.headers['Content-Type'];
+  }
   return config;
 });
 
@@ -70,6 +73,40 @@ export interface SavedSatellite {
   color?: string | null;
   created_at: string;
 }
+
+export interface AoiLayerSummary {
+  id: number;
+  name: string;
+  original_filename: string;
+  name_field?: string | null;
+  feature_count: number;
+  created_at?: string | null;
+}
+
+export interface AoiLayerFeature {
+  id: string;
+  name: string;
+}
+
+export interface AoiLayerDetail extends AoiLayerSummary {
+  features: AoiLayerFeature[];
+}
+
+export const aoiLayerApi = {
+  list: () => api.get<AoiLayerSummary[]>('/aoi-layers'),
+  get: (id: number) => api.get<AoiLayerDetail>(`/aoi-layers/${id}`),
+  geojson: (id: number) => api.get<GeoJSON.FeatureCollection>(`/aoi-layers/${id}/geojson`),
+  create: (file: File, name = '') => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (name.trim()) fd.append('name', name.trim());
+    return api.post<AoiLayerSummary>('/aoi-layers', fd);
+  },
+  remove: (id: number) => api.delete(`/aoi-layers/${id}`),
+  exportAoi: (id: number, featureIds: string[]) =>
+    api.post<Blob>(`/aoi-layers/${id}/export-aoi`, { feature_ids: featureIds }, { responseType: 'blob' }),
+  download: (id: number) => api.get<Blob>(`/aoi-layers/${id}/download`, { responseType: 'blob' }),
+};
 
 export const satelliteApi = {
   fetch: (q: string) => api.get<TleResult[]>('/satellites/fetch', { params: { q } }),

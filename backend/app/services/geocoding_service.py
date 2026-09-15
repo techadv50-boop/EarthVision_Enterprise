@@ -15,8 +15,9 @@ class GeocodingService:
             "format": "json",
             "limit": limit,
             "addressdetails": 1,
+            "accept-language": "en",
         }
-        headers = {"User-Agent": "EarthVision-Enterprise/1.0"}
+        headers = {"User-Agent": "EarthVision-Enterprise/1.0", "Accept-Language": "en"}
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -34,10 +35,15 @@ class GeocodingService:
                 bb = item["boundingbox"]
                 bbox = [float(bb[2]), float(bb[0]), float(bb[3]), float(bb[1])]
 
+            display = item.get("display_name") or ""
+            raw_name = item.get("name") or ""
+            name = raw_name if raw_name.isascii() and any(c.isalpha() for c in raw_name) else (
+                display.split(",")[0].strip() if display else raw_name or query
+            )
             results.append(
                 LocationSearchResult(
-                    name=item.get("name", query),
-                    display_name=item.get("display_name", ""),
+                    name=name,
+                    display_name=display,
                     longitude=float(item["lon"]),
                     latitude=float(item["lat"]),
                     bounding_box=bbox,

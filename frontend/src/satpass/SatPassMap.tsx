@@ -1,7 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { parseTle, getState, groundTrack, footprintRadiusMeters, type SatState } from './orbit';
+import { addBaseMap } from './baseMap';
+import MapMeasureTools from './MapMeasureTools';
 import type { SatRec } from 'satellite.js';
 
 export interface TrackedSat {
@@ -47,74 +49,10 @@ function setLayerVisible(map: L.Map, layer: L.Layer, visible: boolean) {
   else if (!visible && map.hasLayer(layer)) map.removeLayer(layer);
 }
 
-const OCEANS: { name: string; lat: number; lon: number }[] = [
-  { name: 'NORTH PACIFIC OCEAN', lat: 25, lon: -160 },
-  { name: 'SOUTH PACIFIC OCEAN', lat: -30, lon: -125 },
-  { name: 'NORTH ATLANTIC OCEAN', lat: 32, lon: -42 },
-  { name: 'SOUTH ATLANTIC OCEAN', lat: -30, lon: -18 },
-  { name: 'INDIAN OCEAN', lat: -22, lon: 78 },
-  { name: 'SOUTHERN OCEAN', lat: -62, lon: 40 },
-  { name: 'ARCTIC OCEAN', lat: 80, lon: 0 },
-];
-
-function textIcon(text: string, style: string) {
-  return L.divIcon({
-    className: '',
-    iconSize: [0, 0],
-    html: `<div style="position:absolute;transform:translate(-50%,-50%);white-space:nowrap;pointer-events:none;${style}">${text}</div>`,
-  });
-}
-
-function addBaseMap(map: L.Map) {
-  fetch('/world-countries-110m.geojson')
-    .then((r) => r.json())
-    .then((geo: GeoJSON.FeatureCollection) => {
-      L.geoJSON(geo, {
-        interactive: false,
-        style: {
-          color: '#3d5670',
-          weight: 0.8,
-          fillColor: '#1c2c3d',
-          fillOpacity: 1,
-        },
-      }).addTo(map);
-
-      // Major country name labels.
-      for (const f of geo.features) {
-        const p = (f.properties || {}) as Record<string, unknown>;
-        const rank = Number(p.LABELRANK);
-        const lon = Number(p.LABEL_X);
-        const lat = Number(p.LABEL_Y);
-        const name = String(p.NAME ?? '');
-        if (!name || Number.isNaN(lon) || Number.isNaN(lat) || rank > 2) continue;
-        L.marker([lat, lon], {
-          interactive: false,
-          keyboard: false,
-          icon: textIcon(
-            name.toUpperCase(),
-            'color:#c7d4e0;font:600 10px Inter,sans-serif;letter-spacing:0.5px;text-shadow:0 1px 2px #000',
-          ),
-        }).addTo(map);
-      }
-
-      // Ocean labels.
-      for (const o of OCEANS) {
-        L.marker([o.lat, o.lon], {
-          interactive: false,
-          keyboard: false,
-          icon: textIcon(
-            o.name,
-            'color:#5b86ad;font:italic 500 11px Inter,sans-serif;letter-spacing:1px;opacity:0.8',
-          ),
-        }).addTo(map);
-      }
-    })
-    .catch(() => undefined);
-}
-
 export default function SatPassMap({ sats, onStates, focusId, showVisibility = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const [leafletMap, setLeafletMap] = useState<L.Map | null>(null);
   const runtimeRef = useRef<Map<number, SatRuntime>>(new Map());
   const onStatesRef = useRef(onStates);
   onStatesRef.current = onStates;
@@ -140,6 +78,7 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
       maxBoundsViscosity: 1,
     });
     mapRef.current = map;
+    setLeafletMap(map);
 
     // Lightweight offline base map: bundled Natural Earth countries + labels.
     addBaseMap(map);
@@ -147,6 +86,8 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
     // The map lives next to a sidebar; make sure Leaflet re-measures its box.
     const invalidate = () => map.invalidateSize();
     const raf = window.setTimeout(invalidate, 0);
+    const raf2 = window.setTimeout(invalidate, 200);
+    const raf3 = window.setTimeout(invalidate, 600);
     const resizeObserver =
       typeof ResizeObserver !== 'undefined' && containerRef.current
         ? new ResizeObserver(invalidate)
@@ -174,7 +115,13 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
         );
         rt.swath.setLatLng(ll);
         rt.vis.setLatLng(ll).setRadius(footprintRadiusMeters(s.altKm));
-        if (refreshTracks && mapRef.current) refreshTrack(mapRef.current, rt, date);
+        if (refreshTracks && mapRef.current) {
+          try {
+            refreshTrack(mapRef.current, rt, date);
+          } catch {
+            /* keep the marker moving even if the trail cannot refresh */
+          }
+        }
       });
       onStatesRef.current?.(states);
     }, 1000);
@@ -182,10 +129,13 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
     return () => {
       window.clearInterval(timer);
       window.clearTimeout(raf);
+      window.clearTimeout(raf2);
+      window.clearTimeout(raf3);
       window.removeEventListener('resize', invalidate);
       resizeObserver?.disconnect();
       map.remove();
       mapRef.current = null;
+      setLeafletMap(null);
       runtimeRef.current.clear();
     };
   }, []);
@@ -215,7 +165,8 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
         }
         const date = new Date();
         const s = getState(satrec, date);
-        const ll = L.latLng(s?.lat ?? 0, s?.lon ?? 0);
+        if (!s) continue;
+        const ll = L.latLng(s.lat, s.lon);
         const marker = L.marker(ll, { icon: dotIcon(sat.color) }).bindTooltip(sat.name, {
           permanent: true,
           direction: 'top',
@@ -271,7 +222,12 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
     map.setView(rt.marker.getLatLng(), 3, { animate: true });
   }, [focusId]);
 
-  return <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />;
+  return (
+    <>
+      <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />
+      <MapMeasureTools map={leafletMap} />
+    </>
+  );
 }
 
 function refreshTrack(map: L.Map, rt: SatRuntime, date: Date) {
@@ -282,7 +238,7 @@ function refreshTrack(map: L.Map, rt: SatRuntime, date: Date) {
   for (const seg of segments) {
     if (seg.length < 2) continue;
     const latlngs = seg.map((p) => L.latLng(p.lat, p.lon));
-    const line = L.polyline(latlngs, { color: rt.color, weight: 2, opacity: 0.85 });
+    const line = L.polyline(latlngs, { pane: 'overlayPane', color: rt.color, weight: 2, opacity: 0.85 });
     rt.trackLayers.push(line);
     if (visible) line.addTo(map);
   }

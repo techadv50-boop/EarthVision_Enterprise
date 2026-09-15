@@ -10,12 +10,16 @@ import {
   X,
   Users,
   LogOut,
+  Layers,
 } from 'lucide-react';
 import { satelliteApi, type SavedSatellite, type TleResult } from '@/services/api';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 import SatPassMap, { type TrackedSat } from './SatPassMap';
 import SatPassUsersModal from './SatPassUsersModal';
+import SatPassLayersModal from './SatPassLayersModal';
+import PredictView from './PredictView';
 import type { SatState } from './orbit';
+import { catalogSensor } from './predict/catalog';
 
 const PALETTE = [
   '#22d3ee',
@@ -35,11 +39,14 @@ const PRESETS: { name: string; q: string }[] = [
   { name: 'NOAA-19', q: '33591' },
   { name: 'Landsat-9', q: '49260' },
   { name: 'Sentinel-2A', q: '40697' },
+  { name: 'NISAR', q: '65053' },
 ];
 
 const DEFAULT_SWATH_KM = 60;
 
 function toTracked(s: SavedSatellite, color: string): TrackedSat {
+  const norad = s.norad_id ?? noradFromLine1(s.tle_line1);
+  const sensor = catalogSensor(s.name, norad);
   return {
     id: s.id,
     name: s.name,
@@ -47,20 +54,27 @@ function toTracked(s: SavedSatellite, color: string): TrackedSat {
     line2: s.tle_line2,
     color: s.color || color,
     visible: true,
-    swathKm: DEFAULT_SWATH_KM,
+    swathKm: sensor.swathKm ?? DEFAULT_SWATH_KM,
     noradId: s.norad_id,
   };
 }
 
 function noradFromLine1(line1: string): number | null {
-  const n = parseInt(line1.slice(2, 7), 10);
-  return Number.isNaN(n) ? null : n;
+  const n = parseInt(line1.slice(2, 7).trim(), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isPlaceholderName(name: string | null | undefined): boolean {
+  const n = (name || '').trim().toLowerCase();
+  if (!n) return true;
+  if (/^norad\s+\d+$/i.test(n)) return true;
+  return ['custom satellite', 'custom sat', 'customsat', 'custom', 'unnamed', 'unknown'].includes(
+    n,
+  );
 }
 
 /** Parse a pasted TLE block (optional name line + the two element lines). */
-function parseTleBlock(
-  text: string,
-): { name: string; line1: string; line2: string; noradId: number | null } | null {
+function parseTleBlock(text: string): { name: string | null; line1: string; line2: string } | null {
   const lines = text
     .split('\n')
     .map((l) => l.trim())
@@ -68,13 +82,12 @@ function parseTleBlock(
   const l1 = lines.find((l) => l.startsWith('1 '));
   const l2 = lines.find((l) => l.startsWith('2 '));
   if (!l1 || !l2) return null;
-  let nameLine = lines.find((l) => !l.startsWith('1 ') && !l.startsWith('2 '));
-  // Some sources prefix the name line with "0 " (3LE format).
-  if (nameLine && nameLine.startsWith('0 ')) nameLine = nameLine.slice(2).trim();
-  return { name: (nameLine || '').trim(), line1: l1, line2: l2, noradId: noradFromLine1(l1) };
+  const nameLine = lines.find((l) => !l.startsWith('1 ') && !l.startsWith('2 '));
+  return { name: nameLine || null, line1: l1, line2: l2 };
 }
 
 export default function SatPassPage() {
+  const [mode, setMode] = useState<'track' | 'predict'>('predict');
   const [sats, setSats] = useState<TrackedSat[]>([]);
   const [states, setStates] = useState<Record<number, SatState>>({});
   const [focusId, setFocusId] = useState<number | null>(null);
@@ -88,6 +101,8 @@ export default function SatPassPage() {
   const [tleText, setTleText] = useState('');
   const [showVisibility, setShowVisibility] = useState(false);
   const [showUsers, setShowUsers] = useState(false);
+  const [showLayers, setShowLayers] = useState(false);
+  const [layersEpoch, setLayersEpoch] = useState(0);
 
   const navigate = useNavigate();
   // ProtectedRoute already loads the current user; here we only read it.
@@ -176,45 +191,80 @@ export default function SatPassPage() {
       setError('Paste a valid TLE — a line starting with "1 " and one starting with "2 ".');
       return;
     }
-    // If the paste has no name line, resolve the real satellite name from Celestrak
-    // by its NORAD catalog number instead of falling back to a generic name.
-    let name = parsed.name;
-    if (!name && parsed.noradId) {
-      try {
-        const { data } = await satelliteApi.fetch(String(parsed.noradId));
-        if (data[0]?.name) name = data[0].name;
-      } catch {
-        /* fall back below */
+    const norad = noradFromLine1(parsed.line1);
+    let name = parsed.name?.trim() || '';
+    setSearching(true);
+    setError('');
+    try {
+      if (norad && isPlaceholderName(name)) {
+        try {
+          const { data } = await satelliteApi.fetch(String(norad));
+          const catalogName = data[0]?.name?.trim();
+          if (catalogName && !isPlaceholderName(catalogName)) {
+            name = catalogName;
+          }
+        } catch {
+          /* keep pasted/fallback name if Celestrak is unreachable */
+        }
       }
-    }
-    if (!name) name = parsed.noradId ? `NORAD ${parsed.noradId}` : 'Custom satellite';
-    const ok = await addFromTle(name, parsed.line1, parsed.line2, parsed.noradId);
-    if (ok) {
-      setTleText('');
-      setShowPaste(false);
+      if (isPlaceholderName(name)) {
+        name = norad ? `NORAD ${norad}` : 'Custom satellite';
+      }
+      const ok = await addFromTle(name, parsed.line1, parsed.line2, norad);
+      if (ok) {
+        setTleText('');
+        setShowPaste(false);
+      }
+    } finally {
+      setSearching(false);
     }
   };
 
+  const tabBtn = (id: 'track' | 'predict', label: string) => (
+    <button
+      onClick={() => setMode(id)}
+      className={`rounded px-3 py-1.5 text-sm font-medium ${
+        mode === id ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10 hover:text-white'
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-black text-gray-100">
-      {/* Control panel (sidebar) */}
-      <aside className="flex h-full w-[360px] max-w-[92vw] shrink-0 flex-col border-r border-white/10 bg-gray-950">
-        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
-          <Satellite className="h-6 w-6 text-cyan-400" />
-          <div className="min-w-0 flex-1">
-            <h1 className="text-base font-bold tracking-wide">SatPass</h1>
-            <p className="truncate text-[11px] text-gray-500">
-              satpass.xdgen.com · live satellite tracker
-            </p>
-          </div>
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-black text-gray-100">
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 bg-gray-950 px-4">
+        <Satellite className="h-6 w-6 text-cyan-400" />
+        <div className="min-w-0">
+          <h1 className="text-base font-bold tracking-wide">SatPass</h1>
+        </div>
+        <nav className="ml-2 flex items-center gap-1 rounded-md bg-white/5 p-0.5 ring-1 ring-white/10">
+          {tabBtn('track', 'Track')}
+          {tabBtn('predict', 'Predict')}
+        </nav>
+        <p className="hidden truncate text-[11px] text-gray-500 sm:block">
+          {mode === 'predict'
+            ? 'When will this satellite pass over a location or area?'
+            : 'satpass.xdgen.com · live satellite tracker'}
+        </p>
+        <div className="ml-auto flex items-center gap-1">
           {admin && (
-            <button
-              onClick={() => setShowUsers(true)}
-              title="Manage user access"
-              className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-cyan-400"
-            >
-              <Users className="h-4 w-4" />
-            </button>
+            <>
+              <button
+                onClick={() => setShowLayers(true)}
+                title="Manage shapefile layers"
+                className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-cyan-400"
+              >
+                <Layers className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => setShowUsers(true)}
+                title="Manage user access"
+                className="rounded p-1.5 text-gray-400 hover:bg-white/10 hover:text-cyan-400"
+              >
+                <Users className="h-4 w-4" />
+              </button>
+            </>
           )}
           <button
             onClick={() => {
@@ -227,7 +277,14 @@ export default function SatPassPage() {
             <LogOut className="h-4 w-4" />
           </button>
         </div>
+      </header>
 
+      {mode === 'predict' ? (
+        <PredictView key={user?.id ?? 'predict'} trackedSats={sats} layersEpoch={layersEpoch} />
+      ) : (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+      {/* Control panel (sidebar) */}
+      <aside className="flex h-full w-[360px] max-w-[92vw] shrink-0 flex-col border-r border-white/10 bg-gray-950">
         {user && (
           <div className="border-b border-white/10 px-4 py-1.5 text-[11px] text-gray-500">
             Signed in as <span className="text-gray-300">{user.full_name || user.username}</span>
@@ -293,9 +350,11 @@ export default function SatPassPage() {
                 />
                 <button
                   type="submit"
-                  className="inline-flex items-center gap-1 rounded bg-cyan-600 px-3 py-1.5 text-sm font-medium hover:bg-cyan-500"
+                  disabled={searching}
+                  className="inline-flex items-center gap-1 rounded bg-cyan-600 px-3 py-1.5 text-sm font-medium hover:bg-cyan-500 disabled:opacity-50"
                 >
-                  <Plus className="h-4 w-4" /> Add satellite
+                  {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{' '}
+                  Add satellite
                 </button>
               </form>
             )}
@@ -427,8 +486,19 @@ export default function SatPassPage() {
           showVisibility={showVisibility}
         />
       </div>
+        </div>
+      )}
 
       {showUsers && <SatPassUsersModal onClose={() => setShowUsers(false)} />}
+      {showLayers && (
+        <SatPassLayersModal
+          onChanged={() => setLayersEpoch((n) => n + 1)}
+          onClose={() => {
+            setShowLayers(false);
+            setLayersEpoch((n) => n + 1);
+          }}
+        />
+      )}
     </div>
   );
 }
