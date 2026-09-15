@@ -154,6 +154,58 @@ def test_metadata_same_hash_is_no_change():
     assert changes.unchanged
 
 
+def test_empty_file_is_a_valid_object(tmp_path: Path):
+    from app.master.objects import has_object
+
+    store = MasterStore(tmp_path / "ServerBackups")
+    digest = write_object_from_bytes(store.objects_root, b"")
+    assert digest == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    assert has_object(store.objects_root, digest)
+    rec = make_record(
+        source_root="/var/www/journal.50sea.com",
+        relative_path="docs/manual/de/SUMMARY.md",
+        sha256=digest,
+        size=0,
+    )
+    store.commit(
+        generation=1,
+        tree={"files": [rec]},
+        meta={"generation": 1, "database": "SKIPPED", "integrity": "OK"},
+        history={"operation_id": "empty-ok", "type": "FULL", "status": "SUCCESS"},
+    )
+    health = assess_health(store, deep=True)
+    assert health["status"] == HEALTHY
+
+
+def test_committed_missing_object_is_corrupted(tmp_path: Path):
+    store = MasterStore(tmp_path / "ServerBackups")
+    digest = write_object_from_bytes(store.objects_root, b"present")
+    rec = make_record(source_root="/var/www/a", relative_path="gone.txt", sha256=digest, size=7)
+    store.commit(
+        generation=1,
+        tree={"files": [rec]},
+        meta={"generation": 1, "database": "SKIPPED", "integrity": "OK"},
+        history={"operation_id": "op1", "type": "FULL"},
+    )
+    object_path(store.objects_root, digest).unlink()
+    health = assess_health(store, deep=False)
+    assert health["status"] == CORRUPTED
+    assert health["generation"] == 1
+    assert "gone.txt" in health["detail"]
+    assert digest in health["detail"]
+    assert store.head_generation() == 1
+
+
+def test_no_head_does_not_validate_objects(tmp_path: Path):
+    store = MasterStore(tmp_path / "ServerBackups")
+    store.ensure_layout()
+    health = assess_health(store, deep=True)
+    assert health["status"] == MISSING
+    assert health.get("master_status") == "NO BASELINE"
+    assert health["generation"] is None
+    assert store.head_generation() is None
+
+
 def test_no_keep_five_on_master_directory(tmp_path: Path):
     from app.backup.retention import apply_retention, list_successful_backups
     from tests.helpers import write_success_backup

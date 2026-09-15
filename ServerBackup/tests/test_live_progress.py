@@ -383,10 +383,13 @@ def test_worker_exception_reaches_gui_without_stale_live_state(tmp_path: Path):
     with patch.object(QMessageBox, "critical", fake_critical):
         window._on_backup_finished(state.operation_id, False, "simulated worker crash")
     qt.processEvents()
-    assert boxes
-    assert "BACKUP FAILED" in boxes[0]
+    assert boxes == []
     assert "Status: IDLE" in window.dashboard.live_panel.text()
+    assert "LAST RESULT: FAILED" in window.dashboard.result_panel.text()
     assert "simulated worker crash" in window.dashboard.result_panel.text()
+    window.show()
+    qt.processEvents()
+    assert not window.dashboard.details_button.isHidden()
     window.close()
 
 

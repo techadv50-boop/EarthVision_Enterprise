@@ -41,17 +41,32 @@ def master_idle_facts(config: AppConfig) -> dict[str, Any]:
     store = MasterStore(config.backup_destination)
     meta = store.load_meta()
     generation = store.head_generation()
-    size = int(meta.get("master_bytes") or meta.get("source_bytes") or 0)
     if generation is None:
-        head = "MISSING"
-    else:
-        head = str(generation)
-    return {"current_size": size, "head_state": head, "generation": generation}
+        return {
+            "current_size": 0,
+            "head_state": "MISSING",
+            "generation": None,
+            "master_status": "NO BASELINE",
+        }
+    size = int(meta.get("master_bytes") or meta.get("source_bytes") or 0)
+    return {
+        "current_size": size,
+        "head_state": str(generation),
+        "generation": generation,
+        "master_status": f"GENERATION {generation}",
+    }
 
 
 def clear_stale_progress(config: AppConfig) -> bool:
     """Normalize leftover runtime state to IDLE when no backup lock is held."""
     return normalize_startup_progress(config)
+
+
+def last_result_from_progress(progress: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    data = dict(progress or {})
+    if isinstance(data.get("last_result"), dict):
+        return dict(data["last_result"])
+    return None
 
 
 def normalize_startup_progress(config: AppConfig) -> bool:
@@ -61,16 +76,15 @@ def normalize_startup_progress(config: AppConfig) -> bool:
     reporter = ProgressReporter(progress_path())
     data = reporter.read()
     facts = master_idle_facts(config)
-    last_result = None
-    if isinstance(data.get("last_result"), dict):
-        last_result = data.get("last_result")
-    elif str(data.get("status") or "").lower() in {"failed", "cancelled", "success"}:
+    last_result = last_result_from_progress(data)
+    if last_result is None and str(data.get("status") or "").lower() in {"failed", "cancelled", "success"}:
         last_result = {
             "status": data.get("status"),
             "message": data.get("message"),
             "error": data.get("error"),
             "operation_id": data.get("operation_id") or data.get("backup_id"),
             "head_state": data.get("head_state"),
+            "error_scope": "operation",
         }
     reporter.reset_idle(
         master_size=int(facts["current_size"] or 0),
@@ -167,8 +181,10 @@ def collect_dashboard_status(config: AppConfig) -> dict[str, Any]:
             head_state=str(facts["head_state"]),
             last_result=progress.get("last_result") if isinstance(progress.get("last_result"), dict) else None,
         ),
+        "last_completed": progress.get("last_result") if isinstance(progress.get("last_result"), dict) else None,
         "master_bytes": facts["current_size"],
         "head_label": facts["head_state"],
+        "master_idle_status": facts.get("master_status") or "NO BASELINE",
         "destination": str(dest),
         "drive_error": drive.error,
         **_discovery_status(config),
@@ -210,6 +226,17 @@ def _discovery_status(config: AppConfig) -> dict[str, Any]:
 
 def _master_status(config: AppConfig) -> dict[str, Any]:
     store = MasterStore(config.backup_destination)
+    if not store.has_head():
+        history = store.list_history()
+        last = history[0] if history else {}
+        return {
+            "status": "NO BASELINE",
+            "generation": None,
+            "detail": "No committed master baseline.",
+            "last_type": last.get("type"),
+            "updated_at": last.get("timestamp"),
+            "ojs": "—",
+        }
     health = assess_health(store, deep=False)
     meta = store.load_meta()
     history = store.list_history()
@@ -218,8 +245,11 @@ def _master_status(config: AppConfig) -> dict[str, Any]:
     ojs_text = ", ".join(
         f"{item.get('domain')}:{item.get('files_dir')}" for item in ojs if isinstance(item, dict)
     )
+    status = health.get("status")
+    if status == "MISSING" or health.get("generation") is None:
+        status = "NO BASELINE"
     return {
-        "status": health.get("status"),
+        "status": status,
         "generation": health.get("generation"),
         "detail": health.get("detail"),
         "last_type": last.get("type") or meta.get("last_type"),

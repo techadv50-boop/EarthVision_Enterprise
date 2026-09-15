@@ -27,7 +27,13 @@ from PySide6.QtWidgets import (
 )
 
 from app import __app_name__, __version__
-from app.backup.live import format_idle_backup_panel, format_live_backup_panel, measurable_percent
+from app.backup.live import (
+    format_idle_backup_panel,
+    format_last_result_details,
+    format_last_result_panel,
+    format_live_backup_panel,
+    measurable_percent,
+)
 from app.backup.lock import BackupAlreadyRunning, BackupLock
 from app.backup.manual_preflight import manual_backup_password_error
 from app.backup.operation import (
@@ -146,6 +152,10 @@ class DashboardPage(QWidget):
         self.result_panel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.result_panel.setVisible(False)
         layout.addWidget(self.result_panel)
+        self.details_button = QPushButton("VIEW DETAILS")
+        self.details_button.clicked.connect(self._window.show_last_result_details)
+        self.details_button.setVisible(False)
+        layout.addWidget(self.details_button, alignment=Qt.AlignmentFlag.AlignLeft)
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("backupProgress")
         self.progress_bar.setRange(0, 100)
@@ -221,7 +231,7 @@ class DashboardPage(QWidget):
         )
         self.master_card.set_rows(
             [
-                ("Status:", str(status.get("master_status") or "MISSING")),
+                ("Status:", str(status.get("master_status") or "NO BASELINE")),
                 ("Generation:", str(status.get("master_generation") or "—")),
                 ("Last operation:", str(status.get("master_type") or "—")),
                 ("Updated:", str(status.get("master_updated") or "—")),
@@ -301,6 +311,7 @@ class DashboardPage(QWidget):
             self.live_panel.setText(format_live_backup_panel(progress, now=time.time()))
             self.result_panel.setVisible(False)
             self.result_panel.setText("")
+            self.details_button.setVisible(False)
         else:
             self.live_panel.setText(
                 format_idle_backup_panel(
@@ -310,21 +321,13 @@ class DashboardPage(QWidget):
                 )
             )
             if last_completed:
-                result_status = str(last_completed.get("status") or "").upper()
                 self.result_panel.setVisible(True)
-                self.result_panel.setText(
-                    "\n".join(
-                        [
-                            f"LAST RESULT: {result_status}",
-                            str(last_completed.get("message") or last_completed.get("error") or ""),
-                            f"Operation: {last_completed.get('operation_id') or '—'}",
-                            f"HEAD: {last_completed.get('head_state') or 'UNCHANGED'}",
-                        ]
-                    )
-                )
+                self.result_panel.setText(format_last_result_panel(last_completed))
+                self.details_button.setVisible(True)
             else:
                 self.result_panel.setVisible(False)
                 self.result_panel.setText("")
+                self.details_button.setVisible(False)
         if running and percent is not None:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(int(percent))
@@ -381,6 +384,9 @@ class MainWindow(QMainWindow):
         self._last_completed: dict | None = None
         self._backup_active = False
         normalize_startup_progress(config)
+        leftover = ProgressReporter(progress_path()).read()
+        last = leftover.get("last_result")
+        self._last_completed = last if isinstance(last, dict) else None
         self.setWindowTitle(f"{__app_name__}  {__version__}")
         self.resize(1100, 780)
         root = QWidget()
@@ -577,7 +583,7 @@ class MainWindow(QMainWindow):
         active_id = None if active is None else active.operation_id
         status["active_operation_id"] = active_id
         status["backup_active"] = active_id is not None
-        status["last_completed"] = self._last_completed
+        status["last_completed"] = self._last_completed or status.get("last_completed")
         if active_id:
             status["backup_running"] = True
             status["show_live_panel"] = True
@@ -745,6 +751,9 @@ class MainWindow(QMainWindow):
             return
         cancelled = (not ok) and "cancel" in str(text or "").lower()
         facts = master_idle_facts(self.config)
+        scope = "operation"
+        if "STAGING ERROR" in str(text or ""):
+            scope = "staging"
         self._last_completed = {
             "status": "success" if ok else ("cancelled" if cancelled else "failed"),
             "ui_stage": "SUCCESS" if ok else ("CANCELLED" if cancelled else "FAILED"),
@@ -754,6 +763,7 @@ class MainWindow(QMainWindow):
             "elapsed_seconds": finished.frozen_elapsed,
             "head_state": facts["head_state"] if ok else "UNCHANGED",
             "operation": "BACKUP",
+            "error_scope": scope,
         }
         ProgressReporter(progress_path()).reset_idle(
             master_size=int(facts["current_size"] or 0),
@@ -766,10 +776,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(text)
             return
         self.statusBar().showMessage("BACKUP CANCELLED" if cancelled else "BACKUP FAILED")
-        if cancelled:
-            QMessageBox.information(self, "BACKUP CANCELLED", text or "Backup cancelled. HEAD is unchanged.")
+
+    def show_last_result_details(self) -> None:
+        last = self._last_completed
+        if not last:
             return
-        QMessageBox.critical(self, "BACKUP FAILED", text or "Backup failed. HEAD is unchanged.")
+        show_scrollable_report(self, "LAST RESULT", format_last_result_details(last))
 
     def cancel_backup(self) -> None:
         op = self.operations.active()

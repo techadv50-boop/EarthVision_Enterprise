@@ -369,15 +369,19 @@ def _stream_files(
             stderr = process.stderr.read() or b""
         raise PipelineError(stderr.decode("utf-8", "replace") or f"stream-objects exit {code}")
     transferred = 0
+    stored_by_key = {str(item.get("key") or ""): item for item in stored}
     for item in stored:
         transferred += int(item.get("size") or 0)
         key = str(item.get("key") or "")
         rec = by_abs.get(key)
         if rec is not None:
             rec["sha256"] = str(item.get("sha256"))
-    missing = [path for path, rec in by_abs.items() if not rec.get("sha256")]
+    # Pre-existing inventory hashes (from hash-files) must not count as stored.
+    missing = [path for path in by_abs if path not in stored_by_key]
     if missing:
-        raise PipelineError("Interrupted object transfer; missing: " + ", ".join(missing[:8]))
+        raise PipelineError(
+            "STAGING ERROR: interrupted object transfer; missing: " + ", ".join(missing[:8])
+        )
     if live is not None and transfer_kind != "database":
         live.overall["file_bytes_complete"] = transferred
         live.overall["files_done"] = len(stored)
@@ -634,6 +638,17 @@ def _absolute(item: dict[str, Any]) -> str:
     rel = str(item.get("relative_path") or "").lstrip("/")
     root = str(item.get("source_root") or "").rstrip("/")
     return f"{root}/{rel}" if rel else root
+
+
+def staging_missing_object_error(rec: dict[str, Any], *, generation: int) -> str:
+    """Staging verify failed. Never describes the committed master."""
+    digest = str(rec.get("sha256") or "") or "(none)"
+    path = f"{rec.get('source_root')}/{rec.get('relative_path')}"
+    return (
+        "STAGING ERROR: Missing object for "
+        f"{path} sha256={digest} generation={generation} "
+        "(uncommitted staging; HEAD unchanged)"
+    )
 
 
 def _key_hashes(inventory: list[dict[str, Any]]) -> dict[str, str]:
@@ -1228,12 +1243,16 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         for rec in files:
             digest = rec.get("sha256")
             if not digest or not store.object_exists(str(digest)):
-                raise PipelineError(f"Missing object for {rec.get('source_root')}/{rec.get('relative_path')}")
+                raise PipelineError(staging_missing_object_error(rec, generation=generation))
         if db_names:
             for name in db_names:
                 digest = db_objects.get(name)
                 if not digest or not store.object_exists(str(digest)):
-                    raise PipelineError(f"Missing database object for {name}")
+                    raise PipelineError(
+                        "STAGING ERROR: missing database object for "
+                        f"{name} sha256={digest or '(none)'} generation={generation} "
+                        "(uncommitted staging; HEAD unchanged)"
+                    )
 
         source_bytes = int(sum(int(item.get("size") or 0) for item in files))
         meta = {

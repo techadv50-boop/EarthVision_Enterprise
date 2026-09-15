@@ -251,6 +251,38 @@ def application_for_root(applications: list[dict[str, Any]] | None, root: str) -
     return ""
 
 
+def format_last_result_panel(last: Mapping[str, Any] | None) -> str:
+    """Persisted last operation. Never treated as live backup state."""
+    if not last:
+        return ""
+    status = str(last.get("status") or "").upper()
+    error = str(last.get("error") or last.get("message") or "—")
+    lines = [f"LAST RESULT: {status}"]
+    if status in {"FAILED", "CANCELLED"}:
+        lines.append(f"Error: {error}")
+    else:
+        lines.append(str(last.get("message") or "SUCCESS"))
+    lines.append(f"Operation: {last.get('operation_id') or '—'}")
+    lines.append(f"HEAD: {last.get('head_state') or 'UNCHANGED'}")
+    return "\n".join(lines)
+
+
+def format_last_result_details(last: Mapping[str, Any] | None) -> str:
+    if not last:
+        return "No previous operation result."
+    status = str(last.get("status") or "").upper()
+    lines = [
+        f"LAST RESULT: {status}",
+        f"Operation: {last.get('operation') or 'BACKUP'}",
+        f"Operation ID: {last.get('operation_id') or '—'}",
+        f"Error: {last.get('error') or last.get('message') or '—'}",
+        f"HEAD: {last.get('head_state') or 'UNCHANGED'}",
+        f"Elapsed: {last.get('elapsed_seconds') if last.get('elapsed_seconds') is not None else '—'}",
+        f"Scope: {last.get('error_scope') or 'operation'}",
+    ]
+    return "\n".join(lines)
+
+
 def format_idle_backup_panel(
     progress: Mapping[str, Any] | None = None,
     *,
@@ -261,6 +293,14 @@ def format_idle_backup_panel(
     master = data.get("master") if isinstance(data.get("master"), dict) else {}
     size = master_size if master_size is not None else master.get("current_size")
     head = head_state or data.get("head_state") or master.get("head_state") or "MISSING"
+    if str(head).upper() in {"MISSING", "NONE", ""}:
+        master_lines = ["NO BASELINE", "HEAD: MISSING"]
+    else:
+        master_lines = [
+            f"GENERATION {head}",
+            f"Current size: {format_bytes(int(size or 0))}",
+            f"HEAD: {head}",
+        ]
     return "\n".join(
         [
             "No backup running.",
@@ -279,8 +319,7 @@ def format_idle_backup_panel(
             "Elapsed: —",
             "",
             "MASTER:",
-            f"Current size: {format_bytes(int(size or 0))}",
-            f"HEAD: {head}",
+            *master_lines,
         ]
     )
 

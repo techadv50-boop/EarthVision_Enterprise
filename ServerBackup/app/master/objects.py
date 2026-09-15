@@ -18,8 +18,15 @@ def object_path(root: Path, digest: str) -> Path:
 
 
 def has_object(root: Path, digest: str) -> bool:
+    """True when the content-addressed object file exists.
+
+    Empty files are valid objects (SHA-256 of zero bytes). A zero-length
+    object must not be reported as missing.
+    """
+    if not digest:
+        return False
     path = object_path(root, digest)
-    return path.is_file() and path.stat().st_size > 0
+    return path.is_file()
 
 
 def write_object_from_file(root: Path, source: Path, *, expected: str | None = None) -> str:

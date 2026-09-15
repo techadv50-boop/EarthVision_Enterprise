@@ -23,7 +23,12 @@ def assess_health(
     deep: bool = False,
 ) -> dict[str, Any]:
     if not store.root.exists() or not store.has_head():
-        return {"status": MISSING, "detail": "No master HEAD.", "generation": None}
+        return {
+            "status": MISSING,
+            "master_status": "NO BASELINE",
+            "detail": "No committed master baseline.",
+            "generation": None,
+        }
     generation = store.head_generation()
     try:
         tree = store.load_tree(generation)
@@ -37,16 +42,36 @@ def assess_health(
     for record in files.values():
         digest = str(record.get("sha256") or "")
         if not digest or not has_object(store.objects_root, digest):
-            missing_objects.append(digest or file_name(record))
+            missing_objects.append(
+                {
+                    "path": file_name(record),
+                    "sha256": digest or "(none)",
+                    "generation": generation,
+                }
+            )
         elif deep and not verify_object(store.objects_root, digest):
-            corrupt.append(digest)
+            corrupt.append({"path": file_name(record), "sha256": digest, "generation": generation})
     if corrupt:
-        return {"status": CORRUPTED, "detail": f"{len(corrupt)} object checksum mismatch(es).", "generation": generation}
-    if missing_objects:
+        first = corrupt[0]
         return {
-            "status": INCOMPLETE,
-            "detail": f"{len(missing_objects)} referenced object(s) missing.",
+            "status": CORRUPTED,
+            "detail": (
+                f"Missing or corrupt object for {first['path']} "
+                f"sha256={first['sha256']} generation={generation}."
+            ),
             "generation": generation,
+            "objects": corrupt,
+        }
+    if missing_objects:
+        first = missing_objects[0]
+        return {
+            "status": CORRUPTED,
+            "detail": (
+                f"Missing object for {first['path']} "
+                f"sha256={first['sha256']} generation={generation}."
+            ),
+            "generation": generation,
+            "objects": missing_objects,
         }
     if required_sources:
         present_roots = {str(item.get("source_root") or "").rstrip("/") for item in files.values()}

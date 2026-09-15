@@ -107,6 +107,9 @@ def test_idle_panel_does_not_use_old_elapsed():
     assert "Elapsed: —" in panel
     assert "PREPARING" not in panel
     assert "cancelled" not in panel.lower()
+    assert "NO BASELINE" in panel
+    assert "HEAD: MISSING" in panel
+    assert "Current size:" not in panel
 
 
 def test_startup_normalizes_cancelled_preparing_cache(tmp_path: Path):
@@ -201,6 +204,7 @@ def test_gui_starts_idle_with_no_fake_progress_bar(tmp_path: Path):
     assert "Overall: Ready" in text
     assert "Stage: —" in text
     assert "Elapsed: —" in text
+    assert "NO BASELINE" in text
     assert "PREPARING" not in text
     assert window.dashboard.progress_bar.maximum() == 100
     assert window.dashboard.progress_bar.value() == 0
@@ -290,7 +294,12 @@ def test_gui_does_not_show_failure_dialog_on_startup(tmp_path: Path):
     with patch.object(QMessageBox, "critical", fake_critical):
         window = MainWindow(make_config(tmp_path), ssh_password="in-memory")
         window.timer.stop()
+        window.show()
         qt.processEvents()
     assert boxes == []
     assert "Status: IDLE" in window.dashboard.live_panel.text()
+    assert "NO BASELINE" in window.dashboard.live_panel.text()
+    assert "LAST RESULT: FAILED" in window.dashboard.result_panel.text()
+    assert not window.dashboard.details_button.isHidden()
+    assert window.operations.active_id() is None
     window.close()
