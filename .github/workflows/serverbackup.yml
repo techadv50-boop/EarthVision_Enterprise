@@ -10,6 +10,9 @@ on:
       - "ServerBackup/**"
       - ".github/workflows/serverbackup.yml"
 
+permissions:
+  contents: write
+
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -36,7 +39,51 @@ jobs:
         run: |
           pip install -r requirements.txt
           pyinstaller --noconfirm serverbackup.spec
+      - name: Read app version
+        id: ver
+        working-directory: ServerBackup
+        shell: pwsh
+        run: |
+          $text = Get-Content -Raw app/__init__.py
+          if ($text -match '__version__ = "([^"]+)"') {
+            "version=$($Matches[1])" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            throw "version not found"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: ServerBackup-exe
           path: ServerBackup/dist/ServerBackup.exe
+      - name: Publish preview EXE
+        if: github.event_name == 'push'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: serverbackup-preview
+          name: Server Backup preview (unsigned EXE)
+          commit: ${{ github.sha }}
+          allowUpdates: true
+          replacesArtifacts: true
+          skipIfReleaseExists: false
+          prerelease: true
+          artifacts: ServerBackup/dist/ServerBackup.exe
+          body: |
+            Unsigned Windows `ServerBackup.exe` from `${{ github.sha }}`.
+            Chrome and SmartScreen may warn. This is not an Actions artifact zip.
+            Direct download: https://github.com/techadv50-boop/EarthVision_Enterprise/releases/download/serverbackup-preview/ServerBackup.exe
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish versioned EXE
+        if: github.event_name == 'push'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: serverbackup-v${{ steps.ver.outputs.version }}
+          name: Server Backup ${{ steps.ver.outputs.version }}
+          commit: ${{ github.sha }}
+          allowUpdates: true
+          replacesArtifacts: true
+          skipIfReleaseExists: false
+          prerelease: true
+          artifacts: ServerBackup/dist/ServerBackup.exe
+          body: |
+            Unsigned Windows `ServerBackup.exe` ${{ steps.ver.outputs.version }} (`${{ github.sha }}`).
+            Direct download: https://github.com/techadv50-boop/EarthVision_Enterprise/releases/download/serverbackup-v${{ steps.ver.outputs.version }}/ServerBackup.exe
+          token: ${{ secrets.GITHUB_TOKEN }}
