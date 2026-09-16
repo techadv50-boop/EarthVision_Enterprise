@@ -195,29 +195,37 @@ def validate_website_folder(
                 required=False,
             )
         if site.named_volumes:
-            excluded.append(
-                "named Docker volumes not copied from /var/lib/docker: " + ", ".join(site.named_volumes)
-            )
+            copied = [
+                name
+                for name in site.named_volumes
+                if any(str(path).endswith(f"/volumes/{name}/_data") for path in site.source_paths + site.storage_roots)
+            ]
+            remaining = [name for name in site.named_volumes if name not in copied]
+            if remaining:
+                excluded.append(
+                    "named Docker volumes backed up via SQL dump or metadata, not raw overlay2: "
+                    + ", ".join(remaining)
+                )
             add(
                 "named volumes",
                 True,
-                "recorded in docker metadata; not copied from Docker internal storage",
+                "application _data copied when classified COPY_DATA; database volumes use SQL dump",
                 required=False,
             )
     else:
         add("docker metadata", True, "not a Docker site", required=False)
 
-    ssl_files = _count_files(nginx_dir / "ssl") if nginx_dir.exists() else 0
+    ssl_files = _count_files(root / "ssl") + (_count_files(nginx_dir / "ssl") if nginx_dir.exists() else 0)
     if ssl_files:
-        add("ssl material", True, f"{ssl_files} files under nginx/ssl", required=False)
+        add("ssl material", True, f"{ssl_files} files under ssl/ or nginx/ssl", required=False)
     else:
         add(
             "ssl material",
             True,
-            "Let's Encrypt files were not in this inventory; add /etc/letsencrypt to extra directories to include certificates",
+            "No TLS files in this inventory. Restore uses the discovered ssl_certificate path or Traefik ACME store.",
             required=False,
         )
-        excluded.append("SSL certificates not inventoried unless /etc/letsencrypt is an extra source")
+        excluded.append("SSL certificates not present in this generation unless inventoried from certificate paths")
 
     if expected_file_count is not None and expected_file_count > 0 and website_files + nginx_files == 0:
         add("file count", False, f"expected about {expected_file_count} inventoried files")
@@ -293,8 +301,20 @@ def predicted_restore_status(site: SiteSpec, *, file_count: int, dump_expected: 
     if site.nginx_source_files and file_count >= 0:
         pass
     if site.named_volumes:
-        excluded.append("named Docker volumes will not be copied: " + ", ".join(site.named_volumes))
-    excluded.append("SSL certificates included only if /etc/letsencrypt is inventoried")
+        copied = [
+            name
+            for name in site.named_volumes
+            if any(str(path).endswith(f"/volumes/{name}/_data") for path in site.source_paths + site.storage_roots)
+        ]
+        remaining = [name for name in site.named_volumes if name not in copied]
+        if remaining:
+            excluded.append(
+                "database/cache named volumes use SQL dump or are classified, not raw overlay2: "
+                + ", ".join(remaining)
+            )
+    excluded.append(
+        "SSL: mechanism is recorded per site; certificate files are copied from discovered ssl_certificate paths when inventoried"
+    )
     if unresolved:
         status = "INCOMPLETE"
     elif excluded:

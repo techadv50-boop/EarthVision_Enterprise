@@ -25,6 +25,7 @@ KIND_FOLDER = {
     "config": "website/config",
     "docker": "docker",
     "nginx": "nginx",
+    "ssl": "ssl",
     "unmapped": "_server/unmapped",
     "blocked": "(blocked docker-internal)",
     "extra": "_server/extra",
@@ -117,7 +118,7 @@ def build_preflight(
     dump_objects: dict[str, str] | None = None,
     has_master: bool = False,
 ) -> dict[str, Any]:
-    domain_map = build_domain_map(applications, database_inventory, approved_only=True)
+    domain_map = build_domain_map(applications, database_inventory, approved_only=False)
     attributed = attribute_records(list(inventory or []), domain_map, nginx_root=nginx_root)
     grouped = group_attributions(attributed)
     objects = dict(dump_objects or {})
@@ -139,8 +140,6 @@ def build_preflight(
         db_bytes = int(db.size_bytes) if db else 0
         unresolved = list(restore.get("unresolved") or [])
         excluded = list(restore.get("excluded") or [])
-        if site.named_volumes:
-            excluded.append("named Docker volumes: " + ", ".join(site.named_volumes))
         docker = site.docker or {}
         websites.append(
             {
@@ -230,12 +229,10 @@ def format_proposed_tree(preflight: dict[str, Any]) -> str:
         "BACKUPS/",
     ]
     websites = list(preflight.get("websites") or [])
-    for index, row in enumerate(websites):
-        last_site = index == len(websites) - 1 and not preflight.get("recovery_databases")
-        branch = "└──" if last_site else "├──"
+    for row in websites:
         folder = row["backup_folder"]
-        lines.append(f"{branch} {folder}/")
-        prefix = "    " if last_site else "│   "
+        lines.append(f"├── {folder}/")
+        prefix = "│   "
         lines.extend(
             [
                 f"{prefix}├── website/",
@@ -246,17 +243,22 @@ def format_proposed_tree(preflight: dict[str, Any]) -> str:
                 f"{prefix}│   └── {PathName(row['database'])}",
                 f"{prefix}├── nginx/",
                 f"{prefix}├── docker/",
+                f"{prefix}├── ssl/",
                 f"{prefix}└── manifest.json",
             ]
         )
     recovery = list(preflight.get("recovery_databases") or [])
     if recovery:
-        lines.append("└── _recovery/")
-        lines.append("    ├── README.txt")
-        lines.append("    └── databases/")
+        lines.append("├── _recovery/")
+        lines.append("│   ├── README.txt")
+        lines.append("│   └── databases/")
         for db in recovery:
-            lines.append(f"        └── {db['name']}.sql")
-    lines.append("└── _server/          (shared Nginx only; not a website)")
+            lines.append(f"│       └── {db['name']}.sql")
+    lines.append("└── _server/")
+    lines.append("    ├── nginx/")
+    lines.append("    ├── docker/")
+    lines.append("    ├── system/")
+    lines.append("    └── ssl/")
     return "\n".join(lines)
 
 

@@ -198,11 +198,11 @@ G:\ServerBackups\
     backup.log
 ```
 
-Each public hostname is a top-level folder under `BACKUPS`. Docker IDs, volume names, and object hashes stay inside `master\` or in that site's `manifest.json`. Named Docker volumes are not copied from `/var/lib/docker`. Dokploy leftover schemas are kept under `_recovery` so they are never silently discarded.
+Each public hostname is a top-level folder under `BACKUPS`. Docker IDs, volume names, and object hashes stay inside `master\` or in that site's `manifest.json`. Application named volumes are copied from `/var/lib/docker/volumes/<name>/_data` when classified as website data. Database volumes are restored from SQL dumps, not live raw copies. Overlay2 is never copied. Dokploy leftover schemas are kept under `_recovery` so they are never silently discarded.
 
 HEAD is replaced only after the new tree, objects, and database dumps (if any) verify. A crash during staging leaves the previous HEAD valid. The readable `BACKUPS` tree is rewritten from the committed master after each successful BACKUP NOW (including NO CHANGE). Each website folder is then restore-validated: copy+dump alone is not treated as a complete restore contract.
 
-**DISCOVER SERVER** runs a read-only `nginx -T` inventory of every active hostname, classifies each application, and discovers OJS `files_dir`, databases, and Docker compose/bind mounts. New sites require approval. Old `/var/www` records that match a live Docker hostname are classified as migrated/legacy, not as deleted websites. BACKUP NOW copies approved discovery sources and dumps databases associated with those sites.
+**DISCOVER SERVER** reconciles every web-serving source on the host: `nginx -T`, sites-available leftovers, Apache vhosts, Docker/Traefik/Dokploy `Host()` labels, `VIRTUAL_HOST`, compose files, bind mounts, named volumes, and SSL certificate paths. There is no hard-coded website list. A hostname that exists only in Docker labels is still classified (ACTIVE if the container is running, LEGACY if it is only leftover config). New sites require approval. Old `/var/www` records that match a live Docker hostname are classified as migrated/legacy, not as deleted websites. BACKUP NOW copies approved discovery sources and dumps databases associated with those sites.
 
 **DRY RUN** is a metadata-only preview: it connects over SSH, discovers applications, inventories sources, attributes NEW files to each website, and prints a 14-field preflight plus the proposed `BACKUPS\<domain>\` tree **without hashing the live tree, writing HEAD, or starting BACKUP NOW**. A missing master is reported as `NO BASELINE` / `FULL BASELINE PREVIEW`, not as a failure.
 

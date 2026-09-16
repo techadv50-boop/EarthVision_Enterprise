@@ -439,6 +439,7 @@ class LocalMasterSSH(FakeSSH):
         extra_scan_files: dict[str, str] | None = None,
         extra_config_files: dict[str, str] | None = None,
         extra_mariadb_details: dict | None = None,
+        extra_docker_containers: list | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -449,6 +450,7 @@ class LocalMasterSSH(FakeSSH):
         self.extra_scan_files = dict(extra_scan_files or {})
         self.extra_config_files = dict(extra_config_files or {})
         self.extra_mariadb_details = dict(extra_mariadb_details or {})
+        self.extra_docker_containers = list(extra_docker_containers or [])
         self.db_fingerprint = "fp-journal-1"
         self.fail_database = False
         self.fail_discover = False
@@ -567,6 +569,7 @@ class LocalMasterSSH(FakeSSH):
                 ],
             }
         ]
+        docker.extend(self.extra_docker_containers)
         mariadb = ["ojs50", "ojsxd", "sea_tedb", *self.extra_mariadb]
         for name in self.extra_mariadb_details:
             if name not in mariadb:
@@ -574,18 +577,6 @@ class LocalMasterSSH(FakeSSH):
         import discover_audit as audit
 
         servers = da.parse_nginx_t("\n".join(lines))
-        apps = da.applications_from_servers(
-            servers,
-            docker_containers=docker,
-            mariadb=mariadb,
-        )
-        postgres = sorted(
-            {
-                str(app.get("database_name"))
-                for app in apps
-                if app.get("database_type") == "PostgreSQL" and app.get("database_name")
-            }
-        )
         details = {
             name: {
                 "size_bytes": 1024,
@@ -607,49 +598,28 @@ class LocalMasterSSH(FakeSSH):
             details[name].update(meta)
         extra_texts = dict(self.extra_config_files)
         extra_texts.update(audit.docker_database_texts(docker))
-        search_roots = [str(app.get("root") or "") for app in apps if app.get("root")]
-        references = audit.find_database_references(
-            mariadb,
-            search_roots,
-            extra_texts=extra_texts,
-            extra_roots=(),
-        )
-        inventory = audit.build_database_inventory(mariadb, apps, details=details, references=references)
-        by_id = {str(app.get("application_id") or ""): app for app in apps}
-        for row in inventory:
-            ident = str(row.get("application_id") or "")
-            app = by_id.get(ident)
-            if app and row.get("name") and not app.get("database_name") and str(row.get("status") or "").startswith("ASSOCIATED"):
-                app["database_name"] = row["name"]
-                app["database_type"] = "MariaDB"
         previous = list(getattr(self, "_previous_hostnames", []) or [])
-        return {
-            "ok": True,
-            "nginx_ok": True,
-            "hostname": "ubuntu-test",
-            "discovery_source": "nginx -T",
-            "applications": apps,
-            "nginx_inventory": da.nginx_inventory(servers),
-            "parsed_hostnames": da.parsed_hostnames(servers),
-            "inactive_hostnames": audit.scan_inactive_hostnames(
-                da.parsed_hostnames(servers),
-                previous_hostnames=previous,
-                parse_nginx_t=da.parse_nginx_t,
-                extra_files=self.extra_scan_files,
-            ),
-            "database_inventory": inventory,
-            "database_account": {
-                "configured_user": "backup",
-                "current_user": "backup@localhost",
-                "source": "/etc/serverbackup/my.cnf",
-                "file_present": True,
-                "using_root": False,
-                "grants": ["GRANT SELECT ON *.* TO 'backup'@'localhost'"],
-                "least_privilege": "least-privilege backup account in use",
-            },
-            "databases": {"mariadb": mariadb, "postgresql": postgres},
-            "errors": [],
+        result = da.assemble_discovery(
+            servers=servers,
+            docker_containers=docker,
+            mariadb=mariadb,
+            extra_scan_files=self.extra_scan_files,
+            extra_config_texts=extra_texts,
+            previous_hostnames=previous,
+            details_override=details,
+            nginx_ok=True,
+            hostname="ubuntu-test",
+        )
+        result["database_account"] = {
+            "configured_user": "backup",
+            "current_user": "backup@localhost",
+            "source": "/etc/serverbackup/my.cnf",
+            "file_present": True,
+            "using_root": False,
+            "grants": ["GRANT SELECT ON *.* TO 'backup'@'localhost'"],
+            "least_privilege": "least-privilege backup account in use",
         }
+        return result
 
     def run_script(self, script_path: str, payload, *, timeout=None, use_sudo: bool = True) -> SSHResult:
         action = payload.get("action")

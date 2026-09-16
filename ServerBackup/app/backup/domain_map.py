@@ -46,6 +46,8 @@ BLOCKED_FILE_PREFIXES = (
     "/dev",
     "/run",
 )
+_NAMED_VOLUME_DATA = re.compile(r"^/var/lib/docker/volumes/([^/]+)/_data$")
+_DOCKER_VOLUME_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 @dataclass
@@ -474,8 +476,19 @@ def docker_only_dump_map(
     return mapping
 
 
+def is_named_volume_data_path(path: str) -> bool:
+    cleaned = _clean(path)
+    match = _NAMED_VOLUME_DATA.match(cleaned)
+    if not match:
+        return False
+    name = match.group(1)
+    return bool(name) and name not in {".", ".."} and bool(_DOCKER_VOLUME_NAME.match(name))
+
+
 def is_blocked_source_path(path: str) -> bool:
     cleaned = _clean(path)
+    if is_named_volume_data_path(cleaned):
+        return False
     return any(cleaned == prefix or cleaned.startswith(prefix + "/") for prefix in BLOCKED_FILE_PREFIXES)
 
 
@@ -628,15 +641,15 @@ def _classify_ssl_path(
     if matched is not None:
         return {
             "site_folder": matched.folder,
-            "kind": "nginx",
-            "relative": f"ssl/{ssl_rel or basename}",
+            "kind": "ssl",
+            "relative": ssl_rel or basename,
             "domain": matched.domain,
             "absolute": abs_path,
         }
     return {
         "site_folder": "_server",
-        "kind": "nginx",
-        "relative": f"ssl/{ssl_rel or basename}",
+        "kind": "ssl",
+        "relative": ssl_rel or basename,
         "domain": "",
         "absolute": abs_path,
     }

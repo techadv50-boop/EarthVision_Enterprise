@@ -109,13 +109,14 @@ def _site_dirs(root: Path, site: SiteSpec) -> dict[str, Path]:
         "config": website / "config",
         "database": base / "database",
         "nginx": base / "nginx",
+        "ssl": base / "ssl",
         "docker": base / "docker",
     }
 
 
 def _ensure_site_layout(root: Path, site: SiteSpec) -> dict[str, Path]:
     dirs = _site_dirs(root, site)
-    for path in (dirs["application"], dirs["storage"], dirs["config"], dirs["database"], dirs["nginx"]):
+    for path in (dirs["application"], dirs["storage"], dirs["config"], dirs["database"], dirs["nginx"], dirs["ssl"]):
         path.mkdir(parents=True, exist_ok=True)
     dirs["docker"].mkdir(parents=True, exist_ok=True)
     return dirs
@@ -214,8 +215,10 @@ def _site_info_json(
             "compose_project": docker.get("compose_project") or "",
             "compose_file": docker.get("compose_file") or docker.get("compose_files") or "",
             "service": docker.get("service") or "",
+            "image": docker.get("image") or "",
             "workdir": docker.get("workdir") or "",
-            "named_volumes_not_copied": list(site.named_volumes),
+            "named_volumes": list(site.named_volumes),
+            "bind_mounts": list(site.storage_roots),
         },
         "source_locations": {
             "application": site.application_root,
@@ -223,7 +226,7 @@ def _site_info_json(
             "files": site.source_paths,
             "config": site.config_paths,
             "nginx": site.nginx_source_files,
-            "named_volumes_not_copied": list(site.named_volumes),
+            "named_volumes": list(site.named_volumes),
         },
         "backup_timestamp": timestamp,
         "backup_version": app_version,
@@ -248,6 +251,17 @@ def _site_info_json(
         },
         "database_files": database_files,
         "backup_software": f"{__app_name__} {app_version}",
+        "proxy_pass": list(docker.get("published_ports") or []),
+        "http_https": {
+            "https": any("/ssl/" in p or "letsencrypt" in p or p.endswith(".pem") for p in site.config_paths),
+        },
+        "ssl": {
+            "certificate_paths": [p for p in site.config_paths if "letsencrypt" in p or p.endswith(".pem") or p.endswith(".crt") or p.endswith(".key")],
+        },
+        "environment_files": [p for p in site.config_paths if p.rsplit("/", 1)[-1].startswith(".env") or p.endswith((".yml", ".yaml", ".inc.php", "wp-config.php"))],
+        "exclusions": [],
+        "warnings": list(site.notes),
+        "restore_readiness": (restore_validation or {}).get("status") or "",
         "master_generation": generation,
         "shared_databases": {db.name: db.shared_with for db in site.databases if db.shared_with},
     }
@@ -255,21 +269,21 @@ def _site_info_json(
 
 def _write_docker_info(path: Path, site: SiteSpec) -> None:
     docker = site.docker or {}
+    volumes = list(site.named_volumes)
     payload = {
         "domain": site.domain,
         "container": docker.get("container") or "",
         "compose_project": docker.get("compose_project") or "",
         "compose_file": docker.get("compose_file") or docker.get("compose_files") or "",
         "service": docker.get("service") or "",
+        "image": docker.get("image") or "",
         "workdir": docker.get("workdir") or "",
-        "named_volumes_not_copied": list(site.named_volumes),
+        "named_volumes": list(dict.fromkeys(volumes)),
         "note": (
-            "Named Docker volumes are not copied from /var/lib/docker. "
-            "Bind-mount host paths are under website/. Recreate the compose project from this metadata."
+            "Application named volumes under /var/lib/docker/volumes/<name>/_data are copied when classified COPY_DATA. "
+            "Database volumes are restored from SQL dumps, not live raw copies. Overlay2 is never copied."
         ),
     }
-    volumes = list(site.named_volumes)
-    payload["named_volumes"] = list(dict.fromkeys(volumes))
     _write_text(path / "container-info.json", json.dumps(payload, indent=2) + "\n")
     lines = [
         f"Domain: {site.domain}",
@@ -278,8 +292,7 @@ def _write_docker_info(path: Path, site: SiteSpec) -> None:
         f"Compose file: {payload['compose_file'] or '(none)'}",
         f"Service: {payload['service'] or '(none)'}",
         f"Workdir: {payload['workdir'] or '(none)'}",
-        "Named volumes (not copied from Docker internal storage): "
-        + (", ".join(payload["named_volumes"]) if payload["named_volumes"] else "(none recorded)"),
+        "Named volumes: " + (", ".join(payload["named_volumes"]) if payload["named_volumes"] else "(none recorded)"),
         payload["note"],
         "",
     ]
@@ -296,6 +309,11 @@ def _dest_for_kind(dirs: dict[str, Path], kind: str, relative: str, server_root:
         return dirs["config"] / rel
     if kind == "docker":
         return dirs["docker"] / rel
+    if kind == "ssl":
+        ssl_root = dirs.get("ssl")
+        if ssl_root is not None:
+            return ssl_root / rel
+        return server_root / "ssl" / rel
     if kind == "nginx":
         nginx_root = dirs.get("nginx")
         if nginx_root is not None:

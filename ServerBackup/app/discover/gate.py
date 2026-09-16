@@ -8,6 +8,9 @@ from typing import Any
 def assess_backup_gate(
     applications: list[dict[str, Any]] | None,
     databases: list[dict[str, Any]] | None = None,
+    *,
+    volumes: list[dict[str, Any]] | None = None,
+    classified: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     apps = [row for row in (applications or []) if isinstance(row, dict)]
     live = [row for row in apps if row.get("change") not in {"removed", "migrated"}]
@@ -52,7 +55,20 @@ def assess_backup_gate(
         and row not in included_unassigned
         and row not in recovery_dbs
     ]
-    block = bool(pending_apps or unresolved_dbs)
+    volume_rows = [row for row in (volumes or []) if isinstance(row, dict)]
+    unresolved_volumes = [
+        row
+        for row in volume_rows
+        if str(row.get("backup_status") or "") in {"UNRESOLVED", "BLOCKING"}
+        or str(row.get("classification") or "").startswith("UNRESOLVED")
+    ]
+    unexplained = [
+        row
+        for row in (classified or [])
+        if isinstance(row, dict) and str(row.get("classification") or "").startswith("UNRESOLVED")
+        and row.get("kind") in {"nginx", "volume"}
+    ]
+    block = bool(pending_apps or unresolved_dbs or unresolved_volumes or unexplained)
     return {
         "applications_discovered": len(live),
         "applications_approved": len(approved_apps),
@@ -61,9 +77,13 @@ def assess_backup_gate(
         "databases_discovered": len(dbs),
         "databases_associated": len(associated),
         "databases_unresolved": len(unresolved_dbs),
+        "volumes_discovered": len(volume_rows),
+        "volumes_unresolved": len(unresolved_volumes),
+        "unexplained_items": len(unexplained),
         "block_complete_backup": block,
         "pending_application_ids": [str(row.get("application_id") or "") for row in pending_apps],
         "unresolved_database_names": [str(row.get("name") or "") for row in unresolved_dbs],
+        "unresolved_volume_names": [str(row.get("name") or "") for row in unresolved_volumes],
     }
 
 
@@ -77,16 +97,21 @@ def format_backup_gate(gate: dict[str, Any]) -> list[str]:
         f"  Databases discovered: {gate.get('databases_discovered', 0)}",
         f"  Databases associated: {gate.get('databases_associated', 0)}",
         f"  Databases unresolved: {gate.get('databases_unresolved', 0)}",
+        f"  Docker volumes discovered: {gate.get('volumes_discovered', 0)}",
+        f"  Docker volumes unresolved: {gate.get('volumes_unresolved', 0)}",
     ]
     if gate.get("block_complete_backup"):
         lines.append("  Unresolved > 0:")
         lines.append("  BLOCK COMPLETE BACKUP")
         pending = gate.get("pending_application_ids") or []
         unresolved = gate.get("unresolved_database_names") or []
+        volumes = gate.get("unresolved_volume_names") or []
         if pending:
             lines.append("  pending applications: " + ", ".join(str(item) for item in pending))
         if unresolved:
             lines.append("  unresolved databases: " + ", ".join(str(item) for item in unresolved))
+        if volumes:
+            lines.append("  unresolved volumes: " + ", ".join(str(item) for item in volumes))
         lines.append("  DRY RUN and discovery remain allowed. BACKUP NOW cannot report COMPLETE.")
     else:
         lines.append("  Gate: CLEAR (approval still required before you choose to run BACKUP NOW)")
@@ -98,6 +123,6 @@ def backup_gate_error(gate: dict[str, Any]) -> str:
         [
             "BLOCK COMPLETE BACKUP",
             *format_backup_gate(gate)[1:],
-            "Resolve pending applications and unassociated databases before BACKUP NOW.",
+            "Resolve pending applications, unassociated databases, and unexplained persistent Docker volumes before BACKUP NOW.",
         ]
     )

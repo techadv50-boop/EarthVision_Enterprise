@@ -43,7 +43,7 @@ from app.database.discover import discover_databases
 from app.discover.engine import DiscoveryError as ApplicationDiscoveryError
 from app.discover.engine import discover_applications
 from app.discover.gate import assess_backup_gate, backup_gate_error, format_backup_gate
-from app.discover.report import format_application_sections
+from app.discover.report import format_application_sections, format_server_wide_discovery_report
 from app.master.delta import compute_delta, next_tree_files, promote_unhashed_for_preview
 from app.master.health import HEALTHY, WARNING, assess_health
 from app.master.pack import unpack_to_objects
@@ -101,6 +101,8 @@ def _is_blocked(path: str, extra: list[str]) -> bool:
     cleaned = path.rstrip("/")
     extras = {item.rstrip("/") for item in extra}
     if cleaned in extras:
+        return False
+    if cleaned.startswith("/var/lib/docker/volumes/") and cleaned.endswith("/_data"):
         return False
     return any(cleaned == prefix or cleaned.startswith(prefix + "/") for prefix in BLOCKED_PREFIXES)
 
@@ -1024,6 +1026,8 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
     )
     extra_sections = [
         "",
+        "\n".join(format_server_wide_discovery_report(discovery)),
+        "",
         format_new_file_attribution(counts=counts, grouped=preflight.get("grouped") or {}, has_master=has_master),
         "",
         format_proposed_tree(preflight),
@@ -1053,7 +1057,13 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         parsed_hostnames=list(discovery.get("parsed_hostnames") or []),
         database_inventory=list(discovery.get("database_inventory") or []),
         inactive_hostnames=list(discovery.get("inactive_hostnames") or []),
-        gate=discovery.get("backup_gate") or assess_backup_gate(applications, list(discovery.get("database_inventory") or [])),
+        gate=discovery.get("backup_gate")
+        or assess_backup_gate(
+            applications,
+            list(discovery.get("database_inventory") or []),
+            volumes=list(discovery.get("docker_volumes") or []),
+            classified=list(discovery.get("classified") or []),
+        ),
         database_account=discovery.get("database_account") or {},
         extra_sections=extra_sections,
     )
@@ -1174,6 +1184,8 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     gate = discovery.get("backup_gate") or assess_backup_gate(
         list(discovery.get("applications") or []),
         list(discovery.get("database_inventory") or []),
+        volumes=list(discovery.get("docker_volumes") or []),
+        classified=list(discovery.get("classified") or []),
     )
     engine.logger.info(" ".join(format_backup_gate(gate)))
     if gate.get("block_complete_backup"):

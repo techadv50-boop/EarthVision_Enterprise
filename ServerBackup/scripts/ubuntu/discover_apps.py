@@ -3,6 +3,7 @@
 
 Never modifies Nginx, PHP-FPM, MariaDB, PostgreSQL, Docker, or application files.
 Never backups /var/lib/docker or /var/lib/containerd wholesale.
+Named volume `_data` directories associated with a website may be inventoried.
 Never falls back to /var/www/ojs-files when OJS files_dir is missing.
 """
 
@@ -27,7 +28,7 @@ from discover_audit import (
     parse_generic_database_from_texts,
     scan_inactive_hostnames,
 )
-from path_safety import is_safe_unix_syntax
+from path_safety import is_named_volume_data_path, is_safe_unix_syntax, named_volume_data_path
 
 UNSAFE = set(";&|`$<>\\\n\r")
 FILE_MARKER = re.compile(r"^# configuration file (.+):\s*$")
@@ -54,6 +55,37 @@ EXCLUDED_PREFIXES = (
     "/home/zhzh/server-migration-backup",
 )
 SECRET_KEYS = ("password", "passwd", "secret", "api_key", "private_key")
+TRAEFIK_HOST_CALL = re.compile(r"Host(?:Regexp)?\(\s*([^)]+)\)", re.IGNORECASE)
+QUOTED_TOKEN = re.compile(r"[`'\"]([^`'\"]+)[`'\"]")
+HOSTNAME_TOKEN = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
+)
+DB_VOLUME_DEST_HINTS = (
+    "/var/lib/postgresql",
+    "/var/lib/mysql",
+    "/var/lib/mariadb",
+    "/var/lib/postgresql/data",
+)
+CACHE_VOLUME_DEST_HINTS = ("/var/lib/redis", "/data/cache", "/tmp", "/var/tmp")
+DOKPLOY_SCAN_ROOTS = (
+    "/etc/dokploy",
+    "/etc/dokploy/compose",
+    "/etc/dokploy/applications",
+)
+APACHE_SCAN_ROOTS = (
+    "/etc/apache2/sites-enabled",
+    "/etc/apache2/sites-available",
+    "/etc/httpd/conf.d",
+    "/etc/httpd/conf",
+)
+COMPOSE_NAME_HINTS = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
+CLASSIFICATION_ACTIVE = "ACTIVE WEBSITE"
+CLASSIFICATION_MIGRATED = "MIGRATED WEBSITE"
+CLASSIFICATION_LEGACY = "LEGACY INSTALLATION"
+CLASSIFICATION_RECOVERY = "RECOVERY DATA"
+CLASSIFICATION_SYSTEM = "SYSTEM DATA"
+CLASSIFICATION_EXCLUDED = "INTENTIONALLY EXCLUDED"
+CLASSIFICATION_UNRESOLVED = "UNRESOLVED — REQUIRES REVIEW"
 
 
 def _strip_value(raw: str) -> str:
@@ -76,6 +108,8 @@ def is_excluded_path(path: str) -> bool:
     cleaned = (path or "").rstrip("/")
     if not cleaned:
         return True
+    if is_named_volume_data_path(cleaned):
+        return False
     for prefix in EXCLUDED_PREFIXES:
         if cleaned == prefix:
             return True
@@ -86,6 +120,150 @@ def is_excluded_path(path: str) -> bool:
         if cleaned.startswith(prefix + "/"):
             return True
     return False
+
+
+def looks_like_hostname(value: str) -> bool:
+    cleaned = (value or "").strip().rstrip(".").lower()
+    if not cleaned or cleaned in CATCHALL_HOSTS:
+        return False
+    if "*" in cleaned or "{" in cleaned or "/" in cleaned or " " in cleaned or ":" in cleaned:
+        return False
+    if cleaned.startswith("$"):
+        return False
+    if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", cleaned):
+        return False
+    return bool(HOSTNAME_TOKEN.match(cleaned))
+
+
+def _split_host_list(text: str) -> list[str]:
+    names: list[str] = []
+    for item in re.split(r"[\s,;]+", (text or "").strip()):
+        cleaned = item.strip().strip("'\"`").rstrip(".")
+        if looks_like_hostname(cleaned):
+            names.append(cleaned)
+    return names
+
+
+def hostnames_from_traefik_rule(text: str) -> list[str]:
+    names: list[str] = []
+    for call in TRAEFIK_HOST_CALL.finditer(text or ""):
+        inner = call.group(1) or ""
+        quoted = QUOTED_TOKEN.findall(inner)
+        tokens = quoted or re.split(r"[\s,]+", inner)
+        for token in tokens:
+            cleaned = str(token).strip().strip("'\"`").rstrip(".")
+            if looks_like_hostname(cleaned):
+                names.append(cleaned)
+    return list(dict.fromkeys(names))
+
+
+def hostnames_from_labels_and_env(labels: dict[str, Any] | None, env_items: list[str] | None = None) -> list[str]:
+    """Extract public hostnames from Docker/Traefik/Dokploy/Caddy labels and VIRTUAL_HOST.
+
+    Never hardcodes production site names. Any future Host() label is discovered.
+    """
+    names: list[str] = []
+    for key, value in (labels or {}).items():
+        key_l = str(key).lower()
+        text = str(value or "")
+        if not text:
+            continue
+        if "traefik" in key_l and "rule" in key_l:
+            names.extend(hostnames_from_traefik_rule(text))
+            continue
+        if "virtual_host" in key_l or key_l.endswith(".host") or key_l.endswith("_host"):
+            names.extend(_split_host_list(text))
+            continue
+        if "hostname" in key_l and "path" not in key_l:
+            names.extend(_split_host_list(text))
+            continue
+        if "dokploy" in key_l and ("domain" in key_l or "host" in key_l):
+            names.extend(_split_host_list(text))
+            continue
+        if "caddy" in key_l:
+            names.extend(_split_host_list(text))
+            names.extend(hostnames_from_traefik_rule(text))
+            continue
+        if "Host(" in text or "Host `" in text or "host(" in text.lower():
+            names.extend(hostnames_from_traefik_rule(text))
+    for item in env_items or []:
+        raw = str(item)
+        if raw.startswith("VIRTUAL_HOST=") or raw.startswith("DEFAULT_HOST="):
+            names.extend(_split_host_list(raw.split("=", 1)[1]))
+    return list(dict.fromkeys(names))
+
+
+def hostnames_from_compose_text(text: str) -> list[str]:
+    names = hostnames_from_traefik_rule(text or "")
+    for match in re.finditer(r"(?im)^\s*(?:VIRTUAL_HOST|DEFAULT_HOST)\s*[:=]\s*(.+)$", text or ""):
+        names.extend(_split_host_list(match.group(1)))
+    return list(dict.fromkeys(names))
+
+
+def _ssl_mechanism(certificate: str, *, https: bool, docker: dict[str, Any] | None = None) -> str:
+    cert = (certificate or "").lower()
+    if "letsencrypt" in cert:
+        return "letsencrypt"
+    if cert:
+        return "nginx-certificate-file"
+    labels = {}
+    if docker:
+        labels = docker.get("labels") if isinstance(docker.get("labels"), dict) else {}
+        blob = " ".join(f"{k}={v}" for k, v in labels.items())
+        if "traefik" in blob.lower() and ("tls" in blob.lower() or hostnames_from_labels_and_env(labels)):
+            return "traefik"
+        if docker.get("hostnames") and https:
+            return "traefik"
+    if https:
+        return "https-listen-without-certificate-path"
+    return "none"
+
+
+def _volume_purpose(destination: str, *, named_volume: str = "") -> str:
+    dest = (destination or "").lower().rstrip("/")
+    name = (named_volume or "").lower()
+    if any(dest == hint.rstrip("/") or dest.startswith(hint.rstrip("/") + "/") for hint in DB_VOLUME_DEST_HINTS):
+        return "database-data"
+    if "postgres" in dest or "mysql" in dest or "mariadb" in dest:
+        return "database-data"
+    if "postgres" in name or "mysql" in name or "mariadb" in name or name.endswith("_pgdata") or name.endswith("-pgdata"):
+        return "database-data"
+    if any(dest == hint.rstrip("/") or dest.startswith(hint.rstrip("/") + "/") for hint in CACHE_VOLUME_DEST_HINTS):
+        return "cache"
+    if "redis" in dest or "redis" in name or "cache" in name:
+        return "cache"
+    return "application-data"
+
+
+def _volume_backup_status(purpose: str) -> str:
+    if purpose == "database-data":
+        return "SQL_DUMP"
+    if purpose == "cache":
+        return "INTENTIONALLY EXCLUDED"
+    if purpose == "application-data":
+        return "COPY_DATA"
+    return "UNRESOLVED"
+
+
+def _collect_ssl_paths(items: list[tuple[str, Any]]) -> tuple[list[str], list[str]]:
+    certs: list[str] = []
+    keys: list[str] = []
+
+    def walk(nodes: list[tuple[str, Any]]) -> None:
+        for kind, key_or_header, extra in nodes:
+            if kind == "directive":
+                key = str(key_or_header)
+                value = _unquote(str(extra))
+                if key == "ssl_certificate":
+                    certs.append(value)
+                elif key == "ssl_certificate_key":
+                    keys.append(value)
+                continue
+            if kind == "block":
+                walk(list(extra or []))
+
+    walk(items)
+    return list(dict.fromkeys(certs)), list(dict.fromkeys(keys))
 
 
 def _strip_comment(line: str) -> str:
@@ -350,6 +528,9 @@ def _parse_server_block(block: str, source_file: str) -> dict[str, Any] | None:
     proxy_passes = list(dict.fromkeys([*proxy_passes, *loc_proxy]))
     ssl = any(_is_ssl_listen(item) for item in listen)
     http = any(not _is_ssl_listen(item) for item in listen) or not listen
+    ssl_certs, ssl_keys = _collect_ssl_paths(body)
+    if ssl_certs:
+        ssl = True
     return {
         "source_file": source_file,
         "server_name": list(dict.fromkeys(names)),
@@ -363,6 +544,9 @@ def _parse_server_block(block: str, source_file: str) -> dict[str, Any] | None:
         "http": http,
         "https": ssl,
         "ssl": ssl,
+        "ssl_certificate": ssl_certs,
+        "ssl_certificate_key": ssl_keys,
+        "ssl_mechanism": _ssl_mechanism(ssl_certs[0] if ssl_certs else "", https=ssl),
         "default_server": any("default_server" in item.split() for item in listen),
     }
 
@@ -420,6 +604,9 @@ def nginx_inventory(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "default_server": bool(block.get("default_server")),
                 "http": bool(block.get("http")),
                 "https": bool(block.get("https")),
+                "ssl_certificate": list(block.get("ssl_certificate") or []),
+                "ssl_certificate_key": list(block.get("ssl_certificate_key") or []),
+                "ssl_mechanism": block.get("ssl_mechanism") or "",
             }
         )
     return rows
@@ -675,24 +862,74 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
             }
         )
     env_map = {}
-    for item in config.get("Env") or []:
-        if "=" in str(item):
-            key, value = str(item).split("=", 1)
+    env_items = [str(item) for item in (config.get("Env") or [])]
+    for item in env_items:
+        if "=" in item:
+            key, value = item.split("=", 1)
             if key.lower() in SECRET_KEYS or "password" in key.lower() or "secret" in key.lower():
                 continue
             env_map[key] = value
+    safe_labels = {
+        str(key): str(value)
+        for key, value in labels.items()
+        if not any(token in str(key).lower() for token in SECRET_KEYS)
+        and "password" not in str(key).lower()
+    }
+    state = inspect.get("State") if isinstance(inspect.get("State"), dict) else {}
+    running = bool(state.get("Running")) if state else True
+    hostnames = hostnames_from_labels_and_env(labels, env_items)
+    compose_files = labels.get("com.docker.compose.project.config_files") or ""
     return {
         "id": str(inspect.get("Id") or "")[:12],
         "name": str((inspect.get("Name") or "").lstrip("/")),
         "image": str(config.get("Image") or ""),
+        "running": running,
+        "labels": safe_labels,
+        "hostnames": hostnames,
         "compose_project": labels.get("com.docker.compose.project") or "",
         "compose_service": labels.get("com.docker.compose.service") or "",
         "compose_workdir": labels.get("com.docker.compose.project.working_dir") or "",
-        "compose_files": labels.get("com.docker.compose.project.config_files") or "",
+        "compose_files": compose_files,
         "published_ports": published,
         "mounts": mounts,
         "postgres_db": env_map.get("POSTGRES_DB") or env_map.get("POSTGRES_USER") and env_map.get("POSTGRES_DB"),
         "mysql_database": env_map.get("MYSQL_DATABASE") or env_map.get("MARIADB_DATABASE"),
+        "traefik_tls": any("traefik" in str(key).lower() and "tls" in str(key).lower() for key in labels),
+    }
+
+
+def _public_docker(docker: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not docker:
+        return None
+    mounts = []
+    for mount in docker.get("mounts") or []:
+        if not isinstance(mount, dict):
+            continue
+        mounts.append(
+            {
+                "type": mount.get("type") or "",
+                "source": mount.get("source") or "",
+                "destination": mount.get("destination") or "",
+                "named_volume": bool(mount.get("named_volume")),
+                "purpose": _volume_purpose(str(mount.get("destination") or ""), named_volume=str(mount.get("source") or "")),
+            }
+        )
+    return {
+        "compose_project": docker.get("compose_project") or "",
+        "compose_file": docker.get("compose_files") or docker.get("compose_file") or "",
+        "compose_files": docker.get("compose_files") or docker.get("compose_file") or "",
+        "service": docker.get("compose_service") or docker.get("service") or "",
+        "container": docker.get("name") or docker.get("container") or "",
+        "image": docker.get("image") or "",
+        "workdir": docker.get("compose_workdir") or docker.get("workdir") or "",
+        "mysql_database": docker.get("mysql_database") or "",
+        "postgres_db": docker.get("postgres_db") or "",
+        "db_container": docker.get("db_container") or "",
+        "running": docker.get("running") if docker.get("running") is not None else True,
+        "hostnames": list(docker.get("hostnames") or []),
+        "published_ports": list(docker.get("published_ports") or []),
+        "mounts": mounts,
+        "traefik_tls": bool(docker.get("traefik_tls")),
     }
 
 
@@ -709,6 +946,8 @@ def inferred_db_container(docker: dict[str, Any] | None) -> str:
 
 
 def _looks_like_db_container(item: dict[str, Any]) -> bool:
+    if item.get("hostnames"):
+        return False
     name = str(item.get("name") or "").lower()
     service = str(item.get("compose_service") or "").lower()
     blob = f"{name} {service}"
@@ -721,10 +960,32 @@ def _looks_like_db_container(item: dict[str, Any]) -> bool:
     return name.endswith("-db") or name.endswith("-db-1")
 
 
-def _match_docker(proxy_passes: list[str], containers: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _match_docker(
+    proxy_passes: list[str],
+    containers: list[dict[str, Any]],
+    hostnames: list[str] | None = None,
+) -> dict[str, Any] | None:
     summaries = [_docker_summary(item) for item in containers]
     matched = _match_docker_summary(proxy_passes, summaries)
+    if not matched:
+        matched = _match_docker_by_hostname(hostnames or [], summaries)
     return _enrich_docker_from_compose(matched, summaries)
+
+
+def _match_docker_by_hostname(hostnames: list[str], summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    wanted = {str(name).lower() for name in hostnames if looks_like_hostname(str(name))}
+    if not wanted:
+        return None
+    hits: list[dict[str, Any]] = []
+    for item in summaries:
+        hosts = {str(name).lower() for name in (item.get("hostnames") or [])}
+        if wanted & hosts:
+            hits.append(item)
+    if not hits:
+        return None
+    web = [item for item in hits if item.get("running") is not False and not _looks_like_db_container(item)]
+    chosen = web[0] if web else hits[0]
+    return dict(chosen)
 
 
 def _match_docker_summary(proxy_passes: list[str], summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -924,6 +1185,28 @@ def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             primary["https"] = bool(primary.get("https") or row.get("https"))
             primary["default_server"] = bool(primary.get("default_server") or row.get("default_server"))
             primary["estimated_bytes"] = max(int(primary.get("estimated_bytes") or 0), int(row.get("estimated_bytes") or 0))
+            sources_field = list(primary.get("discovery_sources") or ([primary.get("discovery_source")] if primary.get("discovery_source") else []))
+            for item in row.get("discovery_sources") or ([row.get("discovery_source")] if row.get("discovery_source") else []):
+                if item and item not in sources_field:
+                    sources_field.append(item)
+            primary["discovery_sources"] = sources_field
+            if sources_field:
+                primary["discovery_source"] = " + ".join(sources_field)
+            ssl_row = row.get("ssl") if isinstance(row.get("ssl"), dict) else {}
+            ssl_primary = primary.get("ssl") if isinstance(primary.get("ssl"), dict) else {}
+            if ssl_row or ssl_primary:
+                certs = list(dict.fromkeys([*(ssl_primary.get("certificate") or []), *(ssl_row.get("certificate") or [])]))
+                keys = list(dict.fromkeys([*(ssl_primary.get("certificate_key") or []), *(ssl_row.get("certificate_key") or [])]))
+                https = bool(ssl_primary.get("https") or ssl_row.get("https") or primary.get("https"))
+                mechanism = ssl_primary.get("mechanism") or ssl_row.get("mechanism") or _ssl_mechanism(
+                    certs[0] if certs else "", https=https, docker=primary.get("docker") if isinstance(primary.get("docker"), dict) else None
+                )
+                primary["ssl"] = {
+                    "https": https,
+                    "mechanism": mechanism,
+                    "certificate": certs,
+                    "certificate_key": keys,
+                }
             if row.get("ojs_files_dir") and not primary.get("ojs_files_dir"):
                 primary["ojs_files_dir"] = row.get("ojs_files_dir")
             if row.get("database_name") and not primary.get("database_name"):
@@ -1148,7 +1431,7 @@ def applications_from_servers(
         root = safe_unix(str(block.get("root") or ""))
         aliases = [safe_unix(p) for p in (block.get("alias") or []) if safe_unix(p)]
         proxies = list(block.get("proxy_pass") or [])
-        docker = _match_docker(proxies, docker_containers)
+        docker = _match_docker(proxies, docker_containers, names)
         files, texts = probe(root) if root and not is_excluded_path(root) else ({}, {})
         app_type = classify_application(
             root=root,
@@ -1201,8 +1484,17 @@ def applications_from_servers(
         if docker:
             for mount in docker.get("mounts") or []:
                 source = str(mount.get("source") or "")
+                dest = str(mount.get("destination") or "")
                 if mount.get("named_volume"):
                     persistent.append(f"volume:{source}")
+                    purpose = _volume_purpose(dest, named_volume=source)
+                    if purpose == "application-data":
+                        try:
+                            host_path = named_volume_data_path(source)
+                        except ValueError:
+                            host_path = ""
+                        if host_path and host_path not in persistent:
+                            persistent.append(host_path)
                 elif source and not is_excluded_path(source) and source not in persistent:
                     persistent.append(source)
         sources = []
@@ -1217,6 +1509,20 @@ def applications_from_servers(
                 config_paths.append(f"{root}/wp-config.php")
         if docker and docker.get("compose_files"):
             config_paths.extend(str(docker.get("compose_files")).split(","))
+        for cert_path in list(block.get("ssl_certificate") or []) + list(block.get("ssl_certificate_key") or []):
+            cleaned = safe_unix(str(cert_path))
+            if cleaned and cleaned not in config_paths:
+                config_paths.append(cleaned)
+        ssl_info = {
+            "https": bool(block.get("https") or block.get("ssl") or (docker or {}).get("traefik_tls")),
+            "mechanism": _ssl_mechanism(
+                (list(block.get("ssl_certificate") or []) or [""])[0],
+                https=bool(block.get("https") or block.get("ssl")),
+                docker=docker,
+            ),
+            "certificate": list(block.get("ssl_certificate") or []),
+            "certificate_key": list(block.get("ssl_certificate_key") or []),
+        }
         size_bytes = 0
         if probe is _probe_root:
             for path in sources:
@@ -1294,6 +1600,8 @@ def applications_from_servers(
                 "hostname_details": details,
                 "type": app_type,
                 "discovery_source": "nginx -T",
+                "discovery_sources": ["nginx -T"],
+                "classification": CLASSIFICATION_EXCLUDED if unused_default else CLASSIFICATION_ACTIVE,
                 "root": root_out,
                 "alias": aliases,
                 "proxy_pass": proxies,
@@ -1303,21 +1611,11 @@ def applications_from_servers(
                 "database_name": db_name,
                 "persistent_data_paths": persistent,
                 "source_paths": list(dict.fromkeys(sources)),
-                "docker": {
-                    "compose_project": docker.get("compose_project"),
-                    "compose_file": docker.get("compose_files"),
-                    "service": docker.get("compose_service"),
-                    "container": docker.get("name"),
-                    "workdir": docker.get("compose_workdir"),
-                    "mysql_database": docker.get("mysql_database") or "",
-                    "postgres_db": docker.get("postgres_db") or "",
-                    "db_container": docker.get("db_container") or "",
-                }
-                if docker
-                else None,
+                "docker": _public_docker(docker) if docker else None,
                 "ojs_files_dir": ojs_files_dir,
                 "http": bool(block.get("http")),
-                "https": bool(block.get("https")),
+                "https": bool(ssl_info.get("https") or block.get("https")),
+                "ssl": ssl_info,
                 "listen": list(block.get("listen") or []),
                 "default_server": default_server,
                 "unused_default_root": unused_default,
@@ -1333,19 +1631,882 @@ def applications_from_servers(
     return _restore_dropped_hostnames(servers, _merge_candidates(attached))
 
 
+def parse_apache_vhosts(text: str, source_file: str = "") -> list[dict[str, Any]]:
+    """Parse Apache VirtualHost blocks. Missing Apache is not an error."""
+    servers: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw in (text or "").splitlines():
+        line = _strip_comment(raw).strip()
+        if not line:
+            continue
+        open_match = re.match(r"^<VirtualHost\b([^>]*)>", line, re.IGNORECASE)
+        if open_match:
+            listen = open_match.group(1).strip()
+            current = {
+                "source_file": source_file,
+                "server_name": [],
+                "listen": [listen] if listen else [],
+                "root": "",
+                "alias": [],
+                "proxy_pass": [],
+                "include": [],
+                "locations": [],
+                "redirect_to": "",
+                "http": "443" not in listen.lower() and "ssl" not in listen.lower(),
+                "https": "443" in listen.lower() or "ssl" in listen.lower(),
+                "ssl": "443" in listen.lower() or "ssl" in listen.lower(),
+                "ssl_certificate": [],
+                "ssl_certificate_key": [],
+                "ssl_mechanism": "",
+                "default_server": False,
+            }
+            continue
+        if current is None:
+            continue
+        if re.match(r"^</VirtualHost>", line, re.IGNORECASE):
+            if current.get("server_name") or current.get("root") or current.get("proxy_pass"):
+                current["ssl_mechanism"] = _ssl_mechanism(
+                    (current.get("ssl_certificate") or [""])[0],
+                    https=bool(current.get("https")),
+                )
+                servers.append(current)
+            current = None
+            continue
+        key, _, value = line.partition(" ")
+        key_l = key.lower()
+        value = _unquote(value.strip())
+        if key_l == "servername" and looks_like_hostname(value.split()[0] if value else ""):
+            current["server_name"].append(value.split()[0])
+        elif key_l == "serveralias":
+            current["server_name"].extend(_split_host_list(value))
+        elif key_l == "documentroot":
+            current["root"] = safe_unix(value)
+        elif key_l == "proxypass":
+            parts = value.split()
+            if parts:
+                current["proxy_pass"].append(parts[-1].rstrip("/"))
+        elif key_l == "sslengine" and value.lower() == "on":
+            current["https"] = True
+            current["ssl"] = True
+        elif key_l == "sslcertificatefile":
+            current["ssl_certificate"].append(value)
+            current["https"] = True
+            current["ssl"] = True
+        elif key_l == "sslcertificatekeyfile":
+            current["ssl_certificate_key"].append(value)
+    return servers
+
+
+def _application_from_docker_summary(
+    summary: dict[str, Any],
+    *,
+    hostnames: list[str],
+    probe: Callable,
+    path_exists: Callable[[str], bool],
+    source: str,
+) -> dict[str, Any]:
+    docker = _enrich_docker_from_compose(dict(summary), [summary])
+    docker = docker or dict(summary)
+    workdir = safe_unix(str(docker.get("compose_workdir") or ""))
+    files, texts = probe(workdir) if workdir and not is_excluded_path(workdir) else ({}, {})
+    app_type = classify_application(
+        root=workdir,
+        aliases=[],
+        proxy_passes=[],
+        docker=docker,
+        files=files,
+        texts=texts,
+    )
+    db_name = ""
+    db_type = ""
+    if docker.get("postgres_db"):
+        db_type = "PostgreSQL"
+        db_name = str(docker.get("postgres_db") or "")
+    elif docker.get("mysql_database"):
+        db_type = "MariaDB"
+        db_name = str(docker.get("mysql_database") or "")
+    if not db_name:
+        generic = parse_generic_database_from_texts(texts)
+        if generic:
+            db_name = generic
+            db_type = db_type or "MariaDB"
+    persistent: list[str] = []
+    sources: list[str] = []
+    if workdir and not is_excluded_path(workdir):
+        sources.append(workdir)
+    for mount in docker.get("mounts") or []:
+        source_path = str(mount.get("source") or "")
+        dest = str(mount.get("destination") or "")
+        if mount.get("named_volume"):
+            persistent.append(f"volume:{source_path}")
+            purpose = _volume_purpose(dest, named_volume=source_path)
+            if purpose == "application-data":
+                try:
+                    host_path = named_volume_data_path(source_path)
+                except ValueError:
+                    host_path = ""
+                if host_path and host_path not in persistent:
+                    persistent.append(host_path)
+                    sources.append(host_path)
+        elif source_path and not is_excluded_path(source_path):
+            if source_path not in persistent:
+                persistent.append(source_path)
+            if source_path not in sources:
+                sources.append(source_path)
+    config_paths = []
+    compose = str(docker.get("compose_files") or "")
+    if compose:
+        config_paths.extend(part.strip() for part in compose.split(",") if part.strip())
+    named = list(dict.fromkeys(hostnames))
+    https = bool(docker.get("traefik_tls"))
+    ssl_info = {
+        "https": https,
+        "mechanism": _ssl_mechanism("", https=https, docker=docker),
+        "certificate": [],
+        "certificate_key": [],
+    }
+    notes = [
+        f"Discovered from {source}; not present as an Nginx server_name in nginx -T.",
+        "Future websites advertised via Traefik/Dokploy/VIRTUAL_HOST are included automatically.",
+    ]
+    if docker.get("running") is False:
+        notes.append(f"Docker container {docker.get('name') or ''} is not running.")
+    details = {
+        name: {
+            "source_file": compose or "docker inspect",
+            "root": workdir,
+            "alias": [],
+            "proxy_pass": [],
+            "redirect_to": "",
+            "listen": [],
+        }
+        for name in named
+    }
+    status = "READY"
+    if docker.get("running") is False:
+        status = "REQUIRES REVIEW"
+    return {
+        "application_id": _application_id(app_type=app_type, root=workdir, docker=docker, proxy_passes=[]),
+        "hostname": _canonical_hostname(named),
+        "hostnames": named,
+        "hostname_details": details,
+        "type": app_type,
+        "discovery_source": source,
+        "discovery_sources": [source],
+        "classification": CLASSIFICATION_ACTIVE if docker.get("running") is not False else CLASSIFICATION_LEGACY,
+        "root": workdir,
+        "alias": [],
+        "proxy_pass": [],
+        "redirect_to": "",
+        "configuration_paths": config_paths,
+        "database_type": db_type,
+        "database_name": db_name,
+        "persistent_data_paths": persistent,
+        "source_paths": list(dict.fromkeys(sources)),
+        "docker": _public_docker(docker),
+        "ojs_files_dir": "",
+        "http": True,
+        "https": https,
+        "ssl": ssl_info,
+        "listen": [],
+        "default_server": False,
+        "unused_default_root": False,
+        "source_file": compose or "docker inspect",
+        "estimated_bytes": 0,
+        "status": status,
+        "notes": notes,
+        "included": False,
+        "excluded": False,
+    }
+
+
+def applications_from_unmatched_docker(
+    existing: list[dict[str, Any]],
+    containers: list[dict[str, Any]],
+    *,
+    probe: Callable | None = None,
+    path_exists: Callable[[str], bool] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create applications from running web containers whose hostnames nginx -T missed.
+
+    Stopped containers with hostnames are returned as leftover records, not backup apps.
+    """
+    probe = probe or _probe_root
+
+    def _exists(path: str) -> bool:
+        if path_exists is not None:
+            return path_exists(path)
+        try:
+            return Path(path).is_dir()
+        except OSError:
+            return False
+
+    all_summaries = [_docker_summary(item) for item in containers]
+    summaries = [_enrich_docker_from_compose(item, all_summaries) or item for item in all_summaries]
+    claimed = {str(name).lower() for app in existing for name in (app.get("hostnames") or []) if name}
+    claimed_projects = {
+        str((app.get("docker") or {}).get("compose_project") or "").lower()
+        for app in existing
+        if isinstance(app.get("docker"), dict) and (app.get("docker") or {}).get("compose_project")
+    }
+    extras: list[dict[str, Any]] = []
+    leftovers: list[dict[str, Any]] = []
+    for summary in summaries:
+        if _looks_like_db_container(summary):
+            continue
+        hosts = [h for h in (summary.get("hostnames") or []) if looks_like_hostname(str(h))]
+        unused = [h for h in hosts if h.lower() not in claimed]
+        if not unused:
+            continue
+        project = str(summary.get("compose_project") or "").lower()
+        if project and project in claimed_projects and not unused:
+            continue
+        running = summary.get("running") is not False
+        if not running:
+            leftovers.append(
+                {
+                    "hostname": unused[0],
+                    "hostnames": unused,
+                    "in_active_nginx": False,
+                    "verdict": "NOT ACTIVE IN CURRENT SERVER CONFIGURATION",
+                    "classification": CLASSIFICATION_LEGACY,
+                    "evidence": [
+                        {
+                            "source": "docker",
+                            "file": "docker inspect",
+                            "detail": (
+                                f"container {summary.get('name') or ''} has Host()/VIRTUAL_HOST labels "
+                                "but is not running"
+                            ),
+                            "root": summary.get("compose_workdir") or "",
+                            "enabled": False,
+                        }
+                    ],
+                }
+            )
+            continue
+        extras.append(
+            _application_from_docker_summary(
+                summary,
+                hostnames=unused,
+                probe=probe,
+                path_exists=_exists,
+                source="docker labels",
+            )
+        )
+        for name in unused:
+            claimed.add(name.lower())
+        if project:
+            claimed_projects.add(project)
+    return extras, leftovers
+
+
+def applications_from_apache_servers(
+    apache_servers: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+    *,
+    docker_containers: list[dict[str, Any]] | None = None,
+    probe: Callable | None = None,
+    path_exists: Callable[[str], bool] | None = None,
+) -> list[dict[str, Any]]:
+    claimed = {str(name).lower() for app in existing for name in (app.get("hostnames") or []) if name}
+    leftover_servers = [
+        block
+        for block in apache_servers
+        if any(looks_like_hostname(str(n)) and str(n).lower() not in claimed for n in (block.get("server_name") or []))
+    ]
+    if not leftover_servers:
+        return []
+    apps = applications_from_servers(
+        leftover_servers,
+        probe=probe,
+        docker_containers=docker_containers,
+        path_exists=path_exists,
+    )
+    extra: list[dict[str, Any]] = []
+    for app in apps:
+        names = [n for n in (app.get("hostnames") or []) if str(n).lower() not in claimed]
+        if not names:
+            continue
+        app = dict(app)
+        app["hostnames"] = names
+        app["hostname"] = _canonical_hostname(names)
+        app["discovery_source"] = "apache"
+        app["discovery_sources"] = ["apache"]
+        app["classification"] = CLASSIFICATION_ACTIVE
+        extra.append(app)
+        for name in names:
+            claimed.add(name.lower())
+    return extra
+
+
+def inventory_docker_volumes(
+    containers: list[dict[str, Any]],
+    applications: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Every named volume is classified. Overlay2 is never treated as a volume."""
+    host_by_container: dict[str, list[str]] = {}
+    host_by_project: dict[str, list[str]] = {}
+    app_by_host: dict[str, dict[str, Any]] = {}
+    for app in applications:
+        names = [str(n) for n in (app.get("hostnames") or []) if n]
+        docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+        container = str(docker.get("container") or "").lstrip("/")
+        project = str(docker.get("compose_project") or "")
+        for name in names:
+            app_by_host[name.lower()] = app
+        if container:
+            host_by_container.setdefault(container.lower(), []).extend(names)
+        if project:
+            host_by_project.setdefault(project.lower(), []).extend(names)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for inspect in containers:
+        summary = _docker_summary(inspect)
+        for mount in summary.get("mounts") or []:
+            if not mount.get("named_volume"):
+                continue
+            name = str(mount.get("source") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            dest = str(mount.get("destination") or "")
+            purpose = _volume_purpose(dest, named_volume=name)
+            status = _volume_backup_status(purpose)
+            container = str(summary.get("name") or "")
+            project = str(summary.get("compose_project") or "")
+            hosts = list(dict.fromkeys(
+                host_by_container.get(container.lower(), []) + host_by_project.get(project.lower(), []) + list(summary.get("hostnames") or [])
+            ))
+            website = hosts[0] if hosts else ""
+            try:
+                host_path = named_volume_data_path(name)
+            except ValueError:
+                host_path = ""
+            size_bytes = 0
+            file_count = 0
+            if host_path and Path(host_path).is_dir():
+                size_bytes, file_count = _dir_stats(Path(host_path))
+            classification = CLASSIFICATION_ACTIVE if website else CLASSIFICATION_UNRESOLVED
+            if purpose == "cache":
+                classification = CLASSIFICATION_EXCLUDED
+            elif purpose == "database-data":
+                classification = CLASSIFICATION_ACTIVE if website else CLASSIFICATION_UNRESOLVED
+            rows.append(
+                {
+                    "name": name,
+                    "container": container,
+                    "mount_point": dest,
+                    "host_path": host_path,
+                    "purpose": purpose,
+                    "size_bytes": size_bytes,
+                    "file_count": file_count,
+                    "website": website,
+                    "hostnames": hosts,
+                    "backup_status": status,
+                    "classification": classification,
+                    "notes": _volume_notes(purpose, website, name),
+                }
+            )
+    return rows
+
+
+def _volume_notes(purpose: str, website: str, name: str) -> str:
+    if purpose == "database-data":
+        return (
+            f"Named volume {name} is a database data directory. "
+            "It is backed up via SQL dump for the associated website, not as a live raw copy."
+        )
+    if purpose == "cache":
+        return f"Named volume {name} looks like cache/redis; intentionally excluded from website restore data."
+    if purpose == "application-data":
+        if website:
+            return f"Named volume {name} contains persistent application data for {website} and is copied from _data."
+        return f"Named volume {name} looks like application data but has no website association."
+    return f"Named volume {name} is unclassified."
+
+
+def _read_scan_file(path: str, extra_files: dict[str, str] | None = None) -> str:
+    if extra_files and path in extra_files:
+        return extra_files[path]
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")[:40000]
+    except OSError:
+        return ""
+
+
+def _iter_existing_files(roots: tuple[str, ...], extra_files: dict[str, str] | None = None) -> list[str]:
+    files: list[str] = []
+    if extra_files:
+        files.extend(extra_files.keys())
+    for root in roots:
+        base = Path(root)
+        if not base.exists():
+            continue
+        if base.is_file():
+            files.append(str(base))
+            continue
+        try:
+            for path in base.rglob("*"):
+                if path.is_file():
+                    files.append(str(path))
+        except OSError:
+            continue
+    return list(dict.fromkeys(files))
+
+
+def scan_compose_hostnames(extra_files: dict[str, str] | None = None) -> dict[str, list[str]]:
+    """Hostnames advertised in on-disk compose/Dokploy files, keyed by file path."""
+    found: dict[str, list[str]] = {}
+    paths = _iter_existing_files(DOKPLOY_SCAN_ROOTS, extra_files)
+    for path in paths:
+        lower = path.lower()
+        if not any(lower.endswith(name) or name in lower for name in (".yml", ".yaml", ".json")):
+            continue
+        text = _read_scan_file(path, extra_files)
+        names = hostnames_from_compose_text(text)
+        if names:
+            found[path] = names
+    return found
+
+
+def scan_apache_servers(extra_files: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    servers: list[dict[str, Any]] = []
+    paths = _iter_existing_files(APACHE_SCAN_ROOTS, extra_files)
+    for path in paths:
+        lower = path.lower()
+        if "apache" not in lower and "httpd" not in lower:
+            if extra_files is None:
+                continue
+        text = _read_scan_file(path, extra_files)
+        if "<virtualhost" not in text.lower():
+            continue
+        servers.extend(parse_apache_vhosts(text, path))
+    return servers
+
+
+def classify_discovered_items(
+    *,
+    applications: list[dict[str, Any]],
+    inactive_hostnames: list[dict[str, Any]],
+    volumes: list[dict[str, Any]],
+    database_inventory: list[dict[str, Any]],
+    nginx_inventory: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Every hostname/volume/database/nginx block lands in exactly one category."""
+    rows: list[dict[str, Any]] = []
+    seen_hosts: set[str] = set()
+    for app in applications:
+        change = str(app.get("change") or "")
+        if change == "migrated" or str(app.get("status") or "").startswith("SITE MIGRATED"):
+            category = CLASSIFICATION_MIGRATED
+        elif change == "removed" or str(app.get("status") or "").startswith("SITE REMOVED"):
+            category = CLASSIFICATION_UNRESOLVED
+        elif app.get("unused_default_root") or "EXCLUDED" in str(app.get("status") or ""):
+            category = CLASSIFICATION_EXCLUDED
+        elif app.get("classification") == CLASSIFICATION_LEGACY:
+            category = CLASSIFICATION_LEGACY
+        elif "REVIEW" in str(app.get("status") or "") and not app.get("docker") and not app.get("root") and not app.get("proxy_pass"):
+            category = CLASSIFICATION_UNRESOLVED
+        else:
+            category = CLASSIFICATION_ACTIVE
+        docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+        ssl = app.get("ssl") if isinstance(app.get("ssl"), dict) else {}
+        for hostname in app.get("hostnames") or [app.get("hostname")]:
+            if not hostname:
+                continue
+            key = str(hostname).lower()
+            if key in seen_hosts:
+                continue
+            seen_hosts.add(key)
+            rows.append(
+                {
+                    "kind": "hostname",
+                    "hostname": hostname,
+                    "application": app.get("application_id") or "",
+                    "type": app.get("type") or "",
+                    "source_path": app.get("root") or docker.get("workdir") or app.get("source_file") or "",
+                    "discovery_source": app.get("discovery_source") or "",
+                    "docker": docker.get("container") or docker.get("compose_project") or "",
+                    "database": app.get("database_name") or "",
+                    "nginx": app.get("source_file") or "",
+                    "ssl": ssl.get("mechanism") or ("https" if app.get("https") else "none"),
+                    "size_bytes": int(app.get("estimated_bytes") or 0),
+                    "status": app.get("status") or "",
+                    "classification": category,
+                }
+            )
+    for row in inactive_hostnames or []:
+        hostname = str(row.get("hostname") or "")
+        if not hostname or hostname.lower() in seen_hosts:
+            continue
+        seen_hosts.add(hostname.lower())
+        evidence = row.get("evidence") or []
+        source = ""
+        path = ""
+        if evidence:
+            source = str(evidence[0].get("source") or "")
+            path = str(evidence[0].get("file") or evidence[0].get("root") or "")
+        rows.append(
+            {
+                "kind": "hostname",
+                "hostname": hostname,
+                "application": "",
+                "type": "",
+                "source_path": path or source,
+                "discovery_source": source or "on-disk config",
+                "docker": "",
+                "database": "",
+                "nginx": path if "nginx" in source else "",
+                "ssl": "none",
+                "size_bytes": 0,
+                "status": row.get("verdict") or CLASSIFICATION_LEGACY,
+                "classification": row.get("classification") or CLASSIFICATION_LEGACY,
+            }
+        )
+    for vol in volumes or []:
+        rows.append(
+            {
+                "kind": "volume",
+                "hostname": vol.get("website") or "",
+                "application": vol.get("name") or "",
+                "type": "docker-volume",
+                "source_path": vol.get("host_path") or vol.get("mount_point") or "",
+                "discovery_source": "docker volume",
+                "docker": vol.get("container") or "",
+                "database": vol.get("name") if vol.get("purpose") == "database-data" else "",
+                "nginx": "",
+                "ssl": "none",
+                "size_bytes": int(vol.get("size_bytes") or 0),
+                "status": vol.get("backup_status") or "",
+                "classification": vol.get("classification") or CLASSIFICATION_UNRESOLVED,
+            }
+        )
+    for row in database_inventory or []:
+        status = str(row.get("status") or "")
+        if row.get("system") or "SYSTEM DATABASE" in status:
+            category = CLASSIFICATION_SYSTEM
+        elif status.startswith("ASSOCIATED"):
+            category = CLASSIFICATION_ACTIVE
+        elif status.startswith("RECOVERY"):
+            category = CLASSIFICATION_RECOVERY
+        elif "EXCLUDED" in status:
+            category = CLASSIFICATION_EXCLUDED
+        else:
+            category = CLASSIFICATION_UNRESOLVED
+        rows.append(
+            {
+                "kind": "database",
+                "hostname": "",
+                "application": row.get("application_id") or "",
+                "type": row.get("type") or "MariaDB",
+                "source_path": row.get("docker_container") or "",
+                "discovery_source": "database inventory",
+                "docker": row.get("docker_container") or "",
+                "database": row.get("name") or "",
+                "nginx": "",
+                "ssl": "none",
+                "size_bytes": int(row.get("size_bytes") or 0),
+                "status": status,
+                "classification": category,
+            }
+        )
+    claimed_nginx_hosts = seen_hosts
+    for block in nginx_inventory or []:
+        names = [str(n) for n in (block.get("server_name") or []) if n]
+        if names and any(name.lower() in claimed_nginx_hosts for name in names):
+            continue
+        if not names:
+            rows.append(
+                {
+                    "kind": "nginx",
+                    "hostname": "",
+                    "application": "",
+                    "type": "nginx-server",
+                    "source_path": block.get("source_file") or "",
+                    "discovery_source": "nginx -T",
+                    "docker": "",
+                    "database": "",
+                    "nginx": block.get("source_file") or "",
+                    "ssl": "https" if block.get("https") else "none",
+                    "size_bytes": 0,
+                    "status": "unexplained nginx server block",
+                    "classification": CLASSIFICATION_UNRESOLVED,
+                }
+            )
+    return rows
+
+
+def assemble_discovery(
+    *,
+    servers: list[dict[str, Any]],
+    docker_containers: list[dict[str, Any]] | None = None,
+    mariadb: list[str] | None = None,
+    apache_servers: list[dict[str, Any]] | None = None,
+    extra_scan_files: dict[str, str] | None = None,
+    extra_config_texts: dict[str, str] | None = None,
+    previous_hostnames: list[str] | None = None,
+    details_override: dict[str, dict[str, Any]] | None = None,
+    probe: Callable | None = None,
+    path_exists: Callable[[str], bool] | None = None,
+    run: Callable | None = None,
+    mysql_defaults: Callable | None = None,
+    nginx_ok: bool = True,
+    hostname: str = "",
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
+    """Reconcile nginx -T, Docker labels, Apache, compose, and leftover configs."""
+    errors = list(errors or [])
+    docker_containers = list(docker_containers or [])
+    mariadb = list(mariadb or [])
+    apache_servers = list(apache_servers or [])
+    apps = applications_from_servers(
+        servers,
+        probe=probe,
+        docker_containers=docker_containers,
+        mariadb=mariadb,
+        path_exists=path_exists,
+    )
+    docker_apps, docker_leftovers = applications_from_unmatched_docker(
+        apps,
+        docker_containers,
+        probe=probe,
+        path_exists=path_exists,
+    )
+    if docker_apps:
+        apps = _merge_candidates(list(apps) + docker_apps)
+    apache_apps = applications_from_apache_servers(
+        apache_servers,
+        apps,
+        docker_containers=docker_containers,
+        probe=probe,
+        path_exists=path_exists,
+    )
+    if apache_apps:
+        apps = _merge_candidates(list(apps) + apache_apps)
+    compose_hosts = scan_compose_hostnames(extra_scan_files)
+    claimed = {str(name).lower() for app in apps for name in (app.get("hostnames") or []) if name}
+    compose_leftovers: list[dict[str, Any]] = []
+    for path, names in compose_hosts.items():
+        unused = [name for name in names if name.lower() not in claimed]
+        if not unused:
+            continue
+        compose_leftovers.append(
+            {
+                "hostname": unused[0],
+                "hostnames": unused,
+                "in_active_nginx": False,
+                "verdict": "NOT ACTIVE IN CURRENT SERVER CONFIGURATION",
+                "classification": CLASSIFICATION_LEGACY,
+                "evidence": [
+                    {
+                        "source": "dokploy-compose",
+                        "file": path,
+                        "detail": "hostname in compose/Dokploy file; no running web container matched",
+                        "root": "",
+                        "enabled": False,
+                    }
+                ],
+            }
+        )
+    details: dict[str, dict[str, Any]] = dict(details_override or {})
+    if mariadb and details_override is None and run is not None and mysql_defaults is not None:
+        try:
+            details = mariadb_schema_details(run, mysql_defaults, mariadb)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"MariaDB schema details skipped: {exc}")
+    search_roots = [str(app.get("root") or "") for app in apps if app.get("root")]
+    extra_texts = dict(extra_config_texts or {})
+    extra_texts.update(docker_database_texts(docker_containers))
+    try:
+        references = find_database_references(mariadb, search_roots, extra_texts=extra_texts)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"database reference search skipped: {exc}")
+        references = {}
+    if mariadb and details_override is None and run is not None and mysql_defaults is not None:
+        unassociated_names = [
+            name
+            for name in mariadb
+            if name not in {"information_schema", "performance_schema", "mysql", "sys"}
+            and not any(str(app.get("database_name") or "") == name for app in apps)
+            and not (
+                references.get(name)
+                and any(
+                    str(app.get("root") or "")
+                    and str(item.get("path") or "").startswith(str(app.get("root") or ""))
+                    for app in apps
+                    for item in (references.get(name) or [])
+                )
+            )
+        ]
+        for name in unassociated_names:
+            try:
+                inspected = inspect_database_contents(run, mysql_defaults, name)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"MariaDB inspect skipped for a database: {exc}")
+                continue
+            details.setdefault(name, {})
+            details[name].update(inspected)
+            if inspected.get("tables") and details[name].get("table_count") in {None, 0}:
+                details[name]["table_count"] = len(inspected.get("tables") or [])
+    account: dict[str, Any] = {}
+    if run is not None and mysql_defaults is not None:
+        try:
+            account = mariadb_account_info(run, mysql_defaults)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"MariaDB account probe skipped: {exc}")
+    database_inventory = build_database_inventory(mariadb, apps, details=details, references=references)
+    database_inventory = attach_docker_only_databases(apps, database_inventory, mariadb)
+    by_id = {str(app.get("application_id") or ""): app for app in apps}
+    for row in database_inventory:
+        ident = str(row.get("application_id") or "")
+        app = by_id.get(ident)
+        if app and row.get("name") and not app.get("database_name") and str(row.get("status") or "").startswith("ASSOCIATED"):
+            app["database_name"] = row["name"]
+            app["database_type"] = row.get("type") or "MariaDB"
+    docker_hosts: list[str] = []
+    for inspect in docker_containers:
+        summary = _docker_summary(inspect)
+        docker_hosts.extend(str(name) for name in (summary.get("hostnames") or []) if name)
+    active_hosts = parsed_hostnames(servers)
+    for app in apps:
+        for name in app.get("hostnames") or []:
+            if name and name not in active_hosts:
+                active_hosts.append(str(name))
+    try:
+        inactive_hostnames = scan_inactive_hostnames(
+            active_hosts,
+            previous_hostnames=previous_hostnames,
+            parse_nginx_t=parse_nginx_t,
+            extra_files=extra_scan_files,
+            docker_hint_hostnames=docker_hosts,
+        )
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"inactive hostname scan skipped: {exc}")
+        inactive_hostnames = []
+    leftover_index = {str(row.get("hostname") or "").lower(): row for row in inactive_hostnames}
+    for extra in [*docker_leftovers, *compose_leftovers]:
+        key = str(extra.get("hostname") or "").lower()
+        if not key:
+            continue
+        if key in leftover_index:
+            evidence = leftover_index[key].setdefault("evidence", [])
+            for item in extra.get("evidence") or []:
+                if item not in evidence:
+                    evidence.append(item)
+            leftover_index[key]["classification"] = extra.get("classification") or CLASSIFICATION_LEGACY
+        else:
+            inactive_hostnames.append(extra)
+            leftover_index[key] = extra
+    postgres = sorted(
+        {
+            str(app.get("database_name"))
+            for app in apps
+            if app.get("database_type") == "PostgreSQL" and app.get("database_name")
+        }
+    )
+    volumes = inventory_docker_volumes(docker_containers, apps)
+    nginx_rows = nginx_inventory(servers)
+    classified = classify_discovered_items(
+        applications=apps,
+        inactive_hostnames=inactive_hostnames,
+        volumes=volumes,
+        database_inventory=database_inventory,
+        nginx_inventory=nginx_rows,
+    )
+    sources = sorted(
+        {
+            str(src)
+            for app in apps
+            for src in (app.get("discovery_sources") or [app.get("discovery_source") or "nginx -T"])
+            if src
+        }
+    )
+    unique_websites = [
+        app
+        for app in apps
+        if app.get("classification") != CLASSIFICATION_EXCLUDED
+        and not app.get("unused_default_root")
+        and app.get("change") not in {"removed", "migrated"}
+    ]
+    return {
+        "ok": bool(nginx_ok or apps),
+        "hostname": hostname or socket.gethostname(),
+        "discovery_source": " + ".join(sources) if sources else "nginx -T",
+        "nginx_ok": nginx_ok,
+        "applications": apps,
+        "servers": servers,
+        "nginx_inventory": nginx_rows,
+        "parsed_hostnames": parsed_hostnames(servers),
+        "inactive_hostnames": inactive_hostnames,
+        "database_inventory": database_inventory,
+        "database_account": account,
+        "databases": {"mariadb": mariadb, "postgresql": postgres},
+        "docker_projects": sorted(
+            {
+                str((app.get("docker") or {}).get("compose_project"))
+                for app in apps
+                if (app.get("docker") or {}).get("compose_project")
+            }
+        ),
+        "docker_volumes": volumes,
+        "classified": classified,
+        "discovery_totals": discovery_totals(
+            applications=apps,
+            classified=classified,
+            volumes=volumes,
+            database_inventory=database_inventory,
+            nginx_inventory=nginx_rows,
+            unique_websites=unique_websites,
+        ),
+        "errors": errors,
+    }
+
+
+def discovery_totals(
+    *,
+    applications: list[dict[str, Any]],
+    classified: list[dict[str, Any]],
+    volumes: list[dict[str, Any]],
+    database_inventory: list[dict[str, Any]],
+    nginx_inventory: list[dict[str, Any]],
+    unique_websites: list[dict[str, Any]],
+) -> dict[str, int]:
+    host_rows = [row for row in classified if row.get("kind") == "hostname"]
+    live_apps = [app for app in applications if app.get("change") not in {"removed", "migrated"}]
+    docker_apps = [app for app in live_apps if app.get("docker")]
+    https_sites = [app for app in unique_websites if app.get("https") or (isinstance(app.get("ssl"), dict) and app.get("ssl", {}).get("https"))]
+    dbs = [row for row in database_inventory if not row.get("system")]
+    return {
+        "hostnames_discovered": len(host_rows),
+        "unique_websites": len(unique_websites),
+        "applications": len(live_apps),
+        "databases": len(dbs),
+        "docker_applications": len(docker_apps),
+        "docker_volumes": len(volumes),
+        "nginx_server_blocks": len(nginx_inventory),
+        "https_sites": len(https_sites),
+    }
+
+
 def attach_docker_only_databases(
     applications: list[dict[str, Any]],
     inventory: list[dict[str, Any]],
     host_names: list[str],
 ) -> list[dict[str, Any]]:
-    """Associate compose MYSQL_DATABASE names that exist only inside a db container."""
+    """Associate compose MYSQL_DATABASE / POSTGRES_DB names that exist only inside a db container."""
     host = {str(name) for name in host_names if name}
     seen = {str(row.get("name") or "") for row in inventory}
     extra: list[dict[str, Any]] = []
     for app in applications:
         docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
-        name = str(app.get("database_name") or docker.get("mysql_database") or "").strip()
+        name = str(app.get("database_name") or docker.get("mysql_database") or docker.get("postgres_db") or "").strip()
         container = inferred_db_container(docker)
+        db_type = str(app.get("database_type") or "")
+        if docker.get("postgres_db") and name == str(docker.get("postgres_db") or ""):
+            db_type = "PostgreSQL"
+        elif not db_type:
+            db_type = "MariaDB"
         if not name or name in host or name in seen:
             continue
         if not container:
@@ -1353,13 +2514,13 @@ def attach_docker_only_databases(
         extra.append(
             {
                 "name": name,
-                "type": "MariaDB",
+                "type": db_type,
                 "system": False,
                 "size_bytes": None,
                 "table_count": None,
                 "application_id": app.get("application_id") or "",
                 "status": "ASSOCIATED WITH APPLICATION",
-                "reason": f"schema lives in Docker container {container}; not present on host MariaDB",
+                "reason": f"schema lives in Docker container {container}; not present on host {db_type}",
                 "docker_container": container,
                 "references": [{"path": f"docker:{container}", "kind": "docker-db"}],
             }
@@ -1369,7 +2530,7 @@ def attach_docker_only_databases(
 
 
 def discover_applications(payload: dict | None = None, *, run=None, mysql_defaults=None) -> dict[str, Any]:
-    """Collect a read-only inventory. payload may include previous_hostnames."""
+    """Collect a read-only inventory from every web-serving source on the host."""
     payload = payload if isinstance(payload, dict) else {}
     previous_hostnames = [str(n) for n in (payload.get("previous_hostnames") or []) if n]
     extra_scan_files = payload.get("hostname_scan_files") if isinstance(payload.get("hostname_scan_files"), dict) else None
@@ -1411,124 +2572,25 @@ def discover_applications(payload: dict | None = None, *, run=None, mysql_defaul
         mariadb = _list_mariadb(run, mysql_defaults)
     except Exception as exc:  # noqa: BLE001
         errors.append(f"MariaDB discovery skipped: {exc}")
-    apps = applications_from_servers(
-        servers,
+    apache_servers: list[dict[str, Any]] = []
+    try:
+        apache_servers = scan_apache_servers(extra_scan_files)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"Apache scan skipped: {exc}")
+    return assemble_discovery(
+        servers=servers,
         docker_containers=docker_containers,
         mariadb=mariadb,
+        apache_servers=apache_servers,
+        extra_scan_files=extra_scan_files,
+        extra_config_texts=extra_config_texts,
+        previous_hostnames=previous_hostnames,
+        details_override=details_override,
+        run=run,
+        mysql_defaults=mysql_defaults,
+        nginx_ok=nginx_ok,
+        errors=errors,
     )
-    details: dict[str, dict[str, Any]] = dict(details_override or {})
-    if mariadb and details_override is None:
-        try:
-            details = mariadb_schema_details(run, mysql_defaults, mariadb)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"MariaDB schema details skipped: {exc}")
-    search_roots = [str(app.get("root") or "") for app in apps if app.get("root")]
-    extra_texts = dict(extra_config_texts or {})
-    extra_texts.update(docker_database_texts(docker_containers))
-    try:
-        references = find_database_references(
-            mariadb,
-            search_roots,
-            extra_texts=extra_texts,
-        )
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"database reference search skipped: {exc}")
-        references = {}
-    if mariadb and details_override is None and run is not None:
-        unassociated_names = [
-            name
-            for name in mariadb
-            if name not in {"information_schema", "performance_schema", "mysql", "sys"}
-            and not any(str(app.get("database_name") or "") == name for app in apps)
-            and not (references.get(name) and any(
-                str(app.get("root") or "") and str(item.get("path") or "").startswith(str(app.get("root") or ""))
-                for app in apps
-                for item in (references.get(name) or [])
-            ))
-        ]
-        for name in unassociated_names:
-            try:
-                inspected = inspect_database_contents(run, mysql_defaults, name)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"MariaDB inspect skipped for a database: {exc}")
-                continue
-            details.setdefault(name, {})
-            details[name].update(inspected)
-            if inspected.get("tables") and details[name].get("table_count") in {None, 0}:
-                details[name]["table_count"] = len(inspected.get("tables") or [])
-    account: dict[str, Any] = {}
-    try:
-        account = mariadb_account_info(run, mysql_defaults) if run is not None else {}
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"MariaDB account probe skipped: {exc}")
-    database_inventory = build_database_inventory(
-        mariadb,
-        apps,
-        details=details,
-        references=references,
-    )
-    database_inventory = attach_docker_only_databases(apps, database_inventory, mariadb)
-    by_id = {str(app.get("application_id") or ""): app for app in apps}
-    for row in database_inventory:
-        ident = str(row.get("application_id") or "")
-        app = by_id.get(ident)
-        if app and row.get("name") and not app.get("database_name") and str(row.get("status") or "").startswith("ASSOCIATED"):
-            app["database_name"] = row["name"]
-            app["database_type"] = "MariaDB"
-    docker_hosts: list[str] = []
-    for inspect in docker_containers:
-        config = inspect.get("Config") or {}
-        labels = config.get("Labels") or {}
-        for key, value in {**labels, **{}}.items():
-            text = str(value or "")
-            if "VIRTUAL_HOST" in str(key).upper() or "hostname" in str(key).lower():
-                docker_hosts.extend(part.strip() for part in text.replace(",", " ").split() if "." in part)
-        for item in config.get("Env") or []:
-            if str(item).startswith("VIRTUAL_HOST="):
-                docker_hosts.extend(part.strip() for part in str(item).split("=", 1)[1].replace(",", " ").split() if "." in part)
-    try:
-        inactive_hostnames = scan_inactive_hostnames(
-            parsed_hostnames(servers),
-            previous_hostnames=previous_hostnames,
-            parse_nginx_t=parse_nginx_t,
-            extra_files=extra_scan_files,
-            docker_hint_hostnames=docker_hosts,
-        )
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"inactive hostname scan skipped: {exc}")
-        inactive_hostnames = []
-    postgres = sorted(
-        {
-            str(app.get("database_name"))
-            for app in apps
-            if app.get("database_type") == "PostgreSQL" and app.get("database_name")
-        }
-    )
-    return {
-        "ok": nginx_ok,
-        "hostname": socket.gethostname(),
-        "discovery_source": "nginx -T",
-        "nginx_ok": nginx_ok,
-        "applications": apps,
-        "servers": servers,
-        "nginx_inventory": nginx_inventory(servers),
-        "parsed_hostnames": parsed_hostnames(servers),
-        "inactive_hostnames": inactive_hostnames,
-        "database_inventory": database_inventory,
-        "database_account": account,
-        "databases": {
-            "mariadb": mariadb,
-            "postgresql": postgres,
-        },
-        "docker_projects": sorted(
-            {
-                str((app.get("docker") or {}).get("compose_project"))
-                for app in apps
-                if (app.get("docker") or {}).get("compose_project")
-            }
-        ),
-        "errors": errors,
-    }
 
 
 def handle(action: str, payload: dict, *, run=None, mysql_defaults=None) -> dict[str, Any]:

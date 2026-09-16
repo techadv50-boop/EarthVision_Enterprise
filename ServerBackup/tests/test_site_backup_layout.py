@@ -139,7 +139,8 @@ def test_nginx_and_letsencrypt_land_in_the_website_nginx_folder():
     )
     assert nginx["site_folder"] == "50sea.com" and nginx["kind"] == "nginx"
     assert ssl["site_folder"] == "50sea.com"
-    assert str(ssl["relative"]).startswith("ssl/")
+    assert ssl["kind"] == "ssl"
+    assert "50sea.com" in str(ssl["relative"])
 
 
 def test_preflight_has_fourteen_fields_and_proposed_tree():

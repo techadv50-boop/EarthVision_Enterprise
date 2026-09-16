@@ -92,6 +92,22 @@ def require_unix_syntax(path: str) -> str:
 
 
 _DOCKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_NAMED_VOLUME_DATA = re.compile(r"^/var/lib/docker/volumes/([^/]+)/_data$")
+
+
+def is_named_volume_data_path(path: str) -> bool:
+    """True only for a Docker named volume data dir, never overlay2/containerd."""
+    cleaned = (path or "").rstrip("/")
+    match = _NAMED_VOLUME_DATA.match(cleaned)
+    if not match:
+        return False
+    name = match.group(1)
+    return bool(name) and name not in {".", ".."} and _DOCKER_NAME.match(name)
+
+
+def named_volume_data_path(name: str) -> str:
+    cleaned = require_docker_name(name)
+    return f"/var/lib/docker/volumes/{cleaned}/_data"
 
 
 def require_docker_name(name: str) -> str:

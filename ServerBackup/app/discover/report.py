@@ -68,6 +68,84 @@ def _hostname_lines(name: str, app: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
+    totals = result.get("discovery_totals") if isinstance(result.get("discovery_totals"), dict) else {}
+    classified = list(result.get("classified") or [])
+    host_rows = [row for row in classified if row.get("kind") == "hostname"]
+    lines = [
+        "SERVER-WIDE DISCOVERY REPORT",
+        f"  TOTAL HOSTNAMES DISCOVERED: {totals.get('hostnames_discovered', len(host_rows))}",
+        f"  TOTAL UNIQUE WEBSITES: {totals.get('unique_websites', 0)}",
+        f"  TOTAL APPLICATIONS: {totals.get('applications', 0)}",
+        f"  TOTAL DATABASES: {totals.get('databases', 0)}",
+        f"  TOTAL DOCKER APPLICATIONS: {totals.get('docker_applications', 0)}",
+        f"  TOTAL DOCKER VOLUMES: {totals.get('docker_volumes', 0)}",
+        f"  TOTAL NGINX SERVER BLOCKS: {totals.get('nginx_server_blocks', 0)}",
+        f"  TOTAL HTTPS SITES: {totals.get('https_sites', 0)}",
+        "",
+        "HOSTNAME | APPLICATION | TYPE | SOURCE/PATH | DOCKER | DATABASE | NGINX | SSL | SIZE | STATUS",
+    ]
+    if host_rows:
+        for row in host_rows:
+            lines.append(
+                " | ".join(
+                    [
+                        str(row.get("hostname") or "—"),
+                        str(row.get("application") or "—"),
+                        str(row.get("type") or "—"),
+                        str(row.get("source_path") or row.get("discovery_source") or "—"),
+                        str(row.get("docker") or "—"),
+                        str(row.get("database") or "—"),
+                        str(row.get("nginx") or "—"),
+                        str(row.get("ssl") or "—"),
+                        str(row.get("size_bytes") or 0),
+                        str(row.get("classification") or row.get("status") or "—"),
+                    ]
+                )
+            )
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "WHY NGINX-ONLY DISCOVERY MISSED WEBSITES"])
+    lines.append(
+        "  Previous versions created backup applications only from `nginx -T` server_name."
+    )
+    lines.append(
+        "  Docker Traefik/Dokploy Host() labels, VIRTUAL_HOST, Apache vhosts, and compose files"
+    )
+    lines.append(
+        "  were evidence-only. This engine reconciles all of those sources automatically."
+    )
+    lines.append("  No production hostname is hard-coded. A new Host() label is enough.")
+    missed = [
+        row
+        for row in host_rows
+        if "nginx -T" not in str(row.get("discovery_source") or "")
+    ]
+    if missed:
+        for row in missed:
+            lines.append(
+                f"  {row.get('hostname')}  source={row.get('discovery_source') or '—'}  "
+                f"{row.get('classification') or row.get('status')}"
+            )
+    else:
+        lines.append("  (every classified hostname was also in nginx -T, or none extra were found)")
+    volumes = list(result.get("docker_volumes") or [])
+    lines.extend(["", "DOCKER NAMED VOLUMES"])
+    if volumes:
+        for vol in volumes:
+            lines.append(
+                f"  {vol.get('name')}  container={vol.get('container') or '—'}  "
+                f"mount={vol.get('mount_point') or '—'}  purpose={vol.get('purpose')}  "
+                f"website={vol.get('website') or '—'}  backup={vol.get('backup_status')}  "
+                f"{vol.get('classification')}"
+            )
+            if vol.get("notes"):
+                lines.append(f"    {vol.get('notes')}")
+    else:
+        lines.append("  (none)")
+    return lines
+
+
 def format_application_sections(
     applications: list[dict[str, Any]],
     *,
@@ -425,8 +503,10 @@ def format_discovery_report(result: dict[str, Any]) -> str:
     lines = [
         "DISCOVERY REPORT",
         f"Host: {result.get('hostname') or 'unknown'}",
-        f"Source: {result.get('discovery_source') or 'nginx -T'}",
+        f"Source: {result.get('discovery_source') or 'nginx -T + docker + on-disk configs'}",
         f"Nginx: {'OK' if result.get('nginx_ok') else 'FAILED'}",
+        "",
+        *format_server_wide_discovery_report(result),
         "",
         *format_application_sections(
             apps,

@@ -350,6 +350,8 @@ def test_tmp_scratch_is_excluded_but_nested_app_trees_are_not():
     assert da.is_excluded_path("/tmp/server-backup-work-abc/databases") is True
     assert da.is_excluded_path("/tmp/pytest-of-ubuntu/remote/var/www/journal.50sea.com") is False
     assert da.is_excluded_path("/var/lib/docker/overlay2/abc") is True
+    assert da.is_excluded_path("/var/lib/docker/volumes/app_uploads/_data") is False
+    assert da.is_excluded_path("/var/lib/docker/volumes/app_uploads") is True
 
 
 def test_database_association_and_secret_redaction():

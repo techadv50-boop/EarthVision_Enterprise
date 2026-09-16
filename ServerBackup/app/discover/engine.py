@@ -51,7 +51,12 @@ def discover_applications(
         parsed["applications"] = apps
         inventory = apply_database_policy(list(parsed.get("database_inventory") or []), config.backup_destination)
         parsed["database_inventory"] = inventory
-        parsed["backup_gate"] = assess_backup_gate(apps, inventory)
+        parsed["backup_gate"] = assess_backup_gate(
+            apps,
+            inventory,
+            volumes=list(parsed.get("docker_volumes") or []),
+            classified=list(parsed.get("classified") or []),
+        )
         parsed["report_text"] = format_discovery_report(parsed)
         parsed["discovered_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if persist:
@@ -66,6 +71,9 @@ def discover_applications(
                     ],
                     "database_inventory": inventory,
                     "inactive_hostnames": list(parsed.get("inactive_hostnames") or []),
+                    "docker_volumes": list(parsed.get("docker_volumes") or []),
+                    "classified": list(parsed.get("classified") or []),
+                    "discovery_totals": parsed.get("discovery_totals") or {},
                     "database_account": parsed.get("database_account") or {},
                 },
             )
