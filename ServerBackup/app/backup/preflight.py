@@ -39,9 +39,13 @@ def attribute_records(
     nginx_root: str = "/etc/nginx",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for record in records:
         placement = classify_file(record, domain_map, nginx_root=nginx_root)
         abs_path = placement.get("absolute") or absolute_record_path(record)
+        if abs_path in seen:
+            continue
+        seen.add(abs_path)
         kind = placement.get("kind") or "unmapped"
         folder = placement.get("site_folder") or "_server"
         if kind == "blocked":
@@ -198,11 +202,53 @@ def build_preflight(
                 }
             )
 
+    website_folders = {str(row.get("backup_folder") or "") for row in websites}
+    website_files = 0
+    infra_files = 0
+    recovery_files = 0
+    excluded_files = 0
+    other_files = 0
+    for key, stats in grouped.items():
+        files = int(stats.get("files") or 0)
+        folder = str(key or "")
+        if folder in website_folders:
+            website_files += files
+        elif folder == "_server" or folder.startswith("_server/"):
+            infra_files += files
+        elif folder == "_recovery" or folder.startswith("_recovery/"):
+            recovery_files += files
+        elif folder in {"(blocked)", ""}:
+            excluded_files += files
+        else:
+            other_files += files
+    attributed_unique = len(attributed)
+    classified_sum = website_files + infra_files + recovery_files + excluded_files + other_files
+    file_reconciliation = {
+        "inventoried": attributed_unique,
+        "website": website_files,
+        "infrastructure": infra_files,
+        "recovery": recovery_files,
+        "excluded": excluded_files,
+        "other": other_files,
+        "attributed": classified_sum,
+        "ok": attributed_unique == classified_sum and other_files == 0,
+    }
+
     return {
         "domain_map": domain_map,
         "attributed": attributed,
         "grouped": grouped,
         "websites": websites,
+        "file_reconciliation": file_reconciliation,
+        "infrastructure_databases": [
+            {
+                "name": db.name,
+                "dump_path": f"_server/infrastructure/databases/{db.name}.sql",
+                "size_bytes": db.size_bytes,
+                "reason": "Dokploy/Traefik infrastructure database; not a website folder",
+            }
+            for db in domain_map.infrastructure_databases
+        ],
         "recovery_databases": [
             {
                 "name": db.name,
@@ -257,6 +303,12 @@ def format_proposed_tree(preflight: dict[str, Any]) -> str:
     lines.append("└── _server/")
     lines.append("    ├── nginx/")
     lines.append("    ├── docker/")
+    lines.append("    ├── infrastructure/")
+    infra_dbs = list(preflight.get("infrastructure_databases") or [])
+    if infra_dbs:
+        lines.append("    │   └── databases/")
+        for db in infra_dbs:
+            lines.append(f"    │       └── {db['name']}.sql")
     lines.append("    ├── system/")
     lines.append("    └── ssl/")
     return "\n".join(lines)
@@ -274,6 +326,7 @@ def format_new_file_attribution(
     counts: dict[str, int],
     grouped: dict[str, dict[str, Any]],
     has_master: bool,
+    file_reconciliation: dict[str, Any] | None = None,
 ) -> str:
     new_count = int((counts or {}).get("new") or 0)
     lines = [
@@ -326,10 +379,23 @@ def format_new_file_attribution(
                 f"    source {source}: {int(stats.get('files') or 0)} files  {format_bytes(int(stats.get('bytes') or 0))}"
             )
     lines.append(f"  attributed total: {total_files} files  {format_bytes(total_bytes)}")
-    if new_count and total_files and new_count != total_files and not has_master:
+    recon = file_reconciliation or {}
+    if recon:
+        extra_other = f"+ other {recon.get('other')} " if recon.get("other") else ""
         lines.append(
-            f"  note: NEW={new_count} is the inventory count; attributed {total_files} "
-            "after per-website classification (blocked docker-internal paths are omitted from copies)."
+            "  FILE ACCOUNTING  inventoried="
+            f"{recon.get('inventoried')} = website {recon.get('website')} "
+            f"+ infrastructure {recon.get('infrastructure')} "
+            f"+ recovery {recon.get('recovery')} "
+            f"+ excluded {recon.get('excluded')} "
+            f"{extra_other}"
+            f"(sum {recon.get('attributed')})  "
+            f"{'OK' if recon.get('ok') else 'MISMATCH'}"
+        )
+    if not has_master and new_count and recon.get("inventoried") not in {None, new_count}:
+        lines.append(
+            f"  NEW={new_count} vs unique inventoried={recon.get('inventoried')} — "
+            "every inventoried file must have exactly one classification."
         )
     return "\n".join(lines)
 

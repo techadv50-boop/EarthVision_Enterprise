@@ -14,7 +14,12 @@ import tarfile
 import time
 from pathlib import Path
 
-from docker_db import docker_dump_argv, docker_mysql_argv, parse_show_table_status
+from docker_db import (
+    docker_dump_argv_for,
+    docker_schema_details_for,
+    is_postgres_engine,
+    parse_docker_db_entry,
+)
 from path_safety import require_unix_syntax
 
 ALLOWED_ACTIONS = {
@@ -126,15 +131,14 @@ def path_checks(payload: dict) -> list[dict]:
     return checks
 
 
-def docker_schema_size_bytes(container: str, name: str) -> int | None:
+def docker_schema_size_bytes(container: str, name: str, engine: str = "") -> int | None:
     try:
-        result = run(docker_mysql_argv(container, name, "SHOW TABLE STATUS"), timeout=30)
+        probed = docker_schema_details_for(run, container, name, engine=engine)
     except Exception:
         return None
-    if result.returncode != 0:
+    if probed.get("size_bytes") is None:
         return None
-    parsed = parse_show_table_status(result.stdout or "")
-    return int(parsed.get("size_bytes") or 0)
+    return int(probed.get("size_bytes") or 0)
 
 
 def schema_size_bytes(name: str) -> int | None:
@@ -172,9 +176,14 @@ def dump_one_database(
     estimated_bytes: int | None = None,
     run_dump=None,
     docker_container: str = "",
+    engine: str = "MariaDB",
 ) -> dict:
+    db_type = "PostgreSQL" if is_postgres_engine(engine) else "MariaDB"
     if docker_container:
-        arg_sets = [docker_dump_argv(docker_container, name)]
+        arg_sets = [docker_dump_argv_for(docker_container, name, engine)]
+    elif db_type == "PostgreSQL":
+        fail(f"PostgreSQL {name} has no Docker db container; host pg_dump is not configured")
+        arg_sets = []
     else:
         arg_sets = [
             [
@@ -197,7 +206,7 @@ def dump_one_database(
                 "event": "progress",
                 "stage": "DATABASE DUMP PREPARING",
                 "name": name,
-                "type": "MariaDB",
+                "type": db_type,
                 "status": "running",
                 "estimated_bytes": estimated_bytes,
                 "bytes_produced": 0,
@@ -219,7 +228,7 @@ def dump_one_database(
                     "event": "progress",
                     "stage": "DATABASE DUMPING",
                     "name": name,
-                    "type": "MariaDB",
+                    "type": db_type,
                     "status": "running",
                     "bytes_produced": 0,
                     "estimated_bytes": estimated_bytes,
@@ -241,7 +250,7 @@ def dump_one_database(
                             "event": "progress",
                             "stage": "DATABASE DUMPING",
                             "name": name,
-                            "type": "MariaDB",
+                            "type": db_type,
                             "status": "running",
                             "bytes_produced": produced,
                             "bytes_written": written,
@@ -258,12 +267,12 @@ def dump_one_database(
                     "event": "progress",
                     "stage": "DATABASE FAILED",
                     "name": name,
-                    "type": "MariaDB",
+                    "type": db_type,
                     "status": "failed",
                     "error": last_stderr.strip() or f"mysqldump failed for {name}",
                 }
             )
-        fail(last_stderr.strip() or f"mysqldump failed for {name}")
+            fail(last_stderr.strip() or f"{'pg_dump' if db_type == 'PostgreSQL' else 'mysqldump'} failed for {name}")
     written = out.stat().st_size if out.is_file() else 0
     if emit_progress:
         emit_dump_progress(
@@ -271,7 +280,7 @@ def dump_one_database(
                 "event": "progress",
                 "stage": "DATABASE DUMPING",
                 "name": name,
-                "type": "MariaDB",
+                "type": db_type,
                 "status": "running",
                 "bytes_produced": produced,
                 "bytes_written": written,
@@ -294,16 +303,20 @@ def dump_databases(
     dest = work / "databases"
     dest.mkdir(parents=True, exist_ok=True)
     docker_databases = docker_databases or {}
+    parsed_docker: dict[str, tuple[str, str]] = {}
+    for raw_name, entry in docker_databases.items():
+        parsed_docker[str(raw_name)] = parse_docker_db_entry(entry)
     mysqldump = shutil.which("mysqldump")
-    host_names = [name for name in names if not docker_databases.get(name)]
+    host_names = [name for name in names if not parsed_docker.get(name, ("", ""))[0]]
     if host_names and not mysqldump:
         fail("mysqldump was not found")
     estimates: dict[str, int | None] = {}
     for name in names:
         if any(ch in name for ch in UNSAFE) or "/" in name or " " in name:
             fail(f"Refusing unsafe database name: {name!r}")
-        if docker_databases.get(name):
-            estimates[name] = docker_schema_size_bytes(str(docker_databases.get(name)), name) if emit_progress else None
+        container, engine = parsed_docker.get(name, ("", ""))
+        if container:
+            estimates[name] = docker_schema_size_bytes(container, name, engine) if emit_progress else None
         else:
             estimates[name] = schema_size_bytes(name) if emit_progress else None
     if emit_progress:
@@ -312,14 +325,23 @@ def dump_databases(
                 "event": "progress",
                 "stage": "DATABASE DISCOVERY",
                 "status": "running",
-                "type": "MariaDB",
+                "type": "database",
                 "databases": [
-                    {"name": name, "estimated_bytes": estimates.get(name), "type": "MariaDB"}
+                    {
+                        "name": name,
+                        "estimated_bytes": estimates.get(name),
+                        "type": (
+                            "PostgreSQL"
+                            if is_postgres_engine(parsed_docker.get(name, ("", ""))[1])
+                            else "MariaDB"
+                        ),
+                    }
                     for name in names
                 ],
             }
         )
     for name in names:
+        container, engine = parsed_docker.get(name, ("", "MariaDB"))
         dump_one_database(
             name,
             dest / f"{name}.sql.gz",
@@ -327,7 +349,8 @@ def dump_databases(
             mysqldump=mysqldump or "mysqldump",
             emit_progress=emit_progress,
             estimated_bytes=estimates.get(name),
-            docker_container=str(docker_databases.get(name) or ""),
+            docker_container=container,
+            engine=engine or "MariaDB",
         )
         dumped.append(name)
     return dumped

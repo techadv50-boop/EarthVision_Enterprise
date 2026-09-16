@@ -57,6 +57,7 @@ def discover_applications(
             volumes=list(parsed.get("docker_volumes") or []),
             classified=list(parsed.get("classified") or []),
             scan_coverage=parsed.get("scan_coverage") if isinstance(parsed.get("scan_coverage"), dict) else None,
+            hostname_records=list(parsed.get("hostname_records") or []),
         )
         parsed["report_text"] = format_discovery_report(parsed)
         parsed["discovered_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -74,6 +75,7 @@ def discover_applications(
                     "inactive_hostnames": list(parsed.get("inactive_hostnames") or []),
                     "docker_volumes": list(parsed.get("docker_volumes") or []),
                     "classified": list(parsed.get("classified") or []),
+                    "hostname_records": list(parsed.get("hostname_records") or []),
                     "discovery_totals": parsed.get("discovery_totals") or {},
                     "database_account": parsed.get("database_account") or {},
                 },

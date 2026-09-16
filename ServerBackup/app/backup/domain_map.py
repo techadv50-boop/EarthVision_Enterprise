@@ -95,6 +95,7 @@ class DomainMap:
     unassigned_databases: list[SiteDatabase]
     skipped: list[dict[str, str]]
     recovery_databases: list[SiteDatabase] = field(default_factory=list)
+    infrastructure_databases: list[SiteDatabase] = field(default_factory=list)
 
     def site_by_folder(self, folder: str) -> SiteSpec | None:
         for site in self.sites:
@@ -123,6 +124,9 @@ class DomainMap:
             for db in site.databases:
                 if _is_postgres(db.db_type) and db.name not in names:
                     names.append(db.name)
+        for db in self.infrastructure_databases:
+            if _is_postgres(db.db_type) and db.name not in names:
+                names.append(db.name)
         return names
 
 
@@ -154,12 +158,17 @@ def canonical_domain(app: dict[str, Any]) -> str:
     names = [n for n in _hostnames(app) if n.lower() not in CATCHALL_HOSTS]
     if not names:
         return ""
+    docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+    advertised = [str(n) for n in (docker.get("advertised_hostnames") or []) if n in names]
+    routed = [str(n) for n in (docker.get("hostnames") or []) if n in names]
+    primary = str(app.get("hostname") or "")
+    use = advertised or ([primary] if primary in names else []) or routed or names
 
     def sort_key(name: str) -> tuple[int, str]:
         lower = name.lower()
         return (1 if lower.startswith("www.") else 0, lower)
 
-    return sorted(names, key=sort_key)[0]
+    return sorted(use, key=sort_key)[0]
 
 
 def sanitize_domain_folder(domain: str) -> str:
@@ -340,7 +349,10 @@ def build_domain_map(
             continue
         ident = str(row.get("application_id") or "")
         site = by_id.get(ident)
-        if site and _associated(str(row.get("status") or "")):
+        status = str(row.get("status") or "")
+        if "INFRASTRUCTURE" in status:
+            continue
+        if site and _associated(status):
             site.databases.append(
                 SiteDatabase(
                     name=name,
@@ -379,6 +391,7 @@ def build_domain_map(
 
     unassigned: list[SiteDatabase] = []
     recovery: list[SiteDatabase] = []
+    infrastructure: list[SiteDatabase] = []
     for row in inventory:
         name = str(row.get("name") or "").strip()
         if not name or name in assigned_names:
@@ -387,6 +400,17 @@ def build_domain_map(
             continue
         status = str(row.get("status") or "")
         is_recovery = bool(row.get("recovery")) or status.startswith("RECOVERY")
+        if "INFRASTRUCTURE" in status:
+            infrastructure.append(
+                SiteDatabase(
+                    name=name,
+                    db_type=str(row.get("type") or "MariaDB"),
+                    docker_container=str(row.get("docker_container") or ""),
+                    size_bytes=int(row.get("size_bytes") or 0),
+                )
+            )
+            assigned_names.add(name)
+            continue
         if "EXCLUDED" in status and not is_recovery:
             continue
         db = SiteDatabase(
@@ -408,6 +432,7 @@ def build_domain_map(
         unassigned_databases=unassigned,
         skipped=skipped,
         recovery_databases=recovery,
+        infrastructure_databases=infrastructure,
     )
 
 
@@ -423,9 +448,13 @@ def dump_names(
     selected = [str(n).strip() for n in (selected or []) if str(n).strip()]
     unassigned_names = {db.name for db in domain_map.unassigned_databases} | {
         db.name for db in domain_map.recovery_databases
-    }
-    for db in [*domain_map.unassigned_databases, *domain_map.recovery_databases]:
-        if (db.include_unassigned or db.recovery) and db.name not in mariadb:
+    } | {db.name for db in domain_map.infrastructure_databases}
+    for db in [*domain_map.unassigned_databases, *domain_map.recovery_databases, *domain_map.infrastructure_databases]:
+        if _is_postgres(db.db_type):
+            if db.name not in postgres:
+                postgres.append(db.name)
+            continue
+        if (db.include_unassigned or db.recovery or db in domain_map.infrastructure_databases) and db.name not in mariadb:
             mariadb.append(db.name)
     for name in selected:
         if name in postgres:
@@ -464,7 +493,7 @@ def docker_only_dump_map(
         if app.get("change") == "removed" or app.get("excluded"):
             continue
         docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
-        name = str(app.get("database_name") or docker.get("mysql_database") or "").strip()
+        name = str(app.get("database_name") or docker.get("mysql_database") or docker.get("postgres_db") or "").strip()
         container = inferred_db_container(docker)
         if name and container and name not in host:
             mapping[name] = container
@@ -474,6 +503,29 @@ def docker_only_dump_map(
         if name and container and name not in host:
             mapping.setdefault(name, container)
     return mapping
+
+
+def enrich_docker_dump_map(
+    mapping: dict[str, Any],
+    inventory: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Attach engine so PostgreSQL dumps never use mysql/mysqldump."""
+    engines = {
+        str(row.get("name") or ""): str(row.get("type") or "")
+        for row in (inventory or [])
+        if row.get("name")
+    }
+    out: dict[str, Any] = {}
+    for name, container in (mapping or {}).items():
+        if isinstance(container, dict):
+            out[name] = container
+            continue
+        engine = engines.get(name) or "MariaDB"
+        if "postgres" in engine.lower():
+            out[name] = {"container": str(container), "engine": "PostgreSQL"}
+        else:
+            out[name] = str(container)
+    return out
 
 
 def is_named_volume_data_path(path: str) -> bool:

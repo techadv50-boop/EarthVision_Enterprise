@@ -610,6 +610,18 @@ class LocalMasterSSH(FakeSSH):
             nginx_ok=True,
             hostname="ubuntu-test",
         )
+        for row in result.get("database_inventory") or []:
+            if "postgres" in str(row.get("type") or "").lower() and row.get("docker_container"):
+                row.setdefault("dump_capable", True)
+                row.setdefault(
+                    "dump_method",
+                    f"docker exec {row.get('docker_container')} pg_dump -U $POSTGRES_USER --format=plain --no-owner --no-acl {row.get('name')}",
+                )
+                row.setdefault(
+                    "dump_probe",
+                    "test harness: live pg_dump skipped because details_override is set",
+                )
+                row.setdefault("dump_destination", f"{row.get('name')}/database/{row.get('name')}.sql")
         result["database_account"] = {
             "configured_user": "backup",
             "current_user": "backup@localhost",

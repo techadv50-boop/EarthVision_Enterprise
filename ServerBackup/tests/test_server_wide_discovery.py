@@ -159,8 +159,8 @@ def test_named_app_volume_is_copy_data_and_postgres_volume_is_sql_dump():
     assert "/var/lib/docker/volumes/uploads_pgdata/_data" not in extras[0]["source_paths"]
     volumes = da.inventory_docker_volumes(docker, extras)
     by_name = {row["name"]: row for row in volumes}
-    assert by_name["uploads_files"]["backup_status"] == "COPY_DATA"
-    assert by_name["uploads_pgdata"]["backup_status"] == "SQL_DUMP"
+    assert by_name["uploads_files"]["backup_status"] == "BACKUP_AS_FILE_DATA"
+    assert by_name["uploads_pgdata"]["backup_status"] == "BACKUP_AS_SQL_DUMP"
     assert by_name["uploads_files"]["website"] == "uploads.example.com"
 
 
@@ -332,7 +332,7 @@ def test_volume_inventory_tolerates_unreadable_docker_paths(monkeypatch):
     monkeypatch.setattr(Path, "is_dir", boom)
     volumes = da.inventory_docker_volumes(docker, extras)
     assert volumes[0]["name"] == "uploads_files"
-    assert volumes[0]["backup_status"] == "COPY_DATA"
+    assert volumes[0]["backup_status"] == "BACKUP_AS_FILE_DATA"
     assert volumes[0]["size_bytes"] == 0
     names = da.hostnames_from_traefik_rule("Host(`a.example.com`) || Host(`www.a.example.com`)")
     assert names == ["a.example.com", "www.a.example.com"]
@@ -538,7 +538,7 @@ def _traefik_proxy_container() -> dict:
     }
 
 
-def test_public_host_env_discovers_website_without_nginx_or_labels():
+def test_public_host_env_is_not_a_website_without_routing():
     docker = [
         _unlabeled_web_container(
             name="cite-web-1",
@@ -547,9 +547,8 @@ def test_public_host_env_discovers_website_without_nginx_or_labels():
         )
     ]
     extras, leftovers = da.applications_from_unmatched_docker([], docker, path_exists=lambda _p: True)
+    assert extras == []
     assert leftovers == []
-    assert extras[0]["hostnames"] == ["cite.example.com"]
-    assert extras[0]["database_name"] == "cite"
 
 
 def test_unreadable_migration_root_does_not_drop_extra_traefik_files(monkeypatch):
@@ -705,5 +704,297 @@ def test_running_traefik_without_readable_routes_blocks_coverage():
     )
     assert gate["block_complete_backup"] is True
     assert "Gate: CLEAR" not in "\n".join(__import__("app.discover.gate", fromlist=["format_backup_gate"]).format_backup_gate(gate))
+
+
+def test_config_placeholder_and_api_urls_are_not_websites():
+    docker = [
+        {
+            "Id": "citationweb1",
+            "Name": "/citation-web-1",
+            "State": {"Running": True},
+            "Config": {
+                "Image": "php:8.3-fpm",
+                "Labels": {
+                    "com.docker.compose.project": "citationapp",
+                    "com.docker.compose.service": "web",
+                    "com.docker.compose.project.working_dir": "/opt/citationapp",
+                    "traefik.http.routers.citationapp.rule": "Host(`citation.example.com`)",
+                    "org.opencontainers.image.url": "https://www.php.net/",
+                },
+                "Env": [
+                    "PUBLIC_HOST=citation.example.com",
+                    "POSTGRES_DB=earthvision",
+                    "CORS_ORIGINS=https://citation.example.com,https://example.com",
+                    "OPENAI_API_URL=https://api.openai.com/v1",
+                ],
+            },
+            "HostConfig": {"PortBindings": {}},
+            "Mounts": [{"Type": "volume", "Name": "citation_pgdata", "Destination": "/var/lib/postgresql/data"}],
+        }
+    ]
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=docker,
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/citation.yml": _dokploy_traefik_yaml("citation.example.com", "citationapp"),
+        },
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "citation.example.com" in hosts
+    assert "www.php.net" not in hosts
+    assert "api.openai.com" not in hosts
+    apps = [app for app in result["applications"] if "citation.example.com" in (app.get("hostnames") or [])]
+    assert len(apps) == 1
+    assert apps[0]["hostname"] == "citation.example.com"
+    roles = {rec["hostname"]: rec["role"] for rec in result["hostname_records"]}
+    assert roles.get("www.php.net") == da.HOSTNAME_ROLE_PLACEHOLDER
+    assert roles.get("api.openai.com") == da.HOSTNAME_ROLE_EXTERNAL
+    assert "citation.example.com" in roles
+
+
+def test_two_traefik_hosts_same_compose_project_are_one_application():
+    yaml = (
+        "http:\n"
+        "  routers:\n"
+        "    cite-a:\n"
+        "      rule: Host(`citation.example.com`)\n"
+        "      service: citationapp-web\n"
+        "      tls:\n"
+        "        certResolver: letsencrypt\n"
+        "    cite-b:\n"
+        "      rule: Host(`api.openai.com`)\n"
+        "      service: citationapp-web\n"
+        "  services:\n"
+        "    citationapp-web:\n"
+        "      loadBalancer:\n"
+        "        servers:\n"
+        "          - url: http://citationapp:3000\n"
+    )
+    docker = [
+        _unlabeled_web_container(
+            name="citation-web-1",
+            project="citationapp",
+            env=["PUBLIC_HOST=citation.example.com", "POSTGRES_DB=earthvision"],
+        )
+    ]
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=docker,
+        extra_scan_files={"/etc/dokploy/traefik/dynamic/citation.yml": yaml},
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    matching = [
+        app
+        for app in result["applications"]
+        if "citation.example.com" in (app.get("hostnames") or []) or "api.openai.com" in (app.get("hostnames") or [])
+    ]
+    assert len(matching) == 1
+    assert matching[0]["hostname"] == "citation.example.com"
+    assert "api.openai.com" in matching[0]["hostnames"]
+    assert matching[0]["database_name"] == "earthvision"
+    classified = {
+        row["hostname"]: row
+        for row in result["classified"]
+        if row.get("kind") == "hostname"
+    }
+    assert classified["citation.example.com"]["hostname_role"] == "canonical"
+    assert classified["api.openai.com"]["hostname_role"].startswith("alias")
+    assert classified["citation.example.com"]["application"] == classified["api.openai.com"]["application"]
+    ssl = matching[0].get("ssl") or {}
+    assert ssl.get("restore_procedure")
+    assert "SSL mechanism is recorded" not in str(ssl.get("restore_procedure"))
+
+
+def test_unmatched_traefik_host_that_is_also_api_url_is_not_a_website():
+    yaml = _dokploy_traefik_yaml("api.example.invalid", "missingbackend")
+    # Host() uses a name that is also OPENAI_API_URL on a real app — not a second website.
+    yaml = yaml.replace("api.example.invalid", "docs.placeholder.test")
+    docker = [
+        _unlabeled_web_container(
+            name="citation-web-1",
+            project="citationapp",
+            env=["PUBLIC_HOST=citation.example.com", "OPENAI_API_URL=https://docs.placeholder.test/v1"],
+        )
+    ]
+    # Give the citation app a real Host() so it is discovered independently.
+    citation_yaml = _dokploy_traefik_yaml("citation.example.com", "citationapp")
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=docker,
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/citation.yml": citation_yaml,
+            "/etc/dokploy/traefik/dynamic/orphan.yml": yaml,
+        },
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "citation.example.com" in hosts
+    assert "docs.placeholder.test" not in hosts
+    roles = {rec["hostname"]: rec["role"] for rec in result["hostname_records"]}
+    assert roles.get("docs.placeholder.test") in {
+        da.HOSTNAME_ROLE_EXTERNAL,
+        da.HOSTNAME_ROLE_PLACEHOLDER,
+        da.HOSTNAME_ROLE_CONFIG,
+    }
+
+
+def test_file_reconciliation_mismatch_blocks_gate():
+    from app.discover.gate import assess_backup_gate
+
+    gate = assess_backup_gate(
+        [],
+        [],
+        file_reconciliation={
+            "inventoried": 10,
+            "website": 4,
+            "infrastructure": 3,
+            "recovery": 0,
+            "excluded": 2,
+            "attributed": 9,
+            "ok": False,
+        },
+    )
+    assert gate["block_complete_backup"] is True
+    assert gate["file_reconciliation_ok"] is False
+
+
+def test_localhost_traefik_host_is_infrastructure_not_website():
+    docker = [
+        {
+            "Id": "dokploy1",
+            "Name": "/dokploy",
+            "State": {"Running": True},
+            "Config": {
+                "Image": "dokploy/dokploy:latest",
+                "Labels": {
+                    "com.docker.compose.project": "dokploy",
+                    "com.docker.compose.service": "dokploy",
+                    "traefik.http.routers.dokploy.rule": "Host(`dokploy.docker.localhost`)",
+                },
+                "Env": ["POSTGRES_DB=dokploy"],
+            },
+            "HostConfig": {"PortBindings": {}},
+            "Mounts": [{"Type": "volume", "Name": "dokploy", "Destination": "/root/.docker"}],
+        },
+        {
+            "Id": "dokploydb1",
+            "Name": "/dokploy-postgres",
+            "State": {"Running": True},
+            "Config": {
+                "Image": "postgres:16",
+                "Labels": {
+                    "com.docker.compose.project": "dokploy",
+                    "com.docker.compose.service": "dokploy-postgres",
+                },
+                "Env": ["POSTGRES_DB=dokploy", "POSTGRES_USER=dokploy"],
+            },
+            "HostConfig": {"PortBindings": {}},
+            "Mounts": [{"Type": "volume", "Name": "dokploy-postgres", "Destination": "/var/lib/postgresql/data"}],
+        },
+    ]
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=docker,
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/dokploy.yml": _dokploy_traefik_yaml("dokploy.docker.localhost", "dokploy"),
+        },
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "dokploy.docker.localhost" not in hosts
+    by_name = {row["name"]: row for row in result["docker_volumes"]}
+    assert by_name["dokploy"]["backup_status"] == "BACKUP_AS_INFRASTRUCTURE"
+    assert by_name["dokploy"]["classification"] == da.CLASSIFICATION_SYSTEM
+    assert by_name["dokploy"]["scope"] == "infrastructure"
+    infra_dbs = [row for row in result["database_inventory"] if row.get("name") == "dokploy"]
+    assert infra_dbs
+    assert "INFRASTRUCTURE" in infra_dbs[0]["status"]
+    assert infra_dbs[0]["type"] == "PostgreSQL"
+
+
+def test_postgres_probe_uses_psql_not_mysql():
+    from docker_db import docker_postgres_argv
+
+    called: list[list[str]] = []
+
+    class Result:
+        def __init__(self, stdout="", code=0):
+            self.returncode = code
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, timeout=30):
+        called.append(list(cmd))
+        joined = " ".join(str(item) for item in cmd)
+        if "pg_database_size" in joined or "SIZE_AND_TABLES" in joined or "information_schema.tables" in joined:
+            return Result("4096|2|10\n")
+        return Result("PSQL=/usr/bin/psql\nPG_DUMP=/usr/bin/pg_dump\nPG_DUMPALL=/usr/bin/pg_dumpall\nPG_USER=earthvision\nPG_META=earthvision|earthvision|16.4\n--\n-- PostgreSQL database dump\n--\n")
+
+    apps = [
+        {
+            "application_id": "docker:citationapp",
+            "hostname": "citation.example.com",
+            "database_name": "earthvision",
+            "database_type": "PostgreSQL",
+            "docker": {
+                "compose_project": "citationapp",
+                "postgres_db": "earthvision",
+                "db_container": "citationapp-db-1",
+            },
+        }
+    ]
+    inventory = da.attach_docker_only_databases(apps, [], [])
+    da._probe_docker_schema_sizes(inventory, run=fake_run, details_override=None, errors=[])
+    assert inventory[0]["size_bytes"] == 4096
+    assert inventory[0]["table_count"] == 2
+    assert inventory[0]["dump_capable"] is True
+    assert "pg_dump" in (inventory[0].get("dump_method") or "")
+    first = " ".join(str(item) for item in called[0])
+    assert "mysql" not in first.lower()
+    assert docker_postgres_argv("citationapp-db-1", "earthvision", "SIZE_AND_TABLES") == called[0]
+
+
+def test_file_attribution_uniques_duplicate_inventory_paths():
+    from app.backup.preflight import attribute_records, build_preflight
+
+    apps = [
+        {
+            "application_id": "docker:cite",
+            "hostname": "cite.example.com",
+            "hostnames": ["cite.example.com"],
+            "type": "Docker",
+            "root": "/opt/cite",
+            "source_paths": ["/opt/cite"],
+            "included": True,
+            "status": "READY",
+            "docker": {"compose_project": "cite", "container": "cite-web-1"},
+        }
+    ]
+    inventory = [
+        {"source_root": "/opt/cite", "relative_path": "app.py", "size": 10},
+        {"source_root": "/opt/cite", "relative_path": "app.py", "size": 10},
+        {"source_root": "/etc/nginx", "relative_path": "nginx.conf", "size": 5},
+    ]
+    preflight = build_preflight(applications=apps, database_inventory=[], inventory=inventory, nginx_root="/etc/nginx")
+    recon = preflight["file_reconciliation"]
+    assert recon["inventoried"] == 2
+    assert recon["ok"] is True
+    assert recon["inventoried"] == recon["attributed"]
+
+
+def test_discover_apps_source_has_no_production_hostnames():
+    source = Path(__file__).resolve().parents[1].joinpath("scripts/ubuntu/discover_apps.py").read_text(encoding="utf-8")
+    assert "sateye.xdgen.com" not in source
+    assert "satpass.xdgen.com" not in source
+    assert "citation.xdgen.com" not in source
+    assert "www.php.net" not in source
+    assert "api.openai.com" not in source
+    assert "dokploy.docker.localhost" not in source
+
 
 

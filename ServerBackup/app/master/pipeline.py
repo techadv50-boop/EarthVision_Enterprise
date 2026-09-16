@@ -35,7 +35,7 @@ from app.backup.live import (
     application_for_root,
     log_pipeline,
 )
-from app.backup.domain_map import build_domain_map, docker_only_dump_map, dump_names
+from app.backup.domain_map import build_domain_map, docker_only_dump_map, dump_names, enrich_docker_dump_map
 from app.backup.preflight import build_preflight, format_new_file_attribution, format_preflight_report, format_proposed_tree
 from app.backup.readable import ReadableExportError, export_readable_backup
 from app.config.schema import SYSTEM_DATABASES
@@ -248,16 +248,21 @@ def merge_discovered_databases(
 
 
 def databases_for_master_dump(config, discovery: dict[str, Any]) -> list[str]:
-    """Associated MariaDB names plus any extra names selected in Settings."""
+    """Associated MariaDB and PostgreSQL names plus extras selected in Settings."""
     domain_map = build_domain_map(
         list(discovery.get("applications") or []),
         list(discovery.get("database_inventory") or []),
         approved_only=True,
     )
-    mariadb, _postgres = dump_names(domain_map, selected=config.databases_for_backup())
+    mariadb, postgres = dump_names(domain_map, selected=config.databases_for_backup())
     if config.exclude_system_databases:
         mariadb = [name for name in mariadb if name not in SYSTEM_DATABASES]
-    return mariadb
+        postgres = [name for name in postgres if name not in POSTGRES_SYSTEM_DATABASES]
+    names = list(mariadb)
+    for name in postgres:
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def _export_readable(
@@ -961,10 +966,13 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
     ]
     db_names = dump_set or associated_names
     host_names = _host_mariadb_names(discovery)
-    docker_map = docker_only_dump_map(
-        applications,
-        host_names,
-        inventory=list(discovery.get("database_inventory") or []),
+    docker_map = enrich_docker_dump_map(
+        docker_only_dump_map(
+            applications,
+            host_names,
+            inventory=list(discovery.get("database_inventory") or []),
+        ),
+        list(discovery.get("database_inventory") or []),
     )
     db_result = "SKIPPED"
     db_error = ""
@@ -1028,7 +1036,12 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         "",
         "\n".join(format_server_wide_discovery_report(discovery)),
         "",
-        format_new_file_attribution(counts=counts, grouped=preflight.get("grouped") or {}, has_master=has_master),
+        format_new_file_attribution(
+            counts=counts,
+            grouped=preflight.get("grouped") or {},
+            has_master=has_master,
+            file_reconciliation=preflight.get("file_reconciliation"),
+        ),
         "",
         format_proposed_tree(preflight),
         "",
@@ -1057,12 +1070,14 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         parsed_hostnames=list(discovery.get("parsed_hostnames") or []),
         database_inventory=list(discovery.get("database_inventory") or []),
         inactive_hostnames=list(discovery.get("inactive_hostnames") or []),
-        gate=discovery.get("backup_gate")
-        or assess_backup_gate(
+        gate=assess_backup_gate(
             applications,
             list(discovery.get("database_inventory") or []),
             volumes=list(discovery.get("docker_volumes") or []),
             classified=list(discovery.get("classified") or []),
+            scan_coverage=discovery.get("scan_coverage") if isinstance(discovery.get("scan_coverage"), dict) else None,
+            hostname_records=list(discovery.get("hostname_records") or []),
+            file_reconciliation=preflight.get("file_reconciliation") if isinstance(preflight.get("file_reconciliation"), dict) else None,
         ),
         database_account=discovery.get("database_account") or {},
         extra_sections=extra_sections,
@@ -1181,11 +1196,13 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     live.operation = "BACKUP"
     live.publish(phase="discovery", message="Discovering applications…")
     log_pipeline(engine, "REMOTE_DISCOVERY_COMPLETE", f"applications={len(applications)}")
-    gate = discovery.get("backup_gate") or assess_backup_gate(
+    gate = assess_backup_gate(
         list(discovery.get("applications") or []),
         list(discovery.get("database_inventory") or []),
         volumes=list(discovery.get("docker_volumes") or []),
         classified=list(discovery.get("classified") or []),
+        scan_coverage=discovery.get("scan_coverage") if isinstance(discovery.get("scan_coverage"), dict) else None,
+        hostname_records=list(discovery.get("hostname_records") or []),
     )
     engine.logger.info(" ".join(format_backup_gate(gate)))
     if gate.get("block_complete_backup"):
@@ -1246,10 +1263,13 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
 
     db_names = databases_for_master_dump(config, discovery)
     host_names = _host_mariadb_names(discovery)
-    docker_map = docker_only_dump_map(
-        applications,
-        host_names,
-        inventory=list(discovery.get("database_inventory") or []),
+    docker_map = enrich_docker_dump_map(
+        docker_only_dump_map(
+            applications,
+            host_names,
+            inventory=list(discovery.get("database_inventory") or []),
+        ),
+        list(discovery.get("database_inventory") or []),
     )
     db_result = "SKIPPED"
     fingerprints: dict[str, str] = {}

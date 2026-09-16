@@ -12,6 +12,8 @@ def assess_backup_gate(
     volumes: list[dict[str, Any]] | None = None,
     classified: list[dict[str, Any]] | None = None,
     scan_coverage: dict[str, Any] | None = None,
+    hostname_records: list[dict[str, Any]] | None = None,
+    file_reconciliation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     apps = [row for row in (applications or []) if isinstance(row, dict)]
     live = [row for row in apps if row.get("change") not in {"removed", "migrated"}]
@@ -60,14 +62,30 @@ def assess_backup_gate(
     unresolved_volumes = [
         row
         for row in volume_rows
-        if str(row.get("backup_status") or "") in {"UNRESOLVED", "BLOCKING"}
+        if str(row.get("backup_status") or "")
+        in {"UNRESOLVED", "BLOCKING", "UNRESOLVED_REQUIRES_REVIEW"}
         or str(row.get("classification") or "").startswith("UNRESOLVED")
     ]
     unexplained = [
         row
         for row in (classified or [])
-        if isinstance(row, dict) and str(row.get("classification") or "").startswith("UNRESOLVED")
-        and row.get("kind") in {"nginx", "volume", "hostname"}
+        if isinstance(row, dict)
+        and str(row.get("classification") or "").startswith("UNRESOLVED")
+        and row.get("kind") in {"nginx", "volume", "hostname", "hostname-investigation"}
+    ]
+    unresolved_hostnames = [
+        row
+        for row in (hostname_records or classified or [])
+        if isinstance(row, dict)
+        and (
+            str(row.get("classification") or "").startswith("UNRESOLVED")
+            or (
+                row.get("kind") == "hostname-investigation"
+                and str(row.get("role") or row.get("type") or "") in {"application-hostname"}
+                and not row.get("assigned_website")
+            )
+        )
+        and str(row.get("hostname") or "")
     ]
     unresolved_app_dbs = [
         row
@@ -86,6 +104,16 @@ def assess_backup_gate(
         and "EXCLUDED" not in str(row.get("status") or "")
         and not str(row.get("status") or "").startswith("RECOVERY")
     ]
+    postgres_unvalidated = [
+        row
+        for row in dbs
+        if "postgres" in str(row.get("type") or "").lower()
+        and not row.get("dump_capable")
+        and "EXCLUDED" not in str(row.get("status") or "")
+        and not row.get("system")
+    ]
+    recon = file_reconciliation if isinstance(file_reconciliation, dict) else {}
+    file_mismatch = bool(recon) and not recon.get("ok", True)
     block = bool(
         pending_apps
         or unresolved_dbs
@@ -93,6 +121,10 @@ def assess_backup_gate(
         or unexplained
         or unresolved_app_dbs
         or incomplete_reasons
+        or docker_unprobed
+        or postgres_unvalidated
+        or unresolved_hostnames
+        or file_mismatch
     )
     return {
         "applications_discovered": len(live),
@@ -108,6 +140,10 @@ def assess_backup_gate(
         "unresolved_website_databases": [str(row.get("hostname") or row.get("application_id") or "") for row in unresolved_app_dbs],
         "incomplete_reasons": incomplete_reasons,
         "unprobed_docker_databases": [str(row.get("name") or "") for row in docker_unprobed],
+        "unvalidated_postgres_databases": [str(row.get("name") or "") for row in postgres_unvalidated],
+        "unresolved_hostnames": [str(row.get("hostname") or "") for row in unresolved_hostnames],
+        "file_reconciliation_ok": recon.get("ok") if recon else True,
+        "file_reconciliation": recon,
         "block_complete_backup": block,
         "pending_application_ids": [str(row.get("application_id") or "") for row in pending_apps],
         "unresolved_database_names": [str(row.get("name") or "") for row in unresolved_dbs],
@@ -146,6 +182,22 @@ def format_backup_gate(gate: dict[str, Any]) -> list[str]:
         unprobed = gate.get("unprobed_docker_databases") or []
         if unprobed:
             lines.append("  unprobed docker database sizes: " + ", ".join(str(item) for item in unprobed))
+        postgres = gate.get("unvalidated_postgres_databases") or []
+        if postgres:
+            lines.append("  PostgreSQL without validated pg_dump: " + ", ".join(str(item) for item in postgres))
+        hosts = gate.get("unresolved_hostnames") or []
+        if hosts:
+            lines.append("  unresolved/suspicious hostnames: " + ", ".join(str(item) for item in hosts))
+        if gate.get("file_reconciliation_ok") is False:
+            recon = gate.get("file_reconciliation") or {}
+            lines.append(
+                "  file-count discrepancy: inventoried="
+                f"{recon.get('inventoried')} website={recon.get('website')} "
+                f"infrastructure={recon.get('infrastructure')} recovery={recon.get('recovery')} "
+                f"excluded={recon.get('excluded')}"
+                + (f" other={recon.get('other')}" if recon.get("other") else "")
+                + f" attributed={recon.get('attributed')}"
+            )
         incomplete = gate.get("incomplete_reasons") or []
         if incomplete:
             lines.append("  incomplete discovery:")

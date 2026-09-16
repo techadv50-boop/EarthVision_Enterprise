@@ -64,6 +64,8 @@ def _hostname_lines(name: str, app: dict[str, Any]) -> list[str]:
         f"    redirect: {meta.get('redirect_to') or app.get('redirect_to') or '(none)'}",
         f"    database: {_db_label(app) if _db_label(app) != '—' else (app.get('database_status') or 'UNRESOLVED')}",
         f"    ssl: {((app.get('ssl') or {}).get('mechanism') if isinstance(app.get('ssl'), dict) else '') or ('https' if app.get('https') else 'none')}",
+        f"    ssl storage: {_fmt_list((app.get('ssl') or {}).get('storage_paths') or (app.get('ssl') or {}).get('acme_file') or (app.get('ssl') or {}).get('certificate'))}",
+        f"    ssl restore: {((app.get('ssl') or {}).get('restore_procedure') if isinstance(app.get('ssl'), dict) else '') or 'not identified'}",
         f"    restore ready: {(app.get('restore') or {}).get('restore_ready') or 'NO'}",
         f"    status: {app.get('status') or '—'}",
     ]
@@ -85,7 +87,7 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
         f"  TOTAL NGINX SERVER BLOCKS: {totals.get('nginx_server_blocks', 0)}",
         f"  TOTAL HTTPS SITES: {totals.get('https_sites', 0)}",
         "",
-        "DOMAIN | APPLICATION | TYPE | SOURCE | DOCKER | DATABASE | NGINX | SSL | SIZE | FILES | STATUS",
+        "DOMAIN | ROLE | APPLICATION | TYPE | SOURCE | DOCKER | DATABASE | NGINX | SSL | SIZE | FILES | STATUS",
     ]
     if host_rows:
         for row in host_rows:
@@ -96,6 +98,7 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
                 " | ".join(
                     [
                         str(row.get("hostname") or "—"),
+                        str(row.get("hostname_role") or "—"),
                         str(row.get("application") or "—"),
                         str(row.get("type") or "—"),
                         str(row.get("source_path") or row.get("discovery_source") or "—"),
@@ -143,7 +146,8 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
         "  routes harvested with docker exec against the Traefik API or mounted dynamic files."
     )
     lines.append(
-        "  PUBLIC_HOST / SITE_URL and similar container environment values are also scanned."
+        "  PUBLIC_HOST / SITE_URL are advertised aliases of the same compose project, not new websites. "
+        "CORS, API URLs, and image documentation URLs are configuration/placeholder records."
     )
     lines.append("  No production hostname is hard-coded. A new Host() route is enough.")
     missed = [
@@ -174,12 +178,25 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
             lines.append(f"    SOURCE/PERSISTENT PATH: {row.get('source_path') or '—'}")
             lines.append(f"    DATABASE: {row.get('database') or 'UNRESOLVED'}")
             lines.append(f"    SSL: {row.get('ssl') or 'none'}")
+            ssl_detail = ""
+            app_ssl = {}
+            for app in result.get("applications") or []:
+                if str(row.get("hostname") or "") in [str(n) for n in (app.get("hostnames") or [])]:
+                    app_ssl = app.get("ssl") if isinstance(app.get("ssl"), dict) else {}
+                    break
+            if app_ssl.get("restore_procedure"):
+                lines.append(f"    SSL RESTORE: {app_ssl.get('restore_procedure')}")
+            if app_ssl.get("storage_paths"):
+                lines.append(f"    SSL STORAGE: {', '.join(str(p) for p in app_ssl.get('storage_paths') if p)}")
+            elif app_ssl.get("acme_file"):
+                lines.append(f"    SSL STORAGE: {app_ssl.get('acme_file')}")
             lines.append(f"    CURRENT STATUS: {row.get('classification') or row.get('status') or '—'}")
             lines.append(
                 "    REASON PREVIOUS DISCOVERY MISSED IT: Host() lived in Traefik/Dokploy YAML "
                 "(not nginx -T and not docker inspect labels). 1.4.24 classified unmatched file "
                 "Host() as NOT ACTIVE leftovers. If the YAML is unreadable by serverbackup, "
-                "disk scans return empty; 1.4.26 reads the live Traefik API / docker exec files."
+                "disk scans return empty; 1.4.26 reads the live Traefik API / docker exec files. "
+                "1.4.27 classifies Host() vs PUBLIC_HOST vs CORS/API/image URLs and probes PostgreSQL with pg_dump."
             )
             lines.append(
                 f"    RESTORE READY: {row.get('restore_ready') or 'NO'}"
@@ -188,7 +205,12 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
     else:
         lines.append("  (none)")
     lines.extend(["", "RESTORE READY BY WEBSITE"])
-    restore_rows = [row for row in host_rows if row.get("classification") == "ACTIVE WEBSITE" or row.get("application")]
+    restore_rows = [
+        row
+        for row in host_rows
+        if (row.get("classification") == "ACTIVE WEBSITE" or row.get("application"))
+        and not str(row.get("hostname_role") or "").startswith("alias")
+    ]
     if restore_rows:
         for row in restore_rows:
             missing = row.get("restore_missing") or []
@@ -212,6 +234,100 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
                 lines.append(f"    {vol.get('notes')}")
     else:
         lines.append("  (none)")
+    lines.extend(["", "DOCKER VOLUME MATRIX"])
+    lines.append(
+        "  VOLUME | CONTAINER | MOUNT | PURPOSE | APPLICATION | SCOPE | BACKUP METHOD | SOURCE | DESTINATION | SIZE | FILES | STATUS"
+    )
+    if volumes:
+        for vol in volumes:
+            lines.append(
+                " | ".join(
+                    [
+                        str(vol.get("name") or "—"),
+                        str(vol.get("container") or "—"),
+                        str(vol.get("mount") or vol.get("mount_point") or "—"),
+                        str(vol.get("purpose") or "—"),
+                        str(vol.get("application") or vol.get("website") or "—"),
+                        str(vol.get("scope") or "—"),
+                        str(vol.get("backup_method") or vol.get("backup_status") or "—"),
+                        str(vol.get("source") or vol.get("host_path") or "—"),
+                        str(vol.get("destination") or vol.get("backup_destination") or "—"),
+                        str(vol.get("size_bytes") if vol.get("size_bytes") is not None else 0),
+                        str(vol.get("file_count") if vol.get("file_count") is not None else 0),
+                        str(vol.get("status") or vol.get("classification") or "—"),
+                    ]
+                )
+            )
+    else:
+        lines.append("  (none)")
+    records = list(result.get("hostname_records") or [])
+    lines.extend(["", "HOSTNAME INVESTIGATION"])
+    lines.append("  Hostname strings from labels/env/compose/Traefik are classified. Only routing Host() becomes a website.")
+    if records:
+        for rec in records:
+            lines.append(
+                f"  {rec.get('hostname')}  role={rec.get('role')}  "
+                f"source={rec.get('source') or '—'}  key={rec.get('key') or '—'}  "
+                f"container={rec.get('container') or '—'}  "
+                f"{'assigned website' if rec.get('assigned_website') else 'not a website folder'}"
+            )
+            if rec.get("evidence"):
+                lines.append(f"    evidence: {rec.get('evidence')}")
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "SSL STORAGE AND RESTORE"])
+    https_apps = [
+        app
+        for app in (result.get("applications") or [])
+        if isinstance(app, dict) and app.get("https") and app.get("change") not in {"removed", "migrated"}
+    ]
+    if https_apps:
+        for app in https_apps:
+            ssl = app.get("ssl") if isinstance(app.get("ssl"), dict) else {}
+            names = ", ".join(str(n) for n in (app.get("hostnames") or [app.get("hostname")]) if n)
+            lines.append(f"  {app.get('hostname') or names}")
+            lines.append(f"    hostnames: {names or '—'}")
+            lines.append(f"    mechanism: {ssl.get('mechanism') or 'not identified'}")
+            storage = ssl.get("storage_paths") or []
+            if ssl.get("acme_file") and ssl.get("acme_file") not in storage:
+                storage = [ssl.get("acme_file"), *storage]
+            lines.append(f"    certificate files: {_fmt_list(ssl.get('certificate'))}")
+            lines.append(f"    private key files: {_fmt_list(ssl.get('certificate_key'))}")
+            lines.append(f"    acme/json store: {ssl.get('acme_file') or '(none)'}")
+            lines.append(f"    persistent volume: {ssl.get('volume') or '(none)'}")
+            lines.append(f"    storage paths: {_fmt_list(storage)}")
+            lines.append(f"    restore: {ssl.get('restore_procedure') or ssl.get('backup_treatment') or 'not identified'}")
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "INFRASTRUCTURE / RECOVERY"])
+    infra_hosts = [rec for rec in records if rec.get("role") == "infrastructure"]
+    infra_vols = [vol for vol in volumes if vol.get("scope") == "infrastructure"]
+    infra_dbs = [
+        row
+        for row in (result.get("database_inventory") or [])
+        if row.get("infrastructure") or "INFRASTRUCTURE" in str(row.get("status") or "")
+    ]
+    if infra_hosts or infra_vols or infra_dbs:
+        for rec in infra_hosts:
+            lines.append(
+                f"  hostname {rec.get('hostname')}  role=infrastructure  "
+                f"source={rec.get('source') or '—'}  not a public website folder"
+            )
+        for vol in infra_vols:
+            lines.append(
+                f"  volume {vol.get('name')}  container={vol.get('container') or '—'}  "
+                f"mount={vol.get('mount') or vol.get('mount_point') or '—'}  "
+                f"dest={vol.get('destination') or '—'}  {vol.get('backup_status')}"
+            )
+        for row in infra_dbs:
+            lines.append(
+                f"  database {row.get('name')}  {row.get('type') or 'PostgreSQL'}  "
+                f"container={row.get('docker_container') or '—'}  "
+                f"dump={row.get('dump_destination') or '_server/infrastructure/databases/'}  "
+                f"{row.get('status')}"
+            )
+    else:
+        lines.append("  (none discovered)")
     return lines
 
 
@@ -314,53 +430,75 @@ def format_application_sections(
         if not row.get("system") and "EXCLUDED" in str(row.get("status") or "")
     ]
     lines.extend(["", "DISCOVERED DATABASES"])
+    lines.append(
+        "  DATABASE | ENGINE | CONTAINER | APPLICATION | WEBSITE/INFRASTRUCTURE | SIZE | TABLES | DUMP METHOD | DUMP DESTINATION | DUMP TEST | STATUS"
+    )
     if inventory:
-        lines.append("  MariaDB:")
         for row in inventory:
             if row.get("system"):
                 continue
-            pointer = f" -> {row.get('application_id')}" if row.get("application_id") else ""
-            lines.append(f"    {row.get('name')}{pointer}")
-            if row.get("table_count") is not None or row.get("size_bytes") is not None or row.get("size_probe"):
-                size = row.get("size_bytes")
-                size_txt = "unprobed" if size is None else str(size)
-                lines.append(f"      tables: {row.get('table_count')}  size_bytes: {size_txt}")
-                if row.get("size_probe"):
-                    lines.append(f"      size probe: {row.get('size_probe')}")
-                if row.get("dump_capable") is True:
-                    lines.append("      dump probe: docker exec SHOW TABLE STATUS succeeded (mysqldump not executed)")
-                elif row.get("dump_capable") is False:
-                    lines.append("      dump probe: FAILED — serverbackup could not query this schema inside the container")
-            if row.get("row_count") is not None:
-                lines.append(f"      rows: {row.get('row_count')}")
+            scope = "infrastructure" if row.get("infrastructure") or "INFRASTRUCTURE" in str(row.get("status") or "") else "website"
+            if str(row.get("status") or "").startswith("RECOVERY"):
+                scope = "recovery"
+            dump_test = "not probed"
+            if row.get("dump_capable") is True:
+                dump_test = str(row.get("dump_probe") or "ok")
+            elif row.get("dump_capable") is False:
+                dump_test = str(row.get("dump_probe") or row.get("size_probe") or "FAILED")
+            elif row.get("size_probe"):
+                dump_test = str(row.get("size_probe"))
+            lines.append(
+                " | ".join(
+                    [
+                        str(row.get("name") or "—"),
+                        str(row.get("type") or "MariaDB"),
+                        str(row.get("docker_container") or "host"),
+                        str(row.get("application_id") or "—"),
+                        scope,
+                        "unprobed" if row.get("size_bytes") is None else str(row.get("size_bytes")),
+                        str(row.get("table_count") if row.get("table_count") is not None else "—"),
+                        str(row.get("dump_method") or ("docker exec pg_dump" if "postgres" in str(row.get("type") or "").lower() else "mysqldump")),
+                        str(row.get("dump_destination") or "—"),
+                        dump_test,
+                        str(row.get("status") or "—"),
+                    ]
+                )
+            )
+            if row.get("engine_version"):
+                lines.append(f"      engine version: {row.get('engine_version')}  user: {row.get('postgres_user') or '—'}")
+            if row.get("dump_tools"):
+                tools = row.get("dump_tools") or {}
+                lines.append(
+                    "      tools: "
+                    + ", ".join(f"{k}={v}" for k, v in tools.items() if v)
+                )
+            if "postgres" in str(row.get("type") or "").lower() and row.get("dump_capable") is not True:
+                lines.append("      PostgreSQL dump is not validated; this application cannot be RESTORE READY.")
             if row.get("tables"):
                 table_names = ", ".join(str(item.get("name") or item) for item in row.get("tables") or [] if item)
                 if table_names:
                     lines.append(f"      table_names: {table_names}")
-            if row.get("identifying_hints"):
-                lines.append(f"      identifying hints: {', '.join(str(h) for h in row.get('identifying_hints') or [])}")
-            if row.get("created") or row.get("updated"):
-                lines.append(f"      created: {row.get('created') or '—'}  updated: {row.get('updated') or '—'}")
             if row.get("references"):
                 paths = ", ".join(str(item.get("path") or "") for item in row.get("references") or [] if item.get("path"))
                 if paths:
                     lines.append(f"      config references: {paths}")
-            lines.append(f"      status: {row.get('status')}")
-            if row.get("docker_container"):
-                lines.append(f"      dump via: docker exec {row.get('docker_container')}")
         postgres = list((databases or {}).get("postgresql") or [])
         if not postgres:
             postgres = sorted(
                 {
-                    str(app.get("database_name"))
-                    for app in live
-                    if app.get("database_type") == "PostgreSQL" and app.get("database_name")
+                    str(row.get("name"))
+                    for row in inventory
+                    if "postgres" in str(row.get("type") or "").lower() and row.get("name")
                 }
             )
+        lines.append(f"  PostgreSQL schemas: {', '.join(postgres) if postgres else '(none discovered)'}")
+        maria_names = [
+            str(row.get("name"))
+            for row in inventory
+            if not row.get("system") and "postgres" not in str(row.get("type") or "").lower() and row.get("name")
+        ]
+        lines.append(f"  MariaDB: {', '.join(maria_names) if maria_names else '(none discovered)'}")
         lines.append(f"  PostgreSQL: {', '.join(postgres) if postgres else '(none discovered)'}")
-        for app in live:
-            if app.get("database_type") == "PostgreSQL" and app.get("database_name"):
-                lines.append(f"    {app.get('database_name')} -> {app.get('application_id')}")
     else:
         lines.append("  (none discovered)")
     lines.extend(["", "UNASSOCIATED DATABASES"])

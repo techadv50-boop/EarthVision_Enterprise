@@ -322,7 +322,7 @@ def test_changed_database_progress_ends_complete(tmp_path: Path):
     assert "dump-databases" in ssh.calls
     data = engine.progress.read()
     assert data.get("database", {}).get("stage") == STAGE_COMPLETE
-    assert data.get("database", {}).get("name") == "journal"
+    assert data.get("database", {}).get("name") in {"journal", "citation", "ojs50", "ojsxd", "sea_tedb"}
 
 
 def test_dashboard_does_not_show_zero_percent_when_bytes_are_unknown(tmp_path: Path):

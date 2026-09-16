@@ -16,7 +16,7 @@ import struct
 import sys
 from pathlib import Path
 
-from docker_db import docker_mysql_argv
+from docker_db import docker_mysql_argv, docker_postgres_argv, is_postgres_engine, parse_docker_db_entry
 from path_safety import (
     contained_in_root,
     explain_uncontained,
@@ -371,6 +371,10 @@ def _docker_mysql(run, container: str, name: str, sql: str):
     return run(docker_mysql_argv(container, name, sql))
 
 
+def _docker_postgres(run, container: str, name: str, sql: str):
+    return run(docker_postgres_argv(container, name, sql))
+
+
 def database_fingerprint(payload: dict, run, mysql_defaults) -> dict:
     names = list(payload.get("databases") or [])
     docker_databases = payload.get("docker_databases") if isinstance(payload.get("docker_databases"), dict) else {}
@@ -382,11 +386,16 @@ def database_fingerprint(payload: dict, run, mysql_defaults) -> dict:
         if any(ch in name for ch in UNSAFE) or "/" in name or " " in name:
             errors.append(f"unsafe database name {name!r}")
             continue
-        container = str(docker_databases.get(name) or "").strip()
+        container_entry = docker_databases.get(name)
+        container, engine = parse_docker_db_entry(container_entry) if container_entry else ("", "")
         if container:
             try:
-                status = _docker_mysql(run, container, name, "SHOW TABLE STATUS")
-                create = _docker_mysql(run, container, name, "SHOW TABLES")
+                if is_postgres_engine(engine):
+                    status = _docker_postgres(run, container, name, "SIZE_AND_TABLES")
+                    create = _docker_postgres(run, container, name, "SCHEMA_LIST")
+                else:
+                    status = _docker_mysql(run, container, name, "SHOW TABLE STATUS")
+                    create = _docker_mysql(run, container, name, "SHOW TABLES")
             except ValueError:
                 errors.append(f"unsafe docker container for {name}")
                 continue
