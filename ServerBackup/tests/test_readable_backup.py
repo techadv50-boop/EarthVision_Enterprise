@@ -275,7 +275,7 @@ def test_backup_now_writes_per_domain_tree_and_keeps_master_and_legacy(tmp_path:
     assert "journal.xdgen.com" in domains
     assert "xdgen.com" in domains
     assert (backups / "50sea.com" / "files" / "application" / "index.html").read_text(encoding="utf-8") == "50sea\n"
-    assert "50sea" in (backups / "50sea.com" / "files" / "application" / "wp-config.php").read_text(encoding="utf-8")
+    assert "sea_tedb" in (backups / "50sea.com" / "files" / "application" / "wp-config.php").read_text(encoding="utf-8")
     assert (backups / "50sea.com" / "database" / "sea_tedb.sql").is_file()
     assert "SQL sea_tedb" in (backups / "50sea.com" / "database" / "sea_tedb.sql").read_text(encoding="utf-8", errors="replace")
     assert (backups / "journal.50sea.com" / "files" / "application" / "index.php").is_file()

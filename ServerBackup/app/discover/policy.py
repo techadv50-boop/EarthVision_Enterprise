@@ -158,6 +158,9 @@ def snapshot_application_row(item: dict[str, Any]) -> dict[str, Any]:
         "estimated_bytes": int(item.get("estimated_bytes") or 0),
         "source_paths": list(item.get("source_paths") or []),
         "persistent_data_paths": list(item.get("persistent_data_paths") or []),
+        "docker": item.get("docker"),
+        "configuration_paths": list(item.get("configuration_paths") or []),
+        "source_files": list(item.get("source_files") or []),
         "change": item.get("change") or "",
     }
 
