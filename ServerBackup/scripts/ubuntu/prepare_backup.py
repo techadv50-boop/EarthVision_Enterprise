@@ -14,7 +14,8 @@ import tarfile
 import time
 from pathlib import Path
 
-from path_safety import require_docker_name, require_unix_syntax
+from docker_db import docker_dump_argv
+from path_safety import require_unix_syntax
 
 ALLOWED_ACTIONS = {
     "check",
@@ -150,28 +151,6 @@ def emit_dump_progress(payload: dict) -> None:
     sys.stdout.flush()
 
 
-def _docker_dump_args(container: str, name: str, binary: str) -> list[str]:
-    return [
-        "docker",
-        "exec",
-        container,
-        binary,
-        "--single-transaction",
-        "--quick",
-        "--routines",
-        "--triggers",
-        "--events",
-        "--hex-blob",
-        "--databases",
-        name,
-    ]
-
-
-def _binary_missing(stderr: str) -> bool:
-    text = (stderr or "").lower()
-    return "not found" in text or "no such file" in text or "executable file not found" in text
-
-
 def dump_one_database(
     name: str,
     out: Path,
@@ -184,11 +163,7 @@ def dump_one_database(
     docker_container: str = "",
 ) -> dict:
     if docker_container:
-        safe_container = require_docker_name(docker_container)
-        arg_sets = [
-            _docker_dump_args(safe_container, name, "mysqldump"),
-            _docker_dump_args(safe_container, name, "mariadb-dump"),
-        ]
+        arg_sets = [docker_dump_argv(docker_container, name)]
     else:
         arg_sets = [
             [
@@ -266,8 +241,6 @@ def dump_one_database(
         last_stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
         if proc.wait() == 0:
             break
-        if index + 1 < len(arg_sets) and _binary_missing(last_stderr):
-            continue
         if emit_progress:
             emit_dump_progress(
                 {

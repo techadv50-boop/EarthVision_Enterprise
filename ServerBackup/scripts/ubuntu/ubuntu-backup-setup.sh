@@ -108,6 +108,8 @@ if [[ "$INSTALL_SCRIPTS" -eq 1 ]]; then
   install -m 0755 "$SRC/prepare-backup.sh" "$DEST/prepare-backup.sh"
   install -m 0755 "$SRC/prepare_backup.py" "$DEST/prepare_backup.py"
   install -m 0755 "$SRC/prepare_master.py" "$DEST/prepare_master.py"
+  install -m 0755 "$SRC/docker_db.py" "$DEST/docker_db.py"
+  install -m 0755 "$SRC/path_safety.py" "$DEST/path_safety.py"
   install -m 0755 "$SRC/restore-backup.sh" "$DEST/restore-backup.sh"
   install -m 0755 "$SRC/restore_backup.py" "$DEST/restore_backup.py"
   install -m 0755 "$SRC/restore_master.py" "$DEST/restore_master.py"

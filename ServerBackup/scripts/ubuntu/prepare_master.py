@@ -16,10 +16,10 @@ import struct
 import sys
 from pathlib import Path
 
+from docker_db import docker_mysql_argv
 from path_safety import (
     contained_in_root,
     explain_uncontained,
-    require_docker_name,
     require_unix_syntax,
 )
 
@@ -368,29 +368,7 @@ def stream_objects_lowmem(payload: dict) -> None:
 
 
 def _docker_mysql(run, container: str, name: str, sql: str):
-    safe_container = require_docker_name(container)
-    last = None
-    for binary in ("mysql", "mariadb"):
-        last = run(
-            [
-                "docker",
-                "exec",
-                safe_container,
-                binary,
-                "--batch",
-                "--skip-column-names",
-                name,
-                "-e",
-                sql,
-            ]
-        )
-        if last.returncode == 0:
-            return last
-        err = (last.stderr or "").lower()
-        if "not found" in err or "executable file not found" in err:
-            continue
-        return last
-    return last
+    return run(docker_mysql_argv(container, name, sql))
 
 
 def database_fingerprint(payload: dict, run, mysql_defaults) -> dict:

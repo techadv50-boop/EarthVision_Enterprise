@@ -112,8 +112,15 @@ def test_database_fingerprint_uses_docker_exec_for_container_schema():
     assert result["ok"] is True
     assert result["fingerprints"][0]["name"] == "sea50_db"
     assert calls
-    assert calls[0][:4] == ["docker", "exec", "sea50-cyfdw1-db-1", "mysql"]
+    assert calls[0][:4] == ["docker", "exec", "sea50-cyfdw1-db-1", "sh"]
+    assert "-c" in calls[0]
+    joined = " ".join(calls[0])
+    assert "MYSQL_ROOT_PASSWORD" in joined
+    assert "MYSQL_PWD" in joined
+    assert "sea50_db" in calls[0]
+    assert "SHOW TABLE STATUS" in calls[0]
     assert "--defaults-extra-file=/etc/serverbackup/my.cnf" not in calls[0]
+    assert "sea50_db" in calls[0]
 
 
 def test_database_fingerprint_rejects_unsafe_docker_name():
@@ -164,34 +171,25 @@ def test_database_fingerprint_does_not_query_host_for_missing_schema():
     assert calls == []
 
 
-def test_database_fingerprint_falls_back_to_mariadb_client():
+def test_database_fingerprint_uses_container_env_password_not_host_root():
     import sys
 
     if str(UBUNTU_SCRIPTS) not in sys.path:
         sys.path.insert(0, str(UBUNTU_SCRIPTS))
+    import docker_db
     import prepare_master as pm
 
-    calls: list[list[str]] = []
-
-    class _Result:
-        def __init__(self, code: int, stderr: str = "", stdout: str = "") -> None:
-            self.returncode = code
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def run(cmd, timeout=None):
-        calls.append(list(cmd))
-        if cmd[3] == "mysql":
-            return _Result(127, "executable file not found")
-        return _Result(0, stdout="wp_posts\n")
-
+    argv = docker_db.docker_mysql_argv("sea50-cyfdw1-db-1", "sea50_db", "SHOW TABLES")
+    assert argv[:5] == ["docker", "exec", "sea50-cyfdw1-db-1", "sh", "-c"]
+    script = argv[5]
+    assert "MYSQL_ROOT_PASSWORD" in script
+    assert "MYSQL_PWD=" in script
+    assert "-ppassword" not in script
+    assert "sea50_db" in argv
     result = pm.database_fingerprint(
         {"databases": ["sea50_db"], "docker_databases": {"sea50_db": "sea50-cyfdw1-db-1"}},
-        run,
-        lambda: [],
+        lambda cmd, timeout=None: type("R", (), {"returncode": 0, "stdout": "wp_posts\n", "stderr": ""})(),
+        lambda: ["--defaults-extra-file=/etc/serverbackup/my.cnf"],
     )
     assert result["ok"] is True
-    binaries = [call[3] for call in calls]
-    assert "mysql" in binaries
-    assert "mariadb" in binaries
 
