@@ -83,3 +83,51 @@ def test_prepare_helper_allows_master_actions():
         )
         combined = result.stderr + result.stdout
         assert "action not allowed" not in combined, action
+
+
+def test_database_fingerprint_uses_docker_exec_for_container_schema():
+    import sys
+
+    if str(UBUNTU_SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(UBUNTU_SCRIPTS))
+    import prepare_master as pm
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = "wp_posts\n"
+            self.stderr = ""
+
+    def run(cmd, timeout=None):
+        calls.append(list(cmd))
+        return _Result()
+
+    result = pm.database_fingerprint(
+        {"databases": ["sea50_db"], "docker_databases": {"sea50_db": "sea50-cyfdw1-db-1"}},
+        run,
+        lambda: ["--defaults-extra-file=/etc/serverbackup/my.cnf"],
+    )
+    assert result["ok"] is True
+    assert result["fingerprints"][0]["name"] == "sea50_db"
+    assert calls
+    assert calls[0][:4] == ["docker", "exec", "sea50-cyfdw1-db-1", "mysql"]
+    assert "--defaults-extra-file=/etc/serverbackup/my.cnf" not in calls[0]
+
+
+def test_database_fingerprint_rejects_unsafe_docker_name():
+    import sys
+
+    if str(UBUNTU_SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(UBUNTU_SCRIPTS))
+    import prepare_master as pm
+
+    result = pm.database_fingerprint(
+        {"databases": ["sea50_db"], "docker_databases": {"sea50_db": "sea50;rm -rf /"}},
+        lambda *_args, **_kwargs: None,
+        lambda: [],
+    )
+    assert result["ok"] is False
+    assert any("unsafe docker" in err for err in result["errors"])
+

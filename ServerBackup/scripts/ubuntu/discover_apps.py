@@ -696,6 +696,19 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _looks_like_db_container(item: dict[str, Any]) -> bool:
+    name = str(item.get("name") or "").lower()
+    service = str(item.get("compose_service") or "").lower()
+    blob = f"{name} {service}"
+    if any(token in blob for token in ("-db-", "_db_", "-db.", "mariadb", "mysql", "postgres")):
+        return True
+    if service in {"db", "database", "mariadb", "mysql", "postgres"}:
+        return True
+    if (item.get("mysql_database") or item.get("postgres_db")) and not item.get("published_ports"):
+        return True
+    return name.endswith("-db") or name.endswith("-db-1")
+
+
 def _match_docker(proxy_passes: list[str], containers: list[dict[str, Any]]) -> dict[str, Any] | None:
     summaries = [_docker_summary(item) for item in containers]
     matched = _match_docker_summary(proxy_passes, summaries)
@@ -737,15 +750,23 @@ def _enrich_docker_from_compose(
     if not project:
         return docker
     out = dict(docker)
-    if out.get("mysql_database") and out.get("postgres_db"):
+    web_name = str(out.get("name") or "")
+    if out.get("mysql_database") and out.get("postgres_db") and out.get("db_container"):
         return out
     for item in summaries:
         if str(item.get("compose_project") or "") != project:
             continue
+        if str(item.get("name") or "") == web_name:
+            continue
         if not out.get("postgres_db") and item.get("postgres_db"):
             out["postgres_db"] = item.get("postgres_db")
-        if not out.get("mysql_database") and item.get("mysql_database"):
-            out["mysql_database"] = item.get("mysql_database")
+        if item.get("mysql_database"):
+            if not out.get("mysql_database"):
+                out["mysql_database"] = item.get("mysql_database")
+            if not out.get("db_container") and _looks_like_db_container(item):
+                out["db_container"] = item.get("name")
+        elif not out.get("db_container") and _looks_like_db_container(item):
+            out["db_container"] = item.get("name")
     return out
 
 
@@ -1272,6 +1293,9 @@ def applications_from_servers(
                     "service": docker.get("compose_service"),
                     "container": docker.get("name"),
                     "workdir": docker.get("compose_workdir"),
+                    "mysql_database": docker.get("mysql_database") or "",
+                    "postgres_db": docker.get("postgres_db") or "",
+                    "db_container": docker.get("db_container") or "",
                 }
                 if docker
                 else None,
@@ -1291,6 +1315,41 @@ def applications_from_servers(
         )
     attached = _attach_ssl_and_redirect_peers(candidates)
     return _restore_dropped_hostnames(servers, _merge_candidates(attached))
+
+
+def attach_docker_only_databases(
+    applications: list[dict[str, Any]],
+    inventory: list[dict[str, Any]],
+    host_names: list[str],
+) -> list[dict[str, Any]]:
+    """Associate compose MYSQL_DATABASE names that exist only inside a db container."""
+    host = {str(name) for name in host_names if name}
+    seen = {str(row.get("name") or "") for row in inventory}
+    extra: list[dict[str, Any]] = []
+    for app in applications:
+        docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+        name = str(app.get("database_name") or docker.get("mysql_database") or "").strip()
+        container = str(docker.get("db_container") or "").strip()
+        if not name or name in host or name in seen:
+            continue
+        if not container:
+            continue
+        extra.append(
+            {
+                "name": name,
+                "type": "MariaDB",
+                "system": False,
+                "size_bytes": None,
+                "table_count": None,
+                "application_id": app.get("application_id") or "",
+                "status": "ASSOCIATED WITH APPLICATION",
+                "reason": f"schema lives in Docker container {container}; not present on host MariaDB",
+                "docker_container": container,
+                "references": [{"path": f"docker:{container}", "kind": "docker-db"}],
+            }
+        )
+        seen.add(name)
+    return list(inventory) + extra
 
 
 def discover_applications(payload: dict | None = None, *, run=None, mysql_defaults=None) -> dict[str, Any]:
@@ -1392,6 +1451,7 @@ def discover_applications(payload: dict | None = None, *, run=None, mysql_defaul
         details=details,
         references=references,
     )
+    database_inventory = attach_docker_only_databases(apps, database_inventory, mariadb)
     by_id = {str(app.get("application_id") or ""): app for app in apps}
     for row in database_inventory:
         ident = str(row.get("application_id") or "")

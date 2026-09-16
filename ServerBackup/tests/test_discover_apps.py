@@ -1433,3 +1433,53 @@ def test_acknowledge_removed_sites_drops_requires_review(tmp_path: Path):
     assert gone["status"] == "SITE REMOVED — ACKNOWLEDGED"
 
 
+def test_dokploy_mysql_database_missing_on_host_is_associated_via_db_container():
+    nginx = """
+# configuration file /etc/nginx/sites-enabled/50sea.com:
+server {
+    listen 80;
+    server_name 50sea.com www.50sea.com;
+    location / { proxy_pass http://127.0.0.1:8084; }
+}
+"""
+    servers = da.parse_nginx_t(nginx)
+    containers = [
+        _dokploy_container("sea50-cyfdw1-web-1", "sea50-cyfdw1", port="8084"),
+        _dokploy_container("sea50-cyfdw1-db-1", "sea50-cyfdw1", env=["MYSQL_DATABASE=sea50_db"]),
+    ]
+    apps = da.applications_from_servers(
+        servers,
+        docker_containers=containers,
+        mariadb=["sea_tecdb"],
+        path_exists=lambda _path: True,
+        probe=lambda _root: ({}, {}),
+    )
+    by_host = _by_host(apps)
+    assert by_host["50sea.com"]["database_name"] == "sea50_db"
+    assert by_host["50sea.com"]["docker"]["db_container"] == "sea50-cyfdw1-db-1"
+    import discover_audit as audit
+
+    inventory = audit.build_database_inventory(
+        ["sea_tecdb"],
+        apps,
+        details={
+            "sea_tecdb": {"table_count": 19, "size_bytes": 1000, "row_count": 10},
+        },
+        references={
+            "sea_tecdb": [{"path": "/opt/dokploy-migrations/50sea/wp-config.live-copy.php"}],
+        },
+    )
+    inventory = da.attach_docker_only_databases(apps, inventory, ["sea_tecdb"])
+    by_name = {row["name"]: row for row in inventory}
+    assert by_name["sea50_db"]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert by_name["sea50_db"]["docker_container"] == "sea50-cyfdw1-db-1"
+    assert by_name["sea_tecdb"]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    gate = assess_backup_gate([{**by_host["50sea.com"], "included": True}], inventory)
+    assert "sea50_db" not in (gate.get("unresolved_database_names") or [])
+    assert gate["unresolved_database_names"] == ["sea_tecdb"]
+    from app.backup.domain_map import docker_only_dump_map
+
+    mapping = docker_only_dump_map(apps, ["sea_tecdb"])
+    assert mapping == {"sea50_db": "sea50-cyfdw1-db-1"}
+
+

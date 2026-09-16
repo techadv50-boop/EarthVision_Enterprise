@@ -35,7 +35,7 @@ from app.backup.live import (
     application_for_root,
     log_pipeline,
 )
-from app.backup.domain_map import build_domain_map, dump_names
+from app.backup.domain_map import build_domain_map, docker_only_dump_map, dump_names
 from app.backup.readable import ReadableExportError, export_readable_backup
 from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
@@ -561,11 +561,31 @@ def _consume_dump_progress(process, live: BackupLiveSession | None) -> list[dict
     return dumps
 
 
-def _fingerprint_databases(engine, names: list[str] | None = None) -> dict[str, str]:
+def _host_mariadb_names(discovery: dict[str, Any]) -> list[str]:
+    dbs = discovery.get("databases") if isinstance(discovery.get("databases"), dict) else {}
+    names = [str(item) for item in (dbs.get("mariadb") or []) if item]
+    if names:
+        return names
+    return [
+        str(row.get("name") or "")
+        for row in (discovery.get("database_inventory") or [])
+        if row.get("name") and not row.get("docker_container")
+    ]
+
+
+def _fingerprint_databases(
+    engine,
+    names: list[str] | None = None,
+    *,
+    docker_databases: dict[str, str] | None = None,
+) -> dict[str, str]:
     names = list(names if names is not None else engine.config.databases_for_backup())
     if not names:
         return {}
-    parsed = _json_script(engine, "database-fingerprint", {"databases": names}, require_ok=False)
+    extra: dict[str, Any] = {"databases": names}
+    if docker_databases:
+        extra["docker_databases"] = dict(docker_databases)
+    parsed = _json_script(engine, "database-fingerprint", extra, require_ok=False)
     mapping = {}
     for item in parsed.get("fingerprints") or []:
         mapping[str(item.get("name"))] = str(item.get("sha256") or "")
@@ -586,6 +606,8 @@ def _dump_changed_databases(
     changed: list[str],
     allowed_roots: list[str],
     live: BackupLiveSession | None = None,
+    *,
+    docker_databases: dict[str, str] | None = None,
 ) -> dict[str, str]:
     if not changed:
         return {}
@@ -606,6 +628,7 @@ def _dump_changed_databases(
                 "databases": changed,
                 "work_id": engine.backup_id.replace("_", ""),
                 "compression_level": engine.config.compression_level,
+                **({"docker_databases": dict(docker_databases)} if docker_databases else {}),
             },
         ),
     )
@@ -927,6 +950,7 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         if str(row.get("name") or "") and str(row.get("status") or "").startswith("ASSOCIATED")
     ]
     db_names = dump_set or associated_names
+    docker_map = docker_only_dump_map(applications, _host_mariadb_names(discovery))
     db_result = "SKIPPED"
     db_error = ""
     fingerprints: dict[str, str] = {}
@@ -934,7 +958,7 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
     if db_names:
         _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_START", "Fingerprinting MariaDB databases…", 90)
         try:
-            fingerprints = _fingerprint_databases(engine, db_names)
+            fingerprints = _fingerprint_databases(engine, db_names, docker_databases=docker_map)
             previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
             for name in db_names:
                 if fingerprints.get(name) != previous_fp.get(name):
@@ -1164,6 +1188,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         log_pipeline(engine, "HASH_COMPLETE")
 
     db_names = databases_for_master_dump(config, discovery)
+    docker_map = docker_only_dump_map(applications, _host_mariadb_names(discovery))
     db_result = "SKIPPED"
     fingerprints: dict[str, str] = {}
     changed_dbs: list[str] = []
@@ -1184,7 +1209,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                 db_type="MariaDB",
             )
         try:
-            fingerprints = _fingerprint_databases(engine, db_names)
+            fingerprints = _fingerprint_databases(engine, db_names, docker_databases=docker_map)
             previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
             for name in db_names:
                 if fingerprints.get(name) != previous_fp.get(name):
@@ -1281,6 +1306,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                     changed_dbs,
                     _required_roots(sources),
                     live=live,
+                    docker_databases=docker_map,
                 )
                 db_result = "OK"
                 log_pipeline(engine, "DATABASE_DUMP_COMPLETE")

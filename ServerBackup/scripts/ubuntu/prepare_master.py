@@ -19,6 +19,7 @@ from pathlib import Path
 from path_safety import (
     contained_in_root,
     explain_uncontained,
+    require_docker_name,
     require_unix_syntax,
 )
 
@@ -368,14 +369,49 @@ def stream_objects_lowmem(payload: dict) -> None:
 
 def database_fingerprint(payload: dict, run, mysql_defaults) -> dict:
     names = list(payload.get("databases") or [])
+    docker_databases = payload.get("docker_databases") if isinstance(payload.get("docker_databases"), dict) else {}
     fingerprints = []
     errors = []
     for name in names:
         if any(ch in name for ch in UNSAFE) or "/" in name or " " in name:
             errors.append(f"unsafe database name {name!r}")
             continue
-        status = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", name, "-e", "SHOW TABLE STATUS"])
-        create = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", name, "-e", "SHOW TABLES"])
+        container = str(docker_databases.get(name) or "").strip()
+        if container:
+            try:
+                safe_container = require_docker_name(container)
+            except ValueError:
+                errors.append(f"unsafe docker container for {name}")
+                continue
+            status = run(
+                [
+                    "docker",
+                    "exec",
+                    safe_container,
+                    "mysql",
+                    "--batch",
+                    "--skip-column-names",
+                    name,
+                    "-e",
+                    "SHOW TABLE STATUS",
+                ]
+            )
+            create = run(
+                [
+                    "docker",
+                    "exec",
+                    safe_container,
+                    "mysql",
+                    "--batch",
+                    "--skip-column-names",
+                    name,
+                    "-e",
+                    "SHOW TABLES",
+                ]
+            )
+        else:
+            status = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", name, "-e", "SHOW TABLE STATUS"])
+            create = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", name, "-e", "SHOW TABLES"])
         if status.returncode != 0:
             errors.append(status.stderr.strip() or f"fingerprint failed for {name}")
             continue

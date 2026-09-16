@@ -398,6 +398,24 @@ def dump_names(
     return mariadb, postgres
 
 
+def docker_only_dump_map(
+    applications: list[dict[str, Any]] | None,
+    host_names: list[str] | None = None,
+) -> dict[str, str]:
+    """Map schema -> db container when the schema is not on host MariaDB."""
+    host = {str(name) for name in (host_names or []) if name}
+    mapping: dict[str, str] = {}
+    for app in applications or []:
+        if app.get("change") == "removed" or app.get("excluded"):
+            continue
+        docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+        name = str(app.get("database_name") or docker.get("mysql_database") or "").strip()
+        container = str(docker.get("db_container") or "").strip().lstrip("/")
+        if name and container and name not in host:
+            mapping[name] = container
+    return mapping
+
+
 def is_blocked_source_path(path: str) -> bool:
     cleaned = _clean(path)
     return any(cleaned == prefix or cleaned.startswith(prefix + "/") for prefix in BLOCKED_FILE_PREFIXES)

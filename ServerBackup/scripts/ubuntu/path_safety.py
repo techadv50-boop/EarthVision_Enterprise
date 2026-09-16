@@ -7,6 +7,7 @@ that contain repeated dots, hyphens, spaces, or long names.
 from __future__ import annotations
 
 import os
+import re
 
 UNSAFE_CHARS = set(";&|`$<>\\\n\r\x00")
 MAX_PATH_LEN = 4096
@@ -88,3 +89,13 @@ def require_unix_syntax(path: str) -> str:
     if not is_safe_unix_syntax(cleaned):
         raise ValueError(f"Refusing unsafe path: {cleaned!r}")
     return cleaned.rstrip("/") or "/"
+
+
+_DOCKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def require_docker_name(name: str) -> str:
+    cleaned = str(name or "").strip().lstrip("/")
+    if not cleaned or not _DOCKER_NAME.match(cleaned) or len(cleaned) > 128:
+        raise ValueError(f"Refusing unsafe docker name: {name!r}")
+    return cleaned

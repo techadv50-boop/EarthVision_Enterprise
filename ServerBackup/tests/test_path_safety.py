@@ -135,3 +135,13 @@ def test_windows_validator_accepts_dots_in_filename():
     )
     assert not is_safe_unix_path("/var/www/foo/../../../etc/passwd")
     assert not is_safe_unix_path("/etc/passwd;id")
+
+
+def test_require_docker_name_rejects_shell_metacharacters():
+    _, path_safety = _pm()
+    assert path_safety.require_docker_name("sea50-cyfdw1-db-1") == "sea50-cyfdw1-db-1"
+    with pytest.raises(ValueError):
+        path_safety.require_docker_name("sea50;rm -rf /")
+    with pytest.raises(ValueError):
+        path_safety.require_docker_name("../etc")
+

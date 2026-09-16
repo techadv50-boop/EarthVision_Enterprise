@@ -242,6 +242,34 @@ def test_legacy_stream_backup_dump_does_not_emit_ndjson(tmp_path: Path, monkeypa
     assert emitted == []
 
 
+def test_dump_databases_uses_docker_exec_for_container_schema(tmp_path: Path, monkeypatch):
+    import prepare_backup
+
+    captured: list[list[str]] = []
+
+    class FakeDump:
+        def __init__(self, args, **_kwargs) -> None:
+            captured.append(list(args))
+            self.stdout = io.BytesIO(b"sql")
+            self.stderr = io.BytesIO(b"")
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(prepare_backup.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(prepare_backup.subprocess, "Popen", FakeDump)
+    dumped = prepare_backup.dump_databases(
+        tmp_path,
+        ["sea50_db"],
+        1,
+        emit_progress=False,
+        docker_databases={"sea50_db": "sea50-cyfdw1-db-1"},
+    )
+    assert dumped == ["sea50_db"]
+    assert captured[0][:4] == ["docker", "exec", "sea50-cyfdw1-db-1", "mysqldump"]
+    assert "--defaults-extra-file=/etc/serverbackup/my.cnf" not in captured[0]
+
+
 def test_unpack_to_objects_reports_chunk_progress(tmp_path: Path):
     payload = b"abcdefghijklmnopqrstuvwxyz" * 80
     digest = hashlib.sha256(payload).hexdigest()

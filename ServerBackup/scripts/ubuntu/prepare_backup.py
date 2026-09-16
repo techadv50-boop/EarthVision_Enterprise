@@ -14,7 +14,7 @@ import tarfile
 import time
 from pathlib import Path
 
-from path_safety import require_unix_syntax
+from path_safety import require_docker_name, require_unix_syntax
 
 ALLOWED_ACTIONS = {
     "check",
@@ -159,19 +159,37 @@ def dump_one_database(
     emit_progress: bool = False,
     estimated_bytes: int | None = None,
     run_dump=None,
+    docker_container: str = "",
 ) -> dict:
-    args = [
-        mysqldump,
-        *mysql_defaults(),
-        "--single-transaction",
-        "--quick",
-        "--routines",
-        "--triggers",
-        "--events",
-        "--hex-blob",
-        "--databases",
-        name,
-    ]
+    if docker_container:
+        safe_container = require_docker_name(docker_container)
+        args = [
+            "docker",
+            "exec",
+            safe_container,
+            "mysqldump",
+            "--single-transaction",
+            "--quick",
+            "--routines",
+            "--triggers",
+            "--events",
+            "--hex-blob",
+            "--databases",
+            name,
+        ]
+    else:
+        args = [
+            mysqldump,
+            *mysql_defaults(),
+            "--single-transaction",
+            "--quick",
+            "--routines",
+            "--triggers",
+            "--events",
+            "--hex-blob",
+            "--databases",
+            name,
+        ]
     started = time.time()
     if emit_progress:
         emit_dump_progress(
@@ -264,18 +282,21 @@ def dump_databases(
     compression_level: int,
     *,
     emit_progress: bool = False,
+    docker_databases: dict | None = None,
 ) -> list[str]:
     dumped: list[str] = []
     dest = work / "databases"
     dest.mkdir(parents=True, exist_ok=True)
+    docker_databases = docker_databases or {}
     mysqldump = shutil.which("mysqldump")
-    if not mysqldump:
+    host_names = [name for name in names if not docker_databases.get(name)]
+    if host_names and not mysqldump:
         fail("mysqldump was not found")
     estimates: dict[str, int | None] = {}
     for name in names:
         if any(ch in name for ch in UNSAFE) or "/" in name or " " in name:
             fail(f"Refusing unsafe database name: {name!r}")
-        estimates[name] = schema_size_bytes(name) if emit_progress else None
+        estimates[name] = None if docker_databases.get(name) else (schema_size_bytes(name) if emit_progress else None)
     if emit_progress:
         emit_dump_progress(
             {
@@ -294,9 +315,10 @@ def dump_databases(
             name,
             dest / f"{name}.sql.gz",
             compression_level,
-            mysqldump=mysqldump,
+            mysqldump=mysqldump or "mysqldump",
             emit_progress=emit_progress,
             estimated_bytes=estimates.get(name),
+            docker_container=str(docker_databases.get(name) or ""),
         )
         dumped.append(name)
     return dumped
@@ -416,7 +438,13 @@ def main() -> None:
         work_id = "".join(ch for ch in str(payload.get("work_id") or "work") if ch.isalnum() or ch in "-_")
         work = Path("/tmp") / f"server-backup-work-{work_id}"
         work.mkdir(parents=True, exist_ok=True)
-        dumped = dump_databases(work, list(payload.get("databases") or []), int(payload.get("compression_level") or 6), emit_progress=True)
+        dumped = dump_databases(
+            work,
+            list(payload.get("databases") or []),
+            int(payload.get("compression_level") or 6),
+            emit_progress=True,
+            docker_databases=payload.get("docker_databases") if isinstance(payload.get("docker_databases"), dict) else {},
+        )
         files = []
         for name in dumped:
             path = work / "databases" / f"{name}.sql.gz"
