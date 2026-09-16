@@ -129,7 +129,7 @@ class SettingsPage(QWidget):
         form.addRow("Minimum Ubuntu temp space (GB)", self.min_remote)
         form.addRow("Compression level", self.compression)
         form.addRow(
-            "Website directories (legacy BACKUP NOW list — use DISCOVER SERVER for Nginx inventory)",
+            "Website directories (fallback if discovery has no approved sites — DISCOVER SERVER drives BACKUPS)",
             self.websites,
         )
         self.website_input = _editable(QLineEdit(), "/var/www/example.com")

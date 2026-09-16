@@ -163,22 +163,39 @@ The SSH setting is the **path** to a private key file on the Windows PC, or you 
 
 ```
 G:\ServerBackups\
-  master\
+  master\                         (incremental content-addressed store; do not delete)
     HEAD
     meta.json
     objects\<ab>\<sha256>
     trees\<generation>.json
     history\<operation-id>.json
     staging\<operation-id>\
-  2026-09-07_082000\          (legacy 1.3.7 archive; left untouched)
+  BACKUPS\                        (human-readable per-website tree)
+    BACKUP-MANIFEST.json
+    50sea.com\
+      files\
+        application\
+        storage\
+        config\
+      database\
+        sea_tedb.sql
+      docker\                     (only if the site uses Docker)
+      backup-info.txt
+    journal.50sea.com\
+      ...
+    _unassigned-databases\        (SQL with no proven website mapping)
+    _server\                      (shared Nginx / unmatched files)
+  2026-09-07_082000\              (legacy 1.3.7 archive; left untouched)
     server-backup.tar.gz
     backup-info.json
     backup.log
 ```
 
-HEAD is replaced only after the new tree, objects, and database dumps (if any) verify. A crash during staging leaves the previous HEAD valid.
+Each public hostname is a top-level folder under `BACKUPS`. Docker IDs, volume names, and object hashes stay inside `master\` or in `backup-info.txt` metadata. Named Docker volumes are not copied from `/var/lib/docker`.
 
-**DISCOVER SERVER** runs a read-only `nginx -T` inventory of every active hostname, classifies each application, and discovers OJS `files_dir`, databases, and Docker compose/bind mounts. New sites require approval. This discovery build does **not** yet change BACKUP NOW sources.
+HEAD is replaced only after the new tree, objects, and database dumps (if any) verify. A crash during staging leaves the previous HEAD valid. The readable `BACKUPS` tree is rewritten from the committed master after each successful BACKUP NOW (including NO CHANGE).
+
+**DISCOVER SERVER** runs a read-only `nginx -T` inventory of every active hostname, classifies each application, and discovers OJS `files_dir`, databases, and Docker compose/bind mounts. New sites require approval. BACKUP NOW copies approved discovery sources and dumps databases associated with those sites.
 
 **DRY RUN** is a metadata-only preview: it connects over SSH, discovers OJS `files_dir`, inventories approved sources, and compares against master **without hashing the live tree or writing HEAD**. A missing master is reported as `NO BASELINE` / `FULL BASELINE PREVIEW`, not as a failure.
 

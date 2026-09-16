@@ -164,8 +164,8 @@ def test_existing_master_unchanged_files_keep_head_and_still_show_discovery(tmp_
     assert "HEAD: unchanged" in text
     assert "citation.xdgen.com" in text
     assert "none configured" not in text
-    # BACKUP NOW still only fingerprints selected_databases. Newly discovered
-    # MariaDB names therefore appear on DRY RUN without writing HEAD.
+    # BACKUP NOW dumps associated discovery databases (plus Settings extras).
+    # Newly discovered MariaDB names therefore appear on DRY RUN without writing HEAD.
     assert master["type"] in {"NO_CHANGE", "INCREMENTAL"}
 
 

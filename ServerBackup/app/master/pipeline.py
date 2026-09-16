@@ -35,6 +35,8 @@ from app.backup.live import (
     application_for_root,
     log_pipeline,
 )
+from app.backup.domain_map import build_domain_map, dump_names
+from app.backup.readable import ReadableExportError, export_readable_backup
 from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
 from app.discover.engine import DiscoveryError as ApplicationDiscoveryError
@@ -129,7 +131,12 @@ def collect_sources(config, ojs_installs: list[dict[str, Any]]) -> list[dict[str
     return sources
 
 
-def collect_sources_from_applications(config, applications: list[dict[str, Any]]) -> list[dict[str, str]]:
+def collect_sources_from_applications(
+    config,
+    applications: list[dict[str, Any]],
+    *,
+    approved_only: bool = False,
+) -> list[dict[str, str]]:
     """Filesystem sources from Nginx discovery. Skips excluded/removed/docker-internal paths."""
     sources: list[dict[str, str]] = []
     extra = list(config.extra_directories or [])
@@ -148,6 +155,8 @@ def collect_sources_from_applications(config, applications: list[dict[str, Any]]
 
     for app in applications:
         if app.get("change") == "removed" or app.get("excluded"):
+            continue
+        if approved_only and not app.get("included"):
             continue
         files_dir = str(app.get("ojs_files_dir") or "").rstrip("/")
         for path in app.get("source_paths") or []:
@@ -225,6 +234,52 @@ def merge_discovered_databases(
         elif dname:
             add_maria(dname)
     return mariadb, postgres
+
+
+def databases_for_master_dump(config, discovery: dict[str, Any]) -> list[str]:
+    """Associated MariaDB names plus any extra names selected in Settings."""
+    domain_map = build_domain_map(
+        list(discovery.get("applications") or []),
+        list(discovery.get("database_inventory") or []),
+        approved_only=True,
+    )
+    mariadb, _postgres = dump_names(domain_map, selected=config.databases_for_backup())
+    if config.exclude_system_databases:
+        mariadb = [name for name in mariadb if name not in SYSTEM_DATABASES]
+    return mariadb
+
+
+def _export_readable(
+    engine,
+    store: MasterStore,
+    tree: dict[str, Any],
+    discovery: dict[str, Any],
+    *,
+    timestamp: str,
+    generation: int | None,
+    output_root=None,
+) -> dict[str, Any] | None:
+    try:
+        manifest = export_readable_backup(
+            destination=engine.config.backup_destination,
+            store=store,
+            tree=tree,
+            applications=list(discovery.get("applications") or []),
+            database_inventory=list(discovery.get("database_inventory") or []),
+            meta=store.load_meta(),
+            nginx_root=str(engine.config.nginx_directory or "/etc/nginx"),
+            timestamp=timestamp,
+            generation=generation,
+            output_root=output_root,
+        )
+        engine.logger.info(
+            "READABLE_EXPORT_COMPLETE "
+            f"root={manifest.get('root')} websites={len(manifest.get('websites') or [])}"
+        )
+        return manifest
+    except (ReadableExportError, OSError) as exc:
+        engine.logger.error(f"READABLE_EXPORT_ERROR {exc}")
+        return {"status": "FAILED", "error": str(exc)}
 
 
 def _required_roots(sources: list[dict[str, str]]) -> list[str]:
@@ -1060,7 +1115,9 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
     if required_missing:
         raise PipelineError("Required OJS application(s) were not discovered: " + ", ".join(required_missing))
 
-    sources = collect_sources(config, ojs)
+    sources = collect_sources_from_applications(config, applications, approved_only=True)
+    if not any(item.get("category") in {"website", "ojs"} for item in sources):
+        sources = collect_sources(config, ojs)
     log_pipeline(engine, "INVENTORY_START")
     if sources:
         live.current_source = str(sources[0].get("root") or "")
@@ -1091,7 +1148,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         changes = compute_delta(previous if has_master else None, inventory, hashes=hashes)
         log_pipeline(engine, "HASH_COMPLETE")
 
-    db_names = config.databases_for_backup()
+    db_names = databases_for_master_dump(config, discovery)
     db_result = "SKIPPED"
     fingerprints: dict[str, str] = {}
     changed_dbs: list[str] = []
@@ -1112,7 +1169,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                 db_type="MariaDB",
             )
         try:
-            fingerprints = _fingerprint_databases(engine)
+            fingerprints = _fingerprint_databases(engine, db_names)
             previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
             for name in db_names:
                 if fingerprints.get(name) != previous_fp.get(name):
@@ -1159,6 +1216,14 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             **counts,
         }
         store.write_history_only(history)
+        readable = _export_readable(
+            engine,
+            store,
+            store.load_tree(),
+            discovery,
+            timestamp=timestamp,
+            generation=store.head_generation(),
+        )
         live.set_ui_stage(UI_SUCCESS, "NO CHANGES DETECTED", phase="complete")
         live.finish("success", UI_SUCCESS, "NO CHANGES DETECTED", staging_state="NONE")
         engine.logger.info("NO_CHANGE Master already current")
@@ -1171,6 +1236,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             "database": "UNCHANGED",
             "ojs": ojs,
             "history": history,
+            "readable": readable,
         }
 
     previous_head = store.head_generation()
@@ -1305,6 +1371,14 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             deep=False,
         )
         log_pipeline(engine, "BACKUP_SUCCESS")
+        readable = _export_readable(
+            engine,
+            store,
+            tree,
+            discovery,
+            timestamp=timestamp,
+            generation=generation,
+        )
         live.finish("success", UI_SUCCESS, "MASTER BACKUP STATUS=SUCCESS", staging_state="CLEANED")
         engine.logger.info("Master update committed")
         return {
@@ -1317,6 +1391,7 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
             "ojs": ojs,
             "health": health,
             "previous_head": previous_head,
+            "readable": readable,
         }
     finally:
         if not committed:
