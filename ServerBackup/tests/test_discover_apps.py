@@ -1372,6 +1372,52 @@ def test_exclude_leftover_wordpress_db_clears_backup_gate(tmp_path: Path):
     assert gate["block_complete_backup"] is False
 
 
+def test_apply_database_policy_auto_excludes_dokploy_migration_leftover(tmp_path: Path):
+    from app.discover.policy import apply_database_policy
+
+    dest = tmp_path / "ServerBackups"
+    dest.mkdir()
+    apps = [
+        {
+            "application_id": "docker:sea50-cyfdw1",
+            "hostname": "50sea.com",
+            "included": True,
+            "status": "READY",
+        }
+    ]
+    inventory = [
+        {
+            "name": "sea50_db",
+            "status": "ASSOCIATED WITH APPLICATION",
+            "application_id": "docker:sea50-cyfdw1",
+            "system": False,
+        },
+        {
+            "name": "sea_tecdb",
+            "status": "UNASSOCIATED DATABASE — REQUIRES REVIEW",
+            "application_id": "",
+            "system": False,
+            "table_count": 19,
+            "row_count": 2815,
+            "reason": (
+                "referenced outside active applications; orphan config references: "
+                "/opt/dokploy-migrations/50sea/wp-config.live-copy.php, "
+                "/root/dokploy-migration/50sea/wordpress/wp-config.php."
+            ),
+            "references": [
+                {"path": "/opt/dokploy-migrations/50sea/wp-config.live-copy.php"},
+                {"path": "/root/dokploy-migration/50sea/wordpress/wp-config.php"},
+            ],
+        },
+    ]
+    reviewed = apply_database_policy(inventory, dest)
+    gate = assess_backup_gate(apps, reviewed)
+    assert reviewed[1]["status"] == "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+    assert gate["databases_unresolved"] == 0
+    assert gate["block_complete_backup"] is False
+    assert gate["unresolved_database_names"] == []
+
+
 def test_include_unassigned_database_clears_gate_and_is_dumped(tmp_path: Path):
     from app.backup.domain_map import build_domain_map, dump_names
     from app.discover.policy import apply_database_policy, set_database_decision

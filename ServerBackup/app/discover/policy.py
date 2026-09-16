@@ -9,6 +9,10 @@ from typing import Any
 
 POLICY_NAME = "applications-policy.json"
 SNAPSHOT_NAME = "last-discovery.json"
+MIGRATION_LEFTOVER_PREFIXES = (
+    "/opt/dokploy-migrations/",
+    "/root/dokploy-migration/",
+)
 
 
 def _policy_path(destination: str | Path) -> Path:
@@ -102,6 +106,27 @@ def set_database_decision(
     return row
 
 
+def _is_migration_leftover_path(path: str) -> bool:
+    cleaned = str(path or "").replace("\\", "/")
+    if not cleaned or cleaned.startswith("docker:"):
+        return False
+    return any(cleaned == prefix.rstrip("/") or cleaned.startswith(prefix) for prefix in MIGRATION_LEFTOVER_PREFIXES)
+
+
+def is_migration_leftover_database(row: dict[str, Any]) -> bool:
+    """True for host leftovers referenced only under Dokploy migration copies."""
+    if row.get("system") or str(row.get("status") or "").startswith("ASSOCIATED"):
+        return False
+    if "MIGRATION LEFTOVER" in str(row.get("status") or ""):
+        return True
+    refs = [item for item in (row.get("references") or []) if isinstance(item, dict)]
+    paths = [str(item.get("path") or "") for item in refs if item.get("path")]
+    blob = " ".join(paths) + " " + str(row.get("reason") or "")
+    if paths:
+        return all(_is_migration_leftover_path(path) for path in paths)
+    return "/opt/dokploy-migrations" in blob or "/root/dokploy-migration" in blob
+
+
 def apply_database_policy(inventory: list[dict[str, Any]], destination: str | Path) -> list[dict[str, Any]]:
     policy = load_policy(destination)
     stored = policy.get("databases") if isinstance(policy.get("databases"), dict) else {}
@@ -126,6 +151,15 @@ def apply_database_policy(inventory: list[dict[str, Any]], destination: str | Pa
             item["reason"] = rec.get("reason") or "reviewed: dump under BACKUPS/_unassigned-databases"
             item["include_unassigned"] = True
             item["excluded"] = False
+        elif is_migration_leftover_database(item):
+            item["status"] = "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+            item["reason"] = item.get("reason") or (
+                "only referenced under Dokploy migration copies "
+                "(/opt/dokploy-migrations or /root/dokploy-migration); "
+                "not an active Nginx application."
+            )
+            item["excluded"] = True
+            item["include_unassigned"] = False
         result.append(item)
     return result
 
