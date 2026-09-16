@@ -14,7 +14,7 @@ import tarfile
 import time
 from pathlib import Path
 
-from docker_db import docker_dump_argv
+from docker_db import docker_dump_argv, docker_mysql_argv, parse_show_table_status
 from path_safety import require_unix_syntax
 
 ALLOWED_ACTIONS = {
@@ -124,6 +124,17 @@ def path_checks(payload: dict) -> list[dict]:
     tar_ok = shutil.which("tar") is not None and shutil.which("gzip") is not None
     checks.append({"name": "tar/gzip", "ok": tar_ok, "detail": "present" if tar_ok else "missing"})
     return checks
+
+
+def docker_schema_size_bytes(container: str, name: str) -> int | None:
+    try:
+        result = run(docker_mysql_argv(container, name, "SHOW TABLE STATUS"), timeout=30)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    parsed = parse_show_table_status(result.stdout or "")
+    return int(parsed.get("size_bytes") or 0)
 
 
 def schema_size_bytes(name: str) -> int | None:
@@ -291,7 +302,10 @@ def dump_databases(
     for name in names:
         if any(ch in name for ch in UNSAFE) or "/" in name or " " in name:
             fail(f"Refusing unsafe database name: {name!r}")
-        estimates[name] = None if docker_databases.get(name) else (schema_size_bytes(name) if emit_progress else None)
+        if docker_databases.get(name):
+            estimates[name] = docker_schema_size_bytes(str(docker_databases.get(name)), name) if emit_progress else None
+        else:
+            estimates[name] = schema_size_bytes(name) if emit_progress else None
     if emit_progress:
         emit_dump_progress(
             {

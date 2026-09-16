@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -244,7 +245,7 @@ server {
     assert "TOTAL HOSTNAMES DISCOVERED" in report
     assert "citation.example.com" in report
     assert "leftover.example.com" in report
-    assert "WHY NGINX-ONLY DISCOVERY MISSED WEBSITES" in report
+    assert "WHY NGINX-ONLY AND LABEL-ONLY DISCOVERY MISSED WEBSITES" in report
 
 
 def test_dry_run_discovers_traefik_sites_and_keeps_sites_available_out_of_applications(tmp_path: Path):
@@ -261,7 +262,10 @@ def test_dry_run_discovers_traefik_sites_and_keeps_sites_available_out_of_applic
     )
     ssh = LocalMasterSSH(
         tmp_path / "remote",
-        extra_scan_files={"/etc/nginx/sites-available/leftover.conf": leftover},
+        extra_scan_files={
+            "/etc/nginx/sites-available/leftover.conf": leftover,
+            "/etc/dokploy/traefik/dynamic/orbital.yml": _dokploy_traefik_yaml("orbital.example.com", "orbital"),
+        },
         extra_docker_containers=[
             _traefik_container(
                 name="sateye_web",
@@ -277,6 +281,7 @@ def test_dry_run_discovers_traefik_sites_and_keeps_sites_available_out_of_applic
                 workdir="/opt/satpass",
                 env=["MYSQL_DATABASE=satpass_db"],
             ),
+            _unlabeled_web_container(name="orbital-web-1", project="orbital", env=["POSTGRES_DB=orbital_db"]),
         ],
     )
     result = discover_applications(cfg, ssh=ssh, persist=True)
@@ -284,13 +289,16 @@ def test_dry_run_discovers_traefik_sites_and_keeps_sites_available_out_of_applic
     assert "sateye.xdgen.com" in hosts
     assert "satpass.xdgen.com" in hosts
     assert "citation.xdgen.com" in hosts
+    assert "orbital.example.com" in hosts
     assert "leftover-only.example.com" not in hosts
     report = result["report_text"]
     assert "SERVER-WIDE DISCOVERY REPORT" in report
     assert "sateye.xdgen.com" in report.split("SERVER-WIDE DISCOVERY REPORT", 1)[1]
     assert "satpass.xdgen.com" in report
+    assert "orbital.example.com" in report
     discovered_hosts = report.split("DISCOVERED HOSTNAMES", 1)[1].split("DISCOVERED APPLICATIONS", 1)[0]
     assert "sateye.xdgen.com" in discovered_hosts
+    assert "orbital.example.com" in discovered_hosts
     assert "leftover-only.example.com" not in discovered_hosts
     not_active = report.split("NOT ACTIVE IN CURRENT SERVER CONFIGURATION", 1)[1].split("OJS FILES_DIR", 1)[0]
     assert "leftover-only.example.com" in not_active
@@ -330,3 +338,183 @@ def test_volume_inventory_tolerates_unreadable_docker_paths(monkeypatch):
     assert names == ["a.example.com", "www.a.example.com"]
     assert da.looks_like_hostname("citation_web") is False
     assert da.looks_like_hostname("sateye.xdgen.com") is True
+
+
+def _unlabeled_web_container(*, name: str, project: str, env: list[str] | None = None, mounts: list[dict] | None = None) -> dict:
+    return {
+        "Id": name * 2,
+        "Name": f"/{name}",
+        "State": {"Running": True},
+        "Config": {
+            "Image": f"{project}:latest",
+            "Labels": {
+                "com.docker.compose.project": project,
+                "com.docker.compose.service": "web",
+                "com.docker.compose.project.working_dir": f"/etc/dokploy/applications/{project}",
+            },
+            "Env": list(env or []),
+        },
+        "NetworkSettings": {"Networks": {"dokploy-network": {"Aliases": [project, f"{project}-web"]}}},
+        "HostConfig": {"PortBindings": {}},
+        "Mounts": list(mounts or [{"Type": "bind", "Source": f"/opt/{project}/app", "Destination": "/app"}]),
+    }
+
+
+def _dokploy_traefik_yaml(hostname: str, backend: str, port: int = 3000) -> str:
+    return (
+        "http:\n"
+        "  routers:\n"
+        f"    {backend}-websecure:\n"
+        f"      rule: Host(`{hostname}`)\n"
+        f"      service: {backend}-web\n"
+        "      tls:\n"
+        "        certResolver: letsencrypt\n"
+        "  services:\n"
+        f"    {backend}-web:\n"
+        "      loadBalancer:\n"
+        "        servers:\n"
+        f"          - url: http://{backend}:{port}\n"
+    )
+
+
+def test_dokploy_traefik_yaml_without_labels_becomes_application():
+    docker = [
+        _unlabeled_web_container(name="orbital-web-1", project="orbital", env=["POSTGRES_DB=orbital_db"]),
+    ]
+    result = da.assemble_discovery(
+        servers=da.parse_nginx_t(
+            """
+# configuration file /etc/nginx/sites-enabled/only.conf:
+server {
+    listen 80;
+    server_name already.example.com;
+    root /var/www/already;
+}
+"""
+        ),
+        docker_containers=docker,
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/orbital.yml": _dokploy_traefik_yaml("orbital.example.com", "orbital"),
+        },
+        nginx_ok=True,
+        hostname="ubuntu-test",
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "orbital.example.com" in hosts
+    assert "already.example.com" in hosts
+    app = next(item for item in result["applications"] if "orbital.example.com" in (item.get("hostnames") or []))
+    assert app["discovery_source"] == "traefik dynamic" or "traefik dynamic" in str(app.get("discovery_sources") or [])
+    assert app["classification"] == da.CLASSIFICATION_ACTIVE
+    assert app["database_name"] == "orbital_db"
+    assert app["https"] is True
+    inactive = {row["hostname"] for row in result["inactive_hostnames"]}
+    assert "orbital.example.com" not in inactive
+    report = format_discovery_report(result)
+    discovered = report.split("DISCOVERED HOSTNAMES", 1)[1].split("DISCOVERED APPLICATIONS", 1)[0]
+    assert "orbital.example.com" in discovered
+    source = Path(__file__).resolve().parents[1].joinpath("scripts/ubuntu/discover_apps.py").read_text(encoding="utf-8")
+    assert "sateye.xdgen.com" not in source
+    assert "satpass.xdgen.com" not in source
+    assert "citation.xdgen.com" not in source
+
+
+def test_new_traefik_host_is_discovered_without_known_list():
+    docker = [_unlabeled_web_container(name="newsite-web-1", project="newsite")]
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=docker,
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/newsite.yml": _dokploy_traefik_yaml("newsite.example.com", "newsite"),
+        },
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "newsite.example.com" in hosts
+    assert result["applications"][0]["classification"] == da.CLASSIFICATION_ACTIVE
+
+
+def test_live_traefik_route_without_container_is_still_an_application():
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=[],
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/orphan.yml": _dokploy_traefik_yaml("orphan.example.com", "orphan"),
+        },
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "orphan.example.com" in hosts
+    app = result["applications"][0]
+    assert app["status"] == "REQUIRES REVIEW"
+    assert app["database_status"] == "UNRESOLVED"
+
+
+def test_acme_json_attaches_ssl_to_traefik_application():
+    acme = json.dumps(
+        {
+            "letsencrypt": {
+                "Certificates": [
+                    {"domain": {"main": "orbital.example.com", "sans": ["www.orbital.example.com"]}}
+                ]
+            }
+        }
+    )
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=[_unlabeled_web_container(name="orbital-web-1", project="orbital")],
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/orbital.yml": _dokploy_traefik_yaml("orbital.example.com", "orbital"),
+            "/etc/dokploy/traefik/acme.json": acme,
+        },
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    app = result["applications"][0]
+    assert app["ssl"]["mechanism"] in {"traefik-acme", "traefik"}
+    assert app["ssl"].get("acme_file") == "/etc/dokploy/traefik/acme.json"
+
+
+def test_parse_show_table_status_sums_data_and_index():
+    from docker_db import parse_show_table_status
+
+    stdout = "posts\tInnoDB\t10\tDynamic\t12\t100\t4096\t0\t2048\t0\n"
+    parsed = parse_show_table_status(stdout)
+    assert parsed["table_count"] == 1
+    assert parsed["size_bytes"] == 6144
+    assert parsed["row_count"] == 12
+
+
+def test_docker_schema_probe_fills_zero_byte_docker_database():
+    from docker_db import docker_mysql_argv
+
+    called: list[list[str]] = []
+
+    class Result:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = "wp_posts\tInnoDB\t10\tDynamic\t5\t100\t8000\t0\t2000\t0\n"
+            self.stderr = ""
+
+    def fake_run(cmd, timeout=30):
+        called.append(list(cmd))
+        return Result()
+
+    apps = [
+        {
+            "application_id": "docker:sea50",
+            "database_name": "sea50_db",
+            "database_type": "MariaDB",
+            "docker": {"compose_project": "sea50", "mysql_database": "sea50_db", "db_container": "sea50-db-1"},
+        }
+    ]
+    inventory = da.attach_docker_only_databases(apps, [], [])
+    assert inventory[0]["size_bytes"] is None
+    da._probe_docker_schema_sizes(inventory, run=fake_run, details_override=None, errors=[])
+    assert inventory[0]["size_bytes"] == 10000
+    assert inventory[0]["table_count"] == 1
+    assert inventory[0]["dump_capable"] is True
+    assert docker_mysql_argv("sea50-db-1", "sea50_db", "SHOW TABLE STATUS") == called[0]
+

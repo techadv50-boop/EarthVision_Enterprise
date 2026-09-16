@@ -56,6 +56,7 @@ def discover_applications(
             inventory,
             volumes=list(parsed.get("docker_volumes") or []),
             classified=list(parsed.get("classified") or []),
+            scan_coverage=parsed.get("scan_coverage") if isinstance(parsed.get("scan_coverage"), dict) else None,
         )
         parsed["report_text"] = format_discovery_report(parsed)
         parsed["discovered_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

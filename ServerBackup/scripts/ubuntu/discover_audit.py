@@ -49,6 +49,11 @@ OTHER_SCAN_ROOTS = (
     "/usr/local/etc/cloudflared",
     "/etc/caddy",
     "/etc/traefik",
+    "/etc/dokploy",
+    "/etc/dokploy/traefik",
+    "/etc/dokploy/traefik/dynamic",
+    "/etc/dokploy/compose",
+    "/etc/dokploy/applications",
 )
 SKIP_DIR_NAMES = {
     "node_modules",
@@ -733,7 +738,7 @@ def scan_inactive_hostnames(
             source = "cloudflared"
         elif "caddy" in lower_path:
             source = "caddy"
-        elif "traefik" in lower_path:
+        elif "traefik" in lower_path or "dokploy" in lower_path:
             source = "traefik"
         names: list[str] = []
         root = ""
@@ -752,6 +757,12 @@ def scan_inactive_hostnames(
                     cleaned = item.strip().strip("'\"")
                     if cleaned and not cleaned.startswith("$"):
                         names.append(cleaned)
+        for match in re.finditer(r"Host(?:Regexp)?\(\s*([^)]+)\)", body or "", re.IGNORECASE):
+            inner = match.group(1) or ""
+            for token in re.findall(r"[`'\"]([^`'\"]+)[`'\"]", inner) or re.split(r"[\s,]+", inner):
+                cleaned = str(token).strip().strip("'\"`").rstrip(".")
+                if cleaned and "." in cleaned and cleaned not in names:
+                    names.append(cleaned)
         enabled = "sites-enabled" in lower_path
         for hostname in names:
             add(

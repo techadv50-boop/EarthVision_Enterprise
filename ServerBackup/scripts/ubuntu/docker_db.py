@@ -125,3 +125,63 @@ def docker_dump_argv(container: str, database: str) -> list[str]:
         "serverbackup-dump",
         db_name,
     ]
+
+
+def parse_show_table_status(stdout: str) -> dict[str, int]:
+    """Sum Data_length + Index_length from `SHOW TABLE STATUS` batch output.
+
+    Column order (skip-column-names): Name, Engine, Version, Row_format, Rows,
+    Avg_row_length, Data_length, Max_data_length, Index_length, ...
+    """
+    size = 0
+    rows = 0
+    tables = 0
+    for line in (stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 9:
+            continue
+        name = (parts[0] or "").strip()
+        if not name or name.upper() in {"NAME", "TABLE"}:
+            continue
+        tables += 1
+        try:
+            rows += int(parts[4] or 0)
+        except ValueError:
+            pass
+        try:
+            size += int(parts[6] or 0) + int(parts[8] or 0)
+        except ValueError:
+            pass
+    return {"size_bytes": size, "table_count": tables, "row_count": rows}
+
+
+def docker_schema_details(run, container: str, database: str) -> dict:
+    """Read-only size/table probe inside a Docker MariaDB/MySQL container. Never dumps."""
+    argv = docker_mysql_argv(container, database, "SHOW TABLE STATUS")
+    try:
+        result = run(argv, timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "size_bytes": None,
+            "table_count": None,
+            "row_count": None,
+            "probe": f"SHOW TABLE STATUS failed: {exc}",
+            "dump_capable": False,
+        }
+    code = getattr(result, "returncode", 1)
+    stdout = getattr(result, "stdout", "") or ""
+    stderr = getattr(result, "stderr", "") or ""
+    if code != 0:
+        detail = (stderr or stdout or "docker exec mysql failed").strip().splitlines()
+        safe = detail[0][:200] if detail else "docker exec mysql failed"
+        return {
+            "size_bytes": None,
+            "table_count": None,
+            "row_count": None,
+            "probe": safe,
+            "dump_capable": False,
+        }
+    parsed = parse_show_table_status(stdout)
+    parsed["probe"] = "SHOW TABLE STATUS via docker exec succeeded (read-only; dump not executed)"
+    parsed["dump_capable"] = True
+    return parsed

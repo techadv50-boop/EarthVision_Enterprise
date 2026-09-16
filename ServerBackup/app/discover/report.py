@@ -57,12 +57,14 @@ def _hostname_lines(name: str, app: dict[str, Any]) -> list[str]:
         f"  {name}",
         f"    application: {app.get('application_id') or '—'}",
         f"    role: {role}",
-        f"    nginx file: {meta.get('source_file') or app.get('source_file') or '—'}",
+        f"    nginx/traefik file: {meta.get('source_file') or app.get('source_file') or '—'}",
         f"    root: {root or '—'}",
         f"    alias: {_fmt_list(meta.get('alias') or app.get('alias'))}",
         f"    proxy_pass: {_fmt_list(meta.get('proxy_pass') or app.get('proxy_pass'))}",
         f"    redirect: {meta.get('redirect_to') or app.get('redirect_to') or '(none)'}",
-        f"    database: {_db_label(app)}",
+        f"    database: {_db_label(app) if _db_label(app) != '—' else (app.get('database_status') or 'UNRESOLVED')}",
+        f"    ssl: {((app.get('ssl') or {}).get('mechanism') if isinstance(app.get('ssl'), dict) else '') or ('https' if app.get('https') else 'none')}",
+        f"    restore ready: {(app.get('restore') or {}).get('restore_ready') or 'NO'}",
         f"    status: {app.get('status') or '—'}",
     ]
     return lines
@@ -83,10 +85,13 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
         f"  TOTAL NGINX SERVER BLOCKS: {totals.get('nginx_server_blocks', 0)}",
         f"  TOTAL HTTPS SITES: {totals.get('https_sites', 0)}",
         "",
-        "HOSTNAME | APPLICATION | TYPE | SOURCE/PATH | DOCKER | DATABASE | NGINX | SSL | SIZE | STATUS",
+        "DOMAIN | APPLICATION | TYPE | SOURCE | DOCKER | DATABASE | NGINX | SSL | SIZE | FILES | STATUS",
     ]
     if host_rows:
         for row in host_rows:
+            db = row.get("database")
+            if db in {None, ""}:
+                db = "UNRESOLVED"
             lines.append(
                 " | ".join(
                     [
@@ -95,31 +100,45 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
                         str(row.get("type") or "—"),
                         str(row.get("source_path") or row.get("discovery_source") or "—"),
                         str(row.get("docker") or "—"),
-                        str(row.get("database") or "—"),
+                        str(db),
                         str(row.get("nginx") or "—"),
                         str(row.get("ssl") or "—"),
-                        str(row.get("size_bytes") or 0),
+                        str(row.get("size_bytes") if row.get("size_bytes") is not None else 0),
+                        str(row.get("file_count") if row.get("file_count") is not None else 0),
                         str(row.get("classification") or row.get("status") or "—"),
                     ]
                 )
             )
     else:
         lines.append("  (none)")
-    lines.extend(["", "WHY NGINX-ONLY DISCOVERY MISSED WEBSITES"])
+    lines.extend(["", "WHY NGINX-ONLY AND LABEL-ONLY DISCOVERY MISSED WEBSITES"])
     lines.append(
         "  Previous versions created backup applications only from `nginx -T` server_name."
     )
     lines.append(
-        "  Docker Traefik/Dokploy Host() labels, VIRTUAL_HOST, Apache vhosts, and compose files"
+        "  1.4.24 also read Docker Traefik Host() labels and VIRTUAL_HOST, then scanned"
     )
     lines.append(
-        "  were evidence-only. This engine reconciles all of those sources automatically."
+        "  /etc/dokploy for Host() in YAML — but unmatched file Host() names were classified"
     )
-    lines.append("  No production hostname is hard-coded. A new Host() label is enough.")
+    lines.append(
+        "  as LEGACY leftovers, so they never appeared in the hostname or application inventory."
+    )
+    lines.append(
+        "  Dokploy Application routes live in Traefik dynamic YAML (Host() + backend url),"
+    )
+    lines.append(
+        "  not in docker inspect labels and not in nginx -T."
+    )
+    lines.append(
+        "  This engine promotes live Traefik/Dokploy Host() routes to applications automatically."
+    )
+    lines.append("  No production hostname is hard-coded. A new Host() route is enough.")
     missed = [
         row
         for row in host_rows
         if "nginx -T" not in str(row.get("discovery_source") or "")
+        and str(row.get("classification") or "") == "ACTIVE WEBSITE"
     ]
     if missed:
         for row in missed:
@@ -129,6 +148,42 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
             )
     else:
         lines.append("  (every classified hostname was also in nginx -T, or none extra were found)")
+    lines.extend(["", "HOSTNAMES ABSENT FROM NGINX -T"])
+    if missed:
+        for row in missed:
+            restore_missing = row.get("restore_missing") or []
+            lines.append(f"  DOMAIN: {row.get('hostname')}")
+            lines.append("    FOUND: YES")
+            lines.append(f"    WHERE FOUND: {row.get('discovery_source') or '—'}")
+            lines.append(f"    CONFIGURATION FILE: {row.get('nginx') or row.get('source_path') or '—'}")
+            lines.append("    SERVER BLOCK: Traefik/Dokploy Host() route (not an Nginx server_name)")
+            lines.append(f"    APPLICATION: {row.get('application') or '—'}")
+            lines.append(f"    CONTAINER / DOCKER PROJECT: {row.get('docker') or '—'}")
+            lines.append(f"    SOURCE/PERSISTENT PATH: {row.get('source_path') or '—'}")
+            lines.append(f"    DATABASE: {row.get('database') or 'UNRESOLVED'}")
+            lines.append(f"    SSL: {row.get('ssl') or 'none'}")
+            lines.append(f"    CURRENT STATUS: {row.get('classification') or row.get('status') or '—'}")
+            lines.append(
+                "    REASON PREVIOUS DISCOVERY MISSED IT: Host() lived in Traefik/Dokploy YAML; "
+                "1.4.24 treated unmatched file Host() as NOT ACTIVE leftovers instead of applications."
+            )
+            lines.append(
+                f"    RESTORE READY: {row.get('restore_ready') or 'NO'}"
+                + (f"  missing: {', '.join(str(item) for item in restore_missing)}" if restore_missing else "")
+            )
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "RESTORE READY BY WEBSITE"])
+    restore_rows = [row for row in host_rows if row.get("classification") == "ACTIVE WEBSITE" or row.get("application")]
+    if restore_rows:
+        for row in restore_rows:
+            missing = row.get("restore_missing") or []
+            lines.append(
+                f"  {row.get('hostname')}: {row.get('restore_ready') or 'NO'}"
+                + (f"  missing: {', '.join(str(item) for item in missing)}" if missing else "")
+            )
+    else:
+        lines.append("  (none)")
     volumes = list(result.get("docker_volumes") or [])
     lines.extend(["", "DOCKER NAMED VOLUMES"])
     if volumes:
@@ -252,8 +307,16 @@ def format_application_sections(
                 continue
             pointer = f" -> {row.get('application_id')}" if row.get("application_id") else ""
             lines.append(f"    {row.get('name')}{pointer}")
-            if row.get("table_count") is not None:
-                lines.append(f"      tables: {row.get('table_count')}  size_bytes: {row.get('size_bytes') or 0}")
+            if row.get("table_count") is not None or row.get("size_bytes") is not None or row.get("size_probe"):
+                size = row.get("size_bytes")
+                size_txt = "unprobed" if size is None else str(size)
+                lines.append(f"      tables: {row.get('table_count')}  size_bytes: {size_txt}")
+                if row.get("size_probe"):
+                    lines.append(f"      size probe: {row.get('size_probe')}")
+                if row.get("dump_capable") is True:
+                    lines.append("      dump probe: docker exec SHOW TABLE STATUS succeeded (mysqldump not executed)")
+                elif row.get("dump_capable") is False:
+                    lines.append("      dump probe: FAILED — serverbackup could not query this schema inside the container")
             if row.get("row_count") is not None:
                 lines.append(f"      rows: {row.get('row_count')}")
             if row.get("tables"):

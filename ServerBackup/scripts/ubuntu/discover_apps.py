@@ -28,6 +28,7 @@ from discover_audit import (
     parse_generic_database_from_texts,
     scan_inactive_hostnames,
 )
+from docker_db import docker_schema_details
 from path_safety import is_named_volume_data_path, is_safe_unix_syntax, named_volume_data_path
 
 UNSAFE = set(";&|`$<>\\\n\r")
@@ -71,7 +72,41 @@ DOKPLOY_SCAN_ROOTS = (
     "/etc/dokploy",
     "/etc/dokploy/compose",
     "/etc/dokploy/applications",
+    "/etc/dokploy/traefik",
+    "/etc/dokploy/traefik/dynamic",
+    "/opt/dokploy",
+    "/opt/dokploy-migrations",
+    "/root/dokploy-migration",
 )
+TRAEFIK_SCAN_ROOTS = (
+    "/etc/dokploy/traefik",
+    "/etc/dokploy/traefik/dynamic",
+    "/etc/traefik",
+    "/etc/traefik/dynamic",
+    "/etc/traefik/conf.d",
+)
+WWW_SCAN_ROOTS = ("/var/www",)
+PHP_FPM_SCAN_ROOTS = ("/etc/php", "/etc/php-fpm.d", "/etc/php-fpm.conf")
+LIVE_PROXY_PATH_HINTS = (
+    "/etc/dokploy/traefik",
+    "/etc/traefik",
+    "traefik/dynamic",
+    "/etc/dokploy/applications",
+)
+MIGRATION_PATH_HINTS = (
+    "/opt/dokploy-migrations",
+    "/root/dokploy-migration",
+    "/srv/namecheap-migration",
+)
+BACKEND_URL = re.compile(
+    r"""(?:^\s*(?:-\s*)?url:\s*['"]?(https?://[^\s'"]+)['"]?|"url"\s*:\s*"(https?://[^"]+)")""",
+    re.IGNORECASE | re.MULTILINE,
+)
+SITE_URL_ENV = re.compile(
+    r"^(?:SITE_URL|APP_URL|PUBLIC_URL|BASE_URL|ALLOWED_HOSTS|DOMAIN|HOST|HOSTNAME)\s*=\s*(.+)$",
+    re.IGNORECASE,
+)
+GENERIC_BACKEND_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "web", "app", "frontend", "backend", "nginx", "proxy"}
 APACHE_SCAN_ROOTS = (
     "/etc/apache2/sites-enabled",
     "/etc/apache2/sites-available",
@@ -190,6 +225,16 @@ def hostnames_from_labels_and_env(labels: dict[str, Any] | None, env_items: list
         raw = str(item)
         if raw.startswith("VIRTUAL_HOST=") or raw.startswith("DEFAULT_HOST="):
             names.extend(_split_host_list(raw.split("=", 1)[1]))
+            continue
+        env_match = SITE_URL_ENV.match(raw)
+        if env_match:
+            value = env_match.group(1).strip().strip("'\"")
+            if "://" in value:
+                parsed = urlparse(value)
+                if looks_like_hostname(parsed.hostname or ""):
+                    names.append((parsed.hostname or "").lower())
+            else:
+                names.extend(_split_host_list(value))
     return list(dict.fromkeys(names))
 
 
@@ -198,6 +243,92 @@ def hostnames_from_compose_text(text: str) -> list[str]:
     for match in re.finditer(r"(?im)^\s*(?:VIRTUAL_HOST|DEFAULT_HOST)\s*[:=]\s*(.+)$", text or ""):
         names.extend(_split_host_list(match.group(1)))
     return list(dict.fromkeys(names))
+
+
+def backend_urls_from_text(text: str) -> list[str]:
+    urls: list[str] = []
+    for match in BACKEND_URL.finditer(text or ""):
+        raw = match.group(1) or match.group(2) or ""
+        cleaned = raw.strip().rstrip("/")
+        if cleaned.startswith("http://") or cleaned.startswith("https://"):
+            urls.append(cleaned)
+    return list(dict.fromkeys(urls))
+
+
+def is_live_proxy_config_path(path: str) -> bool:
+    lower = (path or "").replace("\\", "/").lower()
+    if any(hint in lower for hint in MIGRATION_PATH_HINTS):
+        return False
+    return any(hint in lower for hint in LIVE_PROXY_PATH_HINTS)
+
+
+def is_migration_config_path(path: str) -> bool:
+    lower = (path or "").replace("\\", "/").lower()
+    return any(hint in lower for hint in MIGRATION_PATH_HINTS)
+
+
+def hostnames_from_acme_json(text: str) -> list[str]:
+    """Certificate domains from Traefik/Let's Encrypt acme.json. Never uses a hard-coded site list."""
+    names: list[str] = []
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        for match in re.finditer(r'"(?:main|sans?)"\s*:\s*"([^"]+)"', raw, re.IGNORECASE):
+            if looks_like_hostname(match.group(1)):
+                names.append(match.group(1).lower())
+        return list(dict.fromkeys(names))
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            main = node.get("main") or node.get("Main")
+            if looks_like_hostname(str(main or "")):
+                names.append(str(main).lower())
+            sans = node.get("sans") or node.get("SANs") or node.get("Sans") or []
+            if isinstance(sans, str):
+                sans = [sans]
+            for item in sans if isinstance(sans, list) else []:
+                if looks_like_hostname(str(item)):
+                    names.append(str(item).lower())
+            domain = node.get("domain") or node.get("Domain")
+            if isinstance(domain, dict):
+                walk(domain)
+            elif looks_like_hostname(str(domain or "")):
+                names.append(str(domain).lower())
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return list(dict.fromkeys(names))
+
+
+def parse_traefik_file(text: str, source_file: str = "") -> dict[str, Any]:
+    """Parse one Traefik/Dokploy YAML or JSON file into Host() routes and backends."""
+    body = text or ""
+    hosts = hostnames_from_traefik_rule(body)
+    if not hosts:
+        hosts = hostnames_from_compose_text(body)
+    urls = backend_urls_from_text(body)
+    tls = bool(
+        re.search(r"(?im)^\s*tls\s*:", body)
+        or re.search(r'(?i)"tls"\s*:', body)
+        or "certresolver" in body.lower()
+        or "letsencrypt" in body.lower()
+    )
+    return {
+        "source_file": source_file,
+        "hostnames": list(dict.fromkeys(hosts)),
+        "backend_urls": urls,
+        "tls": tls,
+        "live_proxy": is_live_proxy_config_path(source_file),
+        "migration": is_migration_config_path(source_file),
+    }
 
 
 def _ssl_mechanism(certificate: str, *, https: bool, docker: dict[str, Any] | None = None) -> str:
@@ -881,6 +1012,13 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
     state = inspect.get("State") if isinstance(inspect.get("State"), dict) else {}
     running = bool(state.get("Running")) if state else True
     hostnames = hostnames_from_labels_and_env(labels, env_items)
+    network_aliases = _network_aliases(inspect)
+    for alias in network_aliases:
+        if looks_like_hostname(alias):
+            hostnames.append(alias)
+    config_hostname = str(config.get("Hostname") or "").strip()
+    if looks_like_hostname(config_hostname):
+        hostnames.append(config_hostname)
     compose_files = labels.get("com.docker.compose.project.config_files") or ""
     return {
         "id": str(inspect.get("Id") or "")[:12],
@@ -888,7 +1026,8 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
         "image": str(config.get("Image") or ""),
         "running": running,
         "labels": safe_labels,
-        "hostnames": hostnames,
+        "hostnames": list(dict.fromkeys(hostnames)),
+        "network_aliases": network_aliases,
         "compose_project": labels.get("com.docker.compose.project") or "",
         "compose_service": labels.get("com.docker.compose.service") or "",
         "compose_workdir": labels.get("com.docker.compose.project.working_dir") or "",
@@ -899,6 +1038,20 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
         "mysql_database": env_map.get("MYSQL_DATABASE") or env_map.get("MARIADB_DATABASE"),
         "traefik_tls": any("traefik" in str(key).lower() and "tls" in str(key).lower() for key in labels),
     }
+
+
+def _network_aliases(inspect: dict[str, Any]) -> list[str]:
+    aliases: list[str] = []
+    networks = (inspect.get("NetworkSettings") or {}).get("Networks") or {}
+    if isinstance(networks, dict):
+        for net in networks.values():
+            if not isinstance(net, dict):
+                continue
+            for item in net.get("Aliases") or []:
+                cleaned = str(item or "").strip()
+                if cleaned:
+                    aliases.append(cleaned)
+    return list(dict.fromkeys(aliases))
 
 
 def _public_docker(docker: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -996,19 +1149,60 @@ def _match_docker_summary(proxy_passes: list[str], summaries: list[dict[str, Any
         parsed = parse_proxy(proxy)
         host = (parsed.get("host") or "").lower()
         port = parsed.get("port") or ""
-        for item in summaries:
-            names = {
-                item["name"].lower(),
-                str(item.get("compose_service") or "").lower(),
-                str(item.get("compose_project") or "").lower(),
-            }
-            if host and host in names:
-                return dict(item)
-            if host in {"127.0.0.1", "localhost", "::1"}:
-                for pub in item.get("published_ports") or []:
-                    if str(pub.get("host_port")) == port:
-                        return dict(item)
+        matched = _match_backend_host(host, summaries, port=port)
+        if matched:
+            return matched
     return None
+
+
+def _container_name_tokens(item: dict[str, Any]) -> set[str]:
+    tokens = {
+        str(item.get("name") or "").lower().lstrip("/"),
+        str(item.get("compose_service") or "").lower(),
+        str(item.get("compose_project") or "").lower(),
+    }
+    for alias in item.get("network_aliases") or []:
+        tokens.add(str(alias).lower())
+    return {token for token in tokens if token}
+
+
+def _match_backend_host(
+    host: str,
+    summaries: list[dict[str, Any]],
+    *,
+    port: str = "",
+) -> dict[str, Any] | None:
+    host = (host or "").lower().strip()
+    if not host:
+        return None
+    exact: list[dict[str, Any]] = []
+    fuzzy: list[dict[str, Any]] = []
+    for item in summaries:
+        names = _container_name_tokens(item)
+        if host in names:
+            exact.append(item)
+            continue
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            for pub in item.get("published_ports") or []:
+                if str(pub.get("host_port")) == port:
+                    exact.append(item)
+                    break
+            continue
+        if host in GENERIC_BACKEND_HOSTS:
+            continue
+        for token in names:
+            if token == host or token.startswith(host + "-") or token.startswith(host + "_"):
+                fuzzy.append(item)
+                break
+            if host.startswith(token + "-") or host.startswith(token + "_"):
+                fuzzy.append(item)
+                break
+    pool = exact or fuzzy
+    if not pool:
+        return None
+    web = [item for item in pool if item.get("running") is not False and not _looks_like_db_container(item)]
+    chosen = web[0] if web else pool[0]
+    return dict(chosen)
 
 
 def _enrich_docker_from_compose(
@@ -1231,7 +1425,7 @@ def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             and not any(
                 token in note
                 for note in notes
-                for token in ("invalid root", "duplicate hostname", "excluded root", "files_dir", "catch-all")
+                for token in ("invalid root", "duplicate hostname", "excluded root", "files_dir", "catch-all", "Backend container")
             )
         ):
             primary["status"] = "READY"
@@ -1273,7 +1467,7 @@ def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         elif app.get("status") == "REQUIRES REVIEW" and not any(
             token in note
             for note in notes
-            for token in ("invalid root", "excluded root", "files_dir", "catch-all", "no application root")
+            for token in ("invalid root", "excluded root", "files_dir", "catch-all", "no application root", "Backend container")
         ):
             if not app.get("unused_default_root") and (app.get("root") or app.get("proxy_pass") or app.get("docker")):
                 app["status"] = "READY"
@@ -1525,6 +1719,11 @@ def applications_from_servers(
             ),
             "certificate": list(block.get("ssl_certificate") or []),
             "certificate_key": list(block.get("ssl_certificate_key") or []),
+            "backup_treatment": (
+                "Copy ssl_certificate, ssl_certificate_key, and chain files into BACKUPS/<site>/ssl/. "
+                "Also copy Let's Encrypt renewal config if the path is under /etc/letsencrypt. "
+                "Restore those files and reload Nginx; do not share another site's private key."
+            ),
         }
         size_bytes = 0
         if probe is _probe_root:
@@ -1707,6 +1906,10 @@ def _application_from_docker_summary(
     probe: Callable,
     path_exists: Callable[[str], bool],
     source: str,
+    extra_source_file: str = "",
+    extra_proxy: list[str] | None = None,
+    extra_tls: bool = False,
+    extra_notes: list[str] | None = None,
 ) -> dict[str, Any]:
     docker = _enrich_docker_from_compose(dict(summary), [summary])
     docker = docker or dict(summary)
@@ -1761,25 +1964,39 @@ def _application_from_docker_summary(
     if compose:
         config_paths.extend(part.strip() for part in compose.split(",") if part.strip())
     named = list(dict.fromkeys(hostnames))
-    https = bool(docker.get("traefik_tls"))
+    proxies = [p for p in (extra_proxy or []) if p]
+    if extra_source_file and extra_source_file not in config_paths:
+        config_paths.append(extra_source_file)
+    https = bool(docker.get("traefik_tls") or extra_tls)
+    mechanism = _ssl_mechanism("", https=https, docker=docker)
+    if extra_tls and mechanism in {"none", "https-listen-without-certificate-path"}:
+        mechanism = "traefik-acme"
     ssl_info = {
         "https": https,
-        "mechanism": _ssl_mechanism("", https=https, docker=docker),
+        "mechanism": mechanism,
         "certificate": [],
         "certificate_key": [],
+        "backup_treatment": (
+            "Copy Traefik/Dokploy dynamic route file and ACME material into BACKUPS/<site>/ssl/ "
+            "and BACKUPS/<site>/nginx/. Restore the route file and certificate store without "
+            "overwriting unrelated Traefik routes."
+        ),
     }
     notes = [
         f"Discovered from {source}; not present as an Nginx server_name in nginx -T.",
-        "Future websites advertised via Traefik/Dokploy/VIRTUAL_HOST are included automatically.",
+        "Future websites advertised via Traefik/Dokploy Host() files, labels, or VIRTUAL_HOST are included automatically.",
     ]
+    for note in extra_notes or []:
+        if note and note not in notes:
+            notes.append(note)
     if docker.get("running") is False:
         notes.append(f"Docker container {docker.get('name') or ''} is not running.")
     details = {
         name: {
-            "source_file": compose or "docker inspect",
+            "source_file": extra_source_file or compose or "docker inspect",
             "root": workdir,
             "alias": [],
-            "proxy_pass": [],
+            "proxy_pass": proxies,
             "redirect_to": "",
             "listen": [],
         }
@@ -1789,7 +2006,7 @@ def _application_from_docker_summary(
     if docker.get("running") is False:
         status = "REQUIRES REVIEW"
     return {
-        "application_id": _application_id(app_type=app_type, root=workdir, docker=docker, proxy_passes=[]),
+        "application_id": _application_id(app_type=app_type, root=workdir, docker=docker, proxy_passes=proxies),
         "hostname": _canonical_hostname(named),
         "hostnames": named,
         "hostname_details": details,
@@ -1799,7 +2016,7 @@ def _application_from_docker_summary(
         "classification": CLASSIFICATION_ACTIVE if docker.get("running") is not False else CLASSIFICATION_LEGACY,
         "root": workdir,
         "alias": [],
-        "proxy_pass": [],
+        "proxy_pass": proxies,
         "redirect_to": "",
         "configuration_paths": config_paths,
         "database_type": db_type,
@@ -1814,7 +2031,7 @@ def _application_from_docker_summary(
         "listen": [],
         "default_server": False,
         "unused_default_root": False,
-        "source_file": compose or "docker inspect",
+        "source_file": extra_source_file or compose or "docker inspect",
         "estimated_bytes": 0,
         "status": status,
         "notes": notes,
@@ -1902,6 +2119,222 @@ def applications_from_unmatched_docker(
         if project:
             claimed_projects.add(project)
     return extras, leftovers
+
+
+def _application_from_unmatched_route(
+    route: dict[str, Any],
+    hostnames: list[str],
+) -> dict[str, Any]:
+    named = list(dict.fromkeys(hostnames))
+    proxies = list(route.get("backend_urls") or [])
+    source_file = str(route.get("source_file") or "")
+    https = bool(route.get("tls"))
+    notes = [
+        "Discovered from Traefik/Dokploy dynamic configuration; not present as an Nginx server_name in nginx -T.",
+        "A live reverse-proxy Host() rule is treated as an active website even when docker inspect has no Host() labels.",
+        "Backend container was not matched by name, compose service, project, or network alias.",
+    ]
+    details = {
+        name: {
+            "source_file": source_file,
+            "root": "",
+            "alias": [],
+            "proxy_pass": proxies,
+            "redirect_to": "",
+            "listen": [],
+        }
+        for name in named
+    }
+    return {
+        "application_id": _application_id(
+            app_type="Docker",
+            root="",
+            docker=None,
+            proxy_passes=proxies,
+        ),
+        "hostname": _canonical_hostname(named),
+        "hostnames": named,
+        "hostname_details": details,
+        "type": "Docker",
+        "discovery_source": "traefik dynamic",
+        "discovery_sources": ["traefik dynamic"],
+        "classification": CLASSIFICATION_ACTIVE,
+        "root": "",
+        "alias": [],
+        "proxy_pass": proxies,
+        "redirect_to": "",
+        "configuration_paths": [source_file] if source_file else [],
+        "database_type": "",
+        "database_name": "",
+        "persistent_data_paths": [],
+        "source_paths": [],
+        "docker": None,
+        "ojs_files_dir": "",
+        "http": True,
+        "https": https,
+        "ssl": {
+            "https": https,
+            "mechanism": "traefik-acme" if https else "none",
+            "certificate": [],
+            "certificate_key": [],
+            "backup_treatment": (
+                "Copy the Traefik/Dokploy route file and ACME material into BACKUPS/<site>/ssl/ "
+                "and BACKUPS/<site>/nginx/. Restore those files; do not overwrite unrelated routes."
+            ),
+        },
+        "listen": [],
+        "default_server": False,
+        "unused_default_root": False,
+        "source_file": source_file,
+        "estimated_bytes": 0,
+        "status": "REQUIRES REVIEW",
+        "notes": notes,
+        "included": False,
+        "excluded": False,
+        "database_status": "UNRESOLVED",
+    }
+
+
+def applications_from_traefik_routes(
+    existing: list[dict[str, Any]],
+    routes: list[dict[str, Any]],
+    containers: list[dict[str, Any]],
+    *,
+    probe: Callable | None = None,
+    path_exists: Callable[[str], bool] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Promote live Traefik/Dokploy Host() routes to applications.
+
+    1.4.24 scanned these files but classified unmatched Host() names as LEGACY leftovers,
+    so they never appeared under DISCOVERED HOSTNAMES / DISCOVERED APPLICATIONS.
+    """
+    probe = probe or _probe_root
+
+    def _exists(path: str) -> bool:
+        if path_exists is not None:
+            return path_exists(path)
+        try:
+            return Path(path).is_dir()
+        except OSError:
+            return False
+
+    all_summaries = [_docker_summary(item) for item in containers]
+    summaries = [_enrich_docker_from_compose(item, all_summaries) or item for item in all_summaries]
+    claimed = {str(name).lower() for app in existing for name in (app.get("hostnames") or []) if name}
+    extras: list[dict[str, Any]] = []
+    leftovers: list[dict[str, Any]] = []
+    for route in routes:
+        hosts = [h for h in (route.get("hostnames") or []) if looks_like_hostname(str(h))]
+        unused = [h for h in hosts if h.lower() not in claimed]
+        if not unused:
+            continue
+        live = bool(route.get("live_proxy")) and not route.get("migration")
+        matched = None
+        for url in route.get("backend_urls") or []:
+            parsed = urlparse(url)
+            matched = _match_backend_host(parsed.hostname or "", summaries, port=str(parsed.port or ""))
+            if matched:
+                break
+        if matched and matched.get("running") is not False:
+            matched = _enrich_docker_from_compose(matched, summaries) or matched
+            extras.append(
+                _application_from_docker_summary(
+                    matched,
+                    hostnames=unused,
+                    probe=probe,
+                    path_exists=_exists,
+                    source="traefik dynamic",
+                    extra_source_file=str(route.get("source_file") or ""),
+                    extra_proxy=list(route.get("backend_urls") or []),
+                    extra_tls=bool(route.get("tls") or matched.get("traefik_tls")),
+                    extra_notes=[
+                        f"Traefik/Dokploy file {route.get('source_file') or ''} Host() was not on docker inspect labels.",
+                        "Previous discovery treated unmatched compose/Dokploy Host() as leftovers instead of applications.",
+                    ],
+                )
+            )
+            for name in unused:
+                claimed.add(name.lower())
+            continue
+        if live:
+            if matched:
+                matched = _enrich_docker_from_compose(matched, summaries) or matched
+                extras.append(
+                    _application_from_docker_summary(
+                        matched,
+                        hostnames=unused,
+                        probe=probe,
+                        path_exists=_exists,
+                        source="traefik dynamic",
+                        extra_source_file=str(route.get("source_file") or ""),
+                        extra_proxy=list(route.get("backend_urls") or []),
+                        extra_tls=bool(route.get("tls")),
+                        extra_notes=[
+                            f"Live Traefik route in {route.get('source_file') or ''}; backend container is not running.",
+                        ],
+                    )
+                )
+            else:
+                extras.append(_application_from_unmatched_route(route, unused))
+            for name in unused:
+                claimed.add(name.lower())
+            continue
+        leftovers.append(
+            {
+                "hostname": unused[0],
+                "hostnames": unused,
+                "in_active_nginx": False,
+                "verdict": "NOT ACTIVE IN CURRENT SERVER CONFIGURATION",
+                "classification": CLASSIFICATION_LEGACY if route.get("migration") else CLASSIFICATION_UNRESOLVED,
+                "evidence": [
+                    {
+                        "source": "dokploy-compose",
+                        "file": route.get("source_file") or "",
+                        "detail": (
+                            "hostname in compose/Dokploy file; no live Traefik dynamic route and "
+                            "no running web container matched"
+                        ),
+                        "root": "",
+                        "enabled": False,
+                    }
+                ],
+            }
+        )
+    return extras, leftovers
+
+
+def scan_proxy_routes(extra_files: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """Walk Dokploy/Traefik/compose files and return Host() routes with backends."""
+    roots = tuple(dict.fromkeys([*DOKPLOY_SCAN_ROOTS, *TRAEFIK_SCAN_ROOTS]))
+    paths = _iter_existing_files(roots, extra_files)
+    routes: list[dict[str, Any]] = []
+    for path in paths:
+        lower = path.lower()
+        if lower.endswith("acme.json"):
+            continue
+        if not any(lower.endswith(ext) or ext in lower for ext in (".yml", ".yaml", ".json", ".toml")):
+            continue
+        text = _read_scan_file(path, extra_files, limit=120000)
+        parsed = parse_traefik_file(text, path)
+        if parsed.get("hostnames"):
+            routes.append(parsed)
+    return routes
+
+
+def scan_acme_hostnames(extra_files: dict[str, str] | None = None) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    roots = tuple(dict.fromkeys([*DOKPLOY_SCAN_ROOTS, *TRAEFIK_SCAN_ROOTS]))
+    paths = _iter_existing_files(roots, extra_files)
+    if extra_files:
+        paths.extend(key for key in extra_files if str(key).lower().endswith("acme.json"))
+    for path in list(dict.fromkeys(paths)):
+        if "acme.json" not in path.lower():
+            continue
+        text = _read_scan_file(path, extra_files, limit=2_000_000)
+        names = hostnames_from_acme_json(text)
+        if names:
+            found[path] = names
+    return found
 
 
 def applications_from_apache_servers(
@@ -2033,11 +2466,11 @@ def _volume_notes(purpose: str, website: str, name: str) -> str:
     return f"Named volume {name} is unclassified."
 
 
-def _read_scan_file(path: str, extra_files: dict[str, str] | None = None) -> str:
+def _read_scan_file(path: str, extra_files: dict[str, str] | None = None, limit: int = 40000) -> str:
     if extra_files and path in extra_files:
-        return extra_files[path]
+        return extra_files[path][:limit]
     try:
-        return Path(path).read_text(encoding="utf-8", errors="replace")[:40000]
+        return Path(path).read_text(encoding="utf-8", errors="replace")[:limit]
     except OSError:
         return ""
 
@@ -2135,10 +2568,13 @@ def classify_discovered_items(
                     "source_path": app.get("root") or docker.get("workdir") or app.get("source_file") or "",
                     "discovery_source": app.get("discovery_source") or "",
                     "docker": docker.get("container") or docker.get("compose_project") or "",
-                    "database": app.get("database_name") or "",
+                    "database": app.get("database_name") or app.get("database_status") or "UNRESOLVED",
                     "nginx": app.get("source_file") or "",
                     "ssl": ssl.get("mechanism") or ("https" if app.get("https") else "none"),
                     "size_bytes": int(app.get("estimated_bytes") or 0),
+                    "file_count": int(app.get("file_count") or 0),
+                    "restore_ready": (app.get("restore") or {}).get("restore_ready") or "NO",
+                    "restore_missing": list((app.get("restore") or {}).get("missing") or []),
                     "status": app.get("status") or "",
                     "classification": category,
                 }
@@ -2244,6 +2680,185 @@ def classify_discovered_items(
     return rows
 
 
+def _attach_acme_ssl(applications: list[dict[str, Any]], acme_hosts: dict[str, list[str]]) -> None:
+    by_host: dict[str, str] = {}
+    for path, names in acme_hosts.items():
+        for name in names:
+            by_host.setdefault(str(name).lower(), path)
+    for app in applications:
+        ssl = app.get("ssl") if isinstance(app.get("ssl"), dict) else {}
+        matched = [
+            by_host[str(name).lower()]
+            for name in (app.get("hostnames") or [])
+            if str(name).lower() in by_host
+        ]
+        if not matched:
+            continue
+        ssl = dict(ssl)
+        ssl["https"] = True
+        ssl["acme_file"] = matched[0]
+        if not ssl.get("mechanism") or ssl.get("mechanism") in {"none", "https-listen-without-certificate-path"}:
+            ssl["mechanism"] = "traefik-acme"
+        ssl["backup_treatment"] = (
+            f"Copy {matched[0]} (or the matching certificate/key pair) into BACKUPS/<site>/ssl/. "
+            "Restore into Traefik's ACME store or equivalent certResolver files."
+        )
+        app["ssl"] = ssl
+        app["https"] = True
+        config = list(app.get("configuration_paths") or [])
+        if matched[0] not in config:
+            config.append(matched[0])
+            app["configuration_paths"] = config
+
+
+def _database_status_for_app(app: dict[str, Any]) -> str:
+    if app.get("database_name"):
+        return "ASSOCIATED"
+    docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+    has_db_volume = any(
+        str(mount.get("purpose") or "") == "database-data"
+        or "postgres" in str(mount.get("destination") or "").lower()
+        or "mysql" in str(mount.get("destination") or "").lower()
+        or "mariadb" in str(mount.get("destination") or "").lower()
+        for mount in (docker.get("mounts") or [])
+        if isinstance(mount, dict)
+    )
+    if docker.get("db_container") or docker.get("mysql_database") or docker.get("postgres_db") or has_db_volume:
+        return "UNRESOLVED"
+    if str(app.get("type") or "") in {"WordPress", "OJS"}:
+        return "UNRESOLVED"
+    source = str(app.get("discovery_source") or "")
+    if str(app.get("type") or "") == "Docker" and not docker and "traefik" in source:
+        return "UNRESOLVED"
+    return "NONE"
+
+
+def _restore_ready_for_app(app: dict[str, Any], db_row: dict[str, Any] | None) -> dict[str, Any]:
+    missing: list[str] = []
+    docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+    ssl = app.get("ssl") if isinstance(app.get("ssl"), dict) else {}
+    has_files = bool(app.get("root") or app.get("source_paths") or app.get("persistent_data_paths"))
+    has_proxy = bool(app.get("proxy_pass") or app.get("source_file") or docker)
+    if not has_files and not docker:
+        missing.append("application files / persistent path")
+    if not has_proxy:
+        missing.append("nginx or Traefik configuration")
+    db_status = str(app.get("database_status") or _database_status_for_app(app))
+    if db_status == "UNRESOLVED":
+        missing.append("database association")
+    elif db_status == "ASSOCIATED":
+        missing.append("database dump (Dry Run does not dump; BACKUP NOW required)")
+        if db_row and db_row.get("size_bytes") is None and db_row.get("docker_container"):
+            missing.append("database size unverified inside Docker container")
+        if docker and not (db_row or {}).get("docker_container") and not docker.get("db_container"):
+            missing.append("database container")
+    if app.get("https") and not (
+        ssl.get("certificate") or ssl.get("acme_file") or ssl.get("mechanism") in {"traefik", "traefik-acme", "letsencrypt"}
+    ):
+        missing.append("ssl certificate / ACME material")
+    if docker:
+        named = [
+            mount.get("source")
+            for mount in (docker.get("mounts") or [])
+            if isinstance(mount, dict) and mount.get("named_volume")
+        ]
+        copied = [p for p in (app.get("source_paths") or []) if "/volumes/" in str(p) and str(p).endswith("/_data")]
+        db_named = [
+            mount.get("source")
+            for mount in (docker.get("mounts") or [])
+            if isinstance(mount, dict)
+            and mount.get("named_volume")
+            and str(mount.get("purpose") or "") == "database-data"
+        ]
+        app_named = [name for name in named if name and name not in db_named]
+        if app_named and not copied:
+            missing.append("Docker named volume _data copy path")
+    return {
+        "restore_ready": "NO",
+        "missing": missing or ["live backup not taken (Dry Run does not copy files or dump databases)"],
+    }
+
+
+def _probe_docker_schema_sizes(
+    inventory: list[dict[str, Any]],
+    *,
+    run: Callable | None,
+    details_override: dict[str, dict[str, Any]] | None,
+    errors: list[str],
+) -> None:
+    if run is None or details_override is not None:
+        return
+    for row in inventory:
+        if row.get("system"):
+            continue
+        container = str(row.get("docker_container") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not container or not name:
+            continue
+        if row.get("size_bytes") not in {None, 0} and row.get("table_count") not in {None}:
+            continue
+        try:
+            probed = docker_schema_details(run, container, name)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Docker schema probe skipped for {name}: {exc}")
+            row["size_probe"] = str(exc)
+            continue
+        if probed.get("size_bytes") is not None:
+            row["size_bytes"] = probed.get("size_bytes")
+        if probed.get("table_count") is not None:
+            row["table_count"] = probed.get("table_count")
+        if probed.get("row_count") is not None:
+            row["row_count"] = probed.get("row_count")
+        row["size_probe"] = probed.get("probe") or ""
+        row["dump_capable"] = bool(probed.get("dump_capable"))
+        if probed.get("size_bytes") is None:
+            errors.append(
+                f"Docker database {name} in {container}: size still unknown ({probed.get('probe') or 'probe failed'}). "
+                "Host serverbackup MySQL grants do not apply inside this container; dump uses docker exec."
+            )
+
+
+def scan_coverage(
+    *,
+    nginx_ok: bool,
+    docker_containers: list[dict[str, Any]],
+    proxy_routes: list[dict[str, Any]],
+    errors: list[str],
+    extra_files: dict[str, str] | None,
+) -> dict[str, Any]:
+    unreadable: list[str] = []
+    existing_roots: list[str] = []
+    if extra_files is None:
+        for root in (*DOKPLOY_SCAN_ROOTS, *TRAEFIK_SCAN_ROOTS, *APACHE_SCAN_ROOTS):
+            path = Path(root)
+            try:
+                if path.exists():
+                    existing_roots.append(root)
+                    if not os.access(path, os.R_OK):
+                        unreadable.append(root)
+            except OSError:
+                unreadable.append(root)
+    incomplete = []
+    if not nginx_ok:
+        incomplete.append("nginx -T failed or returned no server blocks")
+    if extra_files is None and not docker_containers and not any("docker" in str(err).lower() for err in errors):
+        incomplete.append("docker inspect returned no containers")
+    if unreadable:
+        incomplete.append("unreadable scan roots: " + ", ".join(unreadable))
+    skipped = [err for err in errors if "skipped" in str(err).lower()]
+    if skipped:
+        incomplete.extend(skipped)
+    return {
+        "nginx_ok": nginx_ok,
+        "docker_containers": len(docker_containers),
+        "traefik_routes": len(proxy_routes),
+        "existing_scan_roots": existing_roots,
+        "unreadable_scan_roots": unreadable,
+        "incomplete_reasons": incomplete,
+        "complete": not incomplete,
+    }
+
+
 def assemble_discovery(
     *,
     servers: list[dict[str, Any]],
@@ -2291,10 +2906,28 @@ def assemble_discovery(
     )
     if apache_apps:
         apps = _merge_candidates(list(apps) + apache_apps)
-    compose_hosts = scan_compose_hostnames(extra_scan_files)
+    proxy_routes: list[dict[str, Any]] = []
+    try:
+        proxy_routes = scan_proxy_routes(extra_scan_files)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"Traefik/Dokploy file scan skipped: {exc}")
+    traefik_apps, compose_leftovers = applications_from_traefik_routes(
+        apps,
+        proxy_routes,
+        docker_containers,
+        probe=probe,
+        path_exists=path_exists,
+    )
+    if traefik_apps:
+        apps = _merge_candidates(list(apps) + traefik_apps)
+    acme_hosts: dict[str, list[str]] = {}
+    try:
+        acme_hosts = scan_acme_hostnames(extra_scan_files)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"acme.json scan skipped: {exc}")
+    _attach_acme_ssl(apps, acme_hosts)
     claimed = {str(name).lower() for app in apps for name in (app.get("hostnames") or []) if name}
-    compose_leftovers: list[dict[str, Any]] = []
-    for path, names in compose_hosts.items():
+    for path, names in acme_hosts.items():
         unused = [name for name in names if name.lower() not in claimed]
         if not unused:
             continue
@@ -2304,12 +2937,12 @@ def assemble_discovery(
                 "hostnames": unused,
                 "in_active_nginx": False,
                 "verdict": "NOT ACTIVE IN CURRENT SERVER CONFIGURATION",
-                "classification": CLASSIFICATION_LEGACY,
+                "classification": CLASSIFICATION_UNRESOLVED,
                 "evidence": [
                     {
-                        "source": "dokploy-compose",
+                        "source": "traefik-acme",
                         "file": path,
-                        "detail": "hostname in compose/Dokploy file; no running web container matched",
+                        "detail": "certificate domain in acme.json; no live Traefik Host() or nginx server_name matched",
                         "root": "",
                         "enabled": False,
                     }
@@ -2364,13 +2997,29 @@ def assemble_discovery(
             errors.append(f"MariaDB account probe skipped: {exc}")
     database_inventory = build_database_inventory(mariadb, apps, details=details, references=references)
     database_inventory = attach_docker_only_databases(apps, database_inventory, mariadb)
+    _probe_docker_schema_sizes(
+        database_inventory,
+        run=run,
+        details_override=details_override,
+        errors=errors,
+    )
     by_id = {str(app.get("application_id") or ""): app for app in apps}
+    db_by_app: dict[str, dict[str, Any]] = {}
+    db_by_name: dict[str, dict[str, Any]] = {}
     for row in database_inventory:
         ident = str(row.get("application_id") or "")
         app = by_id.get(ident)
         if app and row.get("name") and not app.get("database_name") and str(row.get("status") or "").startswith("ASSOCIATED"):
             app["database_name"] = row["name"]
             app["database_type"] = row.get("type") or "MariaDB"
+        if ident:
+            db_by_app[ident] = row
+        if row.get("name"):
+            db_by_name[str(row.get("name"))] = row
+    for app in apps:
+        app["database_status"] = _database_status_for_app(app)
+        db_row = db_by_app.get(str(app.get("application_id") or "")) or db_by_name.get(str(app.get("database_name") or ""))
+        app["restore"] = _restore_ready_for_app(app, db_row)
     docker_hosts: list[str] = []
     for inspect in docker_containers:
         summary = _docker_summary(inspect)
@@ -2458,6 +3107,15 @@ def assemble_discovery(
         ),
         "docker_volumes": volumes,
         "classified": classified,
+        "proxy_routes": proxy_routes,
+        "acme_hostnames": acme_hosts,
+        "scan_coverage": scan_coverage(
+            nginx_ok=nginx_ok,
+            docker_containers=docker_containers,
+            proxy_routes=proxy_routes,
+            errors=errors,
+            extra_files=extra_scan_files,
+        ),
         "discovery_totals": discovery_totals(
             applications=apps,
             classified=classified,
@@ -2527,7 +3185,10 @@ def attach_docker_only_databases(
                 "table_count": None,
                 "application_id": app.get("application_id") or "",
                 "status": "ASSOCIATED WITH APPLICATION",
-                "reason": f"schema lives in Docker container {container}; not present on host {db_type}",
+                "reason": (
+                    f"schema lives in Docker container {container}; not present on host {db_type}. "
+                    "Dump uses docker exec with container credentials, not the host serverbackup MariaDB account."
+                ),
                 "docker_container": container,
                 "references": [{"path": f"docker:{container}", "kind": "docker-db"}],
             }
