@@ -729,7 +729,10 @@ def resolve_files_dir(raw: str, application_path: str) -> str | None:
 def _dir_stats(path: Path, limit: int = 20000) -> tuple[int, int]:
     files = 0
     size = 0
-    if not path.is_dir():
+    try:
+        if not path.is_dir():
+            return 0, 0
+    except OSError:
         return 0, 0
     for root, dirs, names in os.walk(path, followlinks=False):
         dirs[:] = [name for name in dirs if name not in {".git", "node_modules", "cache"}]
@@ -1985,8 +1988,12 @@ def inventory_docker_volumes(
                 host_path = ""
             size_bytes = 0
             file_count = 0
-            if host_path and Path(host_path).is_dir():
-                size_bytes, file_count = _dir_stats(Path(host_path))
+            if host_path:
+                try:
+                    if Path(host_path).is_dir():
+                        size_bytes, file_count = _dir_stats(Path(host_path))
+                except OSError:
+                    size_bytes, file_count = 0, 0
             classification = CLASSIFICATION_ACTIVE if website else CLASSIFICATION_UNRESOLVED
             if purpose == "cache":
                 classification = CLASSIFICATION_EXCLUDED

@@ -298,7 +298,34 @@ def test_dry_run_discovers_traefik_sites_and_keeps_sites_available_out_of_applic
     assert totals.get("unique_websites", 0) >= 6
 
 
-def test_hostnames_from_traefik_rule_extracts_multiple_hosts():
+def test_volume_inventory_tolerates_unreadable_docker_paths(monkeypatch):
+    docker = [
+        {
+            "Id": "web1",
+            "Name": "/uploads_web",
+            "State": {"Running": True},
+            "Config": {
+                "Image": "app:latest",
+                "Labels": {
+                    "com.docker.compose.project": "uploadsapp",
+                    "traefik.http.routers.uploadsapp.rule": "Host(`uploads.example.com`)",
+                },
+                "Env": [],
+            },
+            "HostConfig": {"PortBindings": {}},
+            "Mounts": [{"Type": "volume", "Name": "uploads_files", "Destination": "/var/www/html/uploads"}],
+        }
+    ]
+    extras, _leftovers = da.applications_from_unmatched_docker([], docker, path_exists=lambda _p: True)
+
+    def boom(self):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "is_dir", boom)
+    volumes = da.inventory_docker_volumes(docker, extras)
+    assert volumes[0]["name"] == "uploads_files"
+    assert volumes[0]["backup_status"] == "COPY_DATA"
+    assert volumes[0]["size_bytes"] == 0
     names = da.hostnames_from_traefik_rule("Host(`a.example.com`) || Host(`www.a.example.com`)")
     assert names == ["a.example.com", "www.a.example.com"]
     assert da.looks_like_hostname("citation_web") is False
