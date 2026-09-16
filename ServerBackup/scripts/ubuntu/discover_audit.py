@@ -501,6 +501,46 @@ def finalize_database_verdict(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _application_id_for_docker_ref(
+    path: str,
+    applications: list[dict[str, Any]],
+    *,
+    database_name: str = "",
+) -> str:
+    """Map docker:<container> evidence onto a discovered compose application.
+
+    Dokploy/Compose db containers are named {project}-db-1. Nginx matches the
+    web container, so application_id is docker:{project} with an empty
+    database_name until sibling env is copied. Matching requires a unique
+    compose project/container prefix — never a hostname guess.
+    """
+    ref = str(path or "")
+    if ref.startswith("docker:"):
+        ref = ref.split(":", 1)[1]
+    ref = ref.strip().lower().lstrip("/")
+    if not ref:
+        return ""
+    hits: list[str] = []
+    for app in applications:
+        docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+        ident = str(app.get("application_id") or "")
+        container = str(docker.get("container") or "").lower().lstrip("/")
+        project = str(docker.get("compose_project") or "").lower()
+        if database_name and str(app.get("database_name") or "") == database_name:
+            if ident and ident not in hits:
+                hits.append(ident)
+            continue
+        names = [item for item in (container, project) if item]
+        if ident.lower().startswith("docker:"):
+            names.append(ident.split(":", 1)[1].lower())
+        if any(ref == name or ref.startswith(name + "-") for name in names):
+            if ident and ident not in hits:
+                hits.append(ident)
+    if len(hits) == 1:
+        return hits[0]
+    return ""
+
+
 def build_database_inventory(
     names: list[str],
     applications: list[dict[str, Any]],
@@ -537,10 +577,7 @@ def build_database_inventory(
                 path = str(ref.get("path") or "")
                 matched = ""
                 if path.startswith("docker:"):
-                    for app in applications:
-                        if str(app.get("database_name") or "") == name:
-                            matched = str(app.get("application_id") or "")
-                            break
+                    matched = _application_id_for_docker_ref(path, applications, database_name=name)
                 else:
                     for root, ident in app_roots:
                         if root and (path == root or path.startswith(root + "/")):

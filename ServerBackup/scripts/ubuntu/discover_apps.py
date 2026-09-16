@@ -698,6 +698,11 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
 
 def _match_docker(proxy_passes: list[str], containers: list[dict[str, Any]]) -> dict[str, Any] | None:
     summaries = [_docker_summary(item) for item in containers]
+    matched = _match_docker_summary(proxy_passes, summaries)
+    return _enrich_docker_from_compose(matched, summaries)
+
+
+def _match_docker_summary(proxy_passes: list[str], summaries: list[dict[str, Any]]) -> dict[str, Any] | None:
     for proxy in proxy_passes:
         parsed = parse_proxy(proxy)
         host = (parsed.get("host") or "").lower()
@@ -705,16 +710,43 @@ def _match_docker(proxy_passes: list[str], containers: list[dict[str, Any]]) -> 
         for item in summaries:
             names = {
                 item["name"].lower(),
-                item["compose_service"].lower(),
-                item["compose_project"].lower(),
+                str(item.get("compose_service") or "").lower(),
+                str(item.get("compose_project") or "").lower(),
             }
             if host and host in names:
-                return item
+                return dict(item)
             if host in {"127.0.0.1", "localhost", "::1"}:
                 for pub in item.get("published_ports") or []:
                     if str(pub.get("host_port")) == port:
-                        return item
+                        return dict(item)
     return None
+
+
+def _enrich_docker_from_compose(
+    docker: dict[str, Any] | None,
+    summaries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Copy MYSQL_DATABASE / POSTGRES_DB from sibling containers in the same compose project.
+
+    Nginx usually matches the web container, which often has no database env vars.
+    The db service (e.g. journal50seacom-bkuksm-db-1) does.
+    """
+    if not docker:
+        return docker
+    project = str(docker.get("compose_project") or "")
+    if not project:
+        return docker
+    out = dict(docker)
+    if out.get("mysql_database") and out.get("postgres_db"):
+        return out
+    for item in summaries:
+        if str(item.get("compose_project") or "") != project:
+            continue
+        if not out.get("postgres_db") and item.get("postgres_db"):
+            out["postgres_db"] = item.get("postgres_db")
+        if not out.get("mysql_database") and item.get("mysql_database"):
+            out["mysql_database"] = item.get("mysql_database")
+    return out
 
 
 def _application_id(
@@ -910,12 +942,19 @@ def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for name in app.get("hostnames") or []:
             seen_hosts[name.lower()] = seen_hosts.get(name.lower(), 0) + 1
     for app in merged:
+        notes = [note for note in (app.get("notes") or []) if not str(note).startswith("duplicate hostname")]
         dups = [name for name in (app.get("hostnames") or []) if seen_hosts.get(name.lower(), 0) > 1]
         if dups:
             app["status"] = "REQUIRES REVIEW"
-            note = "duplicate hostname: " + ", ".join(dups)
-            if note not in (app.get("notes") or []):
-                app.setdefault("notes", []).append(note)
+            notes.append("duplicate hostname: " + ", ".join(dups))
+        elif app.get("status") == "REQUIRES REVIEW" and not any(
+            token in note
+            for note in notes
+            for token in ("invalid root", "excluded root", "files_dir", "catch-all", "no application root")
+        ):
+            if not app.get("unused_default_root") and (app.get("root") or app.get("proxy_pass") or app.get("docker")):
+                app["status"] = "READY"
+        app["notes"] = notes
     return merged
 
 
@@ -1064,10 +1103,6 @@ def applications_from_servers(
             return Path(path).is_dir()
         except OSError:
             return False
-    seen_hosts: dict[str, int] = {}
-    for block in servers:
-        for name in block.get("server_name") or []:
-            seen_hosts[name.lower()] = seen_hosts.get(name.lower(), 0) + 1
     candidates: list[dict[str, Any]] = []
     for block in servers:
         names = [n for n in (block.get("server_name") or []) if n]
@@ -1174,10 +1209,6 @@ def applications_from_servers(
             notes.append(f"Nginx server block: {block.get('source_file') or 'unknown'}")
             notes.append(f"estimated size: {size_bytes} bytes")
             notes.append("Not a named public site; excluded from backup unless you override.")
-        if any(seen_hosts.get(name.lower(), 0) > 1 for name in names):
-            if status == "READY":
-                status = "REQUIRES REVIEW"
-            notes.append("duplicate hostname")
         if all(name.lower() in CATCHALL_HOSTS for name in names) and not unused_default:
             if status == "READY":
                 status = "REQUIRES REVIEW"

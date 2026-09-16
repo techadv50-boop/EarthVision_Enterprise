@@ -1196,3 +1196,138 @@ def test_inspect_database_contents_is_read_only_counts():
     assert not any("SELECT *" in item.upper().replace(" ", "") and "COUNT" not in item.upper() for item in calls)
     assert not any("DELETE" in item.upper() or "DROP" in item.upper() or "UPDATE" in item.upper() for item in calls)
 
+
+def _dokploy_container(name: str, project: str, *, port: str = "", env: list[str] | None = None) -> dict:
+    labels = {
+        "com.docker.compose.project": project,
+        "com.docker.compose.service": name.rsplit("-", 1)[-1] if "-" in name else name,
+        "com.docker.compose.project.working_dir": f"/etc/dokploy/compose/{project}",
+        "com.docker.compose.project.config_files": f"/etc/dokploy/compose/{project}/docker-compose.yml",
+    }
+    host = {"PortBindings": {}}
+    if port:
+        host["PortBindings"] = {"80/tcp": [{"HostIp": "127.0.0.1", "HostPort": port}]}
+    return {
+        "Id": name + "id",
+        "Name": f"/{name}",
+        "Config": {"Image": "app:latest", "Labels": labels, "Env": env or []},
+        "HostConfig": host,
+        "Mounts": [{"Type": "bind", "Source": f"/var/lib/dokploy/compose/{project}/files", "Destination": "/var/www/html"}],
+    }
+
+
+def test_dokploy_proxy_sites_associate_compose_db_and_ignore_http_https_split():
+    nginx = """
+# configuration file /etc/nginx/sites-enabled/50sea.com:
+server {
+    listen 80;
+    server_name 50sea.com www.50sea.com;
+    location / { proxy_pass http://127.0.0.1:8084; }
+}
+# configuration file /etc/nginx/sites-enabled/journal.50sea.com:
+server {
+    listen 80;
+    server_name journal.50sea.com;
+    location / { proxy_pass http://127.0.0.1:8087; }
+}
+# configuration file /etc/nginx/sites-enabled/journal.50sea.com:
+server {
+    listen 443 ssl;
+    server_name journal.50sea.com;
+    location / { proxy_pass http://127.0.0.1:8087; }
+}
+# configuration file /etc/nginx/sites-enabled/xdgen.com:
+server {
+    listen 80;
+    server_name xdgen.com www.xdgen.com;
+    location / { proxy_pass http://127.0.0.1:8085; }
+}
+"""
+    servers = da.parse_nginx_t(nginx)
+    containers = [
+        _dokploy_container("sea50-cyfdw1-web-1", "sea50-cyfdw1", port="8084"),
+        _dokploy_container("sea50-cyfdw1-db-1", "sea50-cyfdw1", env=["MYSQL_DATABASE=sea_tecdb"]),
+        _dokploy_container("journal50seacom-bkuksm-web-1", "journal50seacom-bkuksm", port="8087"),
+        _dokploy_container("journal50seacom-bkuksm-db-1", "journal50seacom-bkuksm", env=["MYSQL_DATABASE=journal50_ojs"]),
+        _dokploy_container("xdgen-infgdf-web-1", "xdgen-infgdf", port="8085"),
+        _dokploy_container("xdgen-infgdf-db-1", "xdgen-infgdf", env=["MYSQL_DATABASE=xdgen_db"]),
+    ]
+    apps = da.applications_from_servers(
+        servers,
+        docker_containers=containers,
+        mariadb=["journal50_ojs", "journal_db", "sea_tecdb", "xdgen_db"],
+        path_exists=lambda _path: True,
+        probe=lambda _root: ({}, {}),
+    )
+    by_host = _by_host(apps)
+    assert by_host["50sea.com"]["application_id"] == "docker:sea50-cyfdw1"
+    assert by_host["50sea.com"]["database_name"] == "sea_tecdb"
+    assert by_host["journal.50sea.com"]["application_id"] == "docker:journal50seacom-bkuksm"
+    assert by_host["journal.50sea.com"]["database_name"] == "journal50_ojs"
+    assert by_host["journal.50sea.com"]["status"] != "REQUIRES REVIEW"
+    assert not any(str(note).startswith("duplicate hostname") for note in (by_host["journal.50sea.com"].get("notes") or []))
+    import discover_audit as audit
+
+    inventory = audit.build_database_inventory(
+        ["journal50_ojs", "journal_db", "sea_tecdb", "xdgen_db"],
+        apps,
+        details={
+            "journal50_ojs": {"table_count": 118, "size_bytes": 1000, "row_count": 10},
+            "journal_db": {"table_count": 124, "size_bytes": 1000, "row_count": 10},
+            "sea_tecdb": {"table_count": 19, "size_bytes": 1000, "row_count": 10},
+            "xdgen_db": {"table_count": 1, "size_bytes": 1000, "row_count": 10},
+        },
+        references={
+            "journal50_ojs": [{"path": "docker:journal50seacom-bkuksm-db-1"}],
+            "journal_db": [{"path": "docker:journalxdgen-xrgdaw-db-1"}],
+            "sea_tecdb": [{"path": "/opt/dokploy-migrations/50sea/wp-config.live-copy.php"}],
+            "xdgen_db": [{"path": "docker:xdgen-infgdf-db-1"}],
+        },
+    )
+    by_name = {row["name"]: row for row in inventory}
+    assert by_name["journal50_ojs"]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert by_name["journal50_ojs"]["application_id"] == "docker:journal50seacom-bkuksm"
+    assert by_name["sea_tecdb"]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert by_name["sea_tecdb"]["application_id"] == "docker:sea50-cyfdw1"
+    assert by_name["xdgen_db"]["status"] == "ASSOCIATED WITH APPLICATION"
+    assert by_name["xdgen_db"]["application_id"] == "docker:xdgen-infgdf"
+    assert by_name["journal_db"]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    assert by_name["journal_db"]["application_id"] == ""
+    gate = assess_backup_gate(
+        [
+            {**by_host["50sea.com"], "included": True},
+            {**by_host["journal.50sea.com"], "included": True},
+            {**by_host["xdgen.com"], "included": True},
+        ],
+        inventory,
+    )
+    assert gate["databases_associated"] == 3
+    assert gate["unresolved_database_names"] == ["journal_db"]
+    assert gate["block_complete_backup"] is True
+
+
+def test_docker_ref_does_not_attach_when_two_projects_share_prefix():
+    import discover_audit as audit
+
+    apps = [
+        {
+            "application_id": "docker:journal",
+            "hostname": "a.example.com",
+            "docker": {"compose_project": "journal", "container": "journal-web-1"},
+        },
+        {
+            "application_id": "docker:journal50seacom-bkuksm",
+            "hostname": "journal.50sea.com",
+            "docker": {"compose_project": "journal50seacom-bkuksm", "container": "journal50seacom-bkuksm-web-1"},
+        },
+    ]
+    inventory = audit.build_database_inventory(
+        ["journal50_ojs"],
+        apps,
+        details={"journal50_ojs": {"table_count": 2, "size_bytes": 10, "row_count": 1}},
+        references={"journal50_ojs": [{"path": "docker:journal50seacom-bkuksm-db-1"}]},
+    )
+    assert inventory[0]["application_id"] == "docker:journal50seacom-bkuksm"
+    assert inventory[0]["status"] == "ASSOCIATED WITH APPLICATION"
+
+
