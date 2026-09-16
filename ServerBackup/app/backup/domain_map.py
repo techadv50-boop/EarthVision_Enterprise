@@ -47,6 +47,7 @@ class SiteDatabase:
     name: str
     db_type: str
     shared_with: list[str] = field(default_factory=list)
+    include_unassigned: bool = False
 
 
 @dataclass
@@ -360,7 +361,12 @@ def build_domain_map(
         if "EXCLUDED" in str(row.get("status") or ""):
             continue
         unassigned.append(
-            SiteDatabase(name=name, db_type=str(row.get("type") or "MariaDB"))
+            SiteDatabase(
+                name=name,
+                db_type=str(row.get("type") or "MariaDB"),
+                include_unassigned=bool(row.get("include_unassigned"))
+                or "INCLUDED — UNASSIGNED" in str(row.get("status") or ""),
+            )
         )
 
     return DomainMap(sites=sites, unassigned_databases=unassigned, skipped=skipped)
@@ -377,10 +383,15 @@ def dump_names(
     postgres = list(domain_map.postgres_names())
     selected = [str(n).strip() for n in (selected or []) if str(n).strip()]
     unassigned_names = {db.name for db in domain_map.unassigned_databases}
+    for db in domain_map.unassigned_databases:
+        if db.include_unassigned and db.name not in mariadb:
+            mariadb.append(db.name)
     for name in selected:
         if name in postgres:
             continue
-        if name in unassigned_names and not include_unassigned_selected:
+        if name in unassigned_names and not include_unassigned_selected and not any(
+            db.name == name and db.include_unassigned for db in domain_map.unassigned_databases
+        ):
             continue
         if name not in mariadb:
             mariadb.append(name)

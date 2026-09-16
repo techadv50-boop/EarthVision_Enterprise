@@ -29,7 +29,16 @@ def assess_backup_gate(
     dbs = [row for row in (databases or []) if isinstance(row, dict) and not row.get("system")]
     associated = [row for row in dbs if str(row.get("status") or "").startswith("ASSOCIATED")]
     excluded_dbs = [row for row in dbs if "EXCLUDED" in str(row.get("status") or "")]
-    unresolved_dbs = [row for row in dbs if row not in associated and row not in excluded_dbs]
+    included_unassigned = [
+        row
+        for row in dbs
+        if row not in associated
+        and row not in excluded_dbs
+        and (row.get("include_unassigned") or "INCLUDED — UNASSIGNED" in str(row.get("status") or ""))
+    ]
+    unresolved_dbs = [
+        row for row in dbs if row not in associated and row not in excluded_dbs and row not in included_unassigned
+    ]
     block = bool(pending_apps or unresolved_dbs)
     return {
         "applications_discovered": len(live),

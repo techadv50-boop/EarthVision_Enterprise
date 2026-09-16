@@ -197,7 +197,7 @@ def _discovery_status(config: AppConfig) -> dict[str, Any]:
     apps: list[dict[str, Any]] = []
     try:
         from app.discover.gate import assess_backup_gate
-        from app.discover.policy import apply_policy, load_snapshot
+        from app.discover.policy import apply_database_policy, apply_policy, load_snapshot
 
         snap = load_snapshot(config.backup_destination)
         apps = apply_policy(list(snap.get("applications") or []), config.backup_destination)
@@ -215,7 +215,8 @@ def _discovery_status(config: AppConfig) -> dict[str, Any]:
             "discovered_review": None,
             "discovered_removed": None,
         }
-    gate = assess_backup_gate(apps, list(snap.get("database_inventory") or []))
+    inventory = apply_database_policy(list(snap.get("database_inventory") or []), config.backup_destination)
+    gate = assess_backup_gate(apps, inventory)
     return {
         "discovered_total": gate.get("applications_discovered", 0),
         "discovered_approved": gate.get("applications_approved", 0),

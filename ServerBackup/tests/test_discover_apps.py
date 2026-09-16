@@ -1331,3 +1331,105 @@ def test_docker_ref_does_not_attach_when_two_projects_share_prefix():
     assert inventory[0]["status"] == "ASSOCIATED WITH APPLICATION"
 
 
+def test_exclude_leftover_wordpress_db_clears_backup_gate(tmp_path: Path):
+    from app.discover.policy import apply_database_policy, set_database_decision
+
+    dest = tmp_path / "ServerBackups"
+    dest.mkdir()
+    apps = [
+        {
+            "application_id": "docker:sea50-cyfdw1",
+            "hostname": "50sea.com",
+            "included": True,
+            "status": "READY",
+        }
+    ]
+    inventory = [
+        {
+            "name": "sea50_db",
+            "status": "ASSOCIATED WITH APPLICATION",
+            "application_id": "docker:sea50-cyfdw1",
+            "system": False,
+        },
+        {
+            "name": "sea_tecdb",
+            "status": "UNASSOCIATED DATABASE — REQUIRES REVIEW",
+            "application_id": "",
+            "system": False,
+            "table_count": 19,
+            "row_count": 2815,
+            "reason": "referenced outside active applications",
+        },
+    ]
+    blocked = assess_backup_gate(apps, inventory)
+    assert blocked["block_complete_backup"] is True
+    assert blocked["unresolved_database_names"] == ["sea_tecdb"]
+    set_database_decision(dest, "sea_tecdb", excluded=True)
+    reviewed = apply_database_policy(inventory, dest)
+    gate = assess_backup_gate(apps, reviewed)
+    assert reviewed[1]["status"] == "EXCLUDED — USER REVIEW"
+    assert gate["databases_unresolved"] == 0
+    assert gate["block_complete_backup"] is False
+
+
+def test_include_unassigned_database_clears_gate_and_is_dumped(tmp_path: Path):
+    from app.backup.domain_map import build_domain_map, dump_names
+    from app.discover.policy import apply_database_policy, set_database_decision
+
+    dest = tmp_path / "ServerBackups"
+    dest.mkdir()
+    apps = [
+        {
+            "application_id": "docker:sea50-cyfdw1",
+            "hostname": "50sea.com",
+            "hostnames": ["50sea.com"],
+            "type": "Docker",
+            "root": "",
+            "included": True,
+            "excluded": False,
+            "status": "READY",
+            "database_name": "sea50_db",
+            "database_type": "MariaDB",
+        }
+    ]
+    inventory = [
+        {"name": "sea50_db", "type": "MariaDB", "application_id": "docker:sea50-cyfdw1", "status": "ASSOCIATED WITH APPLICATION", "system": False},
+        {"name": "sea_tecdb", "type": "MariaDB", "application_id": "", "status": "UNASSOCIATED DATABASE — REQUIRES REVIEW", "system": False},
+    ]
+    set_database_decision(dest, "sea_tecdb", include_unassigned=True)
+    reviewed = apply_database_policy(inventory, dest)
+    assert reviewed[1]["status"] == "INCLUDED — UNASSIGNED"
+    gate = assess_backup_gate(apps, reviewed)
+    assert gate["block_complete_backup"] is False
+    mapping = build_domain_map(apps, reviewed)
+    mariadb, _postgres = dump_names(mapping, selected=[])
+    assert "sea50_db" in mariadb
+    assert "sea_tecdb" in mariadb
+
+
+def test_acknowledge_removed_sites_drops_requires_review(tmp_path: Path):
+    from app.discover.policy import acknowledge_removed_applications, apply_policy, set_approval
+
+    dest = tmp_path / "ServerBackups"
+    dest.mkdir()
+    set_approval(dest, "wordpress:/var/www/50sea.com", approved=True)
+    live = [
+        {
+            "application_id": "docker:sea50-cyfdw1",
+            "hostname": "50sea.com",
+            "hostnames": ["50sea.com"],
+            "type": "Docker",
+            "root": "",
+            "status": "READY",
+        }
+    ]
+    first = apply_policy(live, dest)
+    removed = [row for row in first if row.get("change") == "removed"]
+    assert removed
+    assert removed[0]["status"] == "SITE REMOVED — REQUIRES REVIEW"
+    acknowledge_removed_applications(dest, [removed[0]["application_id"]])
+    after = apply_policy(live, dest)
+    gone = next(row for row in after if row.get("change") == "removed")
+    assert gone["status"] == "SITE REMOVED — ACKNOWLEDGED"
+
+

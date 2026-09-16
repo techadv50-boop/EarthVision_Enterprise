@@ -23,10 +23,13 @@ from app.discover.approval import (
     split_approval_applications,
 )
 from app.discover.policy import (
+    acknowledge_removed_applications,
+    apply_database_policy,
     apply_policy,
     approve_all_applications,
     load_snapshot,
     save_snapshot,
+    set_database_decision,
     snapshot_application_row,
 )
 
@@ -57,6 +60,47 @@ class _ApplicationRow(QFrame):
         return bool(self.checkbox.isVisible() and self.checkbox.isEnabled() and self.checkbox.isChecked())
 
 
+class _DatabaseRow(QFrame):
+    def __init__(self, row: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.row = row
+        self.setObjectName("card")
+        layout = QHBoxLayout(self)
+        body = QLabel(_format_database_block(row))
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setObjectName("databaseBlock")
+        layout.addWidget(body, 1)
+        buttons = QVBoxLayout()
+        include = QPushButton("DUMP AS UNASSIGNED")
+        include.setObjectName("includeUnassigned")
+        include.setProperty("database_name", str(row.get("name") or ""))
+        exclude = QPushButton("EXCLUDE FROM BACKUP")
+        exclude.setObjectName("excludeDatabase")
+        exclude.setProperty("database_name", str(row.get("name") or ""))
+        buttons.addWidget(include)
+        buttons.addWidget(exclude)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        self.include_btn = include
+        self.exclude_btn = exclude
+
+
+def _format_database_block(row: dict) -> str:
+    size = int(row.get("size_bytes") or 0)
+    tables = row.get("table_count")
+    lines = [
+        str(row.get("name") or "—"),
+        f"    {row.get('status') or 'UNASSOCIATED DATABASE — REQUIRES REVIEW'}",
+        f"    tables: {tables if tables is not None else '—'}    size_bytes: {size}",
+    ]
+    if row.get("row_count") is not None:
+        lines.append(f"    rows: {row.get('row_count')}")
+    if row.get("reason"):
+        lines.append(f"    {row.get('reason')}")
+    return "\n".join(lines)
+
+
 class DiscoverPage(QWidget):
     """Application Discovery/Approval view opened by DISCOVER SERVER."""
 
@@ -68,9 +112,11 @@ class DiscoverPage(QWidget):
         super().__init__(parent)
         self._config: AppConfig | None = None
         self._rows: list[dict] = []
+        self._databases: list[dict] = []
         self._result: dict = {}
         self._pending_rows: list[_ApplicationRow] = []
         self._excluded_rows: list[_ApplicationRow] = []
+        self._database_rows: list[_DatabaseRow] = []
         layout = QVBoxLayout(self)
         heading = QLabel("APPLICATION DISCOVERY / APPROVAL")
         heading.setObjectName("title")
@@ -141,10 +187,13 @@ class DiscoverPage(QWidget):
         if result:
             self._result = result
             self._rows = list(result.get("applications") or [])
+            dest = config.backup_destination
+            self._databases = apply_database_policy(list(result.get("database_inventory") or []), dest)
         else:
             snap = load_snapshot(config.backup_destination)
             self._rows = apply_policy(list(snap.get("applications") or []), config.backup_destination)
-            self._result = {**snap, "applications": self._rows}
+            self._databases = apply_database_policy(list(snap.get("database_inventory") or []), config.backup_destination)
+            self._result = {**snap, "applications": self._rows, "database_inventory": self._databases}
         self._render()
 
     def _clear_list(self) -> None:
@@ -157,6 +206,7 @@ class DiscoverPage(QWidget):
                 widget.deleteLater()
         self._pending_rows = []
         self._excluded_rows = []
+        self._database_rows = []
 
     def _section(self, title: str) -> QLabel:
         label = QLabel(title)
@@ -165,10 +215,21 @@ class DiscoverPage(QWidget):
 
     def _render(self) -> None:
         pending, approved, excluded = split_approval_applications(self._rows)
+        removed = [
+            row
+            for row in self._rows
+            if row.get("change") == "removed" and "ACKNOWLEDGED" not in str(row.get("status") or "")
+        ]
+        unassociated = [
+            row
+            for row in self._databases
+            if not row.get("system") and "UNASSOCIATED" in str(row.get("status") or "")
+        ]
         self.summary.setText(
             f"Pending approval: {len(pending)}    "
             f"Approved: {len(approved)}    "
             f"Excluded: {len(excluded)}    "
+            f"Unassociated databases: {len(unassociated)}    "
             "BACKUP NOW is not started from this page."
         )
         self._clear_list()
@@ -195,6 +256,37 @@ class DiscoverPage(QWidget):
             empty.setObjectName("subtitle")
             self._list.addWidget(empty)
         self.override_excluded.setVisible(bool(excluded))
+        if unassociated:
+            self._list.addWidget(self._section("UNASSOCIATED DATABASES"))
+            hint = QLabel(
+                "These schemas are not mapped to a live Nginx site. "
+                "EXCLUDE leftover cutover copies, or DUMP AS UNASSIGNED into BACKUPS\\_unassigned-databases. "
+                "BACKUP NOW stays blocked until every unassociated database is reviewed."
+            )
+            hint.setWordWrap(True)
+            hint.setObjectName("subtitle")
+            self._list.addWidget(hint)
+            for db in unassociated:
+                row = _DatabaseRow(db)
+                row.include_btn.clicked.connect(lambda _=False, name=str(db.get("name") or ""): self._include_database(name))
+                row.exclude_btn.clicked.connect(lambda _=False, name=str(db.get("name") or ""): self._exclude_database(name))
+                self._database_rows.append(row)
+                self._list.addWidget(row)
+        if removed:
+            self._list.addWidget(self._section("REMOVED SITES"))
+            hint = QLabel(
+                "These applications are gone from active Nginx (Dokploy cutover). "
+                "Master data is not deleted. Acknowledge after you have reviewed them."
+            )
+            hint.setWordWrap(True)
+            hint.setObjectName("subtitle")
+            self._list.addWidget(hint)
+            for app in removed:
+                self._list.addWidget(_ApplicationRow(app, checkable=False))
+            ack = QPushButton("ACKNOWLEDGE REMOVED SITES")
+            ack.setObjectName("acknowledgeRemoved")
+            ack.clicked.connect(self._acknowledge_removed)
+            self._list.addWidget(ack)
         if not pending and not approved and not excluded:
             empty = QLabel("Run DISCOVER SERVER to inventory active Nginx sites.")
             empty.setObjectName("subtitle")
@@ -211,7 +303,48 @@ class DiscoverPage(QWidget):
         snap["applications"] = [
             snapshot_application_row(row) for row in self._rows if row.get("change") != "removed"
         ]
+        snap["database_inventory"] = list(self._databases)
         save_snapshot(self._config.backup_destination, snap)
+
+    def _refresh(self) -> None:
+        if not self._config:
+            return
+        payload = {**self._result, "applications": self._rows, "database_inventory": self._databases}
+        self.reload(self._config, payload)
+
+    def _include_database(self, name: str) -> None:
+        if not self._config or not name:
+            return
+        set_database_decision(self._config.backup_destination, name, include_unassigned=True)
+        self._databases = apply_database_policy(self._databases, self._config.backup_destination)
+        self._persist()
+        self._refresh()
+
+    def _exclude_database(self, name: str) -> None:
+        if not self._config or not name:
+            return
+        set_database_decision(self._config.backup_destination, name, excluded=True)
+        self._databases = apply_database_policy(self._databases, self._config.backup_destination)
+        self._persist()
+        self._refresh()
+
+    def _acknowledge_removed(self) -> None:
+        if not self._config:
+            return
+        ids = [
+            application_id(row)
+            for row in self._rows
+            if row.get("change") == "removed" and "ACKNOWLEDGED" not in str(row.get("status") or "")
+        ]
+        if not ids:
+            return
+        acknowledge_removed_applications(self._config.backup_destination, ids)
+        self._rows = apply_policy(
+            [row for row in self._rows if row.get("change") != "removed"],
+            self._config.backup_destination,
+        )
+        self._persist()
+        self._refresh()
 
     def _checked_ids(self) -> list[str]:
         ids: list[str] = []

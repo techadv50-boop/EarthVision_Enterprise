@@ -80,6 +80,75 @@ def set_approval(destination: str | Path, application_id: str, *, approved: bool
     return row
 
 
+def set_database_decision(
+    destination: str | Path,
+    name: str,
+    *,
+    excluded: bool = False,
+    include_unassigned: bool = False,
+) -> dict[str, Any]:
+    """Record a review decision for an unassociated database. No production changes."""
+    ident = str(name or "").strip()
+    if not ident:
+        raise ValueError("database name required")
+    policy = load_policy(destination)
+    dbs = policy.setdefault("databases", {})
+    row = dict(dbs.get(ident) or {})
+    row["excluded"] = bool(excluded)
+    row["include_unassigned"] = bool(include_unassigned) and not excluded
+    row["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    dbs[ident] = row
+    save_policy(destination, policy)
+    return row
+
+
+def apply_database_policy(inventory: list[dict[str, Any]], destination: str | Path) -> list[dict[str, Any]]:
+    policy = load_policy(destination)
+    stored = policy.get("databases") if isinstance(policy.get("databases"), dict) else {}
+    result: list[dict[str, Any]] = []
+    for row in inventory:
+        item = dict(row)
+        name = str(item.get("name") or "")
+        rec = dict(stored.get(name) or {}) if name else {}
+        status = str(item.get("status") or "")
+        if item.get("system") or status.startswith("ASSOCIATED"):
+            result.append(item)
+            continue
+        if rec.get("excluded"):
+            item["status"] = "EXCLUDED — USER REVIEW"
+            item["reason"] = rec.get("reason") or (
+                "excluded after review; leftover schema is not part of the live sites"
+            )
+            item["excluded"] = True
+            item["include_unassigned"] = False
+        elif rec.get("include_unassigned"):
+            item["status"] = "INCLUDED — UNASSIGNED"
+            item["reason"] = rec.get("reason") or "reviewed: dump under BACKUPS/_unassigned-databases"
+            item["include_unassigned"] = True
+            item["excluded"] = False
+        result.append(item)
+    return result
+
+
+def acknowledge_removed_applications(destination: str | Path, application_ids: list[str]) -> list[str]:
+    policy = load_policy(destination)
+    apps = policy.setdefault("applications", {})
+    stamped = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    acknowledged: list[str] = []
+    for ident in application_ids:
+        key = str(ident or "").strip()
+        if not key:
+            continue
+        row = dict(apps.get(key) or {})
+        row["removed_acknowledged"] = True
+        row["updated_at"] = stamped
+        apps[key] = row
+        acknowledged.append(key)
+    if acknowledged:
+        save_policy(destination, policy)
+    return acknowledged
+
+
 def _hostnames(app: dict[str, Any]) -> list[str]:
     names = [str(n) for n in (app.get("hostnames") or []) if n]
     primary = str(app.get("hostname") or "")
@@ -243,6 +312,9 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
             continue
         removed = dict(prev)
         removed["status"] = "SITE REMOVED — REQUIRES REVIEW"
+        rec = stored.get(ident) or {}
+        if rec.get("removed_acknowledged"):
+            removed["status"] = "SITE REMOVED — ACKNOWLEDGED"
         removed["change"] = "removed"
         removed["included"] = False
         removed["notes"] = list(removed.get("notes") or []) + [

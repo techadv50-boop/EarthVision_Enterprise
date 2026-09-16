@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app.config.schema import AppConfig
-from app.discover.policy import apply_policy, load_snapshot, save_snapshot, snapshot_application_row
+from app.discover.policy import apply_policy, load_snapshot, save_snapshot, snapshot_application_row, apply_database_policy
 from app.discover.report import format_discovery_report
 from app.discover.gate import assess_backup_gate
 from app.ssh.client import SSHClient, SSHError
@@ -49,7 +49,9 @@ def discover_applications(
             raise DiscoveryError(str(parsed.get("error") or result.stderr.strip() or "Application discovery failed."))
         apps = apply_policy(list(parsed.get("applications") or []), config.backup_destination)
         parsed["applications"] = apps
-        parsed["backup_gate"] = assess_backup_gate(apps, list(parsed.get("database_inventory") or []))
+        inventory = apply_database_policy(list(parsed.get("database_inventory") or []), config.backup_destination)
+        parsed["database_inventory"] = inventory
+        parsed["backup_gate"] = assess_backup_gate(apps, inventory)
         parsed["report_text"] = format_discovery_report(parsed)
         parsed["discovered_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if persist:
@@ -62,7 +64,7 @@ def discover_applications(
                         for item in apps
                         if item.get("change") != "removed"
                     ],
-                    "database_inventory": list(parsed.get("database_inventory") or []),
+                    "database_inventory": inventory,
                     "inactive_hostnames": list(parsed.get("inactive_hostnames") or []),
                     "database_account": parsed.get("database_account") or {},
                 },

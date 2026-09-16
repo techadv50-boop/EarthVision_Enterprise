@@ -144,6 +144,16 @@ def test_domain_map_one_folder_per_site_and_correct_databases():
     assert "xdgen_db" not in mariadb
 
 
+def test_included_unassigned_database_is_dumped():
+    inventory = _inventory()
+    inventory[-2]["status"] = "INCLUDED — UNASSIGNED"
+    inventory[-2]["include_unassigned"] = True
+    mapping = build_domain_map(_apps(), inventory)
+    mariadb, _postgres = dump_names(mapping, selected=[])
+    assert "xdgen_db" in mariadb
+    assert mapping.unassigned_databases[0].include_unassigned is True
+
+
 def test_overlay2_is_blocked_from_site_folders():
     mapping = build_domain_map(_apps(), _inventory())
     placement = classify_file(

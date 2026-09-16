@@ -86,7 +86,13 @@ def _json_script(
     if not result.ok and not parsed:
         raise PipelineError(result.stderr.strip() or result.stdout.strip() or f"{action} failed")
     if require_ok and parsed.get("ok") is False:
-        raise PipelineError(str(parsed.get("error") or result.stderr.strip() or f"{action} failed"))
+        detail = (
+            str(parsed.get("error") or "").strip()
+            or "; ".join(str(item) for item in (parsed.get("errors") or []) if item)
+            or result.stderr.strip()
+            or f"{action} failed"
+        )
+        raise PipelineError(detail)
     return parsed
 
 
@@ -559,12 +565,15 @@ def _fingerprint_databases(engine, names: list[str] | None = None) -> dict[str, 
     names = list(names if names is not None else engine.config.databases_for_backup())
     if not names:
         return {}
-    parsed = _json_script(engine, "database-fingerprint", {"databases": names})
+    parsed = _json_script(engine, "database-fingerprint", {"databases": names}, require_ok=False)
     mapping = {}
     for item in parsed.get("fingerprints") or []:
         mapping[str(item.get("name"))] = str(item.get("sha256") or "")
     if parsed.get("ok") is False:
-        raise PipelineError("; ".join(parsed.get("errors") or ["database fingerprint failed"]))
+        raise PipelineError(
+            "; ".join(str(item) for item in (parsed.get("errors") or []) if item)
+            or str(parsed.get("error") or "database fingerprint failed")
+        )
     missing = [name for name in names if name not in mapping]
     if missing:
         raise PipelineError("Database fingerprint missing for: " + ", ".join(missing))
@@ -909,9 +918,15 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         db_discovery_error = str(exc)
         engine.logger.error(f"DRY_RUN_ERROR database discovery: {exc}")
-    mariadb_names, postgres_names = merge_discovered_databases(config, discovery, mysql_names)
+    _mariadb_names, postgres_names = merge_discovered_databases(config, discovery, mysql_names)
 
-    db_names = mariadb_names
+    dump_set = databases_for_master_dump(config, discovery)
+    associated_names = [
+        str(row.get("name") or "")
+        for row in (discovery.get("database_inventory") or [])
+        if str(row.get("name") or "") and str(row.get("status") or "").startswith("ASSOCIATED")
+    ]
+    db_names = dump_set or associated_names
     db_result = "SKIPPED"
     db_error = ""
     fingerprints: dict[str, str] = {}

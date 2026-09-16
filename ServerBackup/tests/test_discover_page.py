@@ -128,3 +128,55 @@ def test_main_window_review_button_opens_approval_view(tmp_path: Path):
     assert window.stack.currentWidget() is window.discover_page
     assert window.discover_page.findChild(QPushButton, "approveAll") is not None
     window.close()
+
+
+def test_discover_page_exclude_unassociated_database(tmp_path: Path):
+    from app.discover.gate import assess_backup_gate
+    from app.discover.policy import load_policy
+
+    qt = _app()
+    cfg = make_config(tmp_path)
+    Path(cfg.backup_destination).mkdir(parents=True, exist_ok=True)
+    page = DiscoverPage()
+    apps = live_shaped_apps()
+    for row in apps:
+        if row["application_id"] != "other:/var/www/html":
+            row["included"] = True
+            row["status"] = "READY"
+    page.reload(
+        cfg,
+        {
+            "applications": apps,
+            "database_inventory": [
+                {
+                    "name": "sea50_db",
+                    "status": "ASSOCIATED WITH APPLICATION",
+                    "application_id": "wordpress:/var/www/50sea.com",
+                    "system": False,
+                },
+                {
+                    "name": "sea_tecdb",
+                    "status": "UNASSOCIATED DATABASE — REQUIRES REVIEW",
+                    "reason": "orphan dokploy-migration copy",
+                    "table_count": 19,
+                    "row_count": 2815,
+                    "size_bytes": 45974102,
+                    "system": False,
+                },
+            ],
+        },
+    )
+    page.show()
+    qt.processEvents()
+    labels = "\n".join(label.text() for label in page.findChildren(QLabel))
+    assert "UNASSOCIATED DATABASES" in labels
+    assert "sea_tecdb" in labels
+    exclude = page.findChild(QPushButton, "excludeDatabase")
+    assert exclude is not None
+    exclude.click()
+    qt.processEvents()
+    policy = load_policy(cfg.backup_destination)
+    assert policy["databases"]["sea_tecdb"]["excluded"] is True
+    gate = assess_backup_gate(page._rows, page._databases)
+    assert gate["block_complete_backup"] is False
+    page.close()
