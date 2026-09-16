@@ -228,8 +228,13 @@ class DiscoverPage(QWidget):
         leftover_dbs = [
             row
             for row in self._databases
-            if not row.get("system") and "MIGRATION LEFTOVER" in str(row.get("status") or "")
+            if not row.get("system")
+            and (
+                "MIGRATION LEFTOVER" in str(row.get("status") or "")
+                or str(row.get("status") or "").startswith("RECOVERY")
+            )
         ]
+        migrated = [row for row in self._rows if row.get("change") == "migrated"]
         self.summary.setText(
             f"Pending approval: {len(pending)}    "
             f"Approved: {len(approved)}    "
@@ -278,22 +283,39 @@ class DiscoverPage(QWidget):
                 self._database_rows.append(row)
                 self._list.addWidget(row)
         if leftover_dbs:
-            self._list.addWidget(self._section("EXCLUDED DATABASES (MIGRATION LEFTOVER)"))
+            self._list.addWidget(self._section("RECOVERY DATABASES (MIGRATION LEFTOVER)"))
             hint = QLabel(
                 "These host schemas are only referenced under Dokploy migration copies. "
-                "They are excluded from BACKUP NOW. Use DUMP AS UNASSIGNED to keep a copy."
+                "They are NOT live website databases and are NOT placed in a website folder. "
+                "Default: dump into BACKUPS\\_recovery\\databases so they are never silently discarded. "
+                "EXCLUDE FROM BACKUP skips the dump and writes a recovery note. "
+                "DUMP AS UNASSIGNED puts the SQL under _unassigned-databases instead."
             )
             hint.setWordWrap(True)
             hint.setObjectName("subtitle")
             self._list.addWidget(hint)
             for db in leftover_dbs:
                 row = _DatabaseRow(db)
-                row.exclude_btn.setVisible(False)
                 row.include_btn.clicked.connect(
                     lambda _=False, name=str(db.get("name") or ""): self._include_database(name)
                 )
+                row.exclude_btn.clicked.connect(
+                    lambda _=False, name=str(db.get("name") or ""): self._exclude_database(name)
+                )
                 self._database_rows.append(row)
                 self._list.addWidget(row)
+        if migrated:
+            self._list.addWidget(self._section("MIGRATED / LEGACY HOST INSTALLS"))
+            hint = QLabel(
+                "These old application IDs (usually /var/www/...) match a hostname that is now "
+                "an active Docker site. They are not deleted websites. The Docker application "
+                "is the authoritative backup source. No acknowledgement is required for BACKUP NOW."
+            )
+            hint.setWordWrap(True)
+            hint.setObjectName("subtitle")
+            self._list.addWidget(hint)
+            for app in migrated:
+                self._list.addWidget(_ApplicationRow(app, checkable=False))
         if removed:
             self._list.addWidget(self._section("REMOVED SITES"))
             hint = QLabel(

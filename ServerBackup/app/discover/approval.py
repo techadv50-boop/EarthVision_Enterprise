@@ -23,8 +23,8 @@ def hostnames(app: dict[str, Any]) -> list[str]:
 def split_approval_applications(
     applications: list[dict[str, Any]] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return (pending, approved, excluded). Removed rows are omitted."""
-    live = [row for row in (applications or []) if row.get("change") != "removed"]
+    """Return (pending, approved, excluded). Removed and migrated rows are omitted."""
+    live = [row for row in (applications or []) if row.get("change") not in {"removed", "migrated"}]
     excluded = [row for row in live if is_auto_excluded(row)]
     excluded_ids = {id(row) for row in excluded}
     pending = [row for row in live if id(row) not in excluded_ids and not row.get("included")]
@@ -75,7 +75,7 @@ def approve_selected_applications(
     wanted = {str(item).strip() for item in selected_ids if str(item).strip()}
     approved_ids: list[str] = []
     for app in applications:
-        if app.get("change") == "removed":
+        if app.get("change") in {"removed", "migrated"}:
             continue
         ident = application_id(app)
         if not ident or ident not in wanted:

@@ -13,6 +13,7 @@ MIGRATION_LEFTOVER_PREFIXES = (
     "/opt/dokploy-migrations/",
     "/root/dokploy-migration/",
 )
+CATCHALL_HOSTS = {"", "*", "_", "localhost"}
 
 
 def _policy_path(destination: str | Path) -> Path:
@@ -146,20 +147,24 @@ def apply_database_policy(inventory: list[dict[str, Any]], destination: str | Pa
             )
             item["excluded"] = True
             item["include_unassigned"] = False
+            item["recovery"] = False
         elif rec.get("include_unassigned"):
             item["status"] = "INCLUDED — UNASSIGNED"
             item["reason"] = rec.get("reason") or "reviewed: dump under BACKUPS/_unassigned-databases"
             item["include_unassigned"] = True
             item["excluded"] = False
+            item["recovery"] = False
         elif is_migration_leftover_database(item):
-            item["status"] = "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+            item["status"] = "RECOVERY — DOKPLOY MIGRATION LEFTOVER"
             item["reason"] = item.get("reason") or (
                 "only referenced under Dokploy migration copies "
                 "(/opt/dokploy-migrations or /root/dokploy-migration); "
-                "not an active Nginx application."
+                "not an active Nginx application. Kept under BACKUPS/_recovery/databases "
+                "so it is never silently discarded. It is not placed in a website folder."
             )
-            item["excluded"] = True
+            item["excluded"] = False
             item["include_unassigned"] = False
+            item["recovery"] = True
         result.append(item)
     return result
 
@@ -204,6 +209,83 @@ def _policy_record(stored: dict[str, Any], app: dict[str, Any]) -> dict[str, Any
     return {}
 
 
+def _normalized_hosts(app: dict[str, Any]) -> set[str]:
+    hosts: set[str] = set()
+    for raw in _hostnames(app):
+        name = str(raw or "").strip().lower().rstrip(".")
+        if not name or name in CATCHALL_HOSTS:
+            continue
+        hosts.add(name)
+        if name.startswith("www."):
+            hosts.add(name[4:])
+        else:
+            hosts.add("www." + name)
+    return hosts
+
+
+def _hosts_from_legacy_record(app: dict[str, Any]) -> set[str]:
+    hosts = _normalized_hosts(app)
+    ident = str(app.get("application_id") or "")
+    root = str(app.get("root") or "")
+    candidates = []
+    if ":" in ident:
+        candidates.append(ident.split(":", 1)[1])
+    if root:
+        candidates.append(root)
+    for path in candidates:
+        leaf = str(path).rstrip("/").rsplit("/", 1)[-1].lower()
+        if leaf and "." in leaf and leaf not in CATCHALL_HOSTS:
+            hosts.add(leaf)
+            if leaf.startswith("www."):
+                hosts.add(leaf[4:])
+            else:
+                hosts.add("www." + leaf)
+    return hosts
+
+
+def classify_vanished_site(previous: dict[str, Any], live_apps: list[dict[str, Any]]) -> dict[str, Any]:
+    """Distinguish deleted sites from Docker cutovers of the same hostname."""
+    prev_hosts = _hosts_from_legacy_record(previous)
+    for live in live_apps:
+        live_hosts = _normalized_hosts(live)
+        if not prev_hosts or not (prev_hosts & live_hosts):
+            continue
+        live_id = str(live.get("application_id") or live.get("hostname") or "")
+        live_docker = live.get("docker") if isinstance(live.get("docker"), dict) else None
+        prev_root = str(previous.get("root") or "")
+        if live_docker:
+            return {
+                "change": "migrated",
+                "status": "SITE MIGRATED — NOW RUNNING IN DOCKER",
+                "site_class": "migrated_docker",
+                "replaced_by": live_id,
+                "notes": [
+                    f"Legacy host installation {previous.get('application_id')} "
+                    f"({prev_root or 'no root'}) is no longer in active Nginx.",
+                    f"The same hostname now runs as Docker application {live_id}.",
+                    "The current Docker application is the authoritative backup source.",
+                    "This old path is not a deleted website.",
+                ],
+            }
+        return {
+            "change": "migrated",
+            "status": "SITE MIGRATED — LEGACY HOST INSTALL",
+            "site_class": "legacy_host",
+            "replaced_by": live_id,
+            "notes": [
+                f"Previous application {previous.get('application_id')} was replaced by {live_id}.",
+                "The currently active application is the authoritative backup source.",
+            ],
+        }
+    return {
+        "change": "removed",
+        "status": "SITE REMOVED — REQUIRES REVIEW",
+        "site_class": "deleted",
+        "replaced_by": "",
+        "notes": ["No longer detected in active Nginx configuration."],
+    }
+
+
 def is_auto_excluded(app: dict[str, Any]) -> bool:
     status = str(app.get("status") or "")
     return bool(
@@ -224,7 +306,7 @@ def approve_all_applications(
     """Approve discovered applications. Skips unused default roots unless explicitly overridden."""
     approved_ids: list[str] = []
     for app in applications:
-        if app.get("change") == "removed":
+        if app.get("change") in {"removed", "migrated"}:
             continue
         auto_excluded = is_auto_excluded(app)
         if auto_excluded and not include_unused_default:
@@ -265,6 +347,8 @@ def snapshot_application_row(item: dict[str, Any]) -> dict[str, Any]:
         "configuration_paths": list(item.get("configuration_paths") or []),
         "source_files": list(item.get("source_files") or []),
         "change": item.get("change") or "",
+        "site_class": item.get("site_class") or "",
+        "replaced_by": item.get("replaced_by") or "",
     }
 
 
@@ -299,6 +383,7 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
             row["included"] = False
             row["excluded"] = True
             row["change"] = "excluded"
+            row["site_class"] = "excluded"
         elif rec.get("approved"):
             if new_hosts:
                 row["included"] = False
@@ -317,6 +402,7 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
                     "REQUIRES APPROVAL" in status and "HOSTNAME" not in status and "REVIEW" not in status
                 ):
                     row["status"] = "READY"
+                    row["site_class"] = "active"
         else:
             row["included"] = False
             row["excluded"] = False
@@ -331,6 +417,8 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
                 row["change"] = "unchanged" if ident in previous else "new"
                 if row.get("status") == "READY":
                     row["status"] = "NEW SITE DETECTED — REQUIRES APPROVAL"
+        if not row.get("site_class"):
+            row["site_class"] = "active" if row.get("included") else str(row.get("change") or "active")
         result.append(row)
     previous_map: dict[str, dict[str, Any]] = {}
     for item in snapshot.get("applications") or []:
@@ -344,15 +432,20 @@ def apply_policy(applications: list[dict[str, Any]], destination: str | Path) ->
     for ident, prev in previous_map.items():
         if ident in current_ids:
             continue
-        removed = dict(prev)
-        removed["status"] = "SITE REMOVED — REQUIRES REVIEW"
+        vanished = dict(prev)
+        classification = classify_vanished_site(vanished, result)
         rec = stored.get(ident) or {}
-        if rec.get("removed_acknowledged"):
-            removed["status"] = "SITE REMOVED — ACKNOWLEDGED"
-        removed["change"] = "removed"
-        removed["included"] = False
-        removed["notes"] = list(removed.get("notes") or []) + [
-            "No longer detected in active Nginx configuration."
-        ]
-        result.append(removed)
+        vanished["included"] = False
+        vanished["excluded"] = classification["change"] == "migrated"
+        vanished["change"] = classification["change"]
+        vanished["site_class"] = classification["site_class"]
+        vanished["replaced_by"] = classification.get("replaced_by") or ""
+        vanished["notes"] = list(vanished.get("notes") or []) + list(classification.get("notes") or [])
+        if classification["change"] == "migrated":
+            vanished["status"] = classification["status"]
+        else:
+            vanished["status"] = "SITE REMOVED — REQUIRES REVIEW"
+            if rec.get("removed_acknowledged"):
+                vanished["status"] = "SITE REMOVED — ACKNOWLEDGED"
+        result.append(vanished)
     return result

@@ -12,7 +12,13 @@ from typing import Any
 import re
 
 CATCHALL_HOSTS = {"", "*", "_", "localhost"}
-RESERVED_FOLDERS = {"_unassigned-databases", "_server", "backup-manifest.json"}
+RESERVED_FOLDERS = {
+    "_unassigned-databases",
+    "_server",
+    "_recovery",
+    "backup-manifest.json",
+}
+LETSENCRYPT_ROOT = "/etc/letsencrypt"
 WINDOWS_RESERVED = {
     "con",
     "prn",
@@ -48,6 +54,9 @@ class SiteDatabase:
     db_type: str
     shared_with: list[str] = field(default_factory=list)
     include_unassigned: bool = False
+    recovery: bool = False
+    docker_container: str = ""
+    size_bytes: int = 0
 
 
 @dataclass
@@ -66,6 +75,8 @@ class SiteSpec:
     notes: list[str] = field(default_factory=list)
     hostnames: list[str] = field(default_factory=list)
     named_volumes: list[str] = field(default_factory=list)
+    estimated_bytes: int = 0
+    file_count: int = 0
 
     def all_file_roots(self) -> list[str]:
         roots: list[str] = []
@@ -81,6 +92,7 @@ class DomainMap:
     sites: list[SiteSpec]
     unassigned_databases: list[SiteDatabase]
     skipped: list[dict[str, str]]
+    recovery_databases: list[SiteDatabase] = field(default_factory=list)
 
     def site_by_folder(self, folder: str) -> SiteSpec | None:
         for site in self.sites:
@@ -164,7 +176,7 @@ def sanitize_domain_folder(domain: str) -> str:
 def _eligible_application(app: dict[str, Any]) -> bool:
     if not isinstance(app, dict):
         return False
-    if app.get("change") == "removed":
+    if app.get("change") in {"removed", "migrated"}:
         return False
     if app.get("excluded") or app.get("unused_default_root"):
         return False
@@ -268,7 +280,11 @@ def build_domain_map(
                 }
             )
             continue
-        if not approved_only and (app.get("excluded") or app.get("unused_default_root") or app.get("change") == "removed"):
+        if not approved_only and (
+            app.get("excluded")
+            or app.get("unused_default_root")
+            or app.get("change") in {"removed", "migrated"}
+        ):
             continue
         domain = canonical_domain(app)
         if not domain:
@@ -304,6 +320,7 @@ def build_domain_map(
                 notes=[str(n) for n in (app.get("notes") or []) if n],
                 hostnames=_hostnames(app),
                 named_volumes=_named_volumes(app),
+                estimated_bytes=int(app.get("estimated_bytes") or 0),
             )
         )
 
@@ -323,7 +340,12 @@ def build_domain_map(
         site = by_id.get(ident)
         if site and _associated(str(row.get("status") or "")):
             site.databases.append(
-                SiteDatabase(name=name, db_type=_db_type_for(name, {}, row))
+                SiteDatabase(
+                    name=name,
+                    db_type=_db_type_for(name, {}, row),
+                    docker_container=str(row.get("docker_container") or inferred_db_container(site.docker) or ""),
+                    size_bytes=int(row.get("size_bytes") or 0),
+                )
             )
             claimed.setdefault(name, []).append(site.folder)
             assigned_names.add(name)
@@ -333,10 +355,12 @@ def build_domain_map(
         name = str((app or {}).get("database_name") or "").strip()
         if not name or name in {db.name for db in site.databases}:
             continue
+        docker = (app or {}).get("docker") if isinstance((app or {}).get("docker"), dict) else None
         site.databases.append(
             SiteDatabase(
                 name=name,
                 db_type=str((app or {}).get("database_type") or "MariaDB"),
+                docker_container=inferred_db_container(docker),
             )
         )
         claimed.setdefault(name, []).append(site.folder)
@@ -352,24 +376,37 @@ def build_domain_map(
                     db.shared_with = [item for item in unique if item != site.folder]
 
     unassigned: list[SiteDatabase] = []
+    recovery: list[SiteDatabase] = []
     for row in inventory:
         name = str(row.get("name") or "").strip()
         if not name or name in assigned_names:
             continue
         if row.get("system") or "SYSTEM DATABASE" in str(row.get("status") or ""):
             continue
-        if "EXCLUDED" in str(row.get("status") or ""):
+        status = str(row.get("status") or "")
+        is_recovery = bool(row.get("recovery")) or status.startswith("RECOVERY")
+        if "EXCLUDED" in status and not is_recovery:
             continue
-        unassigned.append(
-            SiteDatabase(
-                name=name,
-                db_type=str(row.get("type") or "MariaDB"),
-                include_unassigned=bool(row.get("include_unassigned"))
-                or "INCLUDED — UNASSIGNED" in str(row.get("status") or ""),
-            )
+        db = SiteDatabase(
+            name=name,
+            db_type=str(row.get("type") or "MariaDB"),
+            include_unassigned=bool(row.get("include_unassigned"))
+            or "INCLUDED — UNASSIGNED" in status,
+            recovery=is_recovery,
+            docker_container=str(row.get("docker_container") or ""),
+            size_bytes=int(row.get("size_bytes") or 0),
         )
+        if is_recovery and not db.include_unassigned:
+            recovery.append(db)
+        else:
+            unassigned.append(db)
 
-    return DomainMap(sites=sites, unassigned_databases=unassigned, skipped=skipped)
+    return DomainMap(
+        sites=sites,
+        unassigned_databases=unassigned,
+        skipped=skipped,
+        recovery_databases=recovery,
+    )
 
 
 def dump_names(
@@ -382,15 +419,18 @@ def dump_names(
     mariadb = list(domain_map.mariadb_names())
     postgres = list(domain_map.postgres_names())
     selected = [str(n).strip() for n in (selected or []) if str(n).strip()]
-    unassigned_names = {db.name for db in domain_map.unassigned_databases}
-    for db in domain_map.unassigned_databases:
-        if db.include_unassigned and db.name not in mariadb:
+    unassigned_names = {db.name for db in domain_map.unassigned_databases} | {
+        db.name for db in domain_map.recovery_databases
+    }
+    for db in [*domain_map.unassigned_databases, *domain_map.recovery_databases]:
+        if (db.include_unassigned or db.recovery) and db.name not in mariadb:
             mariadb.append(db.name)
     for name in selected:
         if name in postgres:
             continue
         if name in unassigned_names and not include_unassigned_selected and not any(
-            db.name == name and db.include_unassigned for db in domain_map.unassigned_databases
+            db.name == name and (db.include_unassigned or db.recovery)
+            for db in [*domain_map.unassigned_databases, *domain_map.recovery_databases]
         ):
             continue
         if name not in mariadb:
@@ -479,6 +519,10 @@ def classify_file(
     rel = str(record.get("relative_path") or "").replace("\\", "/").lstrip("/")
     basename = abs_path.rsplit("/", 1)[-1].lower() if abs_path else ""
 
+    ssl_hit = _classify_ssl_path(abs_path, domain_map, rel=rel, basename=basename)
+    if ssl_hit is not None:
+        return ssl_hit
+
     best: tuple[int, SiteSpec, str] | None = None
     for site in domain_map.sites:
         app_root = site.application_root
@@ -530,17 +574,15 @@ def classify_file(
 
     if nginx and (source_root == nginx or abs_path == nginx or abs_path.startswith(nginx + "/")):
         nginx_rel = abs_path[len(nginx) :].lstrip("/") if abs_path.startswith(nginx) else (rel or basename)
-        for site in domain_map.sites:
-            tokens = {site.domain.lower(), site.folder.lower(), *[h.lower() for h in site.hostnames]}
-            haystack = f"{nginx_rel} {abs_path}".lower()
-            if any(token and token in haystack for token in tokens):
-                return {
-                    "site_folder": site.folder,
-                    "kind": "config",
-                    "relative": f"nginx/{nginx_rel or basename}",
-                    "domain": site.domain,
-                    "absolute": abs_path,
-                }
+        matched = _site_matching_tokens(nginx_rel + " " + abs_path, domain_map)
+        if matched is not None:
+            return {
+                "site_folder": matched.folder,
+                "kind": "nginx",
+                "relative": nginx_rel or basename,
+                "domain": matched.domain,
+                "absolute": abs_path,
+            }
         return {
             "site_folder": "_server",
             "kind": "nginx",
@@ -558,8 +600,50 @@ def classify_file(
     }
 
 
+def _site_matching_tokens(haystack: str, domain_map: DomainMap) -> SiteSpec | None:
+    text = haystack.lower()
+    best: tuple[int, SiteSpec] | None = None
+    for site in domain_map.sites:
+        tokens = {site.domain.lower(), site.folder.lower(), *[h.lower() for h in site.hostnames]}
+        for token in tokens:
+            if token and token in text:
+                score = len(token)
+                if best is None or score > best[0]:
+                    best = (score, site)
+    return best[1] if best else None
+
+
+def _classify_ssl_path(
+    abs_path: str,
+    domain_map: DomainMap,
+    *,
+    rel: str,
+    basename: str,
+) -> dict[str, str] | None:
+    cleaned = _clean(abs_path)
+    if not (cleaned == LETSENCRYPT_ROOT or cleaned.startswith(LETSENCRYPT_ROOT + "/")):
+        return None
+    ssl_rel = cleaned[len(LETSENCRYPT_ROOT) :].lstrip("/") if cleaned.startswith(LETSENCRYPT_ROOT) else (rel or basename)
+    matched = _site_matching_tokens(ssl_rel + " " + cleaned, domain_map)
+    if matched is not None:
+        return {
+            "site_folder": matched.folder,
+            "kind": "nginx",
+            "relative": f"ssl/{ssl_rel or basename}",
+            "domain": matched.domain,
+            "absolute": abs_path,
+        }
+    return {
+        "site_folder": "_server",
+        "kind": "nginx",
+        "relative": f"ssl/{ssl_rel or basename}",
+        "domain": "",
+        "absolute": abs_path,
+    }
+
+
 def extra_config_copies(record: dict[str, Any], placement: dict[str, str]) -> dict[str, str] | None:
-    """Optional second copy of well-known config files under files/config/."""
+    """Optional second copy of well-known config files under website/config/."""
     if placement.get("kind") not in {"application", "storage"}:
         return None
     abs_path = placement.get("absolute") or absolute_record_path(record)

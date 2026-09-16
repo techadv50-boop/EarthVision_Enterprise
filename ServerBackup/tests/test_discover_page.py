@@ -220,7 +220,7 @@ def test_discover_page_shows_migration_leftover_dump_button(tmp_path: Path):
     page.show()
     qt.processEvents()
     labels = "\n".join(label.text() for label in page.findChildren(QLabel))
-    assert "EXCLUDED DATABASES (MIGRATION LEFTOVER)" in labels
+    assert "RECOVERY DATABASES (MIGRATION LEFTOVER)" in labels
     assert "sea_tecdb" in labels
     include = page.findChild(QPushButton, "includeUnassigned")
     assert include is not None

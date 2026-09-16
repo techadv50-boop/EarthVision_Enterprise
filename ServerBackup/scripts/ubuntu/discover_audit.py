@@ -508,11 +508,14 @@ def finalize_database_verdict(row: dict[str, Any]) -> dict[str, Any]:
             _is_migration_leftover_path(str(item.get("path") or "")) for item in refs
         )
         if leftover_only:
-            row["status"] = "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+            row["status"] = "RECOVERY — DOKPLOY MIGRATION LEFTOVER"
+            row["recovery"] = True
             row["reason"] = (
                 "only referenced under Dokploy migration copies "
                 "(/opt/dokploy-migrations or /root/dokploy-migration); "
-                "not an active Nginx application. Use Discover DUMP AS UNASSIGNED to keep this leftover schema."
+                "not an active Nginx application. Kept under BACKUPS/_recovery/databases "
+                "so it is never silently discarded. Discover EXCLUDE FROM BACKUP skips the dump "
+                "and still writes a recovery note."
                 + extra
             )
             return row

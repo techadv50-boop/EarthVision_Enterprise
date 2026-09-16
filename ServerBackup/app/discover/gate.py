@@ -10,7 +10,7 @@ def assess_backup_gate(
     databases: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     apps = [row for row in (applications or []) if isinstance(row, dict)]
-    live = [row for row in apps if row.get("change") != "removed"]
+    live = [row for row in apps if row.get("change") not in {"removed", "migrated"}]
     excluded_apps = [
         row
         for row in live
@@ -36,8 +36,21 @@ def assess_backup_gate(
         and row not in excluded_dbs
         and (row.get("include_unassigned") or "INCLUDED — UNASSIGNED" in str(row.get("status") or ""))
     ]
+    recovery_dbs = [
+        row
+        for row in dbs
+        if row not in associated
+        and row not in excluded_dbs
+        and row not in included_unassigned
+        and (row.get("recovery") or str(row.get("status") or "").startswith("RECOVERY"))
+    ]
     unresolved_dbs = [
-        row for row in dbs if row not in associated and row not in excluded_dbs and row not in included_unassigned
+        row
+        for row in dbs
+        if row not in associated
+        and row not in excluded_dbs
+        and row not in included_unassigned
+        and row not in recovery_dbs
     ]
     block = bool(pending_apps or unresolved_dbs)
     return {

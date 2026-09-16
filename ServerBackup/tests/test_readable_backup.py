@@ -196,7 +196,7 @@ def test_files_are_classified_under_the_owning_domain():
         nginx_root="/etc/nginx",
     )
     assert nginx["site_folder"] == "50sea.com"
-    assert nginx["kind"] == "config"
+    assert nginx["kind"] == "nginx"
     shared = classify_file(
         {"source_root": "/etc/nginx", "relative_path": "nginx.conf"},
         mapping,
@@ -245,16 +245,22 @@ def test_readable_export_from_master_objects(tmp_path: Path):
     assert (dest / "master").is_dir()
     assert not (dest / READABLE_DIR).exists()
     assert (test_root / "BACKUP-MANIFEST.json").is_file()
-    assert (test_root / "50sea.com" / "files" / "application" / "index.html").read_bytes() == b"50sea-index"
-    assert (test_root / "50sea.com" / "files" / "config" / "wp-config.php").is_file()
+    assert (test_root / "50sea.com" / "website" / "application" / "index.html").read_bytes() == b"50sea-index"
+    assert (test_root / "50sea.com" / "website" / "config" / "wp-config.php").is_file()
     assert (test_root / "50sea.com" / "database" / "sea_tedb.sql").read_bytes() == b"SQL sea_tedb"
-    assert (test_root / "journal.50sea.com" / "files" / "storage" / "paper.pdf").read_bytes() == b"%PDF-50sea"
+    assert (test_root / "journal.50sea.com" / "website" / "storage" / "paper.pdf").read_bytes() == b"%PDF-50sea"
     assert (test_root / "journal.50sea.com" / "database" / "ojs50.sql").read_bytes() == b"SQL ojs50"
     assert not (test_root / "50sea.com" / "database" / "ojs50.sql").exists()
     assert not (test_root / "journal.50sea.com" / "database" / "sea_tedb.sql").exists()
     assert (test_root / "_unassigned-databases" / "xdgen_db.sql").read_bytes() == b"SQL xdgen_db"
     assert (test_root / "_server" / "nginx" / "nginx.conf").is_file()
     assert (test_root / "citation.xdgen.com" / "docker" / "container-info.txt").is_file()
+    assert (test_root / "50sea.com" / "manifest.json").is_file()
+    sea_manifest = json.loads((test_root / "50sea.com" / "manifest.json").read_text(encoding="utf-8"))
+    assert sea_manifest["canonical_hostname"] == "50sea.com"
+    assert sea_manifest["database_dump_filename"] == "sea_tedb.sql"
+    assert "database/sea_tedb.sql" in sea_manifest["checksums"]
+    assert sea_manifest["restore_validation"]["status"] in {"COMPLETE", "PARTIAL"}
     assert (test_root / "50sea.com" / "backup-info.txt").read_text(encoding="utf-8").startswith("Domain: 50sea.com")
     payload = json.loads((test_root / "BACKUP-MANIFEST.json").read_text(encoding="utf-8"))
     domains = [row["domain"] for row in payload["websites"]]
@@ -284,19 +290,20 @@ def test_backup_now_writes_per_domain_tree_and_keeps_master_and_legacy(tmp_path:
     assert "journal.50sea.com" in domains
     assert "journal.xdgen.com" in domains
     assert "xdgen.com" in domains
-    assert (backups / "50sea.com" / "files" / "application" / "index.html").read_text(encoding="utf-8") == "50sea\n"
-    assert "sea_tedb" in (backups / "50sea.com" / "files" / "application" / "wp-config.php").read_text(encoding="utf-8")
+    assert (backups / "50sea.com" / "website" / "application" / "index.html").read_text(encoding="utf-8") == "50sea\n"
+    assert "sea_tedb" in (backups / "50sea.com" / "website" / "application" / "wp-config.php").read_text(encoding="utf-8")
     assert (backups / "50sea.com" / "database" / "sea_tedb.sql").is_file()
     assert "SQL sea_tedb" in (backups / "50sea.com" / "database" / "sea_tedb.sql").read_text(encoding="utf-8", errors="replace")
-    assert (backups / "journal.50sea.com" / "files" / "application" / "index.php").is_file()
-    assert (backups / "journal.50sea.com" / "files" / "storage" / "paper.pdf").is_file()
+    assert (backups / "journal.50sea.com" / "website" / "application" / "index.php").is_file()
+    assert (backups / "journal.50sea.com" / "website" / "storage" / "paper.pdf").is_file()
     assert (backups / "journal.50sea.com" / "database" / "ojs50.sql").is_file()
     assert not (backups / "50sea.com" / "database" / "ojs50.sql").exists()
     assert not (backups / "journal.50sea.com" / "database" / "sea_tedb.sql").exists()
-    sea_text = (backups / "50sea.com" / "files" / "application" / "index.html").read_text(encoding="utf-8")
-    journal_index = (backups / "journal.50sea.com" / "files" / "application" / "index.php").read_text(encoding="utf-8")
+    sea_text = (backups / "50sea.com" / "website" / "application" / "index.html").read_text(encoding="utf-8")
+    journal_index = (backups / "journal.50sea.com" / "website" / "application" / "index.php").read_text(encoding="utf-8")
     assert "journal50-app" not in sea_text
     assert "50sea\n" not in journal_index
+    assert (backups / "50sea.com" / "manifest.json").is_file()
     assert (backups / "citation.xdgen.com" / "docker" / "container-info.json").is_file()
     assert not (backups / "html").exists()
     names = [path.name for path in backups.iterdir() if path.is_dir()]

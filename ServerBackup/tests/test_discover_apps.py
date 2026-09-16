@@ -946,7 +946,12 @@ def test_inactive_hostname_from_previous_snapshot_is_not_added(tmp_path: Path):
         },
     )
     result = discover_applications(cfg, ssh=LocalMasterSSH(tmp_path / "remote"), persist=True)
-    hosts = {name for app in result["applications"] if app.get("change") != "removed" for name in (app.get("hostnames") or [])}
+    hosts = {
+        name
+        for app in result["applications"]
+        if app.get("change") not in {"removed", "migrated"}
+        for name in (app.get("hostnames") or [])
+    }
     assert "sateye.xdgen.com" not in hosts
     inactive = {row["hostname"] for row in result.get("inactive_hostnames") or []}
     assert "sateye.xdgen.com" in inactive
@@ -1412,10 +1417,16 @@ def test_apply_database_policy_auto_excludes_dokploy_migration_leftover(tmp_path
     ]
     reviewed = apply_database_policy(inventory, dest)
     gate = assess_backup_gate(apps, reviewed)
-    assert reviewed[1]["status"] == "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+    assert reviewed[1]["status"] == "RECOVERY — DOKPLOY MIGRATION LEFTOVER"
     assert gate["databases_unresolved"] == 0
     assert gate["block_complete_backup"] is False
     assert gate["unresolved_database_names"] == []
+    from app.backup.domain_map import build_domain_map, dump_names
+
+    mapping = build_domain_map(apps, reviewed)
+    mariadb, _postgres = dump_names(mapping, selected=[])
+    assert "sea50_db" in mariadb
+    assert "sea_tecdb" in mariadb
 
 
 def test_include_unassigned_database_clears_gate_and_is_dumped(tmp_path: Path):
@@ -1458,7 +1469,7 @@ def test_acknowledge_removed_sites_drops_requires_review(tmp_path: Path):
 
     dest = tmp_path / "ServerBackups"
     dest.mkdir()
-    set_approval(dest, "wordpress:/var/www/50sea.com", approved=True)
+    set_approval(dest, "static:/var/www/gone.example.com", approved=True)
     live = [
         {
             "application_id": "docker:sea50-cyfdw1",
@@ -1477,6 +1488,33 @@ def test_acknowledge_removed_sites_drops_requires_review(tmp_path: Path):
     after = apply_policy(live, dest)
     gone = next(row for row in after if row.get("change") == "removed")
     assert gone["status"] == "SITE REMOVED — ACKNOWLEDGED"
+
+
+def test_old_var_www_wordpress_is_migrated_not_deleted(tmp_path: Path):
+    from app.discover.policy import apply_policy, set_approval
+
+    dest = tmp_path / "ServerBackups"
+    dest.mkdir()
+    set_approval(dest, "wordpress:/var/www/50sea.com", approved=True)
+    live = [
+        {
+            "application_id": "docker:sea50-cyfdw1",
+            "hostname": "50sea.com",
+            "hostnames": ["50sea.com", "www.50sea.com"],
+            "type": "WordPress",
+            "root": "",
+            "status": "READY",
+            "included": True,
+            "docker": {"container": "sea50-cyfdw1-web-1", "compose_project": "sea50-cyfdw1"},
+        }
+    ]
+    rows = apply_policy(live, dest)
+    vanished = [row for row in rows if row.get("application_id") == "wordpress:/var/www/50sea.com"]
+    assert vanished
+    assert vanished[0]["change"] == "migrated"
+    assert "SITE MIGRATED" in vanished[0]["status"]
+    assert vanished[0]["replaced_by"] == "docker:sea50-cyfdw1"
+    assert not any(row.get("change") == "removed" and "50sea.com" in str(row.get("application_id")) for row in rows)
 
 
 def test_dokploy_mysql_database_missing_on_host_is_associated_via_db_container():
@@ -1519,7 +1557,7 @@ server {
     by_name = {row["name"]: row for row in inventory}
     assert by_name["sea50_db"]["status"] == "ASSOCIATED WITH APPLICATION"
     assert by_name["sea50_db"]["docker_container"] == "sea50-cyfdw1-db-1"
-    assert by_name["sea_tecdb"]["status"] == "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+    assert by_name["sea_tecdb"]["status"] == "RECOVERY — DOKPLOY MIGRATION LEFTOVER"
     gate = assess_backup_gate([{**by_host["50sea.com"], "included": True}], inventory)
     assert "sea50_db" not in (gate.get("unresolved_database_names") or [])
     assert gate["unresolved_database_names"] == []
@@ -1587,7 +1625,7 @@ def test_migration_leftover_database_is_auto_excluded():
             ]
         },
     )
-    assert inventory[0]["status"] == "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+    assert inventory[0]["status"] == "RECOVERY — DOKPLOY MIGRATION LEFTOVER"
     gate = assess_backup_gate(
         [{"application_id": "docker:sea50-cyfdw1", "included": True, "status": "READY"}],
         inventory,

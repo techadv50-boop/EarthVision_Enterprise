@@ -80,7 +80,7 @@ def format_application_sections(
     database_account: dict[str, Any] | None = None,
 ) -> list[str]:
     apps = list(applications or [])
-    live = [a for a in apps if a.get("change") != "removed"]
+    live = [a for a in apps if a.get("change") not in {"removed", "migrated"}]
     included = [a for a in live if a.get("included")]
     excluded = [
         a
@@ -156,6 +156,11 @@ def format_application_sections(
         for row in inventory
         if not row.get("system") and "UNASSOCIATED" in str(row.get("status") or "")
     ]
+    recovery_db_rows = [
+        row
+        for row in inventory
+        if not row.get("system") and str(row.get("status") or "").startswith("RECOVERY")
+    ]
     excluded_db_rows = [
         row
         for row in inventory
@@ -217,6 +222,15 @@ def format_application_sections(
                 table_names = ", ".join(str(item.get("name") or item) for item in row.get("tables") or [] if item)
                 if table_names:
                     lines.append(f"    table_names: {table_names}")
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "RECOVERY DATABASES"])
+    if recovery_db_rows:
+        for row in recovery_db_rows:
+            lines.append(f"  {row.get('name')}")
+            lines.append(f"    status: {row.get('status')}")
+            lines.append(f"    reason: {row.get('reason') or 'Dokploy migration leftover'}")
+            lines.append("    kept under BACKUPS/_recovery/databases — not a website folder, not silently discarded")
     else:
         lines.append("  (none)")
     lines.extend(["", "EXCLUDED DATABASES"])
@@ -328,6 +342,39 @@ def format_application_sections(
     lines.extend(["", *format_backup_gate(computed_gate)])
     new_apps = [a for a in apps if a.get("change") == "new" or "NEW SITE DETECTED" in str(a.get("status") or "")]
     removed_apps = [a for a in apps if a.get("change") == "removed" or "SITE REMOVED" in str(a.get("status") or "")]
+    migrated_apps = [a for a in apps if a.get("change") == "migrated" or "SITE MIGRATED" in str(a.get("status") or "")]
+    lines.extend(["", "SITE CLASSIFICATION"])
+    lines.append("  1. currently active website")
+    active = [a for a in live if a.get("included") and not a.get("excluded")]
+    if active:
+        for app in active:
+            lines.append(f"    ACTIVE  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('type')}")
+    else:
+        lines.append("    (none approved yet)")
+    lines.append("  2. migrated application now running in Docker")
+    docker_migrated = [a for a in migrated_apps if a.get("site_class") == "migrated_docker" or "DOCKER" in str(a.get("status") or "")]
+    if docker_migrated:
+        for app in docker_migrated:
+            lines.append(
+                f"    MIGRATED TO DOCKER  {app.get('application_id')}  {', '.join(_hostnames(app))}  "
+                f"replaced_by={app.get('replaced_by') or '—'}"
+            )
+            lines.append("    Old /var/www path is a legacy host install, not a deleted website.")
+    else:
+        lines.append("    (none)")
+    lines.append("  3. old/legacy host installation")
+    legacy = [a for a in migrated_apps if a not in docker_migrated]
+    if legacy:
+        for app in legacy:
+            lines.append(f"    LEGACY HOST  {app.get('application_id')}  {', '.join(_hostnames(app))}")
+    else:
+        lines.append("    (none)")
+    lines.append("  4. genuinely deleted website")
+    if removed_apps:
+        for app in removed_apps:
+            lines.append(f"    DELETED  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
+    else:
+        lines.append("    (none)")
     lines.extend(["", "NEW APPLICATIONS"])
     if new_apps:
         for app in new_apps:
@@ -343,7 +390,17 @@ def format_application_sections(
         for app in removed_apps:
             lines.append(f"  Previously discovered: {app.get('application_id')} ({', '.join(_hostnames(app))})")
             lines.append("  No longer detected in active Nginx configuration.")
+            lines.append("  This is classified as a genuinely deleted website (no live hostname match).")
             lines.append("  Master data is NOT deleted. Review before removing from the backup set.")
+    else:
+        lines.append("  (none)")
+    lines.extend(["", "MIGRATED APPLICATIONS"])
+    if migrated_apps:
+        for app in migrated_apps:
+            lines.append(f"  {app.get('status')}  {app.get('application_id')} ({', '.join(_hostnames(app))})")
+            lines.append(f"  replaced_by={app.get('replaced_by') or '—'}")
+            for note in app.get("notes") or []:
+                lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
     lines.extend(["", "REQUIRES REVIEW"])

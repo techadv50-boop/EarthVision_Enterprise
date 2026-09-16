@@ -36,6 +36,7 @@ from app.backup.live import (
     log_pipeline,
 )
 from app.backup.domain_map import build_domain_map, docker_only_dump_map, dump_names
+from app.backup.preflight import build_preflight, format_new_file_attribution, format_preflight_report, format_proposed_tree
 from app.backup.readable import ReadableExportError, export_readable_backup
 from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
@@ -161,6 +162,8 @@ def collect_sources_from_applications(
 
     for app in applications:
         if app.get("change") == "removed" or app.get("excluded"):
+            continue
+        if app.get("change") == "migrated":
             continue
         if approved_only and not app.get("included"):
             continue
@@ -780,6 +783,7 @@ def format_dry_run_report(
     inactive_hostnames: list[dict[str, Any]] | None = None,
     gate: dict[str, Any] | None = None,
     database_account: dict[str, Any] | None = None,
+    extra_sections: list[str] | None = None,
 ) -> str:
     """Human-readable DRY RUN summary. Never mutates master or HEAD."""
     changed_dbs = list(changed_dbs or [])
@@ -845,6 +849,7 @@ def format_dry_run_report(
         f"MOVED={counts.get('moved', 0)}"
     )
     warning_lines = [f"  {item}" for item in inventory_warnings] if inventory_warnings else []
+    extra = extra_sections or []
     return "\n".join(
         [
             f"MASTER STATUS: {master_status}",
@@ -859,6 +864,7 @@ def format_dry_run_report(
             "HEAD: unchanged",
             counts_line,
             *(["INVENTORY WARNINGS:", *warning_lines] if warning_lines else []),
+            *extra,
         ]
     )
 
@@ -1008,6 +1014,24 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         else op_type
     )
     report_ok = not db_error
+    preflight = build_preflight(
+        applications=applications,
+        database_inventory=list(discovery.get("database_inventory") or []),
+        inventory=inventory,
+        nginx_root=str(config.nginx_directory or "/etc/nginx"),
+        dump_objects=(store.load_meta().get("database_objects") or {}) if has_master else {},
+        has_master=has_master,
+    )
+    extra_sections = [
+        "",
+        format_new_file_attribution(counts=counts, grouped=preflight.get("grouped") or {}, has_master=has_master),
+        "",
+        format_proposed_tree(preflight),
+        "",
+        format_preflight_report(preflight),
+        "",
+        "BACKUP NOW is not started by DRY RUN. Approve this preflight before a real backup.",
+    ]
     report_text = format_dry_run_report(
         has_master=has_master,
         generation=store.head_generation(),
@@ -1031,6 +1055,7 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         inactive_hostnames=list(discovery.get("inactive_hostnames") or []),
         gate=discovery.get("backup_gate") or assess_backup_gate(applications, list(discovery.get("database_inventory") or [])),
         database_account=discovery.get("database_account") or {},
+        extra_sections=extra_sections,
     )
     try:
         dest = Path(config.backup_destination)
@@ -1053,6 +1078,14 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         "ojs": ojs,
         "sources": sources,
         "report_text": report_text,
+        "preflight": {
+            "websites": preflight.get("websites"),
+            "recovery_databases": preflight.get("recovery_databases"),
+            "unassigned_databases": preflight.get("unassigned_databases"),
+            "excluded": preflight.get("excluded"),
+            "server_files": preflight.get("server_files"),
+            "server_bytes": preflight.get("server_bytes"),
+        },
         "hashed": False,
         "head_unchanged": True,
         "error": db_error or None,

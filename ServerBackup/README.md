@@ -170,34 +170,41 @@ G:\ServerBackups\
     trees\<generation>.json
     history\<operation-id>.json
     staging\<operation-id>\
-  BACKUPS\                        (human-readable per-website tree)
+  BACKUPS\                        (human-readable; one top-level folder per website)
     BACKUP-MANIFEST.json
     50sea.com\
-      files\
+      website\
         application\
         storage\
         config\
       database\
-        sea_tedb.sql
-      docker\                     (only if the site uses Docker)
-      backup-info.txt
+        sea50_db.sql
+      nginx\
+      docker\
+      manifest.json
     journal.50sea.com\
       ...
-    _unassigned-databases\        (SQL with no proven website mapping)
-    _server\                      (shared Nginx / unmatched files)
+    journal.xdgen.com\
+      ...
+    xdgen.com\
+      ...
+    _recovery\                    (leftover schemas such as sea_tecdb; not a website)
+      databases\
+    _unassigned-databases\        (SQL you explicitly chose to dump without a site)
+    _server\                      (shared Nginx only)
   2026-09-07_082000\              (legacy 1.3.7 archive; left untouched)
     server-backup.tar.gz
     backup-info.json
     backup.log
 ```
 
-Each public hostname is a top-level folder under `BACKUPS`. Docker IDs, volume names, and object hashes stay inside `master\` or in `backup-info.txt` metadata. Named Docker volumes are not copied from `/var/lib/docker`.
+Each public hostname is a top-level folder under `BACKUPS`. Docker IDs, volume names, and object hashes stay inside `master\` or in that site's `manifest.json`. Named Docker volumes are not copied from `/var/lib/docker`. Dokploy leftover schemas are kept under `_recovery` so they are never silently discarded.
 
-HEAD is replaced only after the new tree, objects, and database dumps (if any) verify. A crash during staging leaves the previous HEAD valid. The readable `BACKUPS` tree is rewritten from the committed master after each successful BACKUP NOW (including NO CHANGE).
+HEAD is replaced only after the new tree, objects, and database dumps (if any) verify. A crash during staging leaves the previous HEAD valid. The readable `BACKUPS` tree is rewritten from the committed master after each successful BACKUP NOW (including NO CHANGE). Each website folder is then restore-validated: copy+dump alone is not treated as a complete restore contract.
 
-**DISCOVER SERVER** runs a read-only `nginx -T` inventory of every active hostname, classifies each application, and discovers OJS `files_dir`, databases, and Docker compose/bind mounts. New sites require approval. BACKUP NOW copies approved discovery sources and dumps databases associated with those sites.
+**DISCOVER SERVER** runs a read-only `nginx -T` inventory of every active hostname, classifies each application, and discovers OJS `files_dir`, databases, and Docker compose/bind mounts. New sites require approval. Old `/var/www` records that match a live Docker hostname are classified as migrated/legacy, not as deleted websites. BACKUP NOW copies approved discovery sources and dumps databases associated with those sites.
 
-**DRY RUN** is a metadata-only preview: it connects over SSH, discovers OJS `files_dir`, inventories approved sources, and compares against master **without hashing the live tree or writing HEAD**. A missing master is reported as `NO BASELINE` / `FULL BASELINE PREVIEW`, not as a failure.
+**DRY RUN** is a metadata-only preview: it connects over SSH, discovers applications, inventories sources, attributes NEW files to each website, and prints a 14-field preflight plus the proposed `BACKUPS\<domain>\` tree **without hashing the live tree, writing HEAD, or starting BACKUP NOW**. A missing master is reported as `NO BASELINE` / `FULL BASELINE PREVIEW`, not as a failure.
 
 **REBUILD MASTER BASELINE** stages a new full generation and replaces HEAD only after verification.
 

@@ -15,6 +15,7 @@ import json
 import shutil
 
 from app import __app_name__, __version__
+from app.backup.checksum import sha256_file
 from app.backup.domain_map import (
     SiteDatabase,
     SiteSpec,
@@ -22,7 +23,9 @@ from app.backup.domain_map import (
     build_domain_map,
     classify_file,
     extra_config_copies,
+    inferred_db_container,
 )
+from app.backup.restore_validate import validate_readable_tree
 from app.master.objects import object_path
 from app.master.store import MasterStore
 from app.master.tree import index_active
@@ -31,8 +34,10 @@ READABLE_DIR = "BACKUPS"
 STAGING_SUFFIX = ".staging"
 PREVIOUS_SUFFIX = ".previous"
 UNASSIGNED_DIR = "_unassigned-databases"
+RECOVERY_DIR = "_recovery"
 SERVER_DIR = "_server"
 MANIFEST_NAME = "BACKUP-MANIFEST.json"
+SITE_MANIFEST_NAME = "manifest.json"
 INFO_NAME = "backup-info.txt"
 INFO_JSON_NAME = "backup-info.json"
 
@@ -43,6 +48,14 @@ class ReadableExportError(RuntimeError):
 
 def readable_root(destination: str | Path) -> Path:
     return Path(destination) / READABLE_DIR
+
+
+def _count_files(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return 1
+    return sum(1 for item in path.rglob("*") if item.is_file())
 
 
 def _safe_sql_name(name: str) -> str:
@@ -87,23 +100,24 @@ def _write_sql_from_object(store: MasterStore, digest: str, dest: Path) -> int:
 
 def _site_dirs(root: Path, site: SiteSpec) -> dict[str, Path]:
     base = root / site.folder
+    website = base / "website"
     return {
         "base": base,
-        "files": base / "files",
-        "application": base / "files" / "application",
-        "storage": base / "files" / "storage",
-        "config": base / "files" / "config",
+        "website": website,
+        "application": website / "application",
+        "storage": website / "storage",
+        "config": website / "config",
         "database": base / "database",
+        "nginx": base / "nginx",
         "docker": base / "docker",
     }
 
 
 def _ensure_site_layout(root: Path, site: SiteSpec) -> dict[str, Path]:
     dirs = _site_dirs(root, site)
-    for path in (dirs["application"], dirs["storage"], dirs["config"], dirs["database"]):
+    for path in (dirs["application"], dirs["storage"], dirs["config"], dirs["database"], dirs["nginx"]):
         path.mkdir(parents=True, exist_ok=True)
-    if site.docker:
-        dirs["docker"].mkdir(parents=True, exist_ok=True)
+    dirs["docker"].mkdir(parents=True, exist_ok=True)
     return dirs
 
 
@@ -154,12 +168,13 @@ def format_backup_info(
         "",
         "Restore notes:",
         "  1. This folder is a self-contained copy of one website.",
-        "  2. Copy files/application/ onto the site document root.",
-        "  3. Copy files/storage/ onto the original storage/files_dir path listed above.",
-        "  4. Copy files/config/ into place if you need Nginx/compose snippets separately.",
+        "  2. Copy website/application/ onto the site document root / bind mount.",
+        "  3. Copy website/storage/ onto the original storage/files_dir path listed above.",
+        "  4. Copy nginx/ onto the matching Nginx site files; SSL material is under nginx/ssl/ when inventoried.",
         "  5. Create the MariaDB/PostgreSQL schema named above, then import database/*.sql.",
         "  6. Docker sites: recreate the compose project from docker/ and restore named volumes from metadata.",
         "  7. Do not mix these files with another domain folder.",
+        "  8. Restore is not proven by copy+dump alone; see restore_validation in manifest.json.",
     ]
     if shared:
         lines.extend(["", "Shared databases:", *[f"  {item}" for item in shared]])
@@ -177,19 +192,53 @@ def _site_info_json(
     generation: int | None,
     app_version: str,
     database_files: list[str],
+    file_count: int = 0,
+    checksums: dict[str, str] | None = None,
+    restore_validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     docker = site.docker or {}
+    dump_name = Path(database_files[0]).name if database_files else ""
+    aliases = [h for h in site.hostnames if h != site.domain]
+    db_names = [db.name for db in site.databases]
+    db_containers = [db.docker_container or inferred_db_container(site.docker) for db in site.databases]
     return {
+        "canonical_hostname": site.domain,
+        "aliases": aliases,
+        "application_id": site.application_id,
+        "application_type": site.website_type,
+        "database_name": db_names[0] if len(db_names) == 1 else db_names,
+        "database_container": db_containers[0] if len(db_containers) == 1 else db_containers,
+        "nginx_configuration_files": list(site.nginx_source_files),
+        "docker": {
+            "container": docker.get("container") or "",
+            "compose_project": docker.get("compose_project") or "",
+            "compose_file": docker.get("compose_file") or docker.get("compose_files") or "",
+            "service": docker.get("service") or "",
+            "workdir": docker.get("workdir") or "",
+            "named_volumes_not_copied": list(site.named_volumes),
+        },
+        "source_locations": {
+            "application": site.application_root,
+            "persistent_data": site.storage_roots,
+            "files": site.source_paths,
+            "config": site.config_paths,
+            "nginx": site.nginx_source_files,
+            "named_volumes_not_copied": list(site.named_volumes),
+        },
+        "backup_timestamp": timestamp,
+        "backup_version": app_version,
+        "file_count": file_count,
+        "database_dump_filename": dump_name,
+        "checksums": checksums or {},
+        "restore_validation": restore_validation or {},
         "domain": site.domain,
         "hostnames": site.hostnames,
-        "timestamp": timestamp,
         "website_type": site.website_type,
-        "database_name": [db.name for db in site.databases],
+        "database_names": db_names,
         "database_type": [db.db_type for db in site.databases],
         "docker_container": docker.get("container") or "",
         "docker_compose_project": docker.get("compose_project") or "",
         "docker_compose_file": docker.get("compose_file") or docker.get("compose_files") or "",
-        "application_id": site.application_id,
         "source_paths": {
             "application": site.application_root,
             "storage": site.storage_roots,
@@ -216,7 +265,7 @@ def _write_docker_info(path: Path, site: SiteSpec) -> None:
         "named_volumes_not_copied": list(site.named_volumes),
         "note": (
             "Named Docker volumes are not copied from /var/lib/docker. "
-            "Bind-mount host paths are under files/. Recreate the compose project from this metadata."
+            "Bind-mount host paths are under website/. Recreate the compose project from this metadata."
         ),
     }
     volumes = list(site.named_volumes)
@@ -248,6 +297,9 @@ def _dest_for_kind(dirs: dict[str, Path], kind: str, relative: str, server_root:
     if kind == "docker":
         return dirs["docker"] / rel
     if kind == "nginx":
+        nginx_root = dirs.get("nginx")
+        if nginx_root is not None:
+            return nginx_root / rel
         return server_root / "nginx" / rel
     if kind == "unmapped":
         return server_root / "unmapped" / rel
@@ -361,6 +413,14 @@ def export_readable_backup(
         if site.docker:
             _write_docker_info(dirs["docker"], site)
             extra_notes.append("Docker named volumes were not copied from Docker internal storage.")
+        checksums: dict[str, str] = {}
+        for db_file in db_files:
+            leaf = Path(db_file).name
+            dump_path = dirs["database"] / leaf
+            if dump_path.is_file():
+                checksums[f"database/{leaf}"] = sha256_file(dump_path)
+        file_count = _count_files(dirs["base"])
+        extra_notes.append(f"Per-site restore contract is {SITE_MANIFEST_NAME}.")
         info_text = format_backup_info(
             site,
             timestamp=stamp,
@@ -371,61 +431,131 @@ def export_readable_backup(
             extra_notes=extra_notes,
         )
         _write_text(dirs["base"] / INFO_NAME, info_text)
-        _write_text(
-            dirs["base"] / INFO_JSON_NAME,
-            json.dumps(
-                _site_info_json(
-                    site,
-                    timestamp=stamp,
-                    generation=int(gen) if gen is not None else None,
-                    app_version=__version__,
-                    database_files=db_files,
-                ),
-                indent=2,
-            )
-            + "\n",
+        site_manifest = _site_info_json(
+            site,
+            timestamp=stamp,
+            generation=int(gen) if gen is not None else None,
+            app_version=__version__,
+            database_files=db_files,
+            file_count=file_count,
+            checksums=checksums,
         )
+        _write_text(dirs["base"] / INFO_JSON_NAME, json.dumps(site_manifest, indent=2) + "\n")
+        _write_text(dirs["base"] / SITE_MANIFEST_NAME, json.dumps(site_manifest, indent=2) + "\n")
         website_rows.append(
             {
                 "domain": site.domain,
                 "type": site.website_type,
                 "folder": site.folder,
-                "files": f"{site.folder}/files",
+                "files": f"{site.folder}/website",
+                "website": f"{site.folder}/website",
+                "nginx": f"{site.folder}/nginx",
+                "docker": f"{site.folder}/docker" if site.docker else "",
+                "manifest": f"{site.folder}/{SITE_MANIFEST_NAME}",
                 "database": db_files[0] if len(db_files) == 1 else db_files,
                 "databases": [db.name for db in site.databases],
                 "database_files": db_files,
                 "backup_info": f"{site.folder}/{INFO_NAME}",
-                "docker": bool(site.docker),
+                "file_count": file_count,
                 "status": "SUCCESS",
             }
         )
 
     unassigned_rows: list[dict[str, Any]] = []
+    recovery_rows: list[dict[str, Any]] = []
     placed_db = {db.name for site in domain_map.sites for db in site.databases}
+    recovery_all = list(domain_map.recovery_databases)
+    seen_recovery = {db.name for db in recovery_all}
     unassigned_all = list(domain_map.unassigned_databases)
-    seen_unassigned = {db.name for db in unassigned_all}
+    seen_unassigned = {db.name for db in unassigned_all} | seen_recovery
     for name in objects:
         if name and name not in placed_db and name not in seen_unassigned:
             unassigned_all.append(SiteDatabase(name=str(name), db_type="MariaDB"))
             seen_unassigned.add(str(name))
+    if recovery_all:
+        recovery_dir = staging / RECOVERY_DIR / "databases"
+        recovery_dir.mkdir(parents=True, exist_ok=True)
+        dumped_here: list[str] = []
+        missing_here: list[str] = []
+        for db in recovery_all:
+            sql_name = f"{_safe_sql_name(db.name)}.sql"
+            digest = str(objects.get(db.name) or "")
+            if not digest:
+                note = recovery_dir / f"{_safe_sql_name(db.name)}.EXCLUDED.txt"
+                _write_text(
+                    note,
+                    "\n".join(
+                        [
+                            f"Database: {db.name}",
+                            "Classification: Dokploy migration leftover / unassigned recovery schema.",
+                            "This schema was NOT silently deleted.",
+                            "It is not part of any live website folder.",
+                            "Recovery option: Discover → DUMP AS UNASSIGNED, then run BACKUP NOW.",
+                            "A dump object was not present in this master generation.",
+                            "",
+                        ]
+                    ),
+                )
+                missing_here.append(db.name)
+                recovery_rows.append(
+                    {
+                        "name": db.name,
+                        "type": db.db_type,
+                        "file": f"{RECOVERY_DIR}/databases/{note.name}",
+                        "reason": "Dokploy migration leftover; dump object missing in this generation",
+                    }
+                )
+                continue
+            dest_sql = recovery_dir / sql_name
+            _write_sql_from_object(store, digest, dest_sql)
+            dumped_here.append(f"{RECOVERY_DIR}/databases/{sql_name}")
+            recovery_rows.append(
+                {
+                    "name": db.name,
+                    "type": db.db_type,
+                    "file": f"{RECOVERY_DIR}/databases/{sql_name}",
+                    "checksum": sha256_file(dest_sql),
+                    "reason": "Dokploy migration leftover; not assigned to a live website",
+                }
+            )
+        _write_text(
+            staging / RECOVERY_DIR / "README.txt",
+            "\n".join(
+                [
+                    "Recovery area — not a website.",
+                    "Schemas here are leftovers (for example sea_tecdb after the 50sea.com",
+                    "WordPress → Docker cutover). They are kept so they are never silently discarded.",
+                    "They are intentionally NOT placed under 50sea.com/ or any other live site folder.",
+                    "",
+                    "Dumped: " + (", ".join(dumped_here) if dumped_here else "(none in this generation)"),
+                    "Documented without dump: " + (", ".join(missing_here) if missing_here else "(none)"),
+                    "",
+                    "To restore one of these schemas, import the .sql into a scratch MariaDB instance.",
+                    "To skip future dumps, use Discover → EXCLUDE FROM BACKUP; a .EXCLUDED.txt note remains.",
+                    "",
+                ]
+            ),
+        )
     if unassigned_all:
         unassigned_dir = staging / UNASSIGNED_DIR
         unassigned_dir.mkdir(parents=True, exist_ok=True)
-        dumped_here: list[str] = []
-        missing_here: list[str] = []
+        dumped_here = []
+        missing_here = []
         for db in unassigned_all:
             sql_name = f"{_safe_sql_name(db.name)}.sql"
             digest = str(objects.get(db.name) or "")
             if not digest:
                 missing_here.append(db.name)
                 continue
-            _write_sql_from_object(store, digest, unassigned_dir / sql_name)
+            dest_sql = unassigned_dir / sql_name
+            _write_sql_from_object(store, digest, dest_sql)
             dumped_here.append(f"{UNASSIGNED_DIR}/{sql_name}")
             unassigned_rows.append(
                 {
                     "name": db.name,
                     "type": db.db_type,
                     "file": f"{UNASSIGNED_DIR}/{sql_name}",
+                    "checksum": sha256_file(dest_sql),
                     "reason": "no proven website association",
                 }
             )
@@ -435,6 +565,7 @@ def export_readable_backup(
                 [
                     "Databases in this folder were discovered on the server but were not",
                     "mapped to a website. They are not guessed onto 50sea.com or any other domain.",
+                    "Dokploy leftovers belong in _recovery/ instead of here unless you chose DUMP AS UNASSIGNED.",
                     "",
                     "Dumped: " + (", ".join(dumped_here) if dumped_here else "(none in this generation)"),
                     "Associated-unknown / not dumped: " + (", ".join(missing_here) if missing_here else "(none)"),
@@ -448,29 +579,61 @@ def export_readable_backup(
         "\n".join(
             [
                 "Shared server files that do not belong to a single website.",
-                "Nginx full tree (if inventoried) is under nginx/.",
-                "Per-site Nginx snippets are also copied into each domain's files/config/ when the filename matches the domain.",
+                "Nginx files that match a hostname are copied into that website's nginx/ folder.",
+                "This folder should stay small. If a site's files landed here, the layout is wrong.",
                 "",
             ]
         ),
     )
 
+    restore_result = validate_readable_tree(staging, domain_map)
+    by_folder = {row.get("folder"): row for row in restore_result.get("websites") or []}
+    for site in domain_map.sites:
+        validation = by_folder.get(site.folder) or {}
+        manifest_path = staging / site.folder / SITE_MANIFEST_NAME
+        if manifest_path.is_file():
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            payload["restore_validation"] = {
+                "status": validation.get("status"),
+                "checks": validation.get("checks") or [],
+                "unresolved": validation.get("unresolved") or [],
+                "excluded": validation.get("excluded") or [],
+            }
+            payload["file_count"] = _count_files(staging / site.folder)
+            _write_text(manifest_path, json.dumps(payload, indent=2) + "\n")
+            _write_text(staging / site.folder / INFO_JSON_NAME, json.dumps(payload, indent=2) + "\n")
+        for row in website_rows:
+            if row.get("folder") == site.folder:
+                row["restore_validation"] = validation.get("status")
+                row["status"] = "SUCCESS" if validation.get("ok") else "INCOMPLETE"
+
+    overall = "SUCCESS"
+    if restore_result.get("status") == "INCOMPLETE":
+        overall = "INCOMPLETE"
+    elif restore_result.get("status") == "PARTIAL":
+        overall = "SUCCESS"
+
     manifest = {
-        "format": 1,
+        "format": 2,
         "backup_software": __app_name__,
         "version": __version__,
         "created_at": stamp,
         "master_generation": gen,
-        "destination_layout": f"{READABLE_DIR}/<domain>/files|database|docker",
+        "destination_layout": f"{READABLE_DIR}/<domain>/website|database|nginx|docker|{SITE_MANIFEST_NAME}",
         "websites": website_rows,
         "unassigned_databases": unassigned_rows,
+        "recovery_databases": recovery_rows,
         "skipped_applications": domain_map.skipped,
         "server": {
             "nginx": f"{SERVER_DIR}/nginx",
             "folder": SERVER_DIR,
         },
         "blocked_docker_internal_files": blocked,
-        "status": "SUCCESS",
+        "restore_validation": restore_result,
+        "status": overall,
     }
     _write_text(staging / MANIFEST_NAME, json.dumps(manifest, indent=2) + "\n")
 

@@ -62,6 +62,10 @@ class RestorePage(QWidget):
         self.warning_box = QTextEdit()
         self.warning_box.setReadOnly(True)
         layout.addWidget(self.warning_box)
+        validate = QPushButton("VALIDATE WEBSITE FOLDERS")
+        validate.setObjectName("validateBackups")
+        validate.clicked.connect(self._validate_backups)
+        layout.addWidget(validate)
         button = QPushButton("RESTORE")
         button.setObjectName("danger")
         button.clicked.connect(self._restore)
@@ -154,3 +158,20 @@ class RestorePage(QWidget):
             if state is not None and hasattr(window, "operations"):
                 window.operations.finish(state.operation_id)
         QMessageBox.information(self, "Restore", str(result.get("message") or result))
+
+    def _validate_backups(self) -> None:
+        if not self._config:
+            return
+        from app.backup.readable import readable_root
+        from app.backup.restore_validate import format_restore_validation, validate_readable_tree
+
+        root = readable_root(self._config.backup_destination)
+        if not root.is_dir():
+            QMessageBox.information(
+                self,
+                "RESTORE VALIDATION",
+                f"No BACKUPS tree at {root}. Run BACKUP NOW after you approve the DRY RUN preflight.",
+            )
+            return
+        result = validate_readable_tree(root)
+        QMessageBox.information(self, "RESTORE VALIDATION", format_restore_validation(result))

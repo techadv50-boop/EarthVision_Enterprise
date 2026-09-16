@@ -96,6 +96,10 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "sea_tedb" in text
     assert "UNUSED DEFAULT ROOT" in text
     assert "EXPECTED FULL BASELINE SIZE:" in text
+    assert "PREFLIGHT VALIDATION REPORT" in text
+    assert "NEW FILE ATTRIBUTION" in text
+    assert "PROPOSED BACKUP TREE" in text
+    assert "BACKUP NOW is not started by DRY RUN" in text
     assert "APPROVED" in text or "pending_approval=" in text
     assert "MariaDB:" in text
     assert "ojs50" in text or "journal" in text
