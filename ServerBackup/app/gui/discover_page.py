@@ -225,6 +225,11 @@ class DiscoverPage(QWidget):
             for row in self._databases
             if not row.get("system") and "UNASSOCIATED" in str(row.get("status") or "")
         ]
+        leftover_dbs = [
+            row
+            for row in self._databases
+            if not row.get("system") and "MIGRATION LEFTOVER" in str(row.get("status") or "")
+        ]
         self.summary.setText(
             f"Pending approval: {len(pending)}    "
             f"Approved: {len(approved)}    "
@@ -270,6 +275,23 @@ class DiscoverPage(QWidget):
                 row = _DatabaseRow(db)
                 row.include_btn.clicked.connect(lambda _=False, name=str(db.get("name") or ""): self._include_database(name))
                 row.exclude_btn.clicked.connect(lambda _=False, name=str(db.get("name") or ""): self._exclude_database(name))
+                self._database_rows.append(row)
+                self._list.addWidget(row)
+        if leftover_dbs:
+            self._list.addWidget(self._section("EXCLUDED DATABASES (MIGRATION LEFTOVER)"))
+            hint = QLabel(
+                "These host schemas are only referenced under Dokploy migration copies. "
+                "They are excluded from BACKUP NOW. Use DUMP AS UNASSIGNED to keep a copy."
+            )
+            hint.setWordWrap(True)
+            hint.setObjectName("subtitle")
+            self._list.addWidget(hint)
+            for db in leftover_dbs:
+                row = _DatabaseRow(db)
+                row.exclude_btn.setVisible(False)
+                row.include_btn.clicked.connect(
+                    lambda _=False, name=str(db.get("name") or ""): self._include_database(name)
+                )
                 self._database_rows.append(row)
                 self._list.addWidget(row)
         if removed:

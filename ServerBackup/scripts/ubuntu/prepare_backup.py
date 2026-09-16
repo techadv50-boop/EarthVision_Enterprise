@@ -150,6 +150,28 @@ def emit_dump_progress(payload: dict) -> None:
     sys.stdout.flush()
 
 
+def _docker_dump_args(container: str, name: str, binary: str) -> list[str]:
+    return [
+        "docker",
+        "exec",
+        container,
+        binary,
+        "--single-transaction",
+        "--quick",
+        "--routines",
+        "--triggers",
+        "--events",
+        "--hex-blob",
+        "--databases",
+        name,
+    ]
+
+
+def _binary_missing(stderr: str) -> bool:
+    text = (stderr or "").lower()
+    return "not found" in text or "no such file" in text or "executable file not found" in text
+
+
 def dump_one_database(
     name: str,
     out: Path,
@@ -163,32 +185,24 @@ def dump_one_database(
 ) -> dict:
     if docker_container:
         safe_container = require_docker_name(docker_container)
-        args = [
-            "docker",
-            "exec",
-            safe_container,
-            "mysqldump",
-            "--single-transaction",
-            "--quick",
-            "--routines",
-            "--triggers",
-            "--events",
-            "--hex-blob",
-            "--databases",
-            name,
+        arg_sets = [
+            _docker_dump_args(safe_container, name, "mysqldump"),
+            _docker_dump_args(safe_container, name, "mariadb-dump"),
         ]
     else:
-        args = [
-            mysqldump,
-            *mysql_defaults(),
-            "--single-transaction",
-            "--quick",
-            "--routines",
-            "--triggers",
-            "--events",
-            "--hex-blob",
-            "--databases",
-            name,
+        arg_sets = [
+            [
+                mysqldump,
+                *mysql_defaults(),
+                "--single-transaction",
+                "--quick",
+                "--routines",
+                "--triggers",
+                "--events",
+                "--hex-blob",
+                "--databases",
+                name,
+            ]
         ]
     started = time.time()
     if emit_progress:
@@ -204,48 +218,56 @@ def dump_one_database(
             }
         )
     launcher = run_dump or subprocess.Popen
-    proc = launcher(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert proc.stdout is not None
+    last_stderr = ""
     produced = 0
-    last_emit = 0
-    if emit_progress:
-        emit_dump_progress(
-            {
-                "event": "progress",
-                "stage": "DATABASE DUMPING",
-                "name": name,
-                "type": "MariaDB",
-                "status": "running",
-                "bytes_produced": 0,
-                "estimated_bytes": estimated_bytes,
-                "elapsed_seconds": int(time.time() - started),
-            }
-        )
-    with gzip.open(out, "wb", compresslevel=compression_level) as handle:
-        while True:
-            chunk = proc.stdout.read(1024 * 1024)
-            if not chunk:
-                break
-            handle.write(chunk)
-            produced += len(chunk)
-            if emit_progress and produced - last_emit >= 1024 * 1024:
-                last_emit = produced
-                written = out.stat().st_size if out.is_file() else 0
-                emit_dump_progress(
-                    {
-                        "event": "progress",
-                        "stage": "DATABASE DUMPING",
-                        "name": name,
-                        "type": "MariaDB",
-                        "status": "running",
-                        "bytes_produced": produced,
-                        "bytes_written": written,
-                        "estimated_bytes": estimated_bytes,
-                        "elapsed_seconds": int(time.time() - started),
-                    }
-                )
-    stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
-    if proc.wait() != 0:
+    for index, args in enumerate(arg_sets):
+        if out.exists():
+            out.unlink()
+        proc = launcher(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert proc.stdout is not None
+        produced = 0
+        last_emit = 0
+        if emit_progress:
+            emit_dump_progress(
+                {
+                    "event": "progress",
+                    "stage": "DATABASE DUMPING",
+                    "name": name,
+                    "type": "MariaDB",
+                    "status": "running",
+                    "bytes_produced": 0,
+                    "estimated_bytes": estimated_bytes,
+                    "elapsed_seconds": int(time.time() - started),
+                }
+            )
+        with gzip.open(out, "wb", compresslevel=compression_level) as handle:
+            while True:
+                chunk = proc.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                produced += len(chunk)
+                if emit_progress and produced - last_emit >= 1024 * 1024:
+                    last_emit = produced
+                    written = out.stat().st_size if out.is_file() else 0
+                    emit_dump_progress(
+                        {
+                            "event": "progress",
+                            "stage": "DATABASE DUMPING",
+                            "name": name,
+                            "type": "MariaDB",
+                            "status": "running",
+                            "bytes_produced": produced,
+                            "bytes_written": written,
+                            "estimated_bytes": estimated_bytes,
+                            "elapsed_seconds": int(time.time() - started),
+                        }
+                    )
+        last_stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
+        if proc.wait() == 0:
+            break
+        if index + 1 < len(arg_sets) and _binary_missing(last_stderr):
+            continue
         if emit_progress:
             emit_dump_progress(
                 {
@@ -254,10 +276,10 @@ def dump_one_database(
                     "name": name,
                     "type": "MariaDB",
                     "status": "failed",
-                    "error": stderr.strip() or f"mysqldump failed for {name}",
+                    "error": last_stderr.strip() or f"mysqldump failed for {name}",
                 }
             )
-        fail(stderr.strip() or f"mysqldump failed for {name}")
+        fail(last_stderr.strip() or f"mysqldump failed for {name}")
     written = out.stat().st_size if out.is_file() else 0
     if emit_progress:
         emit_dump_progress(

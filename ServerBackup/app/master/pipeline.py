@@ -578,6 +578,7 @@ def _fingerprint_databases(
     names: list[str] | None = None,
     *,
     docker_databases: dict[str, str] | None = None,
+    host_names: list[str] | None = None,
 ) -> dict[str, str]:
     names = list(names if names is not None else engine.config.databases_for_backup())
     if not names:
@@ -585,6 +586,7 @@ def _fingerprint_databases(
     extra: dict[str, Any] = {"databases": names}
     if docker_databases:
         extra["docker_databases"] = dict(docker_databases)
+    extra["host_databases"] = list(host_names or [])
     parsed = _json_script(engine, "database-fingerprint", extra, require_ok=False)
     mapping = {}
     for item in parsed.get("fingerprints") or []:
@@ -950,7 +952,12 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
         if str(row.get("name") or "") and str(row.get("status") or "").startswith("ASSOCIATED")
     ]
     db_names = dump_set or associated_names
-    docker_map = docker_only_dump_map(applications, _host_mariadb_names(discovery))
+    host_names = _host_mariadb_names(discovery)
+    docker_map = docker_only_dump_map(
+        applications,
+        host_names,
+        inventory=list(discovery.get("database_inventory") or []),
+    )
     db_result = "SKIPPED"
     db_error = ""
     fingerprints: dict[str, str] = {}
@@ -958,7 +965,12 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
     if db_names:
         _dry_run_stage(engine, "DRY_RUN_DB_FINGERPRINT_START", "Fingerprinting MariaDB databases…", 90)
         try:
-            fingerprints = _fingerprint_databases(engine, db_names, docker_databases=docker_map)
+            fingerprints = _fingerprint_databases(
+                engine,
+                db_names,
+                docker_databases=docker_map,
+                host_names=host_names,
+            )
             previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
             for name in db_names:
                 if fingerprints.get(name) != previous_fp.get(name):
@@ -1188,7 +1200,12 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
         log_pipeline(engine, "HASH_COMPLETE")
 
     db_names = databases_for_master_dump(config, discovery)
-    docker_map = docker_only_dump_map(applications, _host_mariadb_names(discovery))
+    host_names = _host_mariadb_names(discovery)
+    docker_map = docker_only_dump_map(
+        applications,
+        host_names,
+        inventory=list(discovery.get("database_inventory") or []),
+    )
     db_result = "SKIPPED"
     fingerprints: dict[str, str] = {}
     changed_dbs: list[str] = []
@@ -1209,7 +1226,12 @@ def run_master_backup(engine, *, rebuild: bool = False, dry_run: bool = False) -
                 db_type="MariaDB",
             )
         try:
-            fingerprints = _fingerprint_databases(engine, db_names, docker_databases=docker_map)
+            fingerprints = _fingerprint_databases(
+                engine,
+                db_names,
+                docker_databases=docker_map,
+                host_names=host_names,
+            )
             previous_fp = (store.load_meta().get("database_fingerprints") or {}) if has_master else {}
             for name in db_names:
                 if fingerprints.get(name) != previous_fp.get(name):

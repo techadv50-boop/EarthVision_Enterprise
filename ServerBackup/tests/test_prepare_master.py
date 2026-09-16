@@ -131,3 +131,67 @@ def test_database_fingerprint_rejects_unsafe_docker_name():
     assert result["ok"] is False
     assert any("unsafe docker" in err for err in result["errors"])
 
+
+def test_database_fingerprint_does_not_query_host_for_missing_schema():
+    import sys
+
+    if str(UBUNTU_SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(UBUNTU_SCRIPTS))
+    import prepare_master as pm
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 1
+        stdout = ""
+        stderr = "ERROR 1049 (42000): Unknown database 'sea50_db'"
+
+    def run(cmd, timeout=None):
+        calls.append(list(cmd))
+        return _Result()
+
+    result = pm.database_fingerprint(
+        {
+            "databases": ["sea50_db"],
+            "docker_databases": {},
+            "host_databases": ["sea_tecdb", "journal50_ojs", "journal_db", "xdgen_db"],
+        },
+        run,
+        lambda: ["--defaults-extra-file=/etc/serverbackup/my.cnf"],
+    )
+    assert result["ok"] is False
+    assert any("not on host MariaDB" in err for err in result["errors"])
+    assert calls == []
+
+
+def test_database_fingerprint_falls_back_to_mariadb_client():
+    import sys
+
+    if str(UBUNTU_SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(UBUNTU_SCRIPTS))
+    import prepare_master as pm
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self, code: int, stderr: str = "", stdout: str = "") -> None:
+            self.returncode = code
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def run(cmd, timeout=None):
+        calls.append(list(cmd))
+        if cmd[3] == "mysql":
+            return _Result(127, "executable file not found")
+        return _Result(0, stdout="wp_posts\n")
+
+    result = pm.database_fingerprint(
+        {"databases": ["sea50_db"], "docker_databases": {"sea50_db": "sea50-cyfdw1-db-1"}},
+        run,
+        lambda: [],
+    )
+    assert result["ok"] is True
+    binaries = [call[3] for call in calls]
+    assert "mysql" in binaries
+    assert "mariadb" in binaries
+

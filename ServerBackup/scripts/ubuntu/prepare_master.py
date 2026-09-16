@@ -367,9 +367,37 @@ def stream_objects_lowmem(payload: dict) -> None:
     stdout.flush()
 
 
+def _docker_mysql(run, container: str, name: str, sql: str):
+    safe_container = require_docker_name(container)
+    last = None
+    for binary in ("mysql", "mariadb"):
+        last = run(
+            [
+                "docker",
+                "exec",
+                safe_container,
+                binary,
+                "--batch",
+                "--skip-column-names",
+                name,
+                "-e",
+                sql,
+            ]
+        )
+        if last.returncode == 0:
+            return last
+        err = (last.stderr or "").lower()
+        if "not found" in err or "executable file not found" in err:
+            continue
+        return last
+    return last
+
+
 def database_fingerprint(payload: dict, run, mysql_defaults) -> dict:
     names = list(payload.get("databases") or [])
     docker_databases = payload.get("docker_databases") if isinstance(payload.get("docker_databases"), dict) else {}
+    host_raw = payload.get("host_databases")
+    host_set = {str(item) for item in host_raw if item} if isinstance(host_raw, list) else None
     fingerprints = []
     errors = []
     for name in names:
@@ -379,36 +407,16 @@ def database_fingerprint(payload: dict, run, mysql_defaults) -> dict:
         container = str(docker_databases.get(name) or "").strip()
         if container:
             try:
-                safe_container = require_docker_name(container)
+                status = _docker_mysql(run, container, name, "SHOW TABLE STATUS")
+                create = _docker_mysql(run, container, name, "SHOW TABLES")
             except ValueError:
                 errors.append(f"unsafe docker container for {name}")
                 continue
-            status = run(
-                [
-                    "docker",
-                    "exec",
-                    safe_container,
-                    "mysql",
-                    "--batch",
-                    "--skip-column-names",
-                    name,
-                    "-e",
-                    "SHOW TABLE STATUS",
-                ]
+        elif host_set is not None and name not in host_set:
+            errors.append(
+                f"{name} is not on host MariaDB and no Docker db container was mapped"
             )
-            create = run(
-                [
-                    "docker",
-                    "exec",
-                    safe_container,
-                    "mysql",
-                    "--batch",
-                    "--skip-column-names",
-                    name,
-                    "-e",
-                    "SHOW TABLES",
-                ]
-            )
+            continue
         else:
             status = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", name, "-e", "SHOW TABLE STATUS"])
             create = run(["mysql", *mysql_defaults(), "--batch", "--skip-column-names", name, "-e", "SHOW TABLES"])

@@ -1473,13 +1473,80 @@ server {
     by_name = {row["name"]: row for row in inventory}
     assert by_name["sea50_db"]["status"] == "ASSOCIATED WITH APPLICATION"
     assert by_name["sea50_db"]["docker_container"] == "sea50-cyfdw1-db-1"
-    assert by_name["sea_tecdb"]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    assert by_name["sea_tecdb"]["status"] == "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
     gate = assess_backup_gate([{**by_host["50sea.com"], "included": True}], inventory)
     assert "sea50_db" not in (gate.get("unresolved_database_names") or [])
-    assert gate["unresolved_database_names"] == ["sea_tecdb"]
+    assert gate["unresolved_database_names"] == []
+    assert gate["block_complete_backup"] is False
     from app.backup.domain_map import docker_only_dump_map
 
     mapping = docker_only_dump_map(apps, ["sea_tecdb"])
     assert mapping == {"sea50_db": "sea50-cyfdw1-db-1"}
+
+
+def test_docker_only_dump_map_infers_compose_db_container_when_missing():
+    from app.backup.domain_map import docker_only_dump_map
+
+    apps = [
+        {
+            "application_id": "docker:sea50-cyfdw1",
+            "database_name": "sea50_db",
+            "excluded": False,
+            "docker": {"compose_project": "sea50-cyfdw1", "mysql_database": "sea50_db"},
+        }
+    ]
+    mapping = docker_only_dump_map(apps, ["sea_tecdb", "journal50_ojs", "journal_db", "xdgen_db"])
+    assert mapping == {"sea50_db": "sea50-cyfdw1-db-1"}
+
+
+def test_infers_db_container_when_web_has_mysql_database_but_no_sibling():
+    nginx = """
+# configuration file /etc/nginx/sites-enabled/50sea.com:
+server {
+    listen 80;
+    server_name 50sea.com www.50sea.com;
+    location / { proxy_pass http://127.0.0.1:8084; }
+}
+"""
+    servers = da.parse_nginx_t(nginx)
+    containers = [
+        _dokploy_container("sea50-cyfdw1-web-1", "sea50-cyfdw1", port="8084", env=["MYSQL_DATABASE=sea50_db"]),
+    ]
+    apps = da.applications_from_servers(
+        servers,
+        docker_containers=containers,
+        mariadb=["sea_tecdb"],
+        path_exists=lambda _path: True,
+        probe=lambda _root: ({}, {}),
+    )
+    by_host = _by_host(apps)
+    assert by_host["50sea.com"]["database_name"] == "sea50_db"
+    assert by_host["50sea.com"]["docker"]["db_container"] == "sea50-cyfdw1-db-1"
+    inventory = da.attach_docker_only_databases(apps, [], ["sea_tecdb"])
+    assert inventory[0]["name"] == "sea50_db"
+    assert inventory[0]["docker_container"] == "sea50-cyfdw1-db-1"
+
+
+def test_migration_leftover_database_is_auto_excluded():
+    import discover_audit as audit
+
+    inventory = audit.build_database_inventory(
+        ["sea_tecdb"],
+        [{"application_id": "docker:sea50-cyfdw1", "hostname": "50sea.com", "database_name": "sea50_db", "root": ""}],
+        details={"sea_tecdb": {"table_count": 19, "size_bytes": 1000, "row_count": 2815}},
+        references={
+            "sea_tecdb": [
+                {"path": "/opt/dokploy-migrations/50sea/wp-config.live-copy.php"},
+                {"path": "/root/dokploy-migration/50sea/wordpress/wp-config.php"},
+            ]
+        },
+    )
+    assert inventory[0]["status"] == "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+    gate = assess_backup_gate(
+        [{"application_id": "docker:sea50-cyfdw1", "included": True, "status": "READY"}],
+        inventory,
+    )
+    assert gate["block_complete_backup"] is False
+    assert gate["unresolved_database_names"] == []
 
 

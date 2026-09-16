@@ -180,3 +180,50 @@ def test_discover_page_exclude_unassociated_database(tmp_path: Path):
     gate = assess_backup_gate(page._rows, page._databases)
     assert gate["block_complete_backup"] is False
     page.close()
+
+
+def test_discover_page_shows_migration_leftover_dump_button(tmp_path: Path):
+    from app.discover.gate import assess_backup_gate
+
+    qt = _app()
+    cfg = make_config(tmp_path)
+    Path(cfg.backup_destination).mkdir(parents=True, exist_ok=True)
+    page = DiscoverPage()
+    apps = live_shaped_apps()
+    for row in apps:
+        if row["application_id"] != "other:/var/www/html":
+            row["included"] = True
+            row["status"] = "READY"
+    page.reload(
+        cfg,
+        {
+            "applications": apps,
+            "database_inventory": [
+                {
+                    "name": "sea50_db",
+                    "status": "ASSOCIATED WITH APPLICATION",
+                    "application_id": "docker:sea50-cyfdw1",
+                    "system": False,
+                },
+                {
+                    "name": "sea_tecdb",
+                    "status": "EXCLUDED — DOKPLOY MIGRATION LEFTOVER",
+                    "reason": "only referenced under Dokploy migration copies",
+                    "table_count": 19,
+                    "row_count": 2815,
+                    "size_bytes": 45974102,
+                    "system": False,
+                },
+            ],
+        },
+    )
+    page.show()
+    qt.processEvents()
+    labels = "\n".join(label.text() for label in page.findChildren(QLabel))
+    assert "EXCLUDED DATABASES (MIGRATION LEFTOVER)" in labels
+    assert "sea_tecdb" in labels
+    include = page.findChild(QPushButton, "includeUnassigned")
+    assert include is not None
+    gate = assess_backup_gate(page._rows, page._databases)
+    assert gate["block_complete_backup"] is False
+    page.close()

@@ -696,6 +696,18 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def inferred_db_container(docker: dict[str, Any] | None) -> str:
+    """Dokploy/Compose db containers are named {compose_project}-db-1."""
+    docker = docker if isinstance(docker, dict) else {}
+    container = str(docker.get("db_container") or "").strip().lstrip("/")
+    if container:
+        return container
+    project = str(docker.get("compose_project") or "").strip()
+    if project:
+        return f"{project}-db-1"
+    return ""
+
+
 def _looks_like_db_container(item: dict[str, Any]) -> bool:
     name = str(item.get("name") or "").lower()
     service = str(item.get("compose_service") or "").lower()
@@ -767,6 +779,10 @@ def _enrich_docker_from_compose(
                 out["db_container"] = item.get("name")
         elif not out.get("db_container") and _looks_like_db_container(item):
             out["db_container"] = item.get("name")
+    if not out.get("db_container") and (out.get("mysql_database") or out.get("postgres_db")):
+        inferred = inferred_db_container(out)
+        if inferred:
+            out["db_container"] = inferred
     return out
 
 
@@ -1329,7 +1345,7 @@ def attach_docker_only_databases(
     for app in applications:
         docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
         name = str(app.get("database_name") or docker.get("mysql_database") or "").strip()
-        container = str(docker.get("db_container") or "").strip()
+        container = inferred_db_container(docker)
         if not name or name in host or name in seen:
             continue
         if not container:

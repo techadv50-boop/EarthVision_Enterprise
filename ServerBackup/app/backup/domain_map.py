@@ -398,9 +398,22 @@ def dump_names(
     return mariadb, postgres
 
 
+def inferred_db_container(docker: dict[str, Any] | None) -> str:
+    """Dokploy/Compose db containers are named {compose_project}-db-1."""
+    docker = docker if isinstance(docker, dict) else {}
+    container = str(docker.get("db_container") or "").strip().lstrip("/")
+    if container:
+        return container
+    project = str(docker.get("compose_project") or "").strip()
+    if project:
+        return f"{project}-db-1"
+    return ""
+
+
 def docker_only_dump_map(
     applications: list[dict[str, Any]] | None,
     host_names: list[str] | None = None,
+    inventory: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     """Map schema -> db container when the schema is not on host MariaDB."""
     host = {str(name) for name in (host_names or []) if name}
@@ -410,9 +423,14 @@ def docker_only_dump_map(
             continue
         docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
         name = str(app.get("database_name") or docker.get("mysql_database") or "").strip()
-        container = str(docker.get("db_container") or "").strip().lstrip("/")
+        container = inferred_db_container(docker)
         if name and container and name not in host:
             mapping[name] = container
+    for row in inventory or []:
+        name = str(row.get("name") or "").strip()
+        container = str(row.get("docker_container") or "").strip().lstrip("/")
+        if name and container and name not in host:
+            mapping.setdefault(name, container)
     return mapping
 
 

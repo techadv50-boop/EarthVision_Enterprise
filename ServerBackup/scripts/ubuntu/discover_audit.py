@@ -67,6 +67,10 @@ EXTRA_SEARCH_ROOTS = (
     "/etc/nginx",
     "/root",
 )
+MIGRATION_LEFTOVER_PREFIXES = (
+    "/opt/dokploy-migrations/",
+    "/root/dokploy-migration/",
+)
 MYSQL_CNF = "/etc/serverbackup/my.cnf"
 LEAST_PRIVILEGE_NOTE = (
     "TEST CONNECTION switches /etc/serverbackup/my.cnf to user=serverbackup "
@@ -454,6 +458,13 @@ def _row_count(meta: dict[str, Any]) -> int | None:
     return total if known else None
 
 
+def _is_migration_leftover_path(path: str) -> bool:
+    cleaned = str(path or "").replace("\\", "/")
+    if not cleaned or cleaned.startswith("docker:"):
+        return False
+    return any(cleaned == prefix.rstrip("/") or cleaned.startswith(prefix) for prefix in MIGRATION_LEFTOVER_PREFIXES)
+
+
 def finalize_database_verdict(row: dict[str, Any]) -> dict[str, Any]:
     """Classify unassociated databases. Never silently omit them."""
     status = str(row.get("status") or "")
@@ -493,6 +504,18 @@ def finalize_database_verdict(row: dict[str, Any]) -> dict[str, Any]:
     if refs:
         paths = ", ".join(str(item.get("path") or "") for item in refs if item.get("path"))
         extra += f" orphan config references (not under an active application): {paths}."
+        leftover_only = bool(refs) and all(
+            _is_migration_leftover_path(str(item.get("path") or "")) for item in refs
+        )
+        if leftover_only:
+            row["status"] = "EXCLUDED — DOKPLOY MIGRATION LEFTOVER"
+            row["reason"] = (
+                "only referenced under Dokploy migration copies "
+                "(/opt/dokploy-migrations or /root/dokploy-migration); "
+                "not an active Nginx application. Use Discover DUMP AS UNASSIGNED to keep this leftover schema."
+                + extra
+            )
+            return row
         row["status"] = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
         row["reason"] = "referenced outside active applications;" + extra
         return row

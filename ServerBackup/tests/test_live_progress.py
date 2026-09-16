@@ -270,6 +270,36 @@ def test_dump_databases_uses_docker_exec_for_container_schema(tmp_path: Path, mo
     assert "--defaults-extra-file=/etc/serverbackup/my.cnf" not in captured[0]
 
 
+def test_dump_databases_falls_back_to_mariadb_dump(tmp_path: Path, monkeypatch):
+    import prepare_backup
+
+    captured: list[list[str]] = []
+
+    class FakeDump:
+        def __init__(self, args, **_kwargs):
+            captured.append(list(args))
+            missing = args[3] == "mysqldump"
+            self.stdout = io.BytesIO(b"" if missing else b"sql")
+            self.stderr = io.BytesIO(b"executable file not found" if missing else b"")
+            self._code = 127 if missing else 0
+
+        def wait(self) -> int:
+            return self._code
+
+    monkeypatch.setattr(prepare_backup.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(prepare_backup.subprocess, "Popen", FakeDump)
+    dumped = prepare_backup.dump_databases(
+        tmp_path,
+        ["sea50_db"],
+        1,
+        emit_progress=False,
+        docker_databases={"sea50_db": "sea50-cyfdw1-db-1"},
+    )
+    assert dumped == ["sea50_db"]
+    assert captured[0][3] == "mysqldump"
+    assert captured[1][3] == "mariadb-dump"
+
+
 def test_unpack_to_objects_reports_chunk_progress(tmp_path: Path):
     payload = b"abcdefghijklmnopqrstuvwxyz" * 80
     digest = hashlib.sha256(payload).hexdigest()

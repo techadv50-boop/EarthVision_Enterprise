@@ -186,6 +186,8 @@ def format_application_sections(
                 if paths:
                     lines.append(f"      config references: {paths}")
             lines.append(f"      status: {row.get('status')}")
+            if row.get("docker_container"):
+                lines.append(f"      dump via: docker exec {row.get('docker_container')}")
         postgres = list((databases or {}).get("postgresql") or [])
         if not postgres:
             postgres = sorted(
