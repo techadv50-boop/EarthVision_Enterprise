@@ -1,7 +1,13 @@
 import subprocess
+import sys
 from pathlib import Path
 
 from app.ssh.client import bundled_ubuntu_scripts
+from tests.helpers import UBUNTU_SCRIPTS
+
+if str(UBUNTU_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(UBUNTU_SCRIPTS))
+import prepare_backup  # noqa: E402
 
 
 def _run_helper(payload: str) -> subprocess.CompletedProcess[str]:
@@ -68,6 +74,58 @@ def test_unix_text_bytes_strips_crlf_from_env_bash_shebang():
     fixed = unix_text_bytes(raw)
     assert fixed == b"#!/usr/bin/env bash\necho hi\n"
     assert b"bash\r" not in fixed
+
+
+def test_path_checks_treat_missing_website_and_ojs_fallback_as_ok(tmp_path, monkeypatch):
+    nginx = tmp_path / "nginx"
+    nginx.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    present_site = tmp_path / "present-site"
+    present_site.mkdir()
+    monkeypatch.setattr(prepare_backup.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    checks = prepare_backup.path_checks(
+        {
+            "website_directories": ["/var/www/50sea.com", str(present_site)],
+            "ojs_private_files": "/var/www/ojs-files",
+            "nginx_directory": str(nginx),
+            "extra_directories": [str(extra), "/var/www/missing-extra"],
+        }
+    )
+    by_name = {item["name"]: item for item in checks}
+
+    missing_site = by_name["website /var/www/50sea.com"]
+    assert missing_site["ok"] is True
+    assert "legacy fallback" in missing_site["detail"]
+    assert "/var/www/50sea.com" in missing_site["detail"]
+
+    present = by_name[f"website {present_site}"]
+    assert present["ok"] is True
+    assert present["detail"] == str(present_site)
+
+    missing_ojs = by_name["OJS private files /var/www/ojs-files"]
+    assert missing_ojs["ok"] is True
+    assert "legacy fallback" in missing_ojs["detail"]
+
+    assert by_name["Nginx"]["ok"] is True
+    assert by_name[f"extra {extra}"]["ok"] is True
+    assert by_name["extra /var/www/missing-extra"]["ok"] is False
+    assert by_name["MariaDB client"]["ok"] is True
+    assert by_name["tar/gzip"]["ok"] is True
+
+
+def test_path_checks_still_fail_missing_nginx(tmp_path, monkeypatch):
+    monkeypatch.setattr(prepare_backup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    checks = prepare_backup.path_checks(
+        {
+            "website_directories": [],
+            "nginx_directory": "/etc/nginx-does-not-exist",
+        }
+    )
+    nginx = next(item for item in checks if item["name"] == "Nginx")
+    assert nginx["ok"] is False
+    assert "missing:" in nginx["detail"]
 
 
 def test_upload_unix_text_never_sends_crlf(tmp_path, monkeypatch):

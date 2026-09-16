@@ -307,7 +307,7 @@ def test_dry_run_does_not_require_prior_test_connection():
     assert "QueuedConnection" in text
     assert "show_scrollable_report" in finished
     assert "QMessageBox.information" not in finished
-    assert "QMessageBox.critical" in finished
+    assert "QMessageBox.critical" not in finished
 
 
 def test_gui_dry_run_surfaces_result_and_worker_exceptions(tmp_path: Path, monkeypatch):
@@ -344,7 +344,29 @@ def test_gui_dry_run_surfaces_result_and_worker_exceptions(tmp_path: Path, monke
         time.sleep(0.05)
     assert boxes
     assert boxes[0][0] == "info"
+    assert boxes[0][1] == "DRY RUN"
     assert "NO BASELINE" in boxes[0][2]
+    boxes.clear()
+
+    long_report = (
+        "MASTER STATUS: NO BASELINE\nMODE: FULL BASELINE PREVIEW\n"
+        + "50sea.com READY\n" * 80
+        + "BACKUP GATE: CLEAR\n"
+    )
+    monkeypatch.setattr(
+        "app.engine.backup_engine.BackupEngine.dry_run",
+        lambda self: {"ok": False, "report_text": long_report},
+    )
+    window.dry_run()
+    deadline = time.time() + 5
+    while time.time() < deadline and not boxes:
+        app.processEvents()
+        time.sleep(0.05)
+    assert boxes
+    assert boxes[0][0] == "info"
+    assert boxes[0][1] == "DRY RUN — review required"
+    assert "50sea.com READY" in boxes[0][2]
+    assert "BACKUP GATE: CLEAR" in boxes[0][2]
     boxes.clear()
 
     def boom(self):
@@ -357,7 +379,8 @@ def test_gui_dry_run_surfaces_result_and_worker_exceptions(tmp_path: Path, monke
         app.processEvents()
         time.sleep(0.05)
     assert boxes
-    assert boxes[0][0] == "critical"
+    assert boxes[0][0] == "info"
+    assert boxes[0][1] == "DRY RUN — review required"
     assert "silent-thread-failure" in boxes[0][2]
     window.close()
 

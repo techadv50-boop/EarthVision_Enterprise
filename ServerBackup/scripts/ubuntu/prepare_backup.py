@@ -108,6 +108,15 @@ def path_checks(payload: dict) -> list[dict]:
             continue
         safe = safe_unix(str(path))
         ok = os.path.isdir(safe)
+        if not ok and (label.startswith("website ") or label.startswith("OJS private files")):
+            checks.append(
+                {
+                    "name": label,
+                    "ok": True,
+                    "detail": f"missing (legacy fallback; DISCOVER SERVER is the source of truth): {safe}",
+                }
+            )
+            continue
         checks.append({"name": label, "ok": ok, "detail": safe if ok else f"missing: {safe}"})
     mariadb_ok = shutil.which("mysqldump") is not None and shutil.which("mysql") is not None
     checks.append({"name": "MariaDB client", "ok": mariadb_ok, "detail": "mysqldump/mysql"})

@@ -891,12 +891,9 @@ class MainWindow(QMainWindow):
             last_result=dict(self._last_completed),
         )
         self.refresh()
-        if ok:
-            show_scrollable_report(self, "DRY RUN", text)
-            self.statusBar().showMessage("Dry run complete.")
-        else:
-            QMessageBox.critical(self, "DRY RUN failed", text)
-            self.statusBar().showMessage("Dry run failed.")
+        title = "DRY RUN" if ok else "DRY RUN — review required"
+        show_scrollable_report(self, title, text)
+        self.statusBar().showMessage("Dry run complete." if ok else "Dry run finished with problems. See the report.")
 
     def test_integrity(self) -> None:
         from app.master.health import assess_health
