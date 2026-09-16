@@ -518,3 +518,192 @@ def test_docker_schema_probe_fills_zero_byte_docker_database():
     assert inventory[0]["dump_capable"] is True
     assert docker_mysql_argv("sea50-db-1", "sea50_db", "SHOW TABLE STATUS") == called[0]
 
+
+def _traefik_proxy_container() -> dict:
+    return {
+        "Id": "traefikproxy1",
+        "Name": "/dokploy-traefik",
+        "State": {"Running": True},
+        "Config": {
+            "Image": "traefik:v3.0",
+            "Labels": {
+                "com.docker.compose.project": "dokploy",
+                "com.docker.compose.service": "dokploy-traefik",
+            },
+            "Env": [],
+        },
+        "HostConfig": {"PortBindings": {}},
+        "Mounts": [{"Type": "bind", "Source": "/etc/dokploy/traefik", "Destination": "/etc/dokploy/traefik"}],
+        "NetworkSettings": {"Networks": {"dokploy-network": {"Aliases": ["dokploy-traefik"]}}},
+    }
+
+
+def test_public_host_env_discovers_website_without_nginx_or_labels():
+    docker = [
+        _unlabeled_web_container(
+            name="cite-web-1",
+            project="citeapp",
+            env=["PUBLIC_HOST=cite.example.com", "POSTGRES_DB=cite"],
+        )
+    ]
+    extras, leftovers = da.applications_from_unmatched_docker([], docker, path_exists=lambda _p: True)
+    assert leftovers == []
+    assert extras[0]["hostnames"] == ["cite.example.com"]
+    assert extras[0]["database_name"] == "cite"
+
+
+def test_unreadable_migration_root_does_not_drop_extra_traefik_files(monkeypatch):
+    original_exists = Path.exists
+
+    def fake_exists(self):
+        if "dokploy-migration" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=[_unlabeled_web_container(name="orbital-web-1", project="orbital")],
+        extra_scan_files={
+            "/etc/dokploy/traefik/dynamic/orbital.yml": _dokploy_traefik_yaml("orbital.example.com", "orbital"),
+        },
+        nginx_ok=True,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "orbital.example.com" in hosts
+    reasons = " ".join(result["scan_coverage"].get("incomplete_reasons") or [])
+    assert "dokploy-migration" not in reasons
+    assert "scan skipped" not in " ".join(result.get("errors") or []).lower()
+
+
+def test_docker_exec_traefik_api_discovers_unlabeled_hostnames():
+    docker = [
+        _unlabeled_web_container(name="sateye-web-1", project="sateye-app", env=["MYSQL_DATABASE=sateye_db"]),
+        _unlabeled_web_container(name="satpass-web-1", project="satpass-app", env=["MYSQL_DATABASE=satpass_db"]),
+        _unlabeled_web_container(name="citation-web-1", project="citation-app", env=["POSTGRES_DB=citation"]),
+        _unlabeled_web_container(name="newsite-web-1", project="newsite-app"),
+        _traefik_proxy_container(),
+    ]
+    api = json.dumps(
+        [
+            {"name": "sateye-websecure@file", "rule": "Host(`sateye.example.com`)", "service": "sateye-app", "tls": {}, "status": "enabled"},
+            {"name": "satpass-websecure@file", "rule": "Host(`satpass.example.com`)", "service": "satpass-app", "tls": {}, "status": "enabled"},
+            {"name": "citation-websecure@file", "rule": "Host(`citation.example.com`)", "service": "citation-app", "tls": {}, "status": "enabled"},
+            {"name": "newsite-websecure@file", "rule": "Host(`newsite.example.com`)", "service": "newsite-app", "tls": {}, "status": "enabled"},
+        ]
+    )
+
+    class Result:
+        def __init__(self, code=0, stdout=""):
+            self.returncode = code
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, timeout=30):
+        joined = " ".join(str(item) for item in cmd)
+        if "dokploy-traefik" in joined and ("8080" in joined or "wget" in joined or "curl" in joined or "api/http" in joined or "rawdata" in joined):
+            return Result(0, api)
+        return Result(1, "")
+
+    nginx = da.parse_nginx_t(
+        """
+# configuration file /etc/nginx/sites-enabled/only.conf:
+server {
+    listen 80;
+    server_name already.example.com;
+    root /var/www/already;
+}
+"""
+    )
+    result = da.assemble_discovery(
+        servers=nginx,
+        docker_containers=docker,
+        run=fake_run,
+        nginx_ok=True,
+        extra_scan_files=None,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "sateye.example.com" in hosts
+    assert "satpass.example.com" in hosts
+    assert "citation.example.com" in hosts
+    assert "newsite.example.com" in hosts
+    report = format_discovery_report(result)
+    discovered = report.split("DISCOVERED HOSTNAMES", 1)[1].split("DISCOVERED APPLICATIONS", 1)[0]
+    assert "sateye.example.com" in discovered
+    assert "citation.example.com" in discovered
+    source = Path(__file__).resolve().parents[1].joinpath("scripts/ubuntu/discover_apps.py").read_text(encoding="utf-8")
+    assert "sateye.xdgen.com" not in source
+    assert "satpass.xdgen.com" not in source
+    assert "citation.xdgen.com" not in source
+
+
+def test_docker_exec_reads_traefik_files_when_api_unavailable():
+    docker = [
+        _unlabeled_web_container(name="orbital-web-1", project="orbital"),
+        _traefik_proxy_container(),
+    ]
+    dump = (
+        "# configuration file /etc/dokploy/traefik/dynamic/orbital.yml:\n"
+        + _dokploy_traefik_yaml("orbital.example.com", "orbital")
+    )
+
+    class Result:
+        def __init__(self, code=0, stdout=""):
+            self.returncode = code
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, timeout=30):
+        joined = " ".join(str(item) for item in cmd)
+        if "dokploy-traefik" not in joined:
+            return Result(1, "")
+        if "find" in joined or "configuration file" in joined or "/etc/dokploy/traefik" in joined:
+            return Result(0, dump)
+        return Result(1, "")
+
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=docker,
+        run=fake_run,
+        nginx_ok=True,
+        extra_scan_files=None,
+        path_exists=lambda _p: True,
+    )
+    hosts = {name for app in result["applications"] for name in (app.get("hostnames") or [])}
+    assert "orbital.example.com" in hosts
+
+
+def test_running_traefik_without_readable_routes_blocks_coverage():
+    docker = [_traefik_proxy_container()]
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "permission denied"
+
+    result = da.assemble_discovery(
+        servers=[],
+        docker_containers=docker,
+        run=lambda cmd, timeout=30: Result,
+        nginx_ok=True,
+        extra_scan_files=None,
+        path_exists=lambda _p: True,
+    )
+    coverage = result["scan_coverage"]
+    assert coverage["complete"] is False
+    assert any("no live Host()" in item for item in coverage["incomplete_reasons"])
+    from app.discover.gate import assess_backup_gate
+
+    gate = assess_backup_gate(
+        result["applications"],
+        result["database_inventory"],
+        volumes=result["docker_volumes"],
+        classified=result["classified"],
+        scan_coverage=coverage,
+    )
+    assert gate["block_complete_backup"] is True
+    assert "Gate: CLEAR" not in "\n".join(__import__("app.discover.gate", fromlist=["format_backup_gate"]).format_backup_gate(gate))
+
+

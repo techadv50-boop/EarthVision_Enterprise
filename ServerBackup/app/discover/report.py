@@ -128,10 +128,22 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
         "  Dokploy Application routes live in Traefik dynamic YAML (Host() + backend url),"
     )
     lines.append(
-        "  not in docker inspect labels and not in nginx -T."
+        "  not in docker inspect labels and not in nginx -T. Those YAML files are often"
     )
     lines.append(
-        "  This engine promotes live Traefik/Dokploy Host() routes to applications automatically."
+        "  mode 600 root:root, so the serverbackup account can see the directory and still"
+    )
+    lines.append(
+        "  read zero Host() rules from disk."
+    )
+    lines.append(
+        "  This engine promotes live Traefik/Dokploy Host() routes to applications, including"
+    )
+    lines.append(
+        "  routes harvested with docker exec against the Traefik API or mounted dynamic files."
+    )
+    lines.append(
+        "  PUBLIC_HOST / SITE_URL and similar container environment values are also scanned."
     )
     lines.append("  No production hostname is hard-coded. A new Host() route is enough.")
     missed = [
@@ -164,8 +176,10 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
             lines.append(f"    SSL: {row.get('ssl') or 'none'}")
             lines.append(f"    CURRENT STATUS: {row.get('classification') or row.get('status') or '—'}")
             lines.append(
-                "    REASON PREVIOUS DISCOVERY MISSED IT: Host() lived in Traefik/Dokploy YAML; "
-                "1.4.24 treated unmatched file Host() as NOT ACTIVE leftovers instead of applications."
+                "    REASON PREVIOUS DISCOVERY MISSED IT: Host() lived in Traefik/Dokploy YAML "
+                "(not nginx -T and not docker inspect labels). 1.4.24 classified unmatched file "
+                "Host() as NOT ACTIVE leftovers. If the YAML is unreadable by serverbackup, "
+                "disk scans return empty; 1.4.26 reads the live Traefik API / docker exec files."
             )
             lines.append(
                 f"    RESTORE READY: {row.get('restore_ready') or 'NO'}"

@@ -29,7 +29,7 @@ from discover_audit import (
     scan_inactive_hostnames,
 )
 from docker_db import docker_schema_details
-from path_safety import is_named_volume_data_path, is_safe_unix_syntax, named_volume_data_path
+from path_safety import is_named_volume_data_path, is_safe_unix_syntax, named_volume_data_path, require_docker_name
 
 UNSAFE = set(";&|`$<>\\\n\r")
 FILE_MARKER = re.compile(r"^# configuration file (.+):\s*$")
@@ -103,10 +103,49 @@ BACKEND_URL = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 SITE_URL_ENV = re.compile(
-    r"^(?:SITE_URL|APP_URL|PUBLIC_URL|BASE_URL|ALLOWED_HOSTS|DOMAIN|HOST|HOSTNAME)\s*=\s*(.+)$",
+    r"^(?:SITE_URL|APP_URL|PUBLIC_URL|PUBLIC_HOST|PUBLIC_HOSTNAME|BASE_URL|ALLOWED_HOSTS|"
+    r"DOMAIN|HOST|HOSTNAME|TRAEFIK_HOST|DOKPLOY_DOMAIN|NEXTAUTH_URL|CANONICAL_HOST|"
+    r"CANONICAL_URL|VITE_PUBLIC_HOST|NUXT_PUBLIC_SITE_URL)\s*=\s*(.+)$",
+    re.IGNORECASE,
+)
+ENV_HOST_SKIP_PREFIX = re.compile(
+    r"^(?:MYSQL|MARIADB|POSTGRES|PG|DB|DATABASE|REDIS|SMTP|MAIL|MEMCACHED|MONGO|RABBIT|"
+    r"KAFKA|ELASTIC|CLICKHOUSE|MINIO|S3)_",
     re.IGNORECASE,
 )
 GENERIC_BACKEND_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "web", "app", "frontend", "backend", "nginx", "proxy"}
+TRAEFIK_API_SH = r"""
+fetch() {
+  u="$1"
+  if command -v wget >/dev/null 2>&1; then
+    wget -qO- --timeout=5 "$u" && return 0
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 5 "$u" && return 0
+  fi
+  return 1
+}
+fetch http://127.0.0.1:8080/api/http/routers || fetch http://127.0.0.1:8080/api/rawdata
+"""
+TRAEFIK_FILES_SH = r"""
+for dir in /etc/dokploy/traefik/dynamic /etc/dokploy/traefik /etc/traefik/dynamic /etc/traefik /etc/traefik/conf.d; do
+  [ -d "$dir" ] || continue
+  find "$dir" -maxdepth 4 -type f \( -name '*.yml' -o -name '*.yaml' -o -name '*.toml' -o -name '*.json' \) 2>/dev/null | while IFS= read -r f; do
+    echo "# configuration file ${f}:"
+    cat "$f" 2>/dev/null || true
+    echo
+  done
+done
+"""
+ACME_FILES_SH = r"""
+for f in /etc/dokploy/traefik/acme.json /etc/traefik/acme.json /acme.json /data/acme.json; do
+  if [ -f "$f" ]; then
+    echo "# configuration file ${f}:"
+    cat "$f" 2>/dev/null || true
+    echo
+  fi
+done
+"""
 APACHE_SCAN_ROOTS = (
     "/etc/apache2/sites-enabled",
     "/etc/apache2/sites-available",
@@ -222,26 +261,52 @@ def hostnames_from_labels_and_env(labels: dict[str, Any] | None, env_items: list
         if "Host(" in text or "Host `" in text or "host(" in text.lower():
             names.extend(hostnames_from_traefik_rule(text))
     for item in env_items or []:
-        raw = str(item)
-        if raw.startswith("VIRTUAL_HOST=") or raw.startswith("DEFAULT_HOST="):
-            names.extend(_split_host_list(raw.split("=", 1)[1]))
-            continue
-        env_match = SITE_URL_ENV.match(raw)
-        if env_match:
-            value = env_match.group(1).strip().strip("'\"")
-            if "://" in value:
-                parsed = urlparse(value)
-                if looks_like_hostname(parsed.hostname or ""):
-                    names.append((parsed.hostname or "").lower())
-            else:
-                names.extend(_split_host_list(value))
+        names.extend(hostnames_from_env_assignment(str(item)))
+    return list(dict.fromkeys(names))
+
+
+def hostnames_from_env_assignment(raw: str) -> list[str]:
+    """Extract public hostnames from one KEY=value or YAML KEY: value line."""
+    text = (raw or "").strip().lstrip("- ").strip()
+    if not text or text.startswith("#"):
+        return []
+    if "=" in text.split(":", 1)[0]:
+        key, _, value = text.partition("=")
+    elif ":" in text:
+        key, _, value = text.partition(":")
+    else:
+        return []
+    key = key.strip()
+    value = value.strip().strip("'\"")
+    if not key or not value:
+        return []
+    key_u = key.upper()
+    if ENV_HOST_SKIP_PREFIX.match(key):
+        return []
+    interesting = bool(
+        SITE_URL_ENV.match(f"{key}={value}")
+        or key_u in {"VIRTUAL_HOST", "DEFAULT_HOST"}
+        or key_u.endswith("_HOST")
+        or key_u.endswith("_HOSTNAME")
+        or key_u.endswith("_URL")
+        or key_u.endswith("_DOMAIN")
+        or "CORS" in key_u
+    )
+    if not interesting:
+        return []
+    names: list[str] = []
+    for token in re.findall(r"https?://([^/\s'\"\],]+)", value, re.IGNORECASE):
+        host = token.split(":")[0].strip().strip(".")
+        if looks_like_hostname(host):
+            names.append(host.lower())
+    names.extend(_split_host_list(value.replace("https://", " ").replace("http://", " ")))
     return list(dict.fromkeys(names))
 
 
 def hostnames_from_compose_text(text: str) -> list[str]:
     names = hostnames_from_traefik_rule(text or "")
-    for match in re.finditer(r"(?im)^\s*(?:VIRTUAL_HOST|DEFAULT_HOST)\s*[:=]\s*(.+)$", text or ""):
-        names.extend(_split_host_list(match.group(1)))
+    for line in (text or "").splitlines():
+        names.extend(hostnames_from_env_assignment(line))
     return list(dict.fromkeys(names))
 
 
@@ -326,9 +391,201 @@ def parse_traefik_file(text: str, source_file: str = "") -> dict[str, Any]:
         "hostnames": list(dict.fromkeys(hosts)),
         "backend_urls": urls,
         "tls": tls,
-        "live_proxy": is_live_proxy_config_path(source_file),
+        "live_proxy": is_live_proxy_config_path(source_file) or source_file.startswith("traefik-api:") or source_file.startswith("docker-exec:"),
         "migration": is_migration_config_path(source_file),
     }
+
+
+def parse_traefik_api_payload(text: str, source: str = "") -> list[dict[str, Any]]:
+    """Parse Traefik /api/http/routers or /api/rawdata JSON into Host() routes."""
+    raw = (text or "").strip()
+    if not raw or raw[0] not in "{[":
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    routers: list[Any] = []
+    services: dict[str, list[str]] = {}
+    if isinstance(payload, list):
+        routers = payload
+    elif isinstance(payload, dict):
+        maybe_routers = payload.get("routers") or payload.get("http", {}).get("routers") if isinstance(payload.get("http"), dict) else payload.get("routers")
+        maybe_services = payload.get("services") or (payload.get("http", {}).get("services") if isinstance(payload.get("http"), dict) else None)
+        if isinstance(maybe_routers, list):
+            routers = maybe_routers
+        elif isinstance(maybe_routers, dict):
+            routers = [{"name": key, **(value if isinstance(value, dict) else {})} for key, value in maybe_routers.items()]
+        if isinstance(maybe_services, dict):
+            for key, value in maybe_services.items():
+                urls = _backend_urls_from_service(value)
+                if urls:
+                    services[str(key).split("@", 1)[0].lower()] = urls
+        elif isinstance(maybe_services, list):
+            for item in maybe_services:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").split("@", 1)[0].lower()
+                urls = _backend_urls_from_service(item)
+                if name and urls:
+                    services[name] = urls
+    routes: list[dict[str, Any]] = []
+    for item in routers:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "enabled").lower()
+        if status and status not in {"enabled", "ok", ""}:
+            continue
+        rule = str(item.get("rule") or "")
+        hosts = hostnames_from_traefik_rule(rule)
+        if not hosts:
+            continue
+        service = str(item.get("service") or "").split("@", 1)[0]
+        urls = list(services.get(service.lower()) or [])
+        tls = bool(item.get("tls"))
+        routes.append(
+            {
+                "source_file": source or "traefik-api",
+                "hostnames": hosts,
+                "backend_urls": urls,
+                "service": service,
+                "tls": tls,
+                "live_proxy": True,
+                "migration": False,
+            }
+        )
+    return routes
+
+
+def _backend_urls_from_service(node: Any) -> list[str]:
+    urls: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            url = value.get("url") or value.get("URL")
+            if isinstance(url, str) and url.startswith("http"):
+                urls.append(url.rstrip("/"))
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(node)
+    return list(dict.fromkeys(urls))
+
+
+def parse_marked_config_dump(text: str) -> list[tuple[str, str]]:
+    files: list[tuple[str, str]] = []
+    current_name = ""
+    current_lines: list[str] = []
+    for line in (text or "").splitlines():
+        match = FILE_MARKER.match(line)
+        if match:
+            if current_name:
+                files.append((current_name, "\n".join(current_lines)))
+            current_name = match.group(1).strip()
+            current_lines = []
+            continue
+        current_lines.append(line)
+    if current_name:
+        files.append((current_name, "\n".join(current_lines)))
+    return files
+
+
+def _looks_like_proxy_container(summary: dict[str, Any]) -> bool:
+    blob = " ".join(
+        str(summary.get(key) or "")
+        for key in ("name", "image", "compose_service", "compose_project")
+    ).lower()
+    if "traefik" in blob:
+        return True
+    dests = " ".join(str(mount.get("destination") or "") for mount in (summary.get("mounts") or [])).lower()
+    if "traefik" in dests:
+        return True
+    if "dokploy" in blob and any(token in blob for token in ("proxy", "traefik")):
+        return True
+    return False
+
+
+def _docker_exec_text(run: Callable, container: str, script: str) -> str:
+    try:
+        name = require_docker_name(container)
+    except ValueError:
+        return ""
+    try:
+        result = run(["docker", "exec", name, "sh", "-c", script], timeout=30)
+    except Exception:
+        return ""
+    if getattr(result, "returncode", 1) != 0:
+        return ""
+    return getattr(result, "stdout", "") or ""
+
+
+def collect_proxy_routes_from_docker(
+    run: Callable | None,
+    containers: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Read live Traefik Host() routes from the reverse-proxy container when host YAML is unreadable."""
+    if run is None:
+        return []
+    routes: list[dict[str, Any]] = []
+    for inspect in containers or []:
+        summary = _docker_summary(inspect)
+        if summary.get("running") is False:
+            continue
+        if not _looks_like_proxy_container(summary):
+            continue
+        name = str(summary.get("name") or "")
+        api_text = _docker_exec_text(run, name, TRAEFIK_API_SH)
+        if api_text.strip():
+            parsed = parse_traefik_api_payload(api_text, f"traefik-api:{name}")
+            if parsed:
+                routes.extend(parsed)
+                continue
+        dump = _docker_exec_text(run, name, TRAEFIK_FILES_SH)
+        for path, body in parse_marked_config_dump(dump):
+            if "acme.json" in path.lower():
+                continue
+            parsed = parse_traefik_file(body, f"docker-exec:{name}:{path}")
+            if parsed.get("hostnames"):
+                parsed["live_proxy"] = True
+                parsed["migration"] = False
+                routes.append(parsed)
+    return _dedupe_proxy_routes(routes)
+
+
+def collect_acme_from_docker(
+    run: Callable | None,
+    containers: list[dict[str, Any]] | None,
+) -> dict[str, list[str]]:
+    if run is None:
+        return {}
+    found: dict[str, list[str]] = {}
+    for inspect in containers or []:
+        summary = _docker_summary(inspect)
+        if summary.get("running") is False or not _looks_like_proxy_container(summary):
+            continue
+        name = str(summary.get("name") or "")
+        dump = _docker_exec_text(run, name, ACME_FILES_SH)
+        for path, body in parse_marked_config_dump(dump):
+            names = hostnames_from_acme_json(body)
+            if names:
+                found[f"docker-exec:{name}:{path}"] = names
+    return found
+
+
+def _dedupe_proxy_routes(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, ...]] = set()
+    unique: list[dict[str, Any]] = []
+    for route in routes:
+        key = tuple(sorted(str(h).lower() for h in (route.get("hostnames") or []) if h))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(route)
+    return unique
 
 
 def _ssl_mechanism(certificate: str, *, https: bool, docker: dict[str, Any] | None = None) -> str:
@@ -2235,6 +2492,17 @@ def applications_from_traefik_routes(
             matched = _match_backend_host(parsed.hostname or "", summaries, port=str(parsed.port or ""))
             if matched:
                 break
+        if not matched:
+            service = str(route.get("service") or "").split("@", 1)[0]
+            if service:
+                matched = _match_backend_host(service, summaries)
+        if not matched:
+            for host in unused:
+                label = str(host).split(".", 1)[0]
+                if label and label not in GENERIC_BACKEND_HOSTS:
+                    matched = _match_backend_host(label, summaries)
+                    if matched:
+                        break
         if matched and matched.get("running") is not False:
             matched = _enrich_docker_from_compose(matched, summaries) or matched
             extras.append(
@@ -2303,10 +2571,21 @@ def applications_from_traefik_routes(
     return extras, leftovers
 
 
-def scan_proxy_routes(extra_files: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def scan_proxy_routes(
+    extra_files: dict[str, str] | None = None,
+    *,
+    run: Callable | None = None,
+    docker_containers: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Walk Dokploy/Traefik/compose files and return Host() routes with backends."""
     roots = tuple(dict.fromkeys([*DOKPLOY_SCAN_ROOTS, *TRAEFIK_SCAN_ROOTS]))
     paths = _iter_existing_files(roots, extra_files)
+    for inspect in docker_containers or []:
+        summary = _docker_summary(inspect)
+        for raw in str(summary.get("compose_files") or "").split(","):
+            path = raw.strip()
+            if path and path not in paths:
+                paths.append(path)
     routes: list[dict[str, Any]] = []
     for path in paths:
         lower = path.lower()
@@ -2317,11 +2596,23 @@ def scan_proxy_routes(extra_files: dict[str, str] | None = None) -> list[dict[st
         text = _read_scan_file(path, extra_files, limit=120000)
         parsed = parse_traefik_file(text, path)
         if parsed.get("hostnames"):
+            if any(
+                str((_docker_summary(item).get("compose_files") or "")).find(path) >= 0
+                and _docker_summary(item).get("running") is not False
+                for item in (docker_containers or [])
+            ):
+                parsed["live_proxy"] = True
             routes.append(parsed)
-    return routes
+    routes.extend(collect_proxy_routes_from_docker(run, docker_containers))
+    return _dedupe_proxy_routes(routes)
 
 
-def scan_acme_hostnames(extra_files: dict[str, str] | None = None) -> dict[str, list[str]]:
+def scan_acme_hostnames(
+    extra_files: dict[str, str] | None = None,
+    *,
+    run: Callable | None = None,
+    docker_containers: list[dict[str, Any]] | None = None,
+) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     roots = tuple(dict.fromkeys([*DOKPLOY_SCAN_ROOTS, *TRAEFIK_SCAN_ROOTS]))
     paths = _iter_existing_files(roots, extra_files)
@@ -2334,6 +2625,8 @@ def scan_acme_hostnames(extra_files: dict[str, str] | None = None) -> dict[str, 
         names = hostnames_from_acme_json(text)
         if names:
             found[path] = names
+    for key, names in collect_acme_from_docker(run, docker_containers).items():
+        found.setdefault(key, names)
     return found
 
 
@@ -2475,24 +2768,72 @@ def _read_scan_file(path: str, extra_files: dict[str, str] | None = None, limit:
         return ""
 
 
+def _path_exists_unprivileged(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _path_is_file_unprivileged(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def _iter_existing_files(roots: tuple[str, ...], extra_files: dict[str, str] | None = None) -> list[str]:
     files: list[str] = []
     if extra_files:
         files.extend(extra_files.keys())
     for root in roots:
+        files.extend(_walk_files_unprivileged(root))
+    return list(dict.fromkeys(files))
+
+
+def _walk_files_unprivileged(root: str) -> list[str]:
+    files: list[str] = []
+    try:
         base = Path(root)
-        if not base.exists():
+        if not _path_exists_unprivileged(base):
+            return []
+        if _path_is_file_unprivileged(base):
+            return [str(base)]
+    except OSError:
+        return []
+
+    def _onerror(_err: OSError) -> None:
+        return None
+
+    try:
+        for dirpath, _dirnames, filenames in os.walk(base, onerror=_onerror):
+            for name in filenames:
+                path = Path(dirpath) / name
+                if _path_is_file_unprivileged(path):
+                    files.append(str(path))
+    except OSError:
+        return files
+    return files
+
+
+def unreadable_live_proxy_files() -> list[str]:
+    """Host Traefik/Dokploy files that exist but cannot be read by this account."""
+    missed: list[str] = []
+    roots = tuple(dict.fromkeys([*DOKPLOY_SCAN_ROOTS, *TRAEFIK_SCAN_ROOTS]))
+    for path in _iter_existing_files(roots, None):
+        if not is_live_proxy_config_path(path):
             continue
-        if base.is_file():
-            files.append(str(base))
+        lower = path.lower()
+        if not any(lower.endswith(ext) for ext in (".yml", ".yaml", ".json", ".toml")):
             continue
         try:
-            for path in base.rglob("*"):
-                if path.is_file():
-                    files.append(str(path))
+            if not os.access(path, os.R_OK):
+                missed.append(path)
+                continue
+            Path(path).read_text(encoding="utf-8", errors="replace")[:1]
         except OSError:
-            continue
-    return list(dict.fromkeys(files))
+            missed.append(path)
+    return missed
 
 
 def scan_compose_hostnames(extra_files: dict[str, str] | None = None) -> dict[str, list[str]]:
@@ -2828,6 +3169,7 @@ def scan_coverage(
 ) -> dict[str, Any]:
     unreadable: list[str] = []
     existing_roots: list[str] = []
+    unreadable_files: list[str] = []
     if extra_files is None:
         for root in (*DOKPLOY_SCAN_ROOTS, *TRAEFIK_SCAN_ROOTS, *APACHE_SCAN_ROOTS):
             path = Path(root)
@@ -2838,22 +3180,48 @@ def scan_coverage(
                         unreadable.append(root)
             except OSError:
                 unreadable.append(root)
+        unreadable_files = unreadable_live_proxy_files()
     incomplete = []
     if not nginx_ok:
         incomplete.append("nginx -T failed or returned no server blocks")
     if extra_files is None and not docker_containers and not any("docker" in str(err).lower() for err in errors):
         incomplete.append("docker inspect returned no containers")
-    if unreadable:
-        incomplete.append("unreadable scan roots: " + ", ".join(unreadable))
-    skipped = [err for err in errors if "skipped" in str(err).lower()]
-    if skipped:
-        incomplete.extend(skipped)
+    live_unreadable = [
+        root
+        for root in unreadable
+        if any(hint in root.replace("\\", "/").lower() for hint in LIVE_PROXY_PATH_HINTS)
+    ]
+    live_routes = [route for route in proxy_routes if route.get("live_proxy") and not route.get("migration")]
+    harvested_from_docker = any(
+        str(route.get("source_file") or "").startswith(("traefik-api:", "docker-exec:"))
+        for route in live_routes
+    )
+    if live_unreadable and not harvested_from_docker:
+        incomplete.append("unreadable live Traefik/Dokploy scan roots: " + ", ".join(live_unreadable))
+    if extra_files is None and unreadable_files and not live_routes:
+        incomplete.append(
+            "Traefik/Dokploy dynamic files exist but are unreadable by this account: "
+            + ", ".join(unreadable_files[:12])
+        )
+    proxy_containers = []
+    for item in docker_containers:
+        summary = _docker_summary(item)
+        if _looks_like_proxy_container(summary) and summary.get("running") is not False:
+            proxy_containers.append(summary)
+    if extra_files is None and proxy_containers and not live_routes:
+        names = ", ".join(str(item.get("name") or "") for item in proxy_containers if item.get("name"))
+        incomplete.append(
+            "Dokploy/Traefik is running ("
+            + names
+            + ") but no live Host() routes were readable from host files, Traefik API, or docker exec"
+        )
     return {
         "nginx_ok": nginx_ok,
         "docker_containers": len(docker_containers),
         "traefik_routes": len(proxy_routes),
         "existing_scan_roots": existing_roots,
         "unreadable_scan_roots": unreadable,
+        "unreadable_live_proxy_files": unreadable_files,
         "incomplete_reasons": incomplete,
         "complete": not incomplete,
     }
@@ -2908,9 +3276,13 @@ def assemble_discovery(
         apps = _merge_candidates(list(apps) + apache_apps)
     proxy_routes: list[dict[str, Any]] = []
     try:
-        proxy_routes = scan_proxy_routes(extra_scan_files)
+        proxy_routes = scan_proxy_routes(
+            extra_scan_files,
+            run=run,
+            docker_containers=docker_containers,
+        )
     except Exception as exc:  # noqa: BLE001
-        errors.append(f"Traefik/Dokploy file scan skipped: {exc}")
+        errors.append(f"Traefik/Dokploy file scan warning: {exc}")
     traefik_apps, compose_leftovers = applications_from_traefik_routes(
         apps,
         proxy_routes,
@@ -2922,9 +3294,13 @@ def assemble_discovery(
         apps = _merge_candidates(list(apps) + traefik_apps)
     acme_hosts: dict[str, list[str]] = {}
     try:
-        acme_hosts = scan_acme_hostnames(extra_scan_files)
+        acme_hosts = scan_acme_hostnames(
+            extra_scan_files,
+            run=run,
+            docker_containers=docker_containers,
+        )
     except Exception as exc:  # noqa: BLE001
-        errors.append(f"acme.json scan skipped: {exc}")
+        errors.append(f"acme.json scan warning: {exc}")
     _attach_acme_ssl(apps, acme_hosts)
     claimed = {str(name).lower() for app in apps for name in (app.get("hostnames") or []) if name}
     for path, names in acme_hosts.items():
