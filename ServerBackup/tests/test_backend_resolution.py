@@ -154,6 +154,113 @@ server {
     assert any("traced to host process php-fpm" in note for note in xdgen.get("notes") or [])
 
 
+def test_db_from_env_parses_connection_strings_and_framework_keys():
+    assert da._db_from_env({"DATABASE_URL": "postgres://u:p@db:5432/xdgen_db?sslmode=require"}) == (
+        "PostgreSQL",
+        "xdgen_db",
+        "",
+    )
+    assert da._db_from_env({"DB_CONNECTION": "mysql", "DB_DATABASE": "sea_tecdb", "DB_USERNAME": "wp"}) == (
+        "MariaDB",
+        "sea_tecdb",
+        "wp",
+    )
+    assert da._db_from_env({"DB_DSN": "Host=db;Database=app_db;User Id=x;Password=secret"})[1] == "app_db"
+    # A bare postgres:// with no db path should not invent one.
+    assert da._db_from_env({"DATABASE_URL": "postgres://u:p@db:5432"})[1] == ""
+
+
+def test_docker_summary_extracts_db_from_database_url():
+    inspect = {
+        "Id": WEB_CONTAINER_ID,
+        "Name": "/xdgen-infgdf-web-1",
+        "Config": {
+            "Image": "app:latest",
+            "Labels": {"com.docker.compose.project": "xdgen-infgdf", "com.docker.compose.service": "web"},
+            "Env": ["DATABASE_URL=postgresql://app:secret@db:5432/xdgen_db", "SECRET_KEY=nope"],
+        },
+        "HostConfig": {"PortBindings": {}},
+        "Mounts": [],
+    }
+    summary = da._docker_summary(inspect)
+    assert summary["postgres_db"] == "xdgen_db"
+    assert "secret" not in json_dumps(summary)
+
+
+def json_dumps(obj):
+    import json
+
+    return json.dumps(obj)
+
+
+def test_project_fallback_from_container_name():
+    assert da._project_from_container_name("sateye-fz2ic4-redis-1") == "sateye-fz2ic4"
+    assert da._project_from_container_name("journal50seacom-bkuksm-db-1") == "journal50seacom-bkuksm"
+    assert da._project_from_container_name("standalone") == ""
+
+
+def test_docker_proxy_container_ip_resolution():
+    ss_output = 'LISTEN 0 511 127.0.0.1:8084 0.0.0.0:* users:(("docker-proxy",pid=555,fd=4))\n'
+    run = _fake_run(
+        {
+            "ss -ltnpH": ss_output,
+            "/proc/555/cgroup": "0::/system.slice/docker.service\n",
+            "/proc/555/cmdline": "/usr/bin/docker-proxy\x00-proto\x00tcp\x00-host-ip\x00127.0.0.1\x00-host-port\x008084\x00-container-ip\x00172.18.0.5\x00-container-port\x0080\x00",
+            "/proc/555/cwd": "/\n",
+        }
+    )
+    owners = da.resolve_backend_owners(run)
+    assert owners["8084"]["container_ip"] == "172.18.0.5"
+    assert owners["8084"]["container_id"] == ""
+
+    web = {
+        "Id": WEB_CONTAINER_ID,
+        "Name": "/sea50-cyfdw1-web-1",
+        "Config": {"Image": "wp:latest", "Labels": {"com.docker.compose.project": "sea50-cyfdw1", "com.docker.compose.service": "web"}, "Env": []},
+        "HostConfig": {"PortBindings": {}},
+        "Mounts": [],
+        "NetworkSettings": {"Networks": {"dokploy-network": {"IPAddress": "172.18.0.5"}}},
+    }
+    db = _dokploy_container("sea50-cyfdw1-db-1", "sea50-cyfdw1", env=["MYSQL_DATABASE=sea_tecdb"])
+    servers = da.parse_nginx_t(
+        "# configuration file /etc/nginx/sites-enabled/50sea.com:\n"
+        "server { listen 80; server_name 50sea.com; location / { proxy_pass http://127.0.0.1:8084; } }\n"
+    )
+    apps = da.applications_from_servers(
+        servers, docker_containers=[web, db], backend_owners=owners,
+        path_exists=lambda _p: True, probe=lambda _r: ({}, {}),
+    )
+    by_host = {n: a for a in apps for n in (a.get("hostnames") or [])}
+    assert by_host["50sea.com"]["application_id"] == "docker:sea50-cyfdw1"
+    assert by_host["50sea.com"]["database_name"] == "sea_tecdb"
+
+
+def test_redis_cache_volume_records_owner_and_is_not_unresolved():
+    redis = {
+        "Id": "redis" + "0" * 59,
+        "Name": "/sateye-fz2ic4-redis-1",
+        "Config": {"Image": "redis:7", "Labels": {"com.docker.compose.project": "sateye-fz2ic4", "com.docker.compose.service": "redis"}, "Env": []},
+        "HostConfig": {"PortBindings": {}},
+        # Volume name is an opaque hash and dest is /data — only the container name reveals redis.
+        "Mounts": [{"Type": "volume", "Name": "deadbeefcafe1234", "Destination": "/data"}],
+    }
+    apps = [
+        {
+            "application_id": "docker:sateye-fz2ic4",
+            "hostname": "xdgen.com",
+            "hostnames": ["xdgen.com"],
+            "docker": {"compose_project": "sateye-fz2ic4", "container": "sateye-fz2ic4-web-1"},
+        }
+    ]
+    vols = da.inventory_docker_volumes([redis], apps)
+    row = next(v for v in vols if v["name"] == "deadbeefcafe1234")
+    assert row["purpose"] == "cache"
+    assert row["application"] == "xdgen.com"
+    assert row["scope"] == "cache"
+    assert row["classification"] != da.CLASSIFICATION_UNRESOLVED
+    assert "xdgen.com" in row["notes"]
+
+
 def test_assemble_discovery_traces_proxy_backend_end_to_end():
     nginx = """
 # configuration file /etc/nginx/sites-enabled/50sea.com:

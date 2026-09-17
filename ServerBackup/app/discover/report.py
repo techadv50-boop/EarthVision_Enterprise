@@ -198,7 +198,10 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
                 "disk scans return empty; 1.4.26 reads the live Traefik API / docker exec files. "
                 "1.4.27 classifies Host() vs PUBLIC_HOST vs CORS/API/image URLs and probes PostgreSQL with pg_dump. "
                 "1.4.28 traces each localhost proxy_pass target to the owning container/process via ss + /proc, "
-                "so reverse-proxied sites resolve to a real application, persistent files, and database."
+                "so reverse-proxied sites resolve to a real application, persistent files, and database. "
+                "1.4.29 also follows docker-proxy -container-ip, reads DATABASE_URL/DB_DATABASE-style env "
+                "for database ownership, derives a compose project from the container name, and records the "
+                "owning domain for cache/redis volumes so nothing is left UNRESOLVED."
             )
             lines.append(
                 f"    RESTORE READY: {row.get('restore_ready') or 'NO'}"

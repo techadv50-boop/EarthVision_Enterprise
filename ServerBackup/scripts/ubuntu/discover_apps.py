@@ -38,6 +38,122 @@ DIRECTIVE = re.compile(r"^([A-Za-z0-9_]+)\s+(.+?);$")
 OJS_FILES_DIR = re.compile(r"^\s*files_dir\s*=\s*(.*)$", re.IGNORECASE)
 OJS_VERSION = re.compile(r"^\s*version\s*=\s*(.*)$", re.IGNORECASE)
 WP_DB = re.compile(r"""['"]DB_NAME['"]\s*,\s*['"]([^'"]+)['"]""")
+DB_ENV_DIRECT_KEYS = (
+    "MYSQL_DATABASE",
+    "MARIADB_DATABASE",
+    "POSTGRES_DB",
+    "POSTGRESQL_DATABASE",
+    "PGDATABASE",
+    "DB_DATABASE",
+    "DB_NAME",
+    "DATABASE_NAME",
+    "MYSQL_DB",
+    "DB_SCHEMA",
+)
+DB_URL_KEYS = (
+    "DATABASE_URL",
+    "DB_URL",
+    "POSTGRES_URL",
+    "POSTGRESQL_URL",
+    "MYSQL_URL",
+    "MARIADB_URL",
+    "JDBC_DATABASE_URL",
+    "DB_CONNECTION_STRING",
+    "DB_DSN",
+    "DSN",
+)
+DB_URL_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*)://", re.IGNORECASE)
+DB_URL_PATH = re.compile(r"://[^/\s]+/([A-Za-z0-9_.\-]+)")
+DB_DSN_NAME = re.compile(r"(?:dbname|database|initial\s*catalog)\s*=\s*([A-Za-z0-9_.\-]+)", re.IGNORECASE)
+DB_NAME_TOKEN = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def _db_engine_from_scheme(scheme: str) -> str:
+    low = (scheme or "").lower()
+    if low.startswith(("postgres", "pg", "psql")):
+        return "PostgreSQL"
+    if low.startswith(("mysql", "mariadb")):
+        return "MariaDB"
+    return ""
+
+
+def _db_name_from_url(value: str) -> tuple[str, str]:
+    """Return (engine, database) parsed from a connection string. No credentials."""
+    raw = (value or "").strip().strip("'\"")
+    if not raw:
+        return "", ""
+    engine = ""
+    scheme = DB_URL_SCHEME.match(raw)
+    if scheme:
+        engine = _db_engine_from_scheme(scheme.group(1))
+    dsn = DB_DSN_NAME.search(raw)
+    if dsn:
+        return engine, dsn.group(1)
+    path = DB_URL_PATH.search(raw)
+    if path:
+        name = path.group(1).split("?", 1)[0]
+        if name and DB_NAME_TOKEN.match(name) and name.lower() not in {"postgres", "mysql", "public"}:
+            return engine, name
+    return engine, ""
+
+
+def _db_from_env(env_map: dict[str, str]) -> tuple[str, str, str]:
+    """Best-effort (engine, database, user) from container environment.
+
+    Recognises the standard MYSQL_DATABASE/POSTGRES_DB keys plus common
+    framework keys (DB_DATABASE, DATABASE_NAME, ...) and connection-string
+    URLs (DATABASE_URL, DB_DSN, ...). Passwords are never returned.
+    """
+    lookup = {str(k).upper(): str(v) for k, v in (env_map or {}).items()}
+    engine = ""
+    if lookup.get("POSTGRES_DB") or lookup.get("POSTGRESQL_DATABASE") or lookup.get("PGDATABASE"):
+        engine = "PostgreSQL"
+    elif lookup.get("MYSQL_DATABASE") or lookup.get("MARIADB_DATABASE"):
+        engine = "MariaDB"
+    connection = str(lookup.get("DB_CONNECTION") or "").lower()
+    if not engine and connection in {"pgsql", "postgres", "postgresql"}:
+        engine = "PostgreSQL"
+    elif not engine and connection in {"mysql", "mariadb"}:
+        engine = "MariaDB"
+    name = ""
+    for key in DB_ENV_DIRECT_KEYS:
+        candidate = str(lookup.get(key) or "").strip().strip("'\"")
+        if candidate and DB_NAME_TOKEN.match(candidate):
+            name = candidate
+            break
+    if not name:
+        for key in DB_URL_KEYS:
+            if key not in lookup:
+                continue
+            url_engine, url_name = _db_name_from_url(lookup.get(key) or "")
+            if url_name:
+                name = url_name
+                engine = engine or url_engine
+                break
+    user = (
+        str(lookup.get("POSTGRES_USER") or lookup.get("MYSQL_USER") or lookup.get("DB_USERNAME") or lookup.get("DB_USER") or "")
+        .strip()
+        .strip("'\"")
+    )
+    return engine, name, user
+
+
+def _project_from_container_name(name: str, *, service: str = "") -> str:
+    """Derive a compose project from a `project-service-N` container name.
+
+    Used only as a fallback when com.docker.compose.project is absent
+    (some Dokploy Application deployments). Never overrides the real label.
+    """
+    cleaned = str(name or "").strip().lstrip("/")
+    if not cleaned:
+        return ""
+    # Compose default container name: <project>-<service>-<replica>
+    match = re.match(r"^(?P<project>.+)-(?P<service>[A-Za-z0-9]+)-(?P<replica>\d+)$", cleaned)
+    if match:
+        return match.group("project")
+    if service and cleaned.endswith("-" + service):
+        return cleaned[: -(len(service) + 1)]
+    return ""
 DEFAULT_OJS_FALLBACK = "/var/www/ojs-files"
 SKIP_HOSTS = {"", "*"}
 CATCHALL_HOSTS = {"", "*", "_", "localhost"}
@@ -879,9 +995,13 @@ def _volume_purpose(destination: str, *, named_volume: str = "", container: str 
         return "database-data"
     if "postgres" in name or "mysql" in name or "mariadb" in name or name.endswith("_pgdata") or name.endswith("-pgdata"):
         return "database-data"
+    if "postgres" in cname or "mysql" in cname or "mariadb" in cname:
+        return "database-data"
     if any(dest == hint.rstrip("/") or dest.startswith(hint.rstrip("/") + "/") for hint in CACHE_VOLUME_DEST_HINTS):
         return "cache"
     if "redis" in dest or "redis" in name or "cache" in name:
+        return "cache"
+    if "redis" in cname or "memcache" in cname or "valkey" in cname:
         return "cache"
     return "application-data"
 
@@ -1543,19 +1663,35 @@ def resolve_backend_owners(run: Callable) -> dict[str, dict[str, Any]]:
         comm_match = SS_COMM.search(process)
         comm = comm_match.group(1) if comm_match else ""
         existing = owners.get(port)
-        # Prefer a real application process over docker-proxy/systemd shims.
-        if existing and existing.get("container_id") and comm in {"docker-proxy", "systemd"}:
+        # Prefer a real application process over systemd shims.
+        if existing and existing.get("container_id") and comm == "systemd":
             continue
         cgroup = _run_text(run, ["cat", f"/proc/{pid}/cgroup"], timeout=5)
         container_id = _container_id_from_cgroup(cgroup)
         cwd = _run_text(run, ["readlink", "-f", f"/proc/{pid}/cwd"], timeout=5).strip()
         exe = _run_text(run, ["readlink", "-f", f"/proc/{pid}/exe"], timeout=5).strip()
         unit = _run_text(run, ["ps", "-o", "unit=", "-p", pid], timeout=5).strip()
+        container_ip = ""
+        container_port = ""
+        # The classic `-p 8084:80` listener is a host `docker-proxy` process whose
+        # own cgroup is the docker daemon, not a container. Its command line records
+        # the container's internal IP, which we can match to a container.
+        if comm == "docker-proxy" or not container_id:
+            cmdline = _run_text(run, ["cat", f"/proc/{pid}/cmdline"], timeout=5)
+            cmd = cmdline.replace("\x00", " ")
+            ip_match = re.search(r"-container-ip\s+(\S+)", cmd)
+            cport_match = re.search(r"-container-port\s+(\d+)", cmd)
+            if ip_match:
+                container_ip = ip_match.group(1)
+            if cport_match:
+                container_port = cport_match.group(1)
         owners[port] = {
             "port": port,
             "pid": pid,
             "comm": comm,
             "container_id": container_id,
+            "container_ip": container_ip,
+            "container_port": container_port,
             "cwd": cwd if cwd and not is_excluded_path(cwd) else "",
             "exe": exe,
             "unit": unit if unit and unit not in {"-", "0"} else "",
@@ -1587,13 +1723,18 @@ def _match_docker_by_backend_owner(
         if not owner:
             continue
         container_id = str(owner.get("container_id") or "")
-        if not container_id:
-            continue
-        for item in summaries:
-            summary_id = str(item.get("id") or "")
-            if summary_id and (container_id.startswith(summary_id) or summary_id.startswith(container_id)):
-                if not _looks_like_infrastructure_container(item):
-                    return dict(item)
+        if container_id:
+            for item in summaries:
+                summary_id = str(item.get("id") or "")
+                if summary_id and (container_id.startswith(summary_id) or summary_id.startswith(container_id)):
+                    if not _looks_like_infrastructure_container(item):
+                        return dict(item)
+        container_ip = str(owner.get("container_ip") or "")
+        if container_ip:
+            for item in summaries:
+                if container_ip in (item.get("network_ips") or []):
+                    if not _looks_like_infrastructure_container(item):
+                        return dict(item)
     return None
 
 
@@ -1658,10 +1799,33 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
         source="docker inspect",
     )
     network_aliases = _network_aliases(inspect)
+    network_ips = _network_ips(inspect)
     compose_files = labels.get("com.docker.compose.project.config_files") or ""
+    name = str((inspect.get("Name") or "").lstrip("/"))
+    compose_service = labels.get("com.docker.compose.service") or ""
+    compose_project = (
+        labels.get("com.docker.compose.project")
+        or labels.get("com.docker.stack.namespace")
+        or _project_from_container_name(name, service=str(compose_service))
+    )
+    env_engine, env_db, env_db_user = _db_from_env(env_map)
+    postgres_db = env_map.get("POSTGRES_DB") or env_map.get("POSTGRESQL_DATABASE") or ""
+    mysql_database = env_map.get("MYSQL_DATABASE") or env_map.get("MARIADB_DATABASE") or ""
+    if env_db:
+        if env_engine == "PostgreSQL" and not postgres_db:
+            postgres_db = env_db
+        elif env_engine == "MariaDB" and not mysql_database:
+            mysql_database = env_db
+        elif not postgres_db and not mysql_database:
+            # Engine unknown from the env; default to MariaDB unless the value
+            # was found via a postgres URL/scheme.
+            if env_engine == "PostgreSQL":
+                postgres_db = env_db
+            else:
+                mysql_database = env_db
     return {
         "id": str(inspect.get("Id") or "")[:12],
-        "name": str((inspect.get("Name") or "").lstrip("/")),
+        "name": name,
         "image": str(config.get("Image") or ""),
         "running": running,
         "labels": safe_labels,
@@ -1669,15 +1833,17 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
         "advertised_hostnames": list(dict.fromkeys(advertised_hosts)),
         "hostname_mentions": mentions,
         "network_aliases": network_aliases,
-        "compose_project": labels.get("com.docker.compose.project") or "",
-        "compose_service": labels.get("com.docker.compose.service") or "",
+        "network_ips": network_ips,
+        "compose_project": compose_project or "",
+        "compose_service": compose_service,
         "compose_workdir": labels.get("com.docker.compose.project.working_dir") or "",
         "compose_files": compose_files,
         "published_ports": published,
         "mounts": mounts,
-        "postgres_db": env_map.get("POSTGRES_DB") or "",
-        "postgres_user": env_map.get("POSTGRES_USER") or "",
-        "mysql_database": env_map.get("MYSQL_DATABASE") or env_map.get("MARIADB_DATABASE"),
+        "postgres_db": postgres_db,
+        "postgres_user": env_map.get("POSTGRES_USER") or env_db_user or "",
+        "mysql_database": mysql_database,
+        "database_env_source": env_db,
         "traefik_tls": any("traefik" in str(key).lower() and "tls" in str(key).lower() for key in labels),
     }
 
@@ -1694,6 +1860,23 @@ def _network_aliases(inspect: dict[str, Any]) -> list[str]:
                 if cleaned:
                     aliases.append(cleaned)
     return list(dict.fromkeys(aliases))
+
+
+def _network_ips(inspect: dict[str, Any]) -> list[str]:
+    ips: list[str] = []
+    net_settings = inspect.get("NetworkSettings") or {}
+    primary = str(net_settings.get("IPAddress") or "").strip()
+    if primary:
+        ips.append(primary)
+    networks = net_settings.get("Networks") or {}
+    if isinstance(networks, dict):
+        for net in networks.values():
+            if not isinstance(net, dict):
+                continue
+            addr = str(net.get("IPAddress") or "").strip()
+            if addr and addr not in ips:
+                ips.append(addr)
+    return ips
 
 
 def _public_docker(docker: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -3212,21 +3395,31 @@ def inventory_docker_volumes(
             purpose = _volume_purpose(dest, named_volume=name, container=container)
             status = _volume_backup_status(purpose)
             project = str(summary.get("compose_project") or "")
+            project_hosts = list(host_by_project.get(project.lower(), []))
+            if not project_hosts and project:
+                for proj_key, proj_hosts in host_by_project.items():
+                    if proj_key and (project.lower().startswith(proj_key) or proj_key.startswith(project.lower())):
+                        project_hosts.extend(proj_hosts)
             hosts = [
                 h
                 for h in dict.fromkeys(
-                    host_by_container.get(container.lower(), []) + host_by_project.get(project.lower(), [])
+                    host_by_container.get(container.lower(), []) + project_hosts
                 )
                 if h and not is_infrastructure_hostname(h)
             ]
-            website = hosts[0] if hosts and purpose not in {"infrastructure", "cache"} else ""
+            owner_host = hosts[0] if hosts else ""
+            website = owner_host if owner_host and purpose not in {"infrastructure", "cache"} else ""
             infra_container = _looks_like_infrastructure_container(summary)
             classification = CLASSIFICATION_ACTIVE if website else CLASSIFICATION_UNRESOLVED
             scope = "website" if website else "unresolved"
-            application = website
+            application = website or owner_host
             if purpose == "cache":
+                # Redis/cache is ephemeral, not persistent application data. It is
+                # not silently dropped: the owning domain is recorded and the volume
+                # is documented as excluded-by-purpose.
                 classification = CLASSIFICATION_EXCLUDED
-                scope = "excluded"
+                scope = "cache" if owner_host else "excluded"
+                application = owner_host or project or container
             elif purpose == "infrastructure" or (infra_container and not website):
                 classification = CLASSIFICATION_SYSTEM
                 scope = "infrastructure"
@@ -3277,7 +3470,7 @@ def inventory_docker_volumes(
                     "size_bytes": size_bytes,
                     "file_count": file_count,
                     "classification": classification,
-                    "notes": _volume_notes(purpose, website, name, dest),
+                    "notes": _volume_notes(purpose, website or (owner_host if purpose == "cache" else ""), name, dest),
                     "status": status,
                 }
             )
@@ -3296,6 +3489,12 @@ def _volume_notes(purpose: str, website: str, name: str, destination: str = "") 
             "It is dumped with pg_dump/mysqldump into _server/infrastructure/databases/, not copied live."
         )
     if purpose == "cache":
+        if website:
+            return (
+                f"Named volume {name} is cache/redis for {website}; it holds ephemeral cache/session "
+                "state, not persistent application data, so it is intentionally excluded from the "
+                "website restore data (documented owner, not silently dropped)."
+            )
         return f"Named volume {name} looks like cache/redis; intentionally excluded from website restore data."
     if purpose == "infrastructure":
         dest = destination or ""

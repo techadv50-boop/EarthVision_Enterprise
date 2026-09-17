@@ -468,6 +468,25 @@ def _fmt(values: Any) -> str:
     return str(values)
 
 
+def _resolution_reasons(row: dict[str, Any]) -> list[str]:
+    """Attribution-level problems only.
+
+    Whether every live file has been inventoried yet is a restore-completeness
+    matter (shown separately as RESTORE STATUS / REMAINING UNRESOLVED ITEMS),
+    not an attribution failure — image-based Docker apps legitimately have no
+    bind-mounted host files.
+    """
+    reasons: list[str] = []
+    app = str(row.get("application_container") or "")
+    app_type = str(row.get("application_type") or "")
+    has_app = bool(row.get("docker_compose_project")) or bool(row.get("actual_source_paths"))
+    if app.startswith("reverse-proxy") or (app_type == "Reverse Proxy" and not has_app):
+        reasons.append("reverse-proxy backend not traced to a real application")
+    if str(row.get("database") or "(none)") == "(none)" and app_type not in {"Static", "Other"}:
+        reasons.append("no database identified for an application site")
+    return reasons
+
+
 def format_attribution_report(preflight: dict[str, Any]) -> str:
     """Per-domain attribution: everything needed to restore each website.
 
@@ -481,6 +500,17 @@ def format_attribution_report(preflight: dict[str, Any]) -> str:
         "  website is attributed to its own BACKUPS/<domain>/ folder.",
     ]
     websites = list(preflight.get("websites") or [])
+    needs_attention: list[str] = []
+    for row in websites:
+        if _resolution_reasons(row):
+            needs_attention.append(str(row.get("website")))
+    unassigned = [db.get("name") for db in (preflight.get("unassigned_databases") or [])]
+    lines.append(
+        f"  RESOLUTION SUMMARY: {len(websites) - len(needs_attention)}/{len(websites)} domains fully resolved"
+        + (f"; NEEDS ATTENTION: {', '.join(needs_attention)}" if needs_attention else "; all domains resolved")
+    )
+    if unassigned:
+        lines.append(f"  UNASSIGNED DATABASES (require review, not discarded): {', '.join(str(n) for n in unassigned)}")
     if not websites:
         lines.append("  (no active websites attributed yet)")
     for row in websites:
@@ -517,9 +547,13 @@ def format_attribution_report(preflight: dict[str, Any]) -> str:
                 f"    RESTORE STATUS: {row.get('restore_completeness_status')}",
             ]
         )
+        reasons = _resolution_reasons(row)
+        lines.append(
+            f"    RESOLVED: {'YES' if not reasons else 'NEEDS ATTENTION — ' + '; '.join(reasons)}"
+        )
         unresolved = row.get("unresolved_items") or []
         if unresolved:
-            lines.append(f"    UNRESOLVED: {_fmt(unresolved)}")
+            lines.append(f"    REMAINING UNRESOLVED ITEMS: {_fmt(unresolved)}")
     recovery = list(preflight.get("recovery_databases") or [])
     if recovery:
         lines.extend(["", "  _recovery/ (leftover/legacy data — kept, never silently discarded)"])
