@@ -358,6 +358,72 @@ server {
     assert "DOCKER PROJECT: sea50-cyfdw1" in report
 
 
+def test_dead_backend_falls_back_to_last_known_docker_source():
+    from app.backup.domain_map import build_domain_map
+
+    apps = [
+        {
+            "application_id": "reverse-proxy:proxy:http://127.0.0.1:8084",
+            "hostname": "50sea.com",
+            "hostnames": ["50sea.com", "www.50sea.com"],
+            "type": "Reverse Proxy",
+            "root": "",
+            "proxy_pass": ["http://127.0.0.1:8084"],
+            "included": True,
+            "status": "READY",
+            "source_paths": ["/etc/nginx/sites-enabled/50sea.com"],
+            "docker": None,
+        },
+        {
+            "application_id": "docker:sea50-cyfdw1",
+            "hostname": "50sea.com",
+            "hostnames": ["50sea.com", "www.50sea.com"],
+            "type": "WordPress",
+            "change": "migrated",
+            "root": "",
+            "source_paths": ["/etc/dokploy/compose/sea50-cyfdw1/wp-content"],
+            "persistent_data_paths": ["/etc/dokploy/compose/sea50-cyfdw1/wp-content", "volume:sea50_uploads"],
+            "docker": {
+                "compose_project": "sea50-cyfdw1",
+                "container": "sea50-cyfdw1-web-1",
+                "mounts": [
+                    {"source": "/etc/dokploy/compose/sea50-cyfdw1/wp-content", "destination": "/var/www/html/wp-content", "named_volume": False}
+                ],
+            },
+        },
+    ]
+    dm = build_domain_map(apps, [], approved_only=True)
+    site = next(s for s in dm.sites if s.domain == "50sea.com")
+    assert site.backend_status == "CURRENT BACKEND UNAVAILABLE"
+    assert "/etc/dokploy/compose/sea50-cyfdw1/wp-content" in site.source_paths
+    assert (site.docker or {}).get("compose_project") == "sea50-cyfdw1"
+    assert "sea50_uploads" in site.named_volumes
+    assert any("CURRENT BACKEND UNAVAILABLE" in w for w in site.warnings)
+
+
+def test_dead_backend_without_evidence_is_documented_not_silent():
+    from app.backup.domain_map import build_domain_map
+
+    apps = [
+        {
+            "application_id": "reverse-proxy:proxy:http://127.0.0.1:8085",
+            "hostname": "xdgen.com",
+            "hostnames": ["xdgen.com", "www.xdgen.com"],
+            "type": "Reverse Proxy",
+            "root": "",
+            "proxy_pass": ["http://127.0.0.1:8085"],
+            "included": True,
+            "status": "READY",
+            "source_paths": ["/etc/nginx/sites-enabled/xdgen.com"],
+            "docker": None,
+        }
+    ]
+    dm = build_domain_map(apps, [], approved_only=True)
+    site = next(s for s in dm.sites if s.domain == "xdgen.com")
+    assert site.backend_status == "CURRENT BACKEND UNAVAILABLE"
+    assert any("NO PERSISTENT SOURCE IDENTIFIED" in w for w in site.warnings)
+
+
 def test_attribution_report_has_all_required_fields():
     apps = [
         {

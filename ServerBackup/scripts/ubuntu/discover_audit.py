@@ -579,11 +579,23 @@ def finalize_database_verdict(row: dict[str, Any]) -> dict[str, Any]:
                 + extra
             )
             return row
-        row["status"] = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
-        row["reason"] = "referenced outside active applications;" + extra
+        # Data exists but no live application could be proven as the owner.
+        # Preserve it under _recovery (never discard, never guess an owner).
+        row["status"] = "RECOVERY — OWNER UNCONFIRMED"
+        row["recovery"] = True
+        row["reason"] = (
+            "OWNER: UNCONFIRMED. Referenced outside any active application; current application "
+            "association could not be proven. Kept under BACKUPS/_recovery/databases so it is never "
+            "silently discarded and never guessed onto a website." + extra
+        )
         return row
-    row["status"] = "UNASSOCIATED DATABASE — REQUIRES REVIEW"
-    row["reason"] = "no application association discovered;" + extra
+    row["status"] = "RECOVERY — OWNER UNCONFIRMED"
+    row["recovery"] = True
+    row["reason"] = (
+        "OWNER: UNCONFIRMED. No application, Docker, or config reference proves ownership. "
+        "Kept under BACKUPS/_recovery/databases so it is never silently discarded and never "
+        "guessed onto a website." + extra
+    )
     return row
 
 

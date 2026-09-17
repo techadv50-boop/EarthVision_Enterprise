@@ -79,6 +79,9 @@ class SiteSpec:
     named_volumes: list[str] = field(default_factory=list)
     estimated_bytes: int = 0
     file_count: int = 0
+    backend_status: str = "OK"
+    backend_source_note: str = ""
+    warnings: list[str] = field(default_factory=list)
 
     def all_file_roots(self) -> list[str]:
         roots: list[str] = []
@@ -182,6 +185,128 @@ def sanitize_domain_folder(domain: str) -> str:
     if name.lower() in RESERVED_FOLDERS or name.startswith("_"):
         name = f"site-{name.lstrip('_')}"
     return name
+
+
+def _normalized_hosts(app: dict[str, Any]) -> set[str]:
+    hosts: set[str] = set()
+    for raw in _hostnames(app):
+        name = str(raw or "").strip().lower().rstrip(".")
+        if not name or name in CATCHALL_HOSTS:
+            continue
+        hosts.add(name)
+        hosts.add(name[4:] if name.startswith("www.") else "www." + name)
+    return hosts
+
+
+def _is_dead_reverse_proxy(app: dict[str, Any]) -> bool:
+    """A reverse-proxy site whose backend could not be resolved to a real app."""
+    app_type = str(app.get("type") or "")
+    ident = str(app.get("application_id") or "")
+    if app_type != "Reverse Proxy" and not ident.startswith("reverse-proxy:"):
+        return False
+    if isinstance(app.get("docker"), dict) and app.get("docker"):
+        return False
+    root = _clean(str(app.get("root") or ""))
+    real_sources = [
+        p
+        for p in (app.get("source_paths") or [])
+        if _clean(str(p)) and not str(p).startswith("volume:") and "/nginx" not in _clean(str(p))
+    ]
+    return not root and not real_sources
+
+
+def _fallback_source_app(domain_hosts: set[str], apps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Best last-known persistent source for a dead-backend domain.
+
+    Uses migrated/removed (previously-discovered) applications that share the
+    hostname and still carry Docker or filesystem evidence. This is the
+    strongest available evidence when the live reverse-proxy backend is down.
+    """
+    best: tuple[int, dict[str, Any]] | None = None
+    for app in apps:
+        if app.get("change") not in {"migrated", "removed"}:
+            continue
+        if not (domain_hosts & _normalized_hosts(app)):
+            continue
+        docker = app.get("docker") if isinstance(app.get("docker"), dict) else {}
+        sources = [
+            _clean(str(p))
+            for p in (app.get("source_paths") or [])
+            if _clean(str(p)) and not str(p).startswith("volume:")
+        ]
+        root = _clean(str(app.get("root") or ""))
+        volumes = [str(p) for p in (app.get("persistent_data_paths") or []) if str(p).startswith("volume:")]
+        score = 0
+        if docker.get("compose_project") or docker.get("mounts"):
+            score += 4
+        if sources:
+            score += 2
+        if root:
+            score += 1
+        if volumes:
+            score += 1
+        if score == 0:
+            continue
+        if best is None or score > best[0]:
+            best = (score, app)
+    return best[1] if best else None
+
+
+def _apply_backend_fallback(site: SiteSpec, source_app: dict[str, Any]) -> None:
+    docker = source_app.get("docker") if isinstance(source_app.get("docker"), dict) else None
+    site.backend_status = "CURRENT BACKEND UNAVAILABLE"
+    proxy = ", ".join(site.source_paths) if site.source_paths else "the configured localhost port"
+    site.docker = dict(docker) if docker else site.docker
+    fallback_sources = [
+        _clean(str(p))
+        for p in (source_app.get("source_paths") or [])
+        if _clean(str(p)) and not str(p).startswith("volume:")
+    ]
+    root = _clean(str(source_app.get("root") or ""))
+    if root and root not in fallback_sources:
+        fallback_sources.insert(0, root)
+    if root and not site.application_root:
+        site.application_root = root
+    for path in fallback_sources:
+        if path and path not in site.source_paths:
+            site.source_paths.append(path)
+    for raw in source_app.get("persistent_data_paths") or []:
+        text = str(raw or "")
+        if text.startswith("volume:"):
+            name = text.split(":", 1)[-1].strip()
+            if name and name not in site.named_volumes:
+                site.named_volumes.append(name)
+        else:
+            cleaned = _clean(text)
+            if cleaned and cleaned not in site.storage_roots and cleaned != site.application_root:
+                site.storage_roots.append(cleaned)
+    identified = (
+        (docker.get("compose_project") if docker else "")
+        or (fallback_sources[0] if fallback_sources else "")
+        or str(source_app.get("application_id") or "")
+    )
+    site.backend_source_note = (
+        f"Live backend ({proxy}) is not listening. Using last-known persistent source "
+        f"from {source_app.get('application_id') or identified}: "
+        f"{identified or 'no persistent source identified'}."
+    )
+    site.warnings.append(
+        "BACKEND_STATUS: CURRENT BACKEND UNAVAILABLE — the Nginx reverse-proxy target is down; "
+        "backing up the last-known persistent source instead of a live application."
+    )
+
+
+def _mark_backend_unavailable_no_source(site: SiteSpec) -> None:
+    site.backend_status = "CURRENT BACKEND UNAVAILABLE"
+    site.backend_source_note = (
+        "Live backend is not listening and no Docker project, persistent volume, or application "
+        "directory could be identified from the collected evidence. Only the Nginx configuration "
+        "is captured. Restore requires redeploying the application, then re-running the backup."
+    )
+    site.warnings.append(
+        "BACKEND_STATUS: CURRENT BACKEND UNAVAILABLE and NO PERSISTENT SOURCE IDENTIFIED — "
+        "this domain folder contains the Nginx config and this warning, not application files."
+    )
 
 
 def _eligible_application(app: dict[str, Any]) -> bool:
@@ -334,6 +459,21 @@ def build_domain_map(
                 estimated_bytes=int(app.get("estimated_bytes") or 0),
             )
         )
+
+    # For any active reverse-proxy site whose backend is down, fall back to the
+    # strongest last-known persistent source (migrated/removed Docker app or
+    # filesystem path for the same hostname). Never leave a silent 0-byte site.
+    app_by_ident = {str(a.get("application_id") or ""): a for a in apps}
+    for site in sites:
+        app = app_by_ident.get(site.application_id)
+        if app is None or not _is_dead_reverse_proxy(app):
+            continue
+        domain_hosts = _normalized_hosts({"hostnames": site.hostnames, "hostname": site.domain})
+        source_app = _fallback_source_app(domain_hosts, apps)
+        if source_app is not None:
+            _apply_backend_fallback(site, source_app)
+        else:
+            _mark_backend_unavailable_no_source(site)
 
     by_id = {site.application_id: site for site in sites if site.application_id}
     claimed: dict[str, list[str]] = {}

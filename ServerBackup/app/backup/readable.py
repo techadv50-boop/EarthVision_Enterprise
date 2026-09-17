@@ -143,6 +143,8 @@ def format_backup_info(
         f"Domain: {site.domain}",
         f"Hostnames: {', '.join(site.hostnames) or site.domain}",
         f"Backup date/time: {timestamp}",
+        f"Backend status: {site.backend_status or 'OK'}",
+        *([f"Backend note: {site.backend_source_note}"] if site.backend_source_note else []),
         f"Website type: {site.website_type}",
         f"Database name: {', '.join(db_names)}",
         f"Database server/type: {', '.join(db_types)}",
@@ -202,11 +204,38 @@ def _site_info_json(
     aliases = [h for h in site.hostnames if h != site.domain]
     db_names = [db.name for db in site.databases]
     db_containers = [db.docker_container or inferred_db_container(site.docker) for db in site.databases]
+    db_engines = [db.db_type or "MariaDB" for db in site.databases]
+    backend_status = site.backend_status or "OK"
+    backup_source = site.application_root or (site.source_paths[0] if site.source_paths else "") or (
+        (docker.get("compose_project") or "") and f"docker:{docker.get('compose_project')}"
+    ) or ""
+    restore_notes: list[str] = []
+    if site.backend_source_note:
+        restore_notes.append(site.backend_source_note)
+    if backend_status != "OK":
+        restore_notes.append(
+            "This website's live backend was unavailable at backup time; verify the application "
+            "before serving traffic after restore."
+        )
+    if backend_status != "OK":
+        backup_completeness = "BACKUP FROM LAST-KNOWN SOURCE (LIVE BACKEND UNAVAILABLE)"
+    elif db_names or site.source_paths or site.application_root:
+        backup_completeness = "RESTORE PACKAGE PRESENT"
+    else:
+        backup_completeness = "CONFIG-ONLY"
+    warnings = list(dict.fromkeys(list(site.warnings) + list(site.notes)))
     return {
         "canonical_hostname": site.domain,
         "aliases": aliases,
         "application_id": site.application_id,
         "application_type": site.website_type,
+        "backend_status": backend_status,
+        "backup_source": backup_source or "(none identified)",
+        "backup_completeness": backup_completeness,
+        "restore_notes": restore_notes,
+        "warnings_summary": warnings,
+        "database_engine": db_engines[0] if len(db_engines) == 1 else db_engines,
+        "database_backup_path": (database_files[0] if len(database_files) == 1 else database_files) or "(none)",
         "database_name": db_names[0] if len(db_names) == 1 else db_names,
         "database_container": db_containers[0] if len(db_containers) == 1 else db_containers,
         "nginx_configuration_files": list(site.nginx_source_files),

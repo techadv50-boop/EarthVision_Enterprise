@@ -79,10 +79,10 @@ def test_first_run_dry_run_with_no_master_is_full_baseline_preview(tmp_path: Pat
     assert "Applications pending:" in text
     assert "Databases unresolved:" in text
     assert "xdgen_db" in text
-    assert "REQUIRES REVIEW" in text
-    unassociated = text.split("UNASSOCIATED DATABASES", 1)[1].split("EXCLUDED DATABASES", 1)[0]
-    assert "xdgen_db" in unassociated
-    assert "REQUIRES REVIEW" in unassociated
+    # xdgen_db has data but no provable owner: preserved under _recovery, never discarded.
+    recovery = text.split("RECOVERY DATABASES", 1)[1].split("EXCLUDED DATABASES", 1)[0]
+    assert "xdgen_db" in recovery
+    assert "OWNER: UNCONFIRMED" in recovery
     discovered_hosts = text.split("DISCOVERED HOSTNAMES", 1)[1].split("DISCOVERED APPLICATIONS", 1)[0]
     assert "sateye.xdgen.com" not in discovered_hosts
     saved = Path(cfg.backup_destination) / "dry-run-last.txt"

@@ -766,7 +766,7 @@ def test_nginx_filesystem_alias_is_not_a_separate_application():
     assert all(app.get("root") != "/var/lib/ojs-journal50" for app in _apps())
 
 
-def test_unassociated_database_is_visible_and_requires_review():
+def test_unassociated_database_is_preserved_in_recovery():
     import discover_audit as audit
 
     apps = [
@@ -792,8 +792,9 @@ def test_unassociated_database_is_visible_and_requires_review():
     )
     by_name = {row["name"]: row for row in inventory}
     assert by_name["sea_tedb"]["status"] == "ASSOCIATED WITH APPLICATION"
-    assert by_name["xdgen_db"]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    assert by_name["xdgen_db"]["status"] == "RECOVERY — OWNER UNCONFIRMED"
     assert by_name["xdgen_db"]["application_id"] == ""
+    assert by_name["xdgen_db"]["recovery"] is True
     assert by_name["information_schema"]["status"] == "SYSTEM DATABASE — EXCLUDED"
     report = format_discovery_report(
         {
@@ -815,11 +816,9 @@ def test_unassociated_database_is_visible_and_requires_review():
             "hostname": "ubuntu",
         }
     )
-    unassociated = report.split("UNASSOCIATED DATABASES", 1)[1].split("EXCLUDED DATABASES", 1)[0]
-    assert "xdgen_db" in unassociated
-    assert "REQUIRES REVIEW" in unassociated
-    assert "no application association discovered" in unassociated
-    assert "database xdgen_db" in report.split("REQUIRES REVIEW", 1)[1]
+    recovery = report.split("RECOVERY DATABASES", 1)[1].split("EXCLUDED DATABASES", 1)[0]
+    assert "xdgen_db" in recovery
+    assert "OWNER: UNCONFIRMED" in recovery
     gate = assess_backup_gate(
         [
             {
@@ -830,9 +829,10 @@ def test_unassociated_database_is_visible_and_requires_review():
         ],
         inventory,
     )
-    assert gate["databases_unresolved"] == 1
-    assert gate["unresolved_database_names"] == ["xdgen_db"]
-    assert gate["block_complete_backup"] is True
+    # No provable owner -> preserved under _recovery, never discarded, does not block.
+    assert gate["databases_unresolved"] == 0
+    assert gate["unresolved_database_names"] == []
+    assert gate["block_complete_backup"] is False
 
 
 def test_empty_database_is_excluded_but_still_listed():
@@ -1000,20 +1000,21 @@ def test_backup_now_blocked_when_applications_pending(tmp_path: Path):
     assert not MasterStore(cfg.backup_destination).has_head()
 
 
-def test_backup_now_blocked_when_unassociated_database_after_approval(tmp_path: Path):
+def test_unassociated_database_after_approval_is_preserved_in_recovery(tmp_path: Path):
     remote = seed_remote_tree(tmp_path / "remote")
     cfg = master_config(tmp_path, remote)
     ssh = LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])
     enable_backup(cfg, ssh)
-    try:
-        BackupEngine(cfg, ssh=LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])).run()
-        assert False, "unassociated database must block COMPLETE backup"
-    except BackupError as exc:
-        text = str(exc)
-        assert "BLOCK COMPLETE BACKUP" in text
-        assert "xdgen_db" in text
-        assert "Databases unresolved:" in text
-    assert not MasterStore(cfg.backup_destination).has_head()
+    info = BackupEngine(
+        cfg, ssh=LocalMasterSSH(tmp_path / "remote", extra_mariadb=["xdgen_db"])
+    ).run()
+    # xdgen_db has no provable owner: the backup completes and preserves it under
+    # _recovery instead of blocking (never discarded, never guessed onto a site).
+    assert info["status"] == "SUCCESS"
+    assert MasterStore(cfg.backup_destination).has_head()
+    recovery_dir = Path(cfg.backup_destination) / "BACKUPS" / "_recovery" / "databases"
+    names = {p.name for p in recovery_dir.glob("xdgen_db*")} if recovery_dir.is_dir() else set()
+    assert any(name.startswith("xdgen_db") for name in names), f"xdgen_db not preserved in _recovery: {names}"
 
 
 def test_empty_unassociated_database_does_not_block_backup_after_approval(tmp_path: Path):
@@ -1070,7 +1071,7 @@ def test_zero_row_unreferenced_database_is_unused_legacy():
     assert gate["block_complete_backup"] is False
 
 
-def test_unreferenced_database_with_rows_stays_requires_review():
+def test_unreferenced_database_with_rows_is_recovery_owner_unconfirmed():
     import discover_audit as audit
 
     inventory = audit.build_database_inventory(
@@ -1089,15 +1090,17 @@ def test_unreferenced_database_with_rows_stays_requires_review():
             }
         },
     )
-    assert inventory[0]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    assert inventory[0]["status"] == "RECOVERY — OWNER UNCONFIRMED"
     assert "120 rows" in inventory[0]["reason"]
     assert "wp_posts" in inventory[0]["reason"]
+    assert "OWNER: UNCONFIRMED" in inventory[0]["reason"]
     gate = assess_backup_gate(
         [{"application_id": "php:/var/www/xdgen.com", "included": True, "status": "READY"}],
         inventory,
     )
-    assert gate["databases_unresolved"] == 1
-    assert gate["block_complete_backup"] is True
+    # Data with no provable owner is preserved under _recovery, not blocked.
+    assert gate["databases_unresolved"] == 0
+    assert gate["block_complete_backup"] is False
 
 
 def test_mysql_account_report_omits_password(tmp_path: Path):
@@ -1298,7 +1301,8 @@ server {
     assert by_name["sea_tecdb"]["application_id"] == "docker:sea50-cyfdw1"
     assert by_name["xdgen_db"]["status"] == "ASSOCIATED WITH APPLICATION"
     assert by_name["xdgen_db"]["application_id"] == "docker:xdgen-infgdf"
-    assert by_name["journal_db"]["status"] == "UNASSOCIATED DATABASE — REQUIRES REVIEW"
+    # journal_db's db container has no matching live app project -> owner unconfirmed, kept in recovery.
+    assert by_name["journal_db"]["status"] == "RECOVERY — OWNER UNCONFIRMED"
     assert by_name["journal_db"]["application_id"] == ""
     gate = assess_backup_gate(
         [
@@ -1309,8 +1313,8 @@ server {
         inventory,
     )
     assert gate["databases_associated"] == 3
-    assert gate["unresolved_database_names"] == ["journal_db"]
-    assert gate["block_complete_backup"] is True
+    assert gate["unresolved_database_names"] == []
+    assert gate["block_complete_backup"] is False
 
 
 def test_docker_ref_does_not_attach_when_two_projects_share_prefix():

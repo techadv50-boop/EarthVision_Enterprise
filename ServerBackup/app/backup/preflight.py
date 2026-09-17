@@ -113,6 +113,15 @@ def _persistent_source(site: SiteSpec) -> str:
     return str(docker.get("workdir") or docker.get("container") or "(none)")
 
 
+def _recovery_reason(name: str, database_inventory: list[dict[str, Any]] | None) -> str:
+    for row in database_inventory or []:
+        if str(row.get("name") or "") == str(name or ""):
+            reason = str(row.get("reason") or "").strip()
+            if reason:
+                return reason
+    return "kept under _recovery; not assigned to a live website folder"
+
+
 def _database_evidence(name: str, database_inventory: list[dict[str, Any]] | None) -> dict[str, Any]:
     """Config evidence proving which application owns a database."""
     for row in database_inventory or []:
@@ -224,6 +233,9 @@ def build_preflight(
                 "restore_completeness_status": restore.get("status"),
                 "aliases": [h for h in site.hostnames if h != site.domain],
                 "application_type": site.website_type,
+                "backend_status": site.backend_status or "OK",
+                "backend_source_note": site.backend_source_note or "",
+                "warnings": list(dict.fromkeys(list(site.warnings) + list(site.notes))),
                 "database_container": _db_container(site),
                 "docker_compose_project": docker.get("compose_project") or "",
                 "docker_compose_file": docker.get("compose_file") or docker.get("compose_files") or "",
@@ -313,7 +325,7 @@ def build_preflight(
                 "name": db.name,
                 "dump_path": f"_recovery/databases/{db.name}.sql",
                 "size_bytes": db.size_bytes,
-                "reason": "Dokploy migration leftover; not assigned to a live website folder",
+                "reason": _recovery_reason(db.name, database_inventory),
             }
             for db in domain_map.recovery_databases
         ],
@@ -479,12 +491,26 @@ def _resolution_reasons(row: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     app = str(row.get("application_container") or "")
     app_type = str(row.get("application_type") or "")
+    backend_status = str(row.get("backend_status") or "OK")
     has_app = bool(row.get("docker_compose_project")) or bool(row.get("actual_source_paths"))
+    # A dead backend that we captured from a last-known source is a documented
+    # state, not an attribution failure.
+    if backend_status != "OK":
+        return reasons
     if app.startswith("reverse-proxy") or (app_type == "Reverse Proxy" and not has_app):
         reasons.append("reverse-proxy backend not traced to a real application")
     if str(row.get("database") or "(none)") == "(none)" and app_type not in {"Static", "Other"}:
         reasons.append("no database identified for an application site")
     return reasons
+
+
+def _site_category(row: dict[str, Any]) -> str:
+    backend_status = str(row.get("backend_status") or "OK")
+    if backend_status != "OK":
+        return "ACTIVE BUT BACKEND CURRENTLY UNAVAILABLE"
+    if _resolution_reasons(row):
+        return "RECOVERY / UNCONFIRMED"
+    return "ACTIVE AND FULLY IDENTIFIED"
 
 
 def format_attribution_report(preflight: dict[str, Any]) -> str:
@@ -511,6 +537,22 @@ def format_attribution_report(preflight: dict[str, Any]) -> str:
     )
     if unassigned:
         lines.append(f"  UNASSIGNED DATABASES (require review, not discarded): {', '.join(str(n) for n in unassigned)}")
+    # Five-category classification requested for the final report.
+    categories = {
+        "ACTIVE AND FULLY IDENTIFIED": [],
+        "ACTIVE BUT BACKEND CURRENTLY UNAVAILABLE": [],
+        "RECOVERY / UNCONFIRMED": [],
+    }
+    for row in websites:
+        categories.setdefault(_site_category(row), []).append(str(row.get("website")))
+    recovery_dbs = [str(db.get("name")) for db in (preflight.get("recovery_databases") or [])]
+    infra_dbs = [str(db.get("name")) for db in (preflight.get("infrastructure_databases") or [])]
+    lines.append("  CLASSIFICATION:")
+    lines.append(f"    1. ACTIVE AND FULLY IDENTIFIED: {_fmt(categories.get('ACTIVE AND FULLY IDENTIFIED'))}")
+    lines.append(f"    2. ACTIVE BUT BACKEND CURRENTLY UNAVAILABLE: {_fmt(categories.get('ACTIVE BUT BACKEND CURRENTLY UNAVAILABLE'))}")
+    lines.append(f"    3. LEGACY / MIGRATION: kept out of website folders (see MIGRATED APPLICATIONS)")
+    lines.append(f"    4. RECOVERY / UNCONFIRMED: {_fmt(recovery_dbs + categories.get('RECOVERY / UNCONFIRMED', []))}")
+    lines.append(f"    5. SERVER INFRASTRUCTURE: {_fmt(infra_dbs)}")
     if not websites:
         lines.append("  (no active websites attributed yet)")
     for row in websites:
@@ -519,6 +561,9 @@ def format_attribution_report(preflight: dict[str, Any]) -> str:
             [
                 "",
                 f"  DOMAIN: {row.get('website')}",
+                f"    CATEGORY: {_site_category(row)}",
+                f"    BACKEND STATUS: {row.get('backend_status') or 'OK'}",
+                *([f"    BACKEND NOTE: {row.get('backend_source_note')}"] if row.get("backend_source_note") else []),
                 f"    APPLICATION: {row.get('application_type') or 'Unknown'} "
                 f"({row.get('application_container')})",
                 f"    ALIASES: {_fmt(aliases)}",
@@ -548,9 +593,13 @@ def format_attribution_report(preflight: dict[str, Any]) -> str:
             ]
         )
         reasons = _resolution_reasons(row)
-        lines.append(
-            f"    RESOLVED: {'YES' if not reasons else 'NEEDS ATTENTION — ' + '; '.join(reasons)}"
-        )
+        if str(row.get("backend_status") or "OK") != "OK":
+            resolved_line = "DOCUMENTED — backend unavailable; backed up from last-known source"
+        elif reasons:
+            resolved_line = "NEEDS ATTENTION — " + "; ".join(reasons)
+        else:
+            resolved_line = "YES"
+        lines.append(f"    RESOLVED: {resolved_line}")
         unresolved = row.get("unresolved_items") or []
         if unresolved:
             lines.append(f"    REMAINING UNRESOLVED ITEMS: {_fmt(unresolved)}")
