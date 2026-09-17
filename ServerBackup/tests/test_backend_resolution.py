@@ -424,6 +424,38 @@ def test_dead_backend_without_evidence_is_documented_not_silent():
     assert any("NO PERSISTENT SOURCE IDENTIFIED" in w for w in site.warnings)
 
 
+def test_unexplained_items_warn_but_do_not_silently_block():
+    from app.discover.gate import assess_backup_gate, format_backup_gate
+
+    apps = [{"application_id": "docker:journal50seacom-bkuksm", "included": True, "status": "READY"}]
+    classified = [
+        # A nameless Nginx block and a legacy hostname — previously these blocked
+        # BACKUP NOW with no printed reason.
+        {"kind": "nginx", "hostname": "", "nginx": "/etc/nginx/sites-enabled/stub", "classification": "UNRESOLVED"},
+    ]
+    hostname_records = [
+        {"kind": "hostname-investigation", "hostname": "satpass.xdgen.com", "role": "application-hostname", "assigned_website": False, "classification": "UNRESOLVED"},
+    ]
+    gate = assess_backup_gate(
+        apps, [], volumes=[], classified=classified, hostname_records=hostname_records
+    )
+    assert gate["block_complete_backup"] is False
+    assert gate["warnings"]
+    text = "\n".join(format_backup_gate(gate))
+    assert "WARNINGS" in text
+    assert "satpass.xdgen.com" in text or "stub" in text
+
+
+def test_gate_still_blocks_on_pending_apps_with_reason():
+    from app.discover.gate import assess_backup_gate, format_backup_gate
+
+    apps = [{"application_id": "docker:x", "hostname": "x.example.com", "included": False, "status": "NEW SITE DETECTED — REQUIRES APPROVAL"}]
+    gate = assess_backup_gate(apps, [])
+    assert gate["block_complete_backup"] is True
+    text = "\n".join(format_backup_gate(gate))
+    assert "pending applications" in text
+
+
 def test_attribution_report_has_all_required_fields():
     apps = [
         {

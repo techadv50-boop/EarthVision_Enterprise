@@ -114,19 +114,34 @@ def assess_backup_gate(
     ]
     recon = file_reconciliation if isinstance(file_reconciliation, dict) else {}
     file_mismatch = bool(recon) and not recon.get("ok", True)
+    # Documented, non-blocking observations. Unexplained Nginx/hostname leftovers
+    # and inactive/legacy hostnames are recorded (kept under _server or noted as
+    # NOT ACTIVE) but must not stop an otherwise-complete backup. Genuinely
+    # unresolved persistent volumes and active-website database problems still
+    # block, so no live application data is silently lost.
+    unexplained_descriptions = [
+        f"{row.get('kind') or 'item'}: {row.get('hostname') or row.get('application') or row.get('source_path') or row.get('nginx') or 'unnamed'}"
+        for row in unexplained
+    ]
+    warnings = list(unexplained_descriptions)
+    warnings.extend(
+        f"inactive/legacy hostname: {row.get('hostname')}"
+        for row in unresolved_hostnames
+        if row.get("hostname")
+    )
     block = bool(
         pending_apps
         or unresolved_dbs
         or unresolved_volumes
-        or unexplained
         or unresolved_app_dbs
         or incomplete_reasons
         or docker_unprobed
         or postgres_unvalidated
-        or unresolved_hostnames
         or file_mismatch
     )
     return {
+        "warnings": warnings,
+        "unexplained_descriptions": unexplained_descriptions,
         "applications_discovered": len(live),
         "applications_approved": len(approved_apps),
         "applications_excluded": len(excluded_apps),
@@ -203,9 +218,42 @@ def format_backup_gate(gate: dict[str, Any]) -> list[str]:
             lines.append("  incomplete discovery:")
             for item in incomplete:
                 lines.append(f"    {item}")
+        # Guarantee the block is never silent: if none of the itemized reasons
+        # above were printed, spell out the remaining blocking counters.
+        printed_any = any(
+            gate.get(key)
+            for key in (
+                "pending_application_ids",
+                "unresolved_database_names",
+                "unresolved_volume_names",
+                "unresolved_website_databases",
+                "unprobed_docker_databases",
+                "unvalidated_postgres_databases",
+                "incomplete_reasons",
+            )
+        ) or gate.get("file_reconciliation_ok") is False
+        if not printed_any:
+            lines.append(
+                "  reason: "
+                + ", ".join(
+                    f"{label}={gate.get(key)}"
+                    for label, key in (
+                        ("pending_apps", "applications_pending"),
+                        ("unresolved_dbs", "databases_unresolved"),
+                        ("unresolved_volumes", "volumes_unresolved"),
+                    )
+                    if gate.get(key)
+                )
+                or "  a completeness check failed; see the warnings below and the full discovery report."
+            )
         lines.append("  DRY RUN and discovery remain allowed. BACKUP NOW cannot report COMPLETE.")
     else:
         lines.append("  Gate: CLEAR (approval still required before you choose to run BACKUP NOW)")
+    warnings = gate.get("warnings") or []
+    if warnings:
+        lines.append("  WARNINGS (documented, non-blocking — kept under _server/_recovery, not lost):")
+        for item in warnings:
+            lines.append(f"    {item}")
     return lines
 
 
