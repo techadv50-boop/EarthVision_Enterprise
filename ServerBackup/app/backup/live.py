@@ -251,19 +251,48 @@ def application_for_root(applications: list[dict[str, Any]] | None, root: str) -
     return ""
 
 
+def _result_headline(message: str) -> list[str]:
+    """A few high-signal lines from a long report; the rest lives behind VIEW DETAILS."""
+    text = str(message or "").strip()
+    if not text:
+        return []
+    highlights: list[str] = []
+    wanted_prefixes = (
+        "RESOLUTION SUMMARY:",
+        "EXPECTED ACTION:",
+        "EXPECTED FULL BASELINE SIZE:",
+        "BLOCK COMPLETE BACKUP",
+    )
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith(wanted_prefixes) and line not in highlights:
+            highlights.append(line)
+        if len(highlights) >= 4:
+            break
+    if not highlights:
+        # Fall back to the first non-empty line only.
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if first:
+            highlights.append(first if len(first) <= 120 else first[:117] + "…")
+    return highlights
+
+
 def format_last_result_panel(last: Mapping[str, Any] | None) -> str:
-    """Persisted last operation. Never treated as live backup state."""
+    """Concise persisted-operation summary. The full report is behind VIEW DETAILS."""
     if not last:
         return ""
     status = str(last.get("status") or "").upper()
-    error = str(last.get("error") or last.get("message") or "—")
-    lines = [f"LAST RESULT: {status}"]
+    operation = str(last.get("operation") or "BACKUP")
+    lines = [f"LAST RESULT: {status}  ({operation})"]
     if status in {"FAILED", "CANCELLED"}:
-        lines.append(f"Error: {error}")
+        error = str(last.get("error") or last.get("message") or "—").strip()
+        first_error = next((ln.strip() for ln in error.splitlines() if ln.strip()), "—")
+        lines.append(f"Error: {first_error if len(first_error) <= 200 else first_error[:197] + '…'}")
     else:
-        lines.append(str(last.get("message") or "SUCCESS"))
+        lines.extend(_result_headline(str(last.get("message") or "")))
     lines.append(f"Operation: {last.get('operation_id') or '—'}")
     lines.append(f"HEAD: {last.get('head_state') or 'UNCHANGED'}")
+    lines.append("Click VIEW DETAILS for the full report.")
     return "\n".join(lines)
 
 
@@ -275,11 +304,13 @@ def format_last_result_details(last: Mapping[str, Any] | None) -> str:
         f"LAST RESULT: {status}",
         f"Operation: {last.get('operation') or 'BACKUP'}",
         f"Operation ID: {last.get('operation_id') or '—'}",
-        f"Error: {last.get('error') or last.get('message') or '—'}",
         f"HEAD: {last.get('head_state') or 'UNCHANGED'}",
         f"Elapsed: {last.get('elapsed_seconds') if last.get('elapsed_seconds') is not None else '—'}",
         f"Scope: {last.get('error_scope') or 'operation'}",
     ]
+    message = str(last.get("message") or "").strip()
+    if message:
+        lines.extend(["", message])
     return "\n".join(lines)
 
 

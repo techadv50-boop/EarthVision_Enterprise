@@ -7,6 +7,18 @@ from typing import Any
 from app.discover.gate import assess_backup_gate, format_backup_gate
 
 
+def _unique_notes(notes: Any) -> list[str]:
+    """Dedupe repeated notes while preserving order (merges can duplicate them)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for note in notes or []:
+        text = str(note)
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
 def _hostnames(app: dict[str, Any]) -> list[str]:
     names = [str(n) for n in (app.get("hostnames") or []) if n]
     primary = str(app.get("hostname") or "")
@@ -329,11 +341,27 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
                 )
         else:
             lines.append("  (ss/proc backend resolution produced no listening-socket owners)")
+        listening_ports = {str(port) for port in backends}
+        import re as _re
+
         for app in proxy_apps:
+            proxies = app.get("proxy_pass") or []
+            ports = _re.findall(r":(\d+)", " ".join(str(p) for p in proxies))
+            local_ports = [p for p in ports]
+            dead = bool(local_ports) and not any(p in listening_ports for p in local_ports)
+            traced = str(app.get("application_id") or "").startswith("docker:")
+            suffix = ""
+            if dead and not traced:
+                suffix = (
+                    f"  ⚠ NO PROCESS IS LISTENING ON PORT {', '.join(local_ports)} — the reverse-proxy "
+                    "backend is DOWN or the Nginx upstream is stale. The current app likely moved to a "
+                    "different container/port; fix the Nginx upstream or restart the app, then re-run DISCOVER."
+                )
             lines.append(
                 f"  {app.get('hostname') or '—'}  proxy_pass={_fmt_list(app.get('proxy_pass'))}  "
                 f"application={app.get('application_id') or '—'}  type={app.get('type') or '—'}  "
                 f"database={_db_label(app) if _db_label(app) != '—' else (app.get('database_status') or 'UNRESOLVED')}"
+                f"{suffix}"
             )
     lines.extend(["", "INFRASTRUCTURE / RECOVERY"])
     infra_hosts = [rec for rec in records if rec.get("role") == "infrastructure"]
@@ -430,7 +458,7 @@ def format_application_sections(
             lines.append(
                 f"  {app.get('application_id')} | {names} | {app.get('type')} | {root} | {_db_label(app)} | {app.get('status')}"
             )
-            for note in app.get("notes") or []:
+            for note in _unique_notes(app.get("notes")):
                 lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
@@ -615,7 +643,7 @@ def format_application_sections(
     if excluded_roots:
         for app in excluded_roots:
             lines.append(f"  {app.get('root') or '—'}  hostnames={', '.join(_hostnames(app)) or '—'}  {app.get('status')}")
-            for note in app.get("notes") or []:
+            for note in _unique_notes(app.get("notes")):
                 lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
@@ -663,7 +691,7 @@ def format_application_sections(
     if excluded:
         for app in excluded:
             lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
-            for note in app.get("notes") or []:
+            for note in _unique_notes(app.get("notes")):
                 lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
@@ -728,7 +756,7 @@ def format_application_sections(
         for app in migrated_apps:
             lines.append(f"  {app.get('status')}  {app.get('application_id')} ({', '.join(_hostnames(app))})")
             lines.append(f"  replaced_by={app.get('replaced_by') or '—'}")
-            for note in app.get("notes") or []:
+            for note in _unique_notes(app.get("notes")):
                 lines.append(f"    note: {note}")
     else:
         lines.append("  (none)")
@@ -737,7 +765,7 @@ def format_application_sections(
     if review:
         for app in review:
             review_lines.append(f"  {app.get('application_id')}  {', '.join(_hostnames(app))}  {app.get('status')}")
-            for note in app.get("notes") or []:
+            for note in _unique_notes(app.get("notes")):
                 review_lines.append(f"    note: {note}")
     for row in unassociated_rows:
         review_lines.append(f"  database {row.get('name')}  {row.get('status')}")
