@@ -113,6 +113,49 @@ def _persistent_source(site: SiteSpec) -> str:
     return str(docker.get("workdir") or docker.get("container") or "(none)")
 
 
+def _database_evidence(name: str, database_inventory: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Config evidence proving which application owns a database."""
+    for row in database_inventory or []:
+        if str(row.get("name") or "") != str(name or ""):
+            continue
+        refs = [str(item.get("path") or "") for item in (row.get("references") or []) if item.get("path")]
+        return {
+            "references": refs,
+            "reason": str(row.get("reason") or ""),
+            "status": str(row.get("status") or ""),
+            "docker_container": str(row.get("docker_container") or ""),
+            "engine": str(row.get("type") or ""),
+        }
+    return {"references": [], "reason": "", "status": "", "docker_container": "", "engine": ""}
+
+
+def _persistent_mounts(site: SiteSpec) -> list[str]:
+    entries: list[str] = []
+    docker = site.docker or {}
+    for mount in docker.get("mounts") or []:
+        if not isinstance(mount, dict):
+            continue
+        source = str(mount.get("source") or "")
+        dest = str(mount.get("destination") or "")
+        purpose = str(mount.get("purpose") or "")
+        if mount.get("named_volume"):
+            label = f"volume:{source} -> {dest}"
+        else:
+            label = f"bind:{source} -> {dest}"
+        if purpose:
+            label += f" ({purpose})"
+        if label not in entries:
+            entries.append(label)
+    for name in site.named_volumes:
+        label = f"volume:{name}"
+        if not any(entry.startswith(f"volume:{name} ") or entry == label for entry in entries):
+            entries.append(label)
+    for root in site.storage_roots:
+        if root and root not in entries:
+            entries.append(f"bind:{root}")
+    return entries
+
+
 def build_preflight(
     *,
     applications: list[dict[str, Any]],
@@ -126,6 +169,7 @@ def build_preflight(
     attributed = attribute_records(list(inventory or []), domain_map, nginx_root=nginx_root)
     grouped = group_attributions(attributed)
     objects = dict(dump_objects or {})
+    app_by_id = {str(app.get("application_id") or ""): app for app in (applications or []) if isinstance(app, dict)}
     websites: list[dict[str, Any]] = []
     for site in domain_map.sites:
         stats = grouped.get(site.folder) or {"files": 0, "bytes": 0, "kinds": {}, "sources": {}}
@@ -145,6 +189,13 @@ def build_preflight(
         unresolved = list(restore.get("unresolved") or [])
         excluded = list(restore.get("excluded") or [])
         docker = site.docker or {}
+        app = app_by_id.get(site.application_id) or {}
+        ssl = app.get("ssl") if isinstance(app.get("ssl"), dict) else {}
+        ssl_storage = list(ssl.get("storage_paths") or [])
+        if ssl.get("acme_file") and ssl.get("acme_file") not in ssl_storage:
+            ssl_storage = [ssl.get("acme_file"), *ssl_storage]
+        evidence = _database_evidence(db.name, database_inventory) if db else {}
+        containers = [c for c in [docker.get("container"), _db_container(site)] if c and c != "(none)"]
         websites.append(
             {
                 "website": site.domain,
@@ -152,10 +203,18 @@ def build_preflight(
                 "application_container": site.application_id
                 or docker.get("container")
                 or "(none)",
+                "actual_source_paths": site.all_file_roots(),
                 "persistent_data_source": _persistent_source(site),
+                "persistent_mounts": _persistent_mounts(site),
+                "containers": containers,
                 "database": db.name if db else "(none)",
                 "database_dump_path": _db_dump_path(site),
+                "database_config_evidence": evidence.get("references") or [],
+                "database_evidence_reason": evidence.get("reason") or "",
                 "nginx_configuration": ", ".join(site.nginx_source_files) or "(none recorded)",
+                "ssl_mechanism": str(ssl.get("mechanism") or ("https" if app.get("https") else "none")),
+                "ssl_storage_paths": [str(p) for p in ssl_storage if p],
+                "ssl_restore": str(ssl.get("restore_procedure") or ssl.get("backup_treatment") or ""),
                 "estimated_website_backup_size": max(website_bytes, 0),
                 "estimated_database_dump_size": db_bytes,
                 "total_size": max(website_bytes, 0) + db_bytes,
@@ -397,6 +456,82 @@ def format_new_file_attribution(
             f"  NEW={new_count} vs unique inventoried={recon.get('inventoried')} — "
             "every inventoried file must have exactly one classification."
         )
+    return "\n".join(lines)
+
+
+def _fmt(values: Any) -> str:
+    if not values:
+        return "(none)"
+    if isinstance(values, (list, tuple)):
+        items = [str(v) for v in values if v]
+        return ", ".join(items) if items else "(none)"
+    return str(values)
+
+
+def format_attribution_report(preflight: dict[str, Any]) -> str:
+    """Per-domain attribution: everything needed to restore each website.
+
+    One block per public domain. This is the report a human administrator
+    reads to confirm that ``BACKUPS/<domain>/`` will contain the real
+    application, files, and database — not just the Nginx front door.
+    """
+    lines = [
+        "PER-DOMAIN ATTRIBUTION REPORT",
+        "  One block per active website. Everything required to restore that",
+        "  website is attributed to its own BACKUPS/<domain>/ folder.",
+    ]
+    websites = list(preflight.get("websites") or [])
+    if not websites:
+        lines.append("  (no active websites attributed yet)")
+    for row in websites:
+        aliases = row.get("aliases") or []
+        lines.extend(
+            [
+                "",
+                f"  DOMAIN: {row.get('website')}",
+                f"    APPLICATION: {row.get('application_type') or 'Unknown'} "
+                f"({row.get('application_container')})",
+                f"    ALIASES: {_fmt(aliases)}",
+                f"    ACTUAL SOURCE PATHS: {_fmt(row.get('actual_source_paths'))}",
+                f"    DOCKER PROJECT: {row.get('docker_compose_project') or '(none)'}",
+                f"    CONTAINERS: {_fmt(row.get('containers'))}",
+                f"    PERSISTENT VOLUMES/BIND MOUNTS: {_fmt(row.get('persistent_mounts'))}",
+                f"    DATABASE: {row.get('database')}",
+                f"    DATABASE CONTAINER: {row.get('database_container') or '(host)'}",
+                f"    DATABASE CONFIG EVIDENCE: {_fmt(row.get('database_config_evidence'))}",
+            ]
+        )
+        if row.get("database_evidence_reason"):
+            lines.append(f"      evidence detail: {row.get('database_evidence_reason')}")
+        lines.extend(
+            [
+                f"    NGINX CONFIG: {row.get('nginx_configuration')}",
+                f"    SSL: {row.get('ssl_mechanism')}",
+                f"      ssl storage: {_fmt(row.get('ssl_storage_paths'))}",
+                f"      ssl restore: {row.get('ssl_restore') or 'not identified'}",
+                f"    ESTIMATED SIZE: website "
+                f"{format_bytes(int(row.get('estimated_website_backup_size') or 0))} + database "
+                f"{format_bytes(int(row.get('estimated_database_dump_size') or 0))} = "
+                f"{format_bytes(int(row.get('total_size') or 0))} "
+                f"({row.get('number_of_files')} files)",
+                f"    RESTORE STATUS: {row.get('restore_completeness_status')}",
+            ]
+        )
+        unresolved = row.get("unresolved_items") or []
+        if unresolved:
+            lines.append(f"    UNRESOLVED: {_fmt(unresolved)}")
+    recovery = list(preflight.get("recovery_databases") or [])
+    if recovery:
+        lines.extend(["", "  _recovery/ (leftover/legacy data — kept, never silently discarded)"])
+        for db in recovery:
+            lines.append(
+                f"    {db.get('name')} -> {db.get('dump_path')}  {db.get('reason')}"
+            )
+    infra = list(preflight.get("infrastructure_databases") or [])
+    if infra:
+        lines.extend(["", "  _server/ (genuinely server-wide infrastructure)"])
+        for db in infra:
+            lines.append(f"    {db.get('name')} -> {db.get('dump_path')}  {db.get('reason')}")
     return "\n".join(lines)
 
 

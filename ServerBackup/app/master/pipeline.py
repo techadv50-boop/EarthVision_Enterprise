@@ -36,7 +36,13 @@ from app.backup.live import (
     log_pipeline,
 )
 from app.backup.domain_map import build_domain_map, docker_only_dump_map, dump_names, enrich_docker_dump_map
-from app.backup.preflight import build_preflight, format_new_file_attribution, format_preflight_report, format_proposed_tree
+from app.backup.preflight import (
+    build_preflight,
+    format_attribution_report,
+    format_new_file_attribution,
+    format_preflight_report,
+    format_proposed_tree,
+)
 from app.backup.readable import ReadableExportError, export_readable_backup
 from app.config.schema import SYSTEM_DATABASES
 from app.database.discover import discover_databases
@@ -1035,6 +1041,8 @@ def _run_dry_run_preview(engine, store: MasterStore) -> dict[str, Any]:
     extra_sections = [
         "",
         "\n".join(format_server_wide_discovery_report(discovery)),
+        "",
+        format_attribution_report(preflight),
         "",
         format_new_file_attribution(
             counts=counts,

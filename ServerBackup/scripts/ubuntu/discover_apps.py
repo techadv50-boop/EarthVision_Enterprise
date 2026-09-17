@@ -1485,6 +1485,118 @@ def _docker_containers(run: Callable) -> list[dict[str, Any]]:
     return detailed
 
 
+SS_LISTEN_LINE = re.compile(
+    r"^(?:LISTEN|UNCONN)\s+\S+\s+\S+\s+(\S+?):(\d+)\s+\S+(?:\s+(.*))?$"
+)
+SS_PROC = re.compile(r'pid=(\d+)')
+SS_COMM = re.compile(r'\(\("([^"]+)"')
+CGROUP_DOCKER = re.compile(r'(?:docker[-/])([0-9a-f]{12,64})(?:\.scope)?')
+LOCAL_BACKEND_HOSTS = {"127.0.0.1", "0.0.0.0", "::1", "::", "*", "localhost", "[::1]", "[::]"}
+
+
+def _run_text(run: Callable, cmd: list[str], timeout: int = 10) -> str:
+    """Run a read-only command through the injected runner and return stdout."""
+    try:
+        result = run(cmd, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return ""
+    if getattr(result, "returncode", 1) != 0:
+        return getattr(result, "stdout", "") or ""
+    return getattr(result, "stdout", "") or ""
+
+
+def _container_id_from_cgroup(text: str) -> str:
+    for line in (text or "").splitlines():
+        match = CGROUP_DOCKER.search(line.strip())
+        if match:
+            return match.group(1)
+    return ""
+
+
+def resolve_backend_owners(run: Callable) -> dict[str, dict[str, Any]]:
+    """Map each listening TCP port to the process/container that owns it.
+
+    This is how ``proxy_pass http://127.0.0.1:8084`` is traced to the real
+    application when the container uses host networking, an unusual publish
+    mapping, or is a plain host process (systemd unit / interpreter). It never
+    stops or modifies anything: it only reads ``ss`` output and ``/proc``.
+    """
+    owners: dict[str, dict[str, Any]] = {}
+    listing = _run_text(run, ["ss", "-ltnpH"], timeout=10)
+    if not listing.strip():
+        listing = _run_text(run, ["ss", "-ltnp"], timeout=10)
+    for raw in listing.splitlines():
+        line = raw.strip()
+        if not line or line.lower().startswith("state"):
+            continue
+        match = SS_LISTEN_LINE.match(line)
+        if not match:
+            continue
+        port = match.group(2)
+        process = match.group(3) or ""
+        pid_match = SS_PROC.search(process)
+        if not pid_match:
+            # Keep the port known even without a pid so callers can note it.
+            owners.setdefault(port, {"port": port})
+            continue
+        pid = pid_match.group(1)
+        comm_match = SS_COMM.search(process)
+        comm = comm_match.group(1) if comm_match else ""
+        existing = owners.get(port)
+        # Prefer a real application process over docker-proxy/systemd shims.
+        if existing and existing.get("container_id") and comm in {"docker-proxy", "systemd"}:
+            continue
+        cgroup = _run_text(run, ["cat", f"/proc/{pid}/cgroup"], timeout=5)
+        container_id = _container_id_from_cgroup(cgroup)
+        cwd = _run_text(run, ["readlink", "-f", f"/proc/{pid}/cwd"], timeout=5).strip()
+        exe = _run_text(run, ["readlink", "-f", f"/proc/{pid}/exe"], timeout=5).strip()
+        unit = _run_text(run, ["ps", "-o", "unit=", "-p", pid], timeout=5).strip()
+        owners[port] = {
+            "port": port,
+            "pid": pid,
+            "comm": comm,
+            "container_id": container_id,
+            "cwd": cwd if cwd and not is_excluded_path(cwd) else "",
+            "exe": exe,
+            "unit": unit if unit and unit not in {"-", "0"} else "",
+        }
+    return owners
+
+
+def _local_backend_ports(proxy_passes: list[str]) -> list[str]:
+    ports: list[str] = []
+    for proxy in proxy_passes or []:
+        parsed = parse_proxy(proxy)
+        host = (parsed.get("host") or "").lower().strip("[]")
+        port = parsed.get("port") or ""
+        if host in LOCAL_BACKEND_HOSTS and port and port not in ports:
+            ports.append(port)
+    return ports
+
+
+def _match_docker_by_backend_owner(
+    proxy_passes: list[str],
+    summaries: list[dict[str, Any]],
+    backend_owners: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Match a localhost backend port to the container that actually serves it."""
+    if not backend_owners:
+        return None
+    for port in _local_backend_ports(proxy_passes):
+        owner = backend_owners.get(port)
+        if not owner:
+            continue
+        container_id = str(owner.get("container_id") or "")
+        if not container_id:
+            continue
+        for item in summaries:
+            summary_id = str(item.get("id") or "")
+            if summary_id and (container_id.startswith(summary_id) or summary_id.startswith(container_id)):
+                if not _looks_like_infrastructure_container(item):
+                    return dict(item)
+    return None
+
+
 def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
     config = inspect.get("Config") or {}
     labels = config.get("Labels") or {}
@@ -1652,9 +1764,12 @@ def _match_docker(
     proxy_passes: list[str],
     containers: list[dict[str, Any]],
     hostnames: list[str] | None = None,
+    backend_owners: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     summaries = [_docker_summary(item) for item in containers]
     matched = _match_docker_summary(proxy_passes, summaries)
+    if not matched:
+        matched = _match_docker_by_backend_owner(proxy_passes, summaries, backend_owners)
     if not matched:
         matched = _match_docker_by_hostname(hostnames or [], summaries)
     return _enrich_docker_from_compose(matched, summaries)
@@ -2157,10 +2272,12 @@ def applications_from_servers(
     docker_containers: list[dict[str, Any]] | None = None,
     mariadb: list[str] | None = None,
     path_exists: Callable[[str], bool] | None = None,
+    backend_owners: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     probe = probe or _probe_root
     docker_containers = docker_containers or []
     mariadb = mariadb or []
+    backend_owners = backend_owners or {}
 
     def _exists(path: str) -> bool:
         if path_exists is not None:
@@ -2177,7 +2294,34 @@ def applications_from_servers(
         root = safe_unix(str(block.get("root") or ""))
         aliases = [safe_unix(p) for p in (block.get("alias") or []) if safe_unix(p)]
         proxies = list(block.get("proxy_pass") or [])
-        docker = _match_docker(proxies, docker_containers, names)
+        docker = _match_docker(proxies, docker_containers, names, backend_owners)
+        backend_owner: dict[str, Any] = {}
+        backend_notes: list[str] = []
+        if not docker and proxies:
+            for port in _local_backend_ports(proxies):
+                candidate = backend_owners.get(port) or {}
+                if candidate.get("pid"):
+                    backend_owner = candidate
+                    break
+        if not docker and not root and backend_owner:
+            process_root = safe_unix(str(backend_owner.get("cwd") or ""))
+            if process_root and not is_excluded_path(process_root) and _exists(process_root):
+                root = process_root
+                comm = backend_owner.get("comm") or "process"
+                unit = backend_owner.get("unit") or ""
+                backend_notes.append(
+                    f"Reverse proxy backend on 127.0.0.1:{backend_owner.get('port')} traced to "
+                    f"host process {comm} (pid {backend_owner.get('pid')}"
+                    + (f", unit {unit}" if unit else "")
+                    + f"); application source resolved to {process_root}."
+                )
+            elif backend_owner.get("pid"):
+                backend_notes.append(
+                    f"Reverse proxy backend on 127.0.0.1:{backend_owner.get('port')} is served by "
+                    f"host process {backend_owner.get('comm') or 'unknown'} (pid {backend_owner.get('pid')}"
+                    + (f", unit {backend_owner.get('unit')}" if backend_owner.get('unit') else "")
+                    + "); no application working directory could be resolved."
+                )
         files, texts = probe(root) if root and not is_excluded_path(root) else ({}, {})
         app_type = classify_application(
             root=root,
@@ -2279,7 +2423,7 @@ def applications_from_servers(
                     size_bytes += size
                 except OSError:
                     pass
-        notes: list[str] = []
+        notes: list[str] = list(backend_notes)
         status = "READY"
         default_server = bool(block.get("default_server")) or any(
             "default_server" in str(item).split() for item in (block.get("listen") or [])
@@ -3935,18 +4079,27 @@ def assemble_discovery(
     nginx_ok: bool = True,
     hostname: str = "",
     errors: list[str] | None = None,
+    backend_owners: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reconcile nginx -T, Docker labels, Apache, compose, and leftover configs."""
     errors = list(errors or [])
     docker_containers = list(docker_containers or [])
     mariadb = list(mariadb or [])
     apache_servers = list(apache_servers or [])
+    if backend_owners is None and run is not None:
+        try:
+            backend_owners = resolve_backend_owners(run)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"listening-socket backend resolution skipped: {exc}")
+            backend_owners = {}
+    backend_owners = backend_owners or {}
     apps = applications_from_servers(
         servers,
         probe=probe,
         docker_containers=docker_containers,
         mariadb=mariadb,
         path_exists=path_exists,
+        backend_owners=backend_owners,
     )
     docker_apps, docker_leftovers = applications_from_unmatched_docker(
         apps,
@@ -4193,6 +4346,7 @@ def assemble_discovery(
             if row.get("role") == HOSTNAME_ROLE_INFRASTRUCTURE
         ],
         "proxy_routes": proxy_routes,
+        "backend_owners": backend_owners,
         "acme_hostnames": acme_hosts,
         "scan_coverage": scan_coverage(
             nginx_ok=nginx_ok,

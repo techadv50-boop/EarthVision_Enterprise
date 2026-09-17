@@ -196,7 +196,9 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
                 "(not nginx -T and not docker inspect labels). 1.4.24 classified unmatched file "
                 "Host() as NOT ACTIVE leftovers. If the YAML is unreadable by serverbackup, "
                 "disk scans return empty; 1.4.26 reads the live Traefik API / docker exec files. "
-                "1.4.27 classifies Host() vs PUBLIC_HOST vs CORS/API/image URLs and probes PostgreSQL with pg_dump."
+                "1.4.27 classifies Host() vs PUBLIC_HOST vs CORS/API/image URLs and probes PostgreSQL with pg_dump. "
+                "1.4.28 traces each localhost proxy_pass target to the owning container/process via ss + /proc, "
+                "so reverse-proxied sites resolve to a real application, persistent files, and database."
             )
             lines.append(
                 f"    RESTORE READY: {row.get('restore_ready') or 'NO'}"
@@ -299,6 +301,34 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
             lines.append(f"    restore: {ssl.get('restore_procedure') or ssl.get('backup_treatment') or 'not identified'}")
     else:
         lines.append("  (none)")
+    backends = result.get("backend_owners") if isinstance(result.get("backend_owners"), dict) else {}
+    proxy_apps = [
+        app
+        for app in (result.get("applications") or [])
+        if isinstance(app, dict) and (app.get("proxy_pass") or [])
+        and app.get("change") not in {"removed", "migrated"}
+    ]
+    if backends or proxy_apps:
+        lines.extend(["", "REVERSE PROXY BACKEND RESOLUTION"])
+        lines.append("  Each localhost proxy_pass target is traced to the process/container that serves it.")
+        if backends:
+            for port, owner in sorted(backends.items(), key=lambda item: str(item[0])):
+                if not isinstance(owner, dict):
+                    continue
+                target = owner.get("container_id") or owner.get("cwd") or owner.get("comm") or "unresolved"
+                lines.append(
+                    f"  127.0.0.1:{port}  process={owner.get('comm') or '—'}  pid={owner.get('pid') or '—'}  "
+                    f"container={(owner.get('container_id') or '')[:12] or '—'}  "
+                    f"cwd={owner.get('cwd') or '—'}  unit={owner.get('unit') or '—'}"
+                )
+        else:
+            lines.append("  (ss/proc backend resolution produced no listening-socket owners)")
+        for app in proxy_apps:
+            lines.append(
+                f"  {app.get('hostname') or '—'}  proxy_pass={_fmt_list(app.get('proxy_pass'))}  "
+                f"application={app.get('application_id') or '—'}  type={app.get('type') or '—'}  "
+                f"database={_db_label(app) if _db_label(app) != '—' else (app.get('database_status') or 'UNRESOLVED')}"
+            )
     lines.extend(["", "INFRASTRUCTURE / RECOVERY"])
     infra_hosts = [rec for rec in records if rec.get("role") == "infrastructure"]
     infra_vols = [vol for vol in volumes if vol.get("scope") == "infrastructure"]
