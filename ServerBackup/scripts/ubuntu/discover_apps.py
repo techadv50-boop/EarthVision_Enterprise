@@ -1742,17 +1742,39 @@ def _docker_summary(inspect: dict[str, Any]) -> dict[str, Any]:
     config = inspect.get("Config") or {}
     labels = config.get("Labels") or {}
     host_config = inspect.get("HostConfig") or {}
-    ports = host_config.get("PortBindings") or {}
+    # Published ports live in two places: HostConfig.PortBindings (the requested
+    # mapping, set by compose) and NetworkSettings.Ports (the actual runtime
+    # mapping). Dokploy/swarm-published and dynamically-published containers
+    # often populate only NetworkSettings.Ports, so we merge both. Reading only
+    # HostConfig.PortBindings is why some reverse-proxied sites failed to match.
     published = []
-    for container_port, binds in ports.items():
-        for bind in binds or []:
-            published.append(
-                {
-                    "container_port": str(container_port),
-                    "host_ip": bind.get("HostIp") or "0.0.0.0",
-                    "host_port": bind.get("HostPort") or "",
-                }
-            )
+    seen_ports: set[tuple[str, str, str]] = set()
+    port_sources = [
+        host_config.get("PortBindings") or {},
+        (inspect.get("NetworkSettings") or {}).get("Ports") or {},
+    ]
+    for ports in port_sources:
+        if not isinstance(ports, dict):
+            continue
+        for container_port, binds in ports.items():
+            for bind in binds or []:
+                if not isinstance(bind, dict):
+                    continue
+                host_port = bind.get("HostPort") or ""
+                if not host_port:
+                    continue
+                host_ip = bind.get("HostIp") or "0.0.0.0"
+                key = (str(container_port), str(host_ip), str(host_port))
+                if key in seen_ports:
+                    continue
+                seen_ports.add(key)
+                published.append(
+                    {
+                        "container_port": str(container_port),
+                        "host_ip": host_ip,
+                        "host_port": host_port,
+                    }
+                )
     mounts = []
     for mount in inspect.get("Mounts") or []:
         if not isinstance(mount, dict):

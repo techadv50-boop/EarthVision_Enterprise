@@ -393,26 +393,81 @@ def collect_config_texts(root: str, *, limit: int = 80) -> dict[str, str]:
     return texts
 
 
+DB_ENV_NAME_KEYS = (
+    "MYSQL_DATABASE",
+    "MARIADB_DATABASE",
+    "POSTGRES_DB",
+    "POSTGRESQL_DATABASE",
+    "PGDATABASE",
+    "DB_DATABASE",
+    "DB_NAME",
+    "DATABASE_NAME",
+    "MYSQL_DB",
+    "DB_SCHEMA",
+)
+DB_ENV_URL_KEYS = (
+    "DATABASE_URL",
+    "DB_URL",
+    "POSTGRES_URL",
+    "POSTGRESQL_URL",
+    "MYSQL_URL",
+    "MARIADB_URL",
+    "JDBC_DATABASE_URL",
+    "DB_CONNECTION_STRING",
+    "DB_DSN",
+    "DSN",
+)
+_URL_DB_PATH = re.compile(r"://[^/\s]+/([A-Za-z0-9_.\-]+)")
+_DSN_DB_NAME = re.compile(r"(?:dbname|database|initial\s*catalog)\s*=\s*([A-Za-z0-9_.\-]+)", re.IGNORECASE)
+
+
+def _db_name_from_connection_string(value: str) -> str:
+    raw = (value or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    dsn = _DSN_DB_NAME.search(raw)
+    if dsn:
+        return dsn.group(1)
+    path = _URL_DB_PATH.search(raw)
+    if path:
+        name = path.group(1).split("?", 1)[0]
+        if name and name.lower() not in {"postgres", "mysql", "public"}:
+            return name
+    return ""
+
+
 def docker_database_texts(containers: list[dict[str, Any]] | None) -> dict[str, str]:
+    """Surface the database NAME (never credentials) that each container uses.
+
+    Covers MYSQL_DATABASE/POSTGRES_DB plus framework keys (DB_DATABASE,
+    DB_NAME, PGDATABASE, ...) and connection-string URLs (DATABASE_URL, DB_DSN),
+    so a schema referenced only through a connection string is still attributed
+    to the owning container. Passwords are parsed out and discarded.
+    """
     texts: dict[str, str] = {}
     for inspect in containers or []:
         config = inspect.get("Config") or {}
         name = str(inspect.get("Name") or inspect.get("Id") or "container").lstrip("/")
-        env_lines = []
+        env_map: dict[str, str] = {}
         for item in config.get("Env") or []:
             text = str(item)
-            if any(
-                text.startswith(prefix)
-                for prefix in (
-                    "MYSQL_DATABASE=",
-                    "MARIADB_DATABASE=",
-                    "MYSQL_DATABASE",
-                    "POSTGRES_DB=",
-                )
-            ):
-                env_lines.append(text)
-        if env_lines:
-            texts[f"docker:{name}"] = "\n".join(env_lines)
+            if "=" not in text:
+                continue
+            key, value = text.split("=", 1)
+            env_map[key.strip().upper()] = value
+        names: list[str] = []
+        for key in DB_ENV_NAME_KEYS:
+            value = str(env_map.get(key) or "").strip().strip("'\"")
+            if value and value not in names:
+                names.append(f"{key}={value}")
+        for key in DB_ENV_URL_KEYS:
+            if key not in env_map:
+                continue
+            dbname = _db_name_from_connection_string(env_map.get(key) or "")
+            if dbname:
+                names.append(f"{key}_DBNAME={dbname}")
+        if names:
+            texts[f"docker:{name}"] = "\n".join(names)
     return texts
 
 

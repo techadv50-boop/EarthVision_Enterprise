@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -96,6 +97,8 @@ class DashboardPage(QWidget):
         scroll.setWidgetResizable(True)
         inner = QWidget()
         layout = QVBoxLayout(inner)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
         title = QLabel(f"{__app_name__}")
         title.setObjectName("title")
         subtitle = QLabel(
@@ -177,42 +180,64 @@ class DashboardPage(QWidget):
         self.cancel_button.clicked.connect(self._window.cancel_backup)
         self.cancel_button.setVisible(False)
         layout.addWidget(self.cancel_button)
-        grid = QHBoxLayout()
-        for label, handler in [
-            ("TEST CONNECTION", self._window.test_connection),
-            ("BACKUP HISTORY", self._window.show_history),
-            ("VIEW LOGS", self._window.show_logs),
-            ("OPEN BACKUP FOLDER", self._window.open_backup_folder),
-            ("SETTINGS", self._window.show_settings),
-            ("RESTORE", self._window.show_restore),
-            ("TEST BACKUP INTEGRITY", self._window.test_integrity),
-            ("DRY RUN", self._window.dry_run),
-            ("DISCOVER SERVER", self._window.discover_server),
-            ("REFRESH", self._window.refresh),
-        ]:
+        actions_label = QLabel("ACTIONS")
+        actions_label.setObjectName("sectionHeader")
+        layout.addWidget(actions_label)
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(10)
+        actions.setVerticalSpacing(10)
+        columns = 3
+        for index, (label, handler) in enumerate(
+            [
+                ("DISCOVER SERVER", self._window.discover_server),
+                ("DRY RUN", self._window.dry_run),
+                ("TEST CONNECTION", self._window.test_connection),
+                ("RESTORE", self._window.show_restore),
+                ("BACKUP HISTORY", self._window.show_history),
+                ("TEST BACKUP INTEGRITY", self._window.test_integrity),
+                ("OPEN BACKUP FOLDER", self._window.open_backup_folder),
+                ("VIEW LOGS", self._window.show_logs),
+                ("SETTINGS", self._window.show_settings),
+                ("REFRESH", self._window.refresh),
+            ]
+        ):
             button = QPushButton(label)
+            button.setObjectName("secondary")
+            button.setToolTip(label.title())
             button.clicked.connect(handler)
-            grid.addWidget(button)
-        wrap = QWidget()
-        wrap.setLayout(grid)
-        layout.addWidget(wrap)
+            actions.addWidget(button, index // columns, index % columns)
+        for col in range(columns):
+            actions.setColumnStretch(col, 1)
+        actions_wrap = QWidget()
+        actions_wrap.setLayout(actions)
+        layout.addWidget(actions_wrap)
         security_label = QLabel("SERVER SECURITY")
-        security_label.setStyleSheet("font-weight: 700; color: #10233a;")
+        security_label.setObjectName("sectionHeader")
         layout.addWidget(security_label)
-        sec_grid = QHBoxLayout()
-        check_btn = QPushButton("SECURITY CHECK")
-        check_btn.clicked.connect(self._window.security_check)
-        sec_grid.addWidget(check_btn)
-        for label, tab in [
-            ("ROTATE SECURITY CREDENTIALS", "rotate"),
-            ("VIEW SERVER CHANGES", "changes"),
-            ("VIEW SECURITY REPORT", "report"),
-            ("SECURITY HISTORY", "history"),
-            ("ROLLBACK SECURITY CHANGES", "rollback"),
-        ]:
+        sec_grid = QGridLayout()
+        sec_grid.setHorizontalSpacing(10)
+        sec_grid.setVerticalSpacing(10)
+        sec_buttons: list[tuple[str, object]] = [("SECURITY CHECK", None)]
+        sec_buttons.extend(
+            [
+                ("ROTATE SECURITY CREDENTIALS", "rotate"),
+                ("VIEW SERVER CHANGES", "changes"),
+                ("VIEW SECURITY REPORT", "report"),
+                ("SECURITY HISTORY", "history"),
+                ("ROLLBACK SECURITY CHANGES", "rollback"),
+            ]
+        )
+        for index, (label, tab) in enumerate(sec_buttons):
             button = QPushButton(label)
-            button.clicked.connect(lambda _checked=False, name=tab: self._window.show_security(name))
-            sec_grid.addWidget(button)
+            button.setObjectName("secondary")
+            button.setToolTip(label.title())
+            if tab is None:
+                button.clicked.connect(self._window.security_check)
+            else:
+                button.clicked.connect(lambda _checked=False, name=tab: self._window.show_security(name))
+            sec_grid.addWidget(button, index // columns, index % columns)
+        for col in range(columns):
+            sec_grid.setColumnStretch(col, 1)
         sec_wrap = QWidget()
         sec_wrap.setLayout(sec_grid)
         layout.addWidget(sec_wrap)

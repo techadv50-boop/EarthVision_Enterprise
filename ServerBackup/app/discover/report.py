@@ -201,7 +201,10 @@ def format_server_wide_discovery_report(result: dict[str, Any]) -> list[str]:
                 "so reverse-proxied sites resolve to a real application, persistent files, and database. "
                 "1.4.29 also follows docker-proxy -container-ip, reads DATABASE_URL/DB_DATABASE-style env "
                 "for database ownership, derives a compose project from the container name, and records the "
-                "owning domain for cache/redis volumes so nothing is left UNRESOLVED."
+                "owning domain for cache/redis volumes so nothing is left UNRESOLVED. "
+                "1.4.30 reads published ports from NetworkSettings.Ports as well as HostConfig.PortBindings "
+                "(Dokploy/runtime-published containers only populate the former), which is why some "
+                "reverse-proxied sites previously failed to match their real container."
             )
             lines.append(
                 f"    RESTORE READY: {row.get('restore_ready') or 'NO'}"

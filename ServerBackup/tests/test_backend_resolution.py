@@ -154,6 +154,51 @@ server {
     assert any("traced to host process php-fpm" in note for note in xdgen.get("notes") or [])
 
 
+def test_published_port_match_uses_networksettings_ports():
+    # Dokploy/runtime-published container: only NetworkSettings.Ports is set,
+    # HostConfig.PortBindings is empty. This must still match nginx -> 8084.
+    web = {
+        "Id": WEB_CONTAINER_ID,
+        "Name": "/sea50-cyfdw1-web-1",
+        "Config": {"Image": "wp:latest", "Labels": {"com.docker.compose.project": "sea50-cyfdw1", "com.docker.compose.service": "web"}, "Env": []},
+        "HostConfig": {"PortBindings": {}},
+        "NetworkSettings": {"Ports": {"80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8084"}]}},
+        "Mounts": [],
+    }
+    db = _dokploy_container("sea50-cyfdw1-db-1", "sea50-cyfdw1", env=["MYSQL_DATABASE=sea_tecdb"])
+    servers = da.parse_nginx_t(
+        "# configuration file /etc/nginx/sites-enabled/50sea.com:\n"
+        "server { listen 80; server_name 50sea.com; location / { proxy_pass http://127.0.0.1:8084; } }\n"
+    )
+    apps = da.applications_from_servers(
+        servers, docker_containers=[web, db], backend_owners={},
+        path_exists=lambda _p: True, probe=lambda _r: ({}, {}),
+    )
+    by_host = {n: a for a in apps for n in (a.get("hostnames") or [])}
+    assert by_host["50sea.com"]["application_id"] == "docker:sea50-cyfdw1"
+    assert by_host["50sea.com"]["database_name"] == "sea_tecdb"
+
+
+def test_docker_database_texts_surfaces_connection_string_dbname():
+    import discover_audit as audit
+
+    containers = [
+        {
+            "Name": "/sateye-fz2ic4-web-1",
+            "Config": {"Env": ["DATABASE_URL=postgresql://app:secret@db:5432/xdgen_db", "OTHER=1"]},
+        },
+        {
+            "Name": "/sea50-web-1",
+            "Config": {"Env": ["DB_DATABASE=sea_tecdb", "DB_PASSWORD=secret"]},
+        },
+    ]
+    texts = audit.docker_database_texts(containers)
+    assert "xdgen_db" in texts["docker:sateye-fz2ic4-web-1"]
+    assert "secret" not in texts["docker:sateye-fz2ic4-web-1"]
+    assert "sea_tecdb" in texts["docker:sea50-web-1"]
+    assert "secret" not in texts["docker:sea50-web-1"]
+
+
 def test_db_from_env_parses_connection_strings_and_framework_keys():
     assert da._db_from_env({"DATABASE_URL": "postgres://u:p@db:5432/xdgen_db?sslmode=require"}) == (
         "PostgreSQL",
