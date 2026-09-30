@@ -33,15 +33,13 @@ export default function AppLayout() {
           </NavLink>
           {inCitation && (
             <>
+              <NavLink to="/journals" className={({ isActive }) => navClass(isActive)}>
+                Journals
+              </NavLink>
               {admin && (
-                <>
-                  <NavLink to="/journals" className={({ isActive }) => navClass(isActive)}>
-                    Journals
-                  </NavLink>
-                  <NavLink to="/archive" className={({ isActive }) => navClass(isActive)}>
-                    Search
-                  </NavLink>
-                </>
+                <NavLink to="/archive" className={({ isActive }) => navClass(isActive)}>
+                  Search
+                </NavLink>
               )}
               <NavLink to="/manuscripts" className={({ isActive }) => navClass(isActive)}>
                 <span className="inline-flex items-center gap-1">

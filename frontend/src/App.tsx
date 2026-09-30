@@ -66,37 +66,15 @@ export default function App() {
         }
       >
         <Route path="/" element={<HomePage />} />
-        <Route
-          path="/journals"
-          element={
-            <AdminRoute>
-              <DashboardPage />
-            </AdminRoute>
-          }
-        />
-        <Route
-          path="/journals/:journalId"
-          element={
-            <AdminRoute>
-              <JournalVolumesPage />
-            </AdminRoute>
-          }
-        />
+        <Route path="/journals" element={<DashboardPage />} />
+        <Route path="/journals/:journalId" element={<JournalVolumesPage />} />
         <Route
           path="/journals/:journalId/volumes/:volume"
-          element={
-            <AdminRoute>
-              <VolumeIssuesPage />
-            </AdminRoute>
-          }
+          element={<VolumeIssuesPage />}
         />
         <Route
           path="/journals/:journalId/volumes/:volume/issues/:issueNumber"
-          element={
-            <AdminRoute>
-              <IssueArticlesPage />
-            </AdminRoute>
-          }
+          element={<IssueArticlesPage />}
         />
         <Route path="/manuscripts" element={<ManuscriptsPage />} />
         <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />

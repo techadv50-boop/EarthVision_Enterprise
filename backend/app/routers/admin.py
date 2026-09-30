@@ -33,6 +33,7 @@ from app.schemas.admin import (
     UserAdminUpdate,
 )
 from app.schemas.auth import UserCreate, UserResponse as AuthUserResponse
+from app.services.journal_access import set_user_journals
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
@@ -90,6 +91,7 @@ def _user_payload(user: User) -> AuthUserResponse:
         is_superuser=user.is_superuser,
         roles=[r.name for r in user.roles],
         access_status=user.portal_status(),
+        assigned_journal_ids=[j.id for j in (user.allowed_journals or [])],
         created_at=user.created_at,
     )
 
@@ -100,7 +102,9 @@ async def list_users(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     result = await db.execute(
-        select(User).options(selectinload(User.roles)).order_by(User.created_at.desc())
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.allowed_journals))
+        .order_by(User.created_at.desc())
     )
     return [_user_payload(u) for u in result.scalars().all()]
 
@@ -131,7 +135,13 @@ async def create_user(
         role_name=role,
         approved=True,
     )
-    return _user_payload(user)
+    await set_user_journals(db, user, data.assigned_journal_ids)
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.allowed_journals))
+        .where(User.id == user.id)
+    )
+    return _user_payload(result.scalar_one())
 
 
 @router.patch("/users/{user_id}")
@@ -141,7 +151,11 @@ async def update_user(
     admin: Annotated[User, Depends(require_permission("admin", "all"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(User).options(selectinload(User.roles)).where(User.id == user_id))
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.allowed_journals))
+        .where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -179,9 +193,14 @@ async def update_user(
         roles_result = await db.execute(select(Role).where(Role.id.in_(data.role_ids)))
         user.roles = list(roles_result.scalars().all())
 
+    if data.assigned_journal_ids is not None:
+        await set_user_journals(db, user, data.assigned_journal_ids)
+
     await db.flush()
     result = await db.execute(
-        select(User).options(selectinload(User.roles)).where(User.id == user.id)
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.allowed_journals))
+        .where(User.id == user.id)
     )
     updated = result.scalar_one()
     return {
@@ -191,6 +210,7 @@ async def update_user(
         "is_superuser": updated.is_superuser,
         "is_active": updated.is_active,
         "access_status": updated.portal_status(),
+        "assigned_journal_ids": [j.id for j in (updated.allowed_journals or [])],
     }
 
 

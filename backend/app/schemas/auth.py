@@ -29,6 +29,7 @@ class UserResponse(BaseModel):
     is_superuser: bool
     roles: list[str] = []
     access_status: str = "approved"
+    assigned_journal_ids: list[int] = []
     created_at: datetime
 
     model_config = {"from_attributes": True}

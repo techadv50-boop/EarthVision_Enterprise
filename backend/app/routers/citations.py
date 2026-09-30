@@ -46,6 +46,7 @@ from app.schemas.citation import (
 from app.services.citation_counts import sync_article_citations
 from app.services.crawler import run_crawl_job, run_download_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
+from app.services.journal_access import allowed_journal_ids, require_journal_access
 from app.services.matcher import house_citation_for, split_manuscript_paragraphs, suggest_for_manuscript
 from app.services.citation_parser import split_paragraphs
 from app.services.manuscript_export import assign_citations
@@ -81,7 +82,7 @@ def _article_out(article: Article) -> ArticleOut:
         abstract=article.abstract,
         doi=article.doi,
         ocr_status=article.ocr_status,
-        pdf_path=article.pdf_path,
+        pdf_path=None,
         source_url=article.source_url,
         crossref_citation_count=article.crossref_citation_count or 0,
         scholar_citation_count=article.scholar_citation_count or 0,
@@ -171,9 +172,12 @@ async def create_journal(body: JournalCreate, db: Db, _admin: CitationAdmin):
 
 
 @router.get("/journals", response_model=list[JournalOut])
-async def list_journals(db: Db, _admin: CitationAdmin):
+async def list_journals(db: Db, user: CurrentUser):
     result = await db.execute(select(Journal).order_by(Journal.name))
     journals = list(result.scalars().all())
+    allowed = await allowed_journal_ids(db, user)
+    if allowed is not None:
+        journals = [journal for journal in journals if journal.id in allowed]
     out: list[JournalOut] = []
     for journal in journals:
         issues_res = await db.execute(select(Issue).where(Issue.journal_id == journal.id))
@@ -215,8 +219,9 @@ async def list_journals(db: Db, _admin: CitationAdmin):
 
 
 @router.get("/journals/{journal_id}", response_model=JournalOut)
-async def get_journal(journal_id: int, db: Db, _admin: CitationAdmin):
-    rows = await list_journals(db, _user)
+async def get_journal(journal_id: int, db: Db, user: CurrentUser):
+    await require_journal_access(db, user, journal_id)
+    rows = await list_journals(db, user)
     for row in rows:
         if row.id == journal_id:
             return row
@@ -224,12 +229,12 @@ async def get_journal(journal_id: int, db: Db, _admin: CitationAdmin):
 
 
 @router.patch("/journals/{journal_id}", response_model=JournalOut)
-async def update_journal(journal_id: int, body: JournalUpdate, db: Db, _admin: CitationAdmin):
+async def update_journal(journal_id: int, body: JournalUpdate, db: Db, admin: CitationAdmin):
     journal = await _journal_or_404(db, journal_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(journal, field, value)
     await db.flush()
-    return await get_journal(journal_id, db, _user)
+    return await get_journal(journal_id, db, admin)
 
 
 @router.delete("/journals/{journal_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -240,8 +245,8 @@ async def delete_journal(journal_id: int, db: Db, _admin: CitationAdmin):
 
 
 @router.get("/journals/{journal_id}/volumes", response_model=list[VolumeOut])
-async def list_volumes(journal_id: int, db: Db, _admin: CitationAdmin):
-    await _journal_or_404(db, journal_id)
+async def list_volumes(journal_id: int, db: Db, user: CurrentUser):
+    await require_journal_access(db, user, journal_id)
     issues = list(
         (await db.execute(select(Issue).where(Issue.journal_id == journal_id))).scalars().all()
     )
@@ -276,8 +281,8 @@ async def list_volumes(journal_id: int, db: Db, _admin: CitationAdmin):
 
 
 @router.get("/journals/{journal_id}/issues", response_model=list[IssueStatsOut])
-async def list_journal_issues(journal_id: int, db: Db, _admin: CitationAdmin):
-    await _journal_or_404(db, journal_id)
+async def list_journal_issues(journal_id: int, db: Db, user: CurrentUser):
+    await require_journal_access(db, user, journal_id)
     issues = list(
         (
             await db.execute(
@@ -300,8 +305,8 @@ async def list_journal_issues(journal_id: int, db: Db, _admin: CitationAdmin):
     "/journals/{journal_id}/volumes/{volume}/issues",
     response_model=list[IssueStatsOut],
 )
-async def list_issues(journal_id: int, volume: int, db: Db, _admin: CitationAdmin):
-    await _journal_or_404(db, journal_id)
+async def list_issues(journal_id: int, volume: int, db: Db, user: CurrentUser):
+    await require_journal_access(db, user, journal_id)
     issues = list(
         (
             await db.execute(
@@ -333,9 +338,9 @@ async def list_issues(journal_id: int, volume: int, db: Db, _admin: CitationAdmi
 
 @router.get("/journals/{journal_id}/volumes/{volume}/issues/{issue_number}/articles")
 async def list_issue_articles(
-    journal_id: int, volume: int, issue_number: int, db: Db, _admin: CitationAdmin
+    journal_id: int, volume: int, issue_number: int, db: Db, user: CurrentUser
 ):
-    await _journal_or_404(db, journal_id)
+    await require_journal_access(db, user, journal_id)
     issue = (
         await db.execute(
             select(Issue).where(
@@ -370,9 +375,9 @@ async def list_issue_articles(
     response_model=CoverageOut,
 )
 async def issue_coverage(
-    journal_id: int, volume: int, issue_number: int, db: Db, _admin: CitationAdmin
+    journal_id: int, volume: int, issue_number: int, db: Db, user: CurrentUser
 ):
-    data = await list_issue_articles(journal_id, volume, issue_number, db, _user)
+    data = await list_issue_articles(journal_id, volume, issue_number, db, user)
     return data["coverage"]
 
 
@@ -561,7 +566,7 @@ async def search_archive(
 
 
 @router.get("/articles/{article_id}")
-async def get_article(article_id: int, db: Db, _admin: CitationAdmin):
+async def get_article(article_id: int, db: Db, user: CurrentUser):
     article = (
         await db.execute(
             select(Article)
@@ -571,8 +576,13 @@ async def get_article(article_id: int, db: Db, _admin: CitationAdmin):
     ).scalar_one_or_none()
     if article is None:
         raise HTTPException(status_code=404, detail="Article not found")
+    journal_id = article.issue.journal_id if article.issue else None
+    if journal_id is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    await require_journal_access(db, user, journal_id)
     data = _article_out(article).model_dump()
-    data["full_text"] = article.full_text or ""
+    if user.is_citation_admin():
+        data["full_text"] = article.full_text or ""
     return data
 
 
@@ -716,7 +726,8 @@ async def run_suggestions(manuscript_id: int, db: Db, _user: CurrentUser):
     ).scalar_one_or_none()
     if manuscript is None:
         raise HTTPException(status_code=404, detail="Manuscript not found")
-    created = await suggest_for_manuscript(db, manuscript)
+    allowed = await allowed_journal_ids(db, _user)
+    created = await suggest_for_manuscript(db, manuscript, allowed_journal_ids=allowed)
     return {"suggestion_count": len(created), "status": manuscript.status}
 
 

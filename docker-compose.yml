@@ -5,10 +5,8 @@ services:
     image: postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: earthvision
-      POSTGRES_PASSWORD: earthvision
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: earthvision
-    ports:
-      - '5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -23,24 +21,24 @@ services:
       context: .
       dockerfile: docker/Dockerfile.backend
     ports:
-      - '8000:8000'
+      - '8200:8000'
     environment:
-      DATABASE_URL: postgresql+asyncpg://earthvision:earthvision@db:5432/earthvision
-      SECRET_KEY: ${SECRET_KEY:-production-secret-key-change-me-min-32-chars-long}
+      DATABASE_URL: ${DATABASE_URL}
+      SECRET_KEY: ${SECRET_KEY}
       DEBUG: 'false'
-      CORS_ORIGINS: '["https://citation.xdgen.com","https://xdgen.com","https://www.xdgen.com","http://localhost","http://localhost:5173"]'
+      CORS_ORIGINS: '["https://citation.drxdhr.com","https://citation.xdgen.com","https://xdgen.com","https://www.xdgen.com","http://localhost","http://localhost:5173"]'
       OPERATOR_EMAIL: citation@xdgen.com
       OPERATOR_USERNAME: citation@xdgen.com
-      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-pak123}
-      MASTER_RESET_PASSWORD: ${MASTER_RESET_PASSWORD:-NTZHSS}
-      PUBLIC_HOST: citation.xdgen.com
+      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD}
+      MASTER_RESET_PASSWORD: ${MASTER_RESET_PASSWORD}
+      PUBLIC_HOST: citation.drxdhr.com
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     volumes:
-      - ./cache:/app/cache
-      - ./uploads:/app/uploads
-      - ./logs:/app/logs
+      - citation_uploads:/app/uploads
+      - citation_cache:/app/cache
+      - citation_logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -50,29 +48,27 @@ services:
       context: .
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - '80:80'
+      - '8201:80'
     depends_on:
       - backend
 
   nginx:
     image: nginx:alpine
     ports:
-      - '8080:80'
+      - '8202:80'
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - backend
       - frontend
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    profiles: ['tunnel']
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    depends_on:
-      - nginx
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
 
 volumes:
   pgdata:
+    name: dokploy_citation_pgdata
+  citation_uploads:
+    name: dokploy_citation_uploads
+  citation_cache:
+    name: dokploy_citation_cache
+  citation_logs:
+    name: dokploy_citation_logs

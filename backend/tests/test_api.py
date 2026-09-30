@@ -124,9 +124,11 @@ async def test_user_role_cannot_list_journals_but_can_open_manuscripts(client):
     assert login.status_code == 200, login.text
     headers = _bearer(login)
     journals = await client.get("/api/v1/journals", headers=headers)
-    assert journals.status_code == 403
+    assert journals.status_code == 200
+    assert journals.json() == []
     search = await client.get("/api/v1/archive/search", headers=headers)
     assert search.status_code == 403
+    assert (await client.post("/api/v1/journals", headers=headers, json={"name": "Hidden"})).status_code == 403
     manuscripts = await client.get("/api/v1/manuscripts", headers=headers)
     assert manuscripts.status_code == 200
     users = await client.get("/api/v1/admin/users", headers=headers)
@@ -182,7 +184,10 @@ async def test_admin_assigns_user_and_admin_roles(client):
         "/api/v1/auth/login",
         json={"username": "promote", "password": "Promote@123456"},
     )
-    assert (await client.get("/api/v1/journals", headers=_bearer(as_user))).status_code == 403
+    listed = await client.get("/api/v1/journals", headers=_bearer(as_user))
+    assert listed.status_code == 200
+    assert listed.json() == []
+    assert (await client.post("/api/v1/journals", headers=_bearer(as_user), json={"name": "Nope"})).status_code == 403
 
     me = await client.get("/api/v1/auth/me", headers=admin_headers)
     self_id = me.json()["id"]
@@ -222,7 +227,9 @@ async def test_admin_creates_user_and_can_restrict_access(client):
         json={"username": "newhire", "password": "Newhire@123456"},
     )
     assert login.status_code == 200, login.text
-    assert (await client.get("/api/v1/journals", headers=_bearer(login))).status_code == 403
+    listed = await client.get("/api/v1/journals", headers=_bearer(login))
+    assert listed.status_code == 200
+    assert listed.json() == []
     assert (await client.get("/api/v1/manuscripts", headers=_bearer(login))).status_code == 200
 
     restricted = await client.patch(

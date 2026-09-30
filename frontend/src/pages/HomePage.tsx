@@ -1,11 +1,8 @@
 import { Link } from 'react-router-dom';
 import { BookOpen, GitCompare } from 'lucide-react';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 export default function HomePage() {
-  const user = useAuthStore((s) => s.user);
-  const admin = isCitationAdmin(user);
-  const citationTo = admin ? '/journals' : '/manuscripts';
+  const citationTo = '/journals';
 
   return (
     <div className="max-w-5xl mx-auto">

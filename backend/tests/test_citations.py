@@ -741,3 +741,137 @@ async def test_journal_duplicate_and_delete(client: AsyncClient):
     listing = await client.get("/api/v1/journals", headers=headers)
     names = [row["name"] for row in listing.json()]
     assert "Once Only Journal" not in names
+
+
+@pytest.mark.asyncio
+async def test_user_journal_assignment_hides_journals_and_filters_suggestions(client: AsyncClient):
+    admin = await _auth(client)
+    journal_a = await client.post(
+        "/api/v1/journals",
+        headers=admin,
+        json={"name": "Journal Alpha Cite Scope", "abbreviation": "JAC"},
+    )
+    journal_b = await client.post(
+        "/api/v1/journals",
+        headers=admin,
+        json={"name": "Journal Beta Cite Scope", "abbreviation": "JBC"},
+    )
+    assert journal_a.status_code == 201, journal_a.text
+    assert journal_b.status_code == 201, journal_b.text
+    id_a = journal_a.json()["id"]
+    id_b = journal_b.json()["id"]
+
+    paper_a = await client.post(
+        f"/api/v1/journals/{id_a}/papers-text",
+        headers=admin,
+        json={"filename": "eddsa.txt", "text": GALLEY_EDDSA},
+    )
+    paper_b = await client.post(
+        f"/api/v1/journals/{id_b}/papers-text",
+        headers=admin,
+        json={"filename": "water.txt", "text": GALLEY_WATER},
+    )
+    assert paper_a.status_code == 200, paper_a.text
+    assert paper_b.status_code == 200, paper_b.text
+
+    created = await client.post(
+        "/api/v1/admin/users",
+        headers=admin,
+        json={
+            "email": "citeuser@example.com",
+            "username": "citeuser",
+            "password": "CiteUser@123456",
+            "full_name": "Cite User",
+            "role": "user",
+            "assigned_journal_ids": [id_b],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["assigned_journal_ids"] == [id_b]
+    uid = created.json()["id"]
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citeuser", "password": "CiteUser@123456"},
+    )
+    user = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    visible = await client.get("/api/v1/journals", headers=user)
+    assert visible.status_code == 200
+    names = {row["name"] for row in visible.json()}
+    assert "Journal Beta Cite Scope" in names
+    assert "Journal Alpha Cite Scope" not in names
+
+    assert (await client.get(f"/api/v1/journals/{id_a}", headers=user)).status_code == 404
+    seen_b = await client.get(f"/api/v1/journals/{id_b}", headers=user)
+    assert seen_b.status_code == 200
+    assert seen_b.json()["article_count"] == 1
+    vols = await client.get(f"/api/v1/journals/{id_b}/volumes", headers=user)
+    assert vols.status_code == 200, vols.text
+    vol = next(row["volume"] for row in vols.json() if row["article_count"] > 0)
+    issues = await client.get(f"/api/v1/journals/{id_b}/volumes/{vol}/issues", headers=user)
+    assert issues.status_code == 200, issues.text
+    iss = next(row for row in issues.json() if row["article_count"] > 0)
+    arts = await client.get(
+        f"/api/v1/journals/{id_b}/volumes/{vol}/issues/{iss['issue_number']}/articles",
+        headers=user,
+    )
+    assert arts.status_code == 200, arts.text
+    assert arts.json()["articles"]
+    assert all(not row.get("pdf_path") for row in arts.json()["articles"])
+
+    assert (await client.delete(f"/api/v1/journals/{id_b}", headers=user)).status_code == 403
+    assert (
+        await client.post(
+            f"/api/v1/journals/{id_b}/papers-text",
+            headers=user,
+            json={"filename": "nope.txt", "text": GALLEY_WATER},
+        )
+    ).status_code == 403
+    assert (
+        await client.post(
+            f"/api/v1/journals/{id_b}/crawl",
+            headers=user,
+            json={"archive_url": "https://example.test/archive"},
+        )
+    ).status_code == 403
+
+    pdf = _pdf_from_text(
+        "Introduction\n"
+        "This manuscript proposes an EdDSA watermarking scheme for digital document "
+        "authentication and tamper detection using Edward curve signatures.\n"
+        "Materials and Methods\n"
+        "The EdDSA watermarking pipeline signs each document page before embedding.\n"
+        "Results\n"
+        "The signature scheme results are reported separately."
+    )
+    up = await client.post(
+        "/api/v1/manuscripts",
+        headers=user,
+        files={"file": ("eddsa-ms.pdf", pdf, "application/pdf")},
+    )
+    assert up.status_code == 201, up.text
+    mid = up.json()["id"]
+    blocked = await client.post(f"/api/v1/manuscripts/{mid}/suggest", headers=user)
+    assert blocked.status_code == 200, blocked.text
+    assert blocked.json()["suggestion_count"] == 0
+
+    assigned = await client.patch(
+        f"/api/v1/admin/users/{uid}",
+        headers=admin,
+        json={"assigned_journal_ids": [id_a, id_b]},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert set(assigned.json()["assigned_journal_ids"]) == {id_a, id_b}
+
+    allowed = await client.post(f"/api/v1/manuscripts/{mid}/suggest", headers=user)
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["suggestion_count"] >= 1
+    detail = (await client.get(f"/api/v1/manuscripts/{mid}", headers=user)).json()
+    reasons = " ".join(
+        s["reason"] + " " + (s.get("article") or {}).get("title", "")
+        for p in detail["paragraphs"]
+        for s in p["suggestions"]
+    )
+    assert "Digital Signature" in reasons or "EDDSA" in reasons or "Watermark" in reasons
+    assert all(not (s.get("article") or {}).get("pdf_path") for p in detail["paragraphs"] for s in p["suggestions"])

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Trash2 } from 'lucide-react';
 import { citationApi } from '@/services/api';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 interface Journal {
   id: number;
@@ -13,6 +14,7 @@ interface Journal {
 }
 
 export default function DashboardPage() {
+  const admin = isCitationAdmin(useAuthStore((s) => s.user));
   const [journals, setJournals] = useState<Journal[]>([]);
   const [name, setName] = useState('International Journal of Innovations in Science & Technology');
   const [abbr, setAbbr] = useState('IJIST');
@@ -67,18 +69,24 @@ export default function DashboardPage() {
         <div>
           <h2 className="text-2xl font-semibold">Journals</h2>
           <p className="text-gray-400 text-sm mt-1">
-            Each card shows the journal name and how many articles are stored in the archive.{' '}
-            <Link to="/archive" className="text-earth-400 hover:underline">
-              Search the archive
-            </Link>
+            {admin
+              ? 'Each card shows the journal name and how many articles are stored in the archive. '
+              : 'Only journals assigned to your account are shown. Suggestions use those journals only. '}
+            {admin && (
+              <Link to="/archive" className="text-earth-400 hover:underline">
+                Search the archive
+              </Link>
+            )}
           </p>
         </div>
-        <button className="btn-primary inline-flex items-center gap-2" onClick={() => setOpen(true)}>
-          <Plus className="w-4 h-4" /> Add journal
-        </button>
+        {admin && (
+          <button className="btn-primary inline-flex items-center gap-2" onClick={() => setOpen(true)}>
+            <Plus className="w-4 h-4" /> Add journal
+          </button>
+        )}
       </div>
 
-      {open && (
+      {open && admin && (
         <form onSubmit={create} className="panel p-4 mb-6 space-y-3 max-w-xl">
           <input className="input-field" value={name} onChange={(e) => setName(e.target.value)} />
           <input className="input-field" value={abbr} onChange={(e) => setAbbr(e.target.value)} />
@@ -115,18 +123,20 @@ export default function DashboardPage() {
                     Gaps
                   </span>
                 )}
-                <button
-                  type="button"
-                  className="p-1 text-gray-500 hover:text-red-400"
-                  title="Remove journal"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    void remove(j.id, j.name);
-                  }}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {admin && (
+                  <button
+                    type="button"
+                    className="p-1 text-gray-500 hover:text-red-400"
+                    title="Remove journal"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void remove(j.id, j.name);
+                    }}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             </div>
             <p className="text-gray-400 text-sm mt-1">{j.abbreviation}</p>
@@ -135,7 +145,11 @@ export default function DashboardPage() {
           </Link>
         ))}
         {journals.length === 0 && (
-          <p className="text-gray-500">No journals yet. Add IJIST to start the archive.</p>
+          <p className="text-gray-500">
+            {admin
+              ? 'No journals yet. Add a journal and crawl or upload papers so they stay in the server archive.'
+              : 'No journals are assigned to your account yet. Ask an admin to grant journal access.'}
+          </p>
         )}
       </div>
     </div>
