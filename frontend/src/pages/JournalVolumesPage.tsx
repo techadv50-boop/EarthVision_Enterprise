@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { citationApi } from '@/services/api';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 interface Volume {
   volume: number;
@@ -90,6 +91,7 @@ function CrawlProgress({ crawl }: { crawl: CrawlJob }) {
 }
 
 export default function JournalVolumesPage() {
+  const admin = isCitationAdmin(useAuthStore((s) => s.user));
   const { journalId } = useParams();
   const id = Number(journalId);
   const [journal, setJournal] = useState<{ name: string; archive_url?: string } | null>(null);
@@ -187,18 +189,20 @@ export default function JournalVolumesPage() {
     const issues: LocalIssue[] = issuesRes.data || [];
     setLocalIssues(issues);
     setArchiveUrl(j.archive_url || '');
-    try {
-      const { data: job } = await citationApi.journals.latestCrawl(id);
-      if (job?.inventory?.length) {
-        setCrawl(job);
-        const next: Record<string, boolean> = {};
-        for (const row of job.inventory as InventoryRow[]) {
-          next[row.url] = false;
+    if (admin) {
+      try {
+        const { data: job } = await citationApi.journals.latestCrawl(id);
+        if (job?.inventory?.length) {
+          setCrawl(job);
+          const next: Record<string, boolean> = {};
+          for (const row of job.inventory as InventoryRow[]) {
+            next[row.url] = false;
+          }
+          setSelected(next);
         }
-        setSelected(next);
+      } catch {
+        /* no prior scan */
       }
-    } catch {
-      /* no prior scan */
     }
     return issues;
   };
@@ -221,12 +225,13 @@ export default function JournalVolumesPage() {
   useEffect(() => {
     void (async () => {
       const issues = await load();
+      if (!admin) return;
       const needsSync = issues.some((iss) => iss.article_count > 0 && !iss.citations_synced);
       if (needsSync) {
         await refreshCitations();
       }
     })();
-  }, [id]);
+  }, [id, admin]);
 
   const pollJob = async (jobId: number) => {
     const { data: job } = await citationApi.crawlJob(jobId);
@@ -304,8 +309,13 @@ export default function JournalVolumesPage() {
         <Link to="/journals">Journals</Link> / {journal?.name}
       </p>
       <h2 className="text-2xl font-semibold mb-2">{journal?.name}</h2>
-      <p className="text-gray-400 mb-6">Volumes and article totals. Missing volume numbers are flagged.</p>
+      <p className="text-gray-400 mb-6">
+        {admin
+          ? 'Volumes and article totals. Missing volume numbers are flagged. Papers stay on the server archive.'
+          : 'Browse articles stored for this journal. Upload, crawl, and delete stay with the admin account.'}
+      </p>
 
+      {admin && (
       <div className="grid md:grid-cols-2 gap-4 mb-4">
         <div className="panel p-4 space-y-3">
           <h3 className="font-medium">1. Upload PDFs</h3>
@@ -359,6 +369,7 @@ export default function JournalVolumesPage() {
           {crawl && (scanning || downloading) && <CrawlProgress crawl={crawl} />}
         </div>
       </div>
+      )}
       {msg && <p className="text-earth-400 text-sm mb-4">{msg}</p>}
 
       {issueRows.length > 0 && (
@@ -369,10 +380,10 @@ export default function JournalVolumesPage() {
               <p className="text-sm text-gray-400">
                 {issueRows.length} issues ·{' '}
                 {issueRows.reduce((n, row) => n + Number(row.article_count || 0), 0)} articles.
-                Tick remote issues to download; leave the rest on the site.
+                {admin ? ' Tick remote issues to download; leave the rest on the site.' : ' Open an issue to see stored articles.'}
               </p>
             </div>
-            {inventory.length > 0 && (
+            {admin && inventory.length > 0 && (
               <div className="flex gap-2">
                 <button className="btn-secondary" type="button" onClick={() => toggleAll(true)}>
                   Select all
@@ -387,7 +398,7 @@ export default function JournalVolumesPage() {
             <table className="w-full text-sm">
               <thead className="text-left text-gray-400 border-b border-gray-800">
                 <tr>
-                  <th className="py-2 pr-3 w-10">Get</th>
+                  <th className="py-2 pr-3 w-10">{admin ? 'Get' : ''}</th>
                   <th className="py-2 pr-3">Issue</th>
                   <th className="py-2 pr-3 text-right">Articles</th>
                   <th className="py-2 pr-3 text-right">Scholar</th>
@@ -399,7 +410,7 @@ export default function JournalVolumesPage() {
                 {issueRows.map((row) => (
                   <tr key={row.key} className="border-b border-gray-800/80">
                     <td className="py-2 pr-3">
-                      {row.url ? (
+                      {admin && row.url ? (
                         <input
                           type="checkbox"
                           checked={Boolean(selected[row.url])}
@@ -440,16 +451,18 @@ export default function JournalVolumesPage() {
                         ? row.cited_count
                           ? `On file · ${row.cited_count} cited`
                           : 'On file'
-                        : selected[row.url || '']
+                        : admin && selected[row.url || '']
                           ? 'Will download'
-                          : 'Leave'}
+                          : admin
+                            ? 'Leave'
+                            : ''}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {inventory.length > 0 && (
+          {admin && inventory.length > 0 && (
             <button className="btn-primary" type="button" onClick={() => void startDownload()}>
               Download {selectedCount} selected issue{selectedCount === 1 ? '' : 's'}
               {selectedArticles ? ` (${selectedArticles} articles)` : ''}

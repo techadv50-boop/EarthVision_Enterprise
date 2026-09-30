@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { citationApi } from '@/services/api';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 interface IssueRow {
   id: number;
@@ -18,6 +19,7 @@ interface IssueRow {
 }
 
 export default function VolumeIssuesPage() {
+  const admin = isCitationAdmin(useAuthStore((s) => s.user));
   const { journalId, volume } = useParams();
   const id = Number(journalId);
   const vol = Number(volume);
@@ -33,7 +35,7 @@ export default function VolumeIssuesPage() {
   useEffect(() => {
     void (async () => {
       const data = await load();
-      const need = data.filter((iss) => iss.id && iss.article_count && !iss.citations_synced);
+      const need = admin ? data.filter((iss) => iss.id && iss.article_count && !iss.citations_synced) : [];
       if (!need.length) return;
       setMsg('Fetching Crossref and Google Scholar cited-by counts…');
       for (const iss of need) {
@@ -42,7 +44,7 @@ export default function VolumeIssuesPage() {
       await load();
       setMsg('');
     })();
-  }, [id, vol]);
+  }, [id, vol, admin]);
 
   return (
     <div>

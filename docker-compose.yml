@@ -26,19 +26,19 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       SECRET_KEY: ${SECRET_KEY}
       DEBUG: 'false'
-      CORS_ORIGINS: '["https://citation.xdgen.com","https://xdgen.com","https://www.xdgen.com","http://localhost","http://localhost:5173"]'
+      CORS_ORIGINS: '["https://citation.drxdhr.com","https://citation.xdgen.com","https://xdgen.com","https://www.xdgen.com","http://localhost","http://localhost:5173"]'
       OPERATOR_EMAIL: citation@xdgen.com
       OPERATOR_USERNAME: citation@xdgen.com
       OPERATOR_PASSWORD: ${OPERATOR_PASSWORD}
       MASTER_RESET_PASSWORD: ${MASTER_RESET_PASSWORD}
-      PUBLIC_HOST: citation.xdgen.com
+      PUBLIC_HOST: citation.drxdhr.com
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     volumes:
-      - ./cache:/app/cache
-      - ./uploads:/app/uploads
-      - ./logs:/app/logs
+      - citation_uploads:/app/uploads
+      - citation_cache:/app/cache
+      - citation_logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -66,3 +66,9 @@ services:
 volumes:
   pgdata:
     name: dokploy_citation_pgdata
+  citation_uploads:
+    name: dokploy_citation_uploads
+  citation_cache:
+    name: dokploy_citation_cache
+  citation_logs:
+    name: dokploy_citation_logs

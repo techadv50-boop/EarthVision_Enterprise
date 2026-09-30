@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { adminApi } from '@/services/api';
+import { adminApi, citationApi } from '@/services/api';
 import { useAuthStore } from '@/store/authStore';
 
 interface AdminUser {
@@ -11,6 +11,13 @@ interface AdminUser {
   is_superuser: boolean;
   roles: string[];
   access_status?: string;
+  assigned_journal_ids?: number[];
+}
+
+interface JournalOption {
+  id: number;
+  name: string;
+  abbreviation?: string;
 }
 
 function citationRole(user: AdminUser): 'admin' | 'user' {
@@ -42,12 +49,22 @@ export default function UsersPage() {
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
   const [newRole, setNewRole] = useState<'admin' | 'user'>('user');
+  const [journals, setJournals] = useState<JournalOption[]>([]);
+  const [journalDraft, setJournalDraft] = useState<Record<number, number[]>>({});
+  const [createJournalIds, setCreateJournalIds] = useState<number[]>([]);
 
   const load = async () => {
-    const { data } = await adminApi.users();
+    const [{ data }, journalsRes] = await Promise.all([
+      adminApi.users(),
+      citationApi.journals.list().catch(() => ({ data: [] as JournalOption[] })),
+    ]);
     const rows = data as AdminUser[];
     setUsers(rows);
     setDraft(Object.fromEntries(rows.map((row) => [row.id, citationRole(row)])));
+    setJournalDraft(
+      Object.fromEntries(rows.map((row) => [row.id, row.assigned_journal_ids || []])),
+    );
+    setJournals((journalsRes.data || []) as JournalOption[]);
   };
 
   useEffect(() => {
@@ -93,6 +110,39 @@ export default function UsersPage() {
     }
   };
 
+  const saveJournals = async (user: AdminUser) => {
+    setBusy(`journals-${user.id}`);
+    setMsg('');
+    setError('');
+    try {
+      await adminApi.updateUser(user.id, { assigned_journal_ids: journalDraft[user.id] || [] });
+      await load();
+      setMsg(`Saved journal access for ${user.username}.`);
+    } catch {
+      setError('Could not save journal access.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleJournal = (userId: number, journalId: number, on: boolean) => {
+    setJournalDraft((prev) => {
+      const current = new Set(prev[userId] || []);
+      if (on) current.add(journalId);
+      else current.delete(journalId);
+      return { ...prev, [userId]: [...current] };
+    });
+  };
+
+  const toggleCreateJournal = (journalId: number, on: boolean) => {
+    setCreateJournalIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(journalId);
+      else next.delete(journalId);
+      return [...next];
+    });
+  };
+
   const addUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy('create');
@@ -107,12 +157,14 @@ export default function UsersPage() {
         password,
         full_name: fullName || undefined,
         role: newRole,
+        assigned_journal_ids: createdRole === 'user' ? createJournalIds : [],
       });
       setEmail('');
       setUsername('');
       setFullName('');
       setPassword('');
       setNewRole('user');
+      setCreateJournalIds([]);
       await load();
       setMsg(`Added ${createdName} as ${createdRole}. They can sign in now.`);
     } catch (err: unknown) {
@@ -133,8 +185,9 @@ export default function UsersPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">Users & access</h2>
       <p className="text-gray-400 text-sm mb-4 max-w-3xl">
-        Add people and assign Admin or User. Self-registered accounts wait here until you approve
-        them. Restrict anyone to block portal access.
+        Add people and assign Admin or User. For standard users, tick the journals they may see
+        and cite from. Self-registered accounts wait here until you approve them. Restrict anyone
+        to block portal access.
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
@@ -177,9 +230,26 @@ export default function UsersPage() {
           value={newRole}
           onChange={(e) => setNewRole(e.target.value as 'admin' | 'user')}
         >
-          <option value="user">User — New manuscript only</option>
+          <option value="user">User — assigned journals only</option>
           <option value="admin">Admin — full portal</option>
         </select>
+        {newRole === 'user' && journals.length > 0 && (
+          <div className="md:col-span-2 space-y-2">
+            <p className="text-sm text-gray-400">Journals this user may see and cite from</p>
+            <div className="flex flex-wrap gap-3">
+              {journals.map((journal) => (
+                <label key={journal.id} className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={createJournalIds.includes(journal.id)}
+                    onChange={(e) => toggleCreateJournal(journal.id, e.target.checked)}
+                  />
+                  {journal.abbreviation || journal.name}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
         <button className="btn-primary" type="submit" disabled={busy === 'create'}>
           {busy === 'create' ? 'Adding…' : 'Add user & grant access'}
         </button>
@@ -252,6 +322,7 @@ export default function UsersPage() {
               <th className="py-2 pr-3">Account</th>
               <th className="py-2 pr-3">Access</th>
               <th className="py-2 pr-3">Role</th>
+              <th className="py-2 pr-3">Journals</th>
               <th className="py-2 pr-3" />
             </tr>
           </thead>
@@ -284,6 +355,35 @@ export default function UsersPage() {
                       <option value="admin">Admin</option>
                       <option value="user">User</option>
                     </select>
+                  </td>
+                  <td className="py-3 pr-3">
+                    {citationRole(user) === 'admin' || draft[user.id] === 'admin' ? (
+                      <p className="text-xs text-gray-500">All journals</p>
+                    ) : journals.length === 0 ? (
+                      <p className="text-xs text-gray-500">Add a journal first</p>
+                    ) : (
+                      <div className="space-y-2 min-w-[12rem]">
+                        {journals.map((journal) => (
+                          <label key={journal.id} className="flex items-center gap-2 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={(journalDraft[user.id] || []).includes(journal.id)}
+                              disabled={self}
+                              onChange={(e) => toggleJournal(user.id, journal.id, e.target.checked)}
+                            />
+                            <span>{journal.abbreviation || journal.name}</span>
+                          </label>
+                        ))}
+                        <button
+                          className="btn-secondary"
+                          type="button"
+                          disabled={busy !== null || self}
+                          onClick={() => void saveJournals(user)}
+                        >
+                          Save journals
+                        </button>
+                      </div>
+                    )}
                   </td>
                   <td className="py-3">
                     <div className="flex flex-wrap gap-2">

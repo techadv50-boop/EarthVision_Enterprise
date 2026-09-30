@@ -15,6 +15,13 @@ user_roles = Table(
     Column("role_id", Integer, ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
 )
 
+user_journals = Table(
+    "user_journals",
+    Base.metadata,
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("journal_id", Integer, ForeignKey("journals.id", ondelete="CASCADE"), primary_key=True),
+)
+
 role_permissions = Table(
     "role_permissions",
     Base.metadata,
@@ -77,6 +84,11 @@ class User(Base):
     )
 
     roles: Mapped[List[Role]] = relationship(secondary=user_roles, back_populates="users")
+    allowed_journals: Mapped[List["Journal"]] = relationship(  # noqa: F821
+        "Journal",
+        secondary=user_journals,
+        lazy="selectin",
+    )
     projects: Mapped[List["Project"]] = relationship(back_populates="owner")  # noqa: F821
     bookmarks: Mapped[List["Bookmark"]] = relationship(back_populates="user")  # noqa: F821
     aois: Mapped[List["AreaOfInterest"]] = relationship(back_populates="user")  # noqa: F821

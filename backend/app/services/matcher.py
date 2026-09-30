@@ -416,6 +416,7 @@ async def suggest_for_manuscript(
     db: AsyncSession,
     manuscript: Manuscript,
     *,
+    allowed_journal_ids: set[int] | None = None,
     per_paragraph: int = MAX_SUGGESTIONS_PER_PARAGRAPH,
     max_suggestions: int = MAX_SUGGESTIONS_PER_MANUSCRIPT,
     min_score: float = MIN_SUGGESTION_SCORE,
@@ -444,14 +445,22 @@ async def suggest_for_manuscript(
         )
         paragraphs = list(loaded.scalars().all())
 
-    chunks_result = await db.execute(
-        select(ArticleChunk).options(
-            selectinload(ArticleChunk.article)
-            .selectinload(Article.issue)
-            .selectinload(Issue.journal)
-        )
+    chunk_stmt = select(ArticleChunk).options(
+        selectinload(ArticleChunk.article)
+        .selectinload(Article.issue)
+        .selectinload(Issue.journal)
     )
-    chunks = list(chunks_result.scalars().all())
+    if allowed_journal_ids is not None:
+        if not allowed_journal_ids:
+            chunks: list[ArticleChunk] = []
+            chunk_stmt = None
+        else:
+            chunk_stmt = (
+                chunk_stmt.join(Article, ArticleChunk.article_id == Article.id)
+                .join(Issue, Article.issue_id == Issue.id)
+                .where(Issue.journal_id.in_(allowed_journal_ids))
+            )
+    chunks = list((await db.execute(chunk_stmt)).scalars().all()) if chunk_stmt is not None else []
 
     old = await db.execute(
         select(CitationSuggestion).where(CitationSuggestion.manuscript_id == manuscript.id)

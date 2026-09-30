@@ -7,7 +7,14 @@ class Base(DeclarativeBase):
     pass
 
 
-from app.models.user import User, Role, Permission, user_roles, role_permissions  # noqa: E402, F401
+from app.models.user import (  # noqa: E402, F401
+    User,
+    Role,
+    Permission,
+    user_roles,
+    role_permissions,
+    user_journals,
+)
 from app.models.project import Project  # noqa: E402, F401
 from app.models.bookmark import Bookmark  # noqa: E402, F401
 from app.models.aoi import AreaOfInterest  # noqa: E402, F401
