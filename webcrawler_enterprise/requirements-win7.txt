@@ -1,0 +1,16 @@
+# Windows 7 SP1+ compatible pins (Python 3.8, Qt5 / PySide2)
+# Playwright/Chromium is omitted — HTTP crawl + PDF scan still works.
+PySide2==5.15.2.1
+shiboken2==5.15.2.1
+beautifulsoup4==4.12.3
+lxml==5.3.0
+httpx==0.27.2
+pdfplumber==0.11.4
+pymupdf==1.24.10
+python-docx==1.1.2
+openpyxl==3.1.5
+phonenumbers==8.13.50
+tldextract==5.1.2
+Pillow==10.4.0
+pytesseract==0.3.10
+pyinstaller==5.13.2
