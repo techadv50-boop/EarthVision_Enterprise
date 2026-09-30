@@ -57,10 +57,12 @@ Nothing crawls until you click **Start**.
 Toggle on the main screen:
 `Light mode — crawl ALL pages for emails & phones only`
 
-## Start / broken URLs / auto-resume
+## Start / broken URLs / resume after shutdown
 - **Start** uses only the URLs in the box, from scratch
 - Broken URLs are skipped; work continues on the next URL
-- After internet drop or PC restart, the app **auto-resumes** from where it stopped
+- After shutdown, reboot, or lost connection, the app asks before continuing
+- **Yes** skips websites that already finished and continues the interrupted website from the last saved page
+- Pages already scanned are not fetched again
 
 ## Output
 Choose an output folder in the app. Each website creates:

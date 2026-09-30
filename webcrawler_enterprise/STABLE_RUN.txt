@@ -6,7 +6,9 @@ Confirmed stability improvements in this build:
 - Broken / 404 URLs are skipped; crawl continues to the next URL
 - URL frontier saved to SQLite — survives power loss, PC reboot, app crash
 - If internet drops, the crawl waits and continues automatically when online
-- Resume unfinished websites instead of wiping progress by default
+- Resume unfinished websites instead of wiping progress
+- Finished websites are skipped on Resume; an interrupted website continues from the saved URL queue
+- Already scanned pages are not fetched again
 - On startup, the app offers to Resume unfinished websites
 - Heartbeat log every 30 seconds so you can see it is still alive
 - Download backpressure + size limits to avoid memory/disk blowups
@@ -20,7 +22,7 @@ File -> Settings:
 - Page workers: 6 to 12
 - Download workers: 4 to 8
 - Download complete website: ON
-- Fresh crawl each Start: OFF   << important for resume
+- Resume never repeats finished websites or pages
 - Playwright fallback: ON
 - Max pages: 50000 (or higher)
 

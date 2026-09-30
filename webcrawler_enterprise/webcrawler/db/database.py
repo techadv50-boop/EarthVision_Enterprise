@@ -108,6 +108,16 @@ CREATE TABLE IF NOT EXISTS frontier (
 
 CREATE INDEX IF NOT EXISTS idx_frontier_site_priority
     ON frontier(site_id, priority ASC, id ASC);
+
+-- Last known position so Resume can report where a site stopped.
+CREATE TABLE IF NOT EXISTS crawl_checkpoints (
+    site_id INTEGER PRIMARY KEY,
+    last_url TEXT,
+    pages_visited INTEGER NOT NULL DEFAULT 0,
+    frontier_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(site_id) REFERENCES queue_items(id) ON DELETE CASCADE
+);
 """
 
 
@@ -122,6 +132,7 @@ class Database:
         self.path = path or (app_data_dir() / "crawler.db")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._conn: sqlite3.Connection | None = None
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -131,7 +142,41 @@ class Database:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 120000")
         conn.execute("PRAGMA synchronous = NORMAL")
+        # Bound cache so a multi-day crawl does not grow without limit on Win7.
+        conn.execute("PRAGMA cache_size = -16000")
+        conn.execute("PRAGMA wal_autocheckpoint = 1000")
         return conn
+
+    def _live(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = self._connect()
+            return self._conn
+        try:
+            self._conn.execute("SELECT 1")
+        except sqlite3.Error:
+            try:
+                self._conn.close()
+            except sqlite3.Error:
+                pass
+            self._conn = self._connect()
+        return self._conn
+
+    def close(self) -> None:
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
+
+    def wal_checkpoint(self) -> None:
+        """Keep the WAL from growing without bound during multi-hour crawls."""
+        with self._lock:
+            try:
+                self._live().execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.Error:
+                pass
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -150,16 +195,16 @@ class Database:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
+        # One long-lived connection per process. Opening a new connection for
+        # every page exhausts Windows handles over a 6–12 hour crawl.
         with self._lock:
-            conn = self._connect()
+            conn = self._live()
             try:
                 yield conn
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
-            finally:
-                conn.close()
 
     def execute(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> int:
         last_err: Exception | None = None
@@ -177,10 +222,11 @@ class Database:
             raise last_err
         return 0
 
-    def fetchone(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> sqlite3.Row | None:
+    def fetchone(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> dict[str, Any] | None:
         with self.connection() as conn:
-            return conn.execute(sql, params).fetchone()
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row is not None else None
 
-    def fetchall(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> list[sqlite3.Row]:
+    def fetchall(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> list[dict[str, Any]]:
         with self.connection() as conn:
-            return list(conn.execute(sql, params).fetchall())
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]

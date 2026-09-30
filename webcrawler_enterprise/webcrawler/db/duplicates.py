@@ -48,15 +48,14 @@ class DuplicateManager:
         normalized = normalize_url(url)
         if normalized in self._visited:
             return False
+        # Persist first. If the write fails, the page stays unvisited so Resume
+        # will fetch it again instead of silently skipping unsaved work.
+        self.db.execute(
+            "INSERT OR IGNORE INTO visited_pages (site_id, url, normalized_url, status_code) "
+            "VALUES (?, ?, ?, ?)",
+            (self.site_id, url, normalized, status_code),
+        )
         self._visited.add(normalized)
-        try:
-            self.db.execute(
-                "INSERT OR IGNORE INTO visited_pages (site_id, url, normalized_url, status_code) "
-                "VALUES (?, ?, ?, ?)",
-                (self.site_id, url, normalized, status_code),
-            )
-        except Exception:
-            pass
         return True
 
     def should_download(self, url: str) -> bool:

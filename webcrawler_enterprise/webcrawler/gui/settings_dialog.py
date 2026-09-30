@@ -66,9 +66,10 @@ class SettingsDialog(QDialog):
         )
         self.contact_scan.setChecked(settings.contact_scan_only)
         self.fresh_crawl = QCheckBox(
-            "Also wipe progress when using Resume (Start always begins from scratch)"
+            "Resume always keeps saved progress (finished websites and pages are skipped)"
         )
-        self.fresh_crawl.setChecked(settings.fresh_site_crawl)
+        self.fresh_crawl.setChecked(True)
+        self.fresh_crawl.setEnabled(False)
         self.pw_fallback = QCheckBox("Playwright fallback for JS/empty pages")
         self.pw_fallback.setChecked(settings.use_playwright_fallback)
 
@@ -122,7 +123,7 @@ class SettingsDialog(QDialog):
                 "download_complete_site": self.complete_site.isChecked(),
                 "download_all_images": self.all_images.isChecked(),
                 "contact_scan_only": self.contact_scan.isChecked(),
-                "fresh_site_crawl": self.fresh_crawl.isChecked(),
+                "fresh_site_crawl": False,
                 "use_playwright_fallback": self.pw_fallback.isChecked(),
             }
         )

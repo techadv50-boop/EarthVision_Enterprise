@@ -368,14 +368,24 @@ class MainWindow(QMainWindow):
                 return
             sample = "\n".join(f"• {item.url}" for item in items[:8])
             extra = "" if len(items) <= 8 else f"\n• …and {len(items) - 8} more"
+            roots = {item.output_root for item in items}
+            done = qm.list_completed(roots)
+            done_note = ""
+            if done:
+                done_note = (
+                    f"{len(done)} website(s) already finished will be skipped "
+                    "and will not be crawled again.\n\n"
+                )
             reply = QMessageBox.question(
                 self,
                 "Resume unfinished crawl?",
-                f"Found {len(items)} unfinished website(s) from a previous run:\n\n"
+                f"{done_note}"
+                f"{len(items)} website(s) were interrupted.\n"
+                "Continue from the last saved page? Pages already scanned "
+                "are not fetched again.\n\n"
                 f"{sample}{extra}\n\n"
-                "Yes = continue those websites from where they stopped.\n"
-                "No = leave the URL box empty. Click Start only when you are ready "
-                "with the URLs you type yourself.",
+                "Yes = continue only the unfinished websites.\n"
+                "No = do nothing until you click Start.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -457,6 +467,11 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
+        # A multi-hour crawl must not keep every line in the window.
+        doc = self.log_view.document()
+        if doc is not None and doc.blockCount() > 2000:
+            lines = self.log_view.toPlainText().splitlines()
+            self.log_view.setPlainText("\n".join(lines[-1500:]))
 
     def _set_running_ui(self, running: bool) -> None:
         self.start_btn.setEnabled(not running)
@@ -489,4 +504,7 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.worker.stop()
+            thread = getattr(self.worker.engine, "_thread", None)
+            if thread is not None and thread.is_alive():
+                thread.join(15)
         event.accept()

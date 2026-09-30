@@ -145,6 +145,46 @@ def test_prepare_resume_ignores_superseded_start_sites(tmp_path: Path):
     assert "Superseded" in (qm.get(old[0].id).error or "")
 
 
+def test_prepare_resume_does_not_recrawl_completed_sites(tmp_path: Path):
+    db = Database(tmp_path / "done.db")
+    qm = QueueManager(db)
+    items = qm.enqueue_many(
+        ["https://done.example", "https://mid.example", "https://waiting.example"],
+        str(tmp_path / "out"),
+    )
+    qm.mark_completed(items[0].id)
+    qm.mark_running(items[1].id)
+    # Power loss: running site becomes pending; completed site stays completed.
+    qm.prepare_resume()
+    assert qm.get(items[0].id).status == QueueStatus.COMPLETED.value
+    resumable = {item.normalized_url for item in qm.list_resumable()}
+    assert items[0].normalized_url not in resumable
+    assert items[1].normalized_url in resumable
+    assert items[2].normalized_url in resumable
+    done = qm.list_completed({items[0].output_root})
+    assert len(done) == 1
+    assert done[0].id == items[0].id
+
+
+def test_frontier_pending_batch_skips_visited_and_held(tmp_path: Path):
+    db = Database(tmp_path / "batch_frontier.db")
+    qm = QueueManager(db)
+    items = qm.enqueue_many(["https://example.com"], str(tmp_path / "out"))
+    site_id = items[0].id
+    frontier = FrontierStore(db, site_id)
+    dup = DuplicateManager(db, site_id)
+    frontier.add("https://example.com/done", 1, priority=1)
+    frontier.add("https://example.com/held", 1, priority=2)
+    frontier.add("https://example.com/next", 2, priority=6)
+    frontier.flush()
+    dup.mark_visited("https://example.com/done")
+    assert frontier.drop_visited() == 1
+    rows = frontier.load_pending_batch(10, skip={"https://example.com/held"})
+    urls = [url for url, _depth, _rank in rows]
+    assert urls == ["https://example.com/next"]
+    assert frontier.count_pending() == 2
+
+
 def test_power_loss_running_site_is_resumable(tmp_path: Path):
     db = Database(tmp_path / "power.db")
     qm = QueueManager(db)

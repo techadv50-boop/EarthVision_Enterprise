@@ -186,6 +186,8 @@ class CrawlEngine:
         logger = CrawlLogger(on_message=self.on_log)
         completed = 0
         try:
+            if self._resume_mode:
+                self._announce_resume(logger)
             while True:
                 try:
                     if self.control_state() == "stopped":
@@ -349,6 +351,24 @@ class CrawlEngine:
                     self.on_finished()
                 except Exception:
                     pass
+            try:
+                logger.close()
+            except Exception:
+                pass
+
+    def _announce_resume(self, logger: CrawlLogger) -> None:
+        """Tell the operator which sites are already done and which continue."""
+        unfinished = self.queue.list_resumable()
+        roots = {item.output_root for item in unfinished}
+        done = self.queue.list_completed(roots)
+        logger.info(
+            f"Resume check: {len(done)} website(s) already finished will be skipped; "
+            f"{len(unfinished)} website(s) will continue from the saved page queue."
+        )
+        for item in done[:40]:
+            logger.info(f"Already finished (skipped): {item.url}")
+        for item in unfinished[:40]:
+            logger.info(f"Will continue: {item.url}")
 
     def _update_eta(self, completed: int) -> None:
         remaining = self._progress.websites_remaining

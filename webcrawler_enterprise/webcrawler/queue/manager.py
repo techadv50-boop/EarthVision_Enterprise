@@ -95,6 +95,17 @@ class QueueManager:
         )
         return int(row["c"]) if row else 0
 
+    def list_completed(self, output_roots: set[str] | None = None) -> list[QueueItem]:
+        """Finished websites. Resume must never crawl these again."""
+        rows = self.db.fetchall(
+            "SELECT * FROM queue_items WHERE status = ? ORDER BY id ASC",
+            (QueueStatus.COMPLETED.value,),
+        )
+        items = [self._row_to_item(r) for r in rows]
+        if output_roots:
+            items = [item for item in items if item.output_root in output_roots]
+        return items
+
     def list_resumable(self) -> list[QueueItem]:
         """Unfinished sites that should continue after disconnect / reboot."""
         rows = self.db.fetchall(

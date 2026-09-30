@@ -17,6 +17,7 @@ from webcrawler.logger.crawl_logger import CrawlLogger
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import destination_path, folder_for_extension
 from webcrawler.utils.hashing import sha256_bytes, sha256_file
+from webcrawler.utils.http_pool import ClientPool
 from webcrawler.utils.url import extension_of
 
 
@@ -36,6 +37,7 @@ class FileDownloader:
         self.logger = logger
         self.on_download = on_download
         self.phone_region = phone_region or "US"
+        self._clients: ClientPool | None = None
         self.stats = {
             "documents": 0,
             "pdfs": 0,
@@ -67,22 +69,14 @@ class FileDownloader:
             self.logger.skipped(url, "light mode skips image files")
             return False
 
-        headers = {"User-Agent": self.settings.user_agent}
-        timeout = httpx.Timeout(self.settings.download_timeout)
         last_error: Exception | None = None
         max_bytes = max(1_000_000, self.settings.max_download_bytes)
 
         for attempt in range(1, self.settings.retry_attempts + 1):
             tmp_path: Path | None = None
             try:
-                with httpx.Client(
-                    headers=headers,
-                    timeout=timeout,
-                    follow_redirects=self.settings.follow_redirects,
-                    verify=False,
-                    limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
-                ) as client:
-                    with client.stream("GET", url) as response:
+                client = self._client()
+                with client.stream("GET", url) as response:
                         if response.status_code in {404, 410}:
                             self.logger.skipped(url, f"HTTP {response.status_code}")
                             self.duplicates.mark_download(url, None, "", "missing")
@@ -174,21 +168,13 @@ class FileDownloader:
             self.logger.skipped(url, "duplicate URL")
             return None
 
-        headers = {"User-Agent": self.settings.user_agent}
-        timeout = httpx.Timeout(self.settings.download_timeout)
         last_error: Exception | None = None
         max_bytes = max(1_000_000, self.settings.max_download_bytes)
 
         for attempt in range(1, self.settings.retry_attempts + 1):
             try:
-                with httpx.Client(
-                    headers=headers,
-                    timeout=timeout,
-                    follow_redirects=self.settings.follow_redirects,
-                    verify=False,
-                    limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
-                ) as client:
-                    with client.stream("GET", url) as response:
+                client = self._client()
+                with client.stream("GET", url) as response:
                         if response.status_code in {404, 410}:
                             self.logger.skipped(url, f"HTTP {response.status_code}")
                             self.duplicates.mark_download(url, None, "", "missing")
@@ -250,6 +236,22 @@ class FileDownloader:
 
         self.logger.error(f"Failed to download {url}: {last_error}")
         return None
+
+    def _client(self) -> httpx.Client:
+        if self._clients is None:
+            self._clients = ClientPool(
+                headers={"User-Agent": self.settings.user_agent},
+                timeout=httpx.Timeout(self.settings.download_timeout),
+                follow_redirects=self.settings.follow_redirects,
+                verify=False,
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            )
+        return self._clients.client()
+
+    def close(self) -> None:
+        if self._clients is not None:
+            self._clients.close()
+            self._clients = None
 
     def _bump_stats(self, file_type: str, is_image: bool = False) -> None:
         if is_image or file_type == "Images":

@@ -19,6 +19,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 
+from webcrawler.crawler.resume_plan import site_resume_action
 from webcrawler.db.duplicates import DuplicateManager
 from webcrawler.db.frontier import FrontierStore
 from webcrawler.downloader.file_downloader import FileDownloader
@@ -29,6 +30,7 @@ from webcrawler.parser.html_parser import HtmlParser
 from webcrawler.queue.manager import QueueItem
 from webcrawler.settings.manager import AppSettings
 from webcrawler.utils.folders import ensure_site_structure, html_mirror_path, site_folder
+from webcrawler.utils.http_pool import ClientPool
 from webcrawler.utils.network import is_connectivity_error, is_online
 from webcrawler.utils.url import (
     download_url_from_galley_view,
@@ -39,6 +41,12 @@ from webcrawler.utils.url import (
     normalize_url,
     same_site,
 )
+
+# In-memory URL heap cap. The rest stays in SQLite so a multi-day crawl
+# does not keep hundreds of thousands of URLs in RAM (Windows 7 and 10).
+MEMORY_QUEUE_CAP = 6000
+MEMORY_QUEUE_REFILL_AT = 1200
+
 
 CONTACT_HINTS = (
     "contact",
@@ -209,6 +217,7 @@ class SiteCrawler:
         self._page_heap: list[tuple[int, int, int, str]] = []
         self._queue_seq = 0
         self._queued: set[str] = set()
+        self._inflight: set[str] = set()
         self._playwright_queue: deque[tuple[str, int]] = deque()
         self._lock = threading.Lock()
         self._robots: RobotFileParser | None = None
@@ -220,6 +229,8 @@ class SiteCrawler:
         self._heartbeat_at = 0.0
         self._processed_since_gc = 0
         self._consecutive_network_errors = 0
+        self._last_url = ""
+        self._page_clients: ClientPool | None = None
         self._frontier = FrontierStore(self.duplicates.db, item.id)
         self._deep_mode = bool(
             settings.contact_scan_only or settings.download_complete_site
@@ -243,19 +254,42 @@ class SiteCrawler:
                 "files are NOT saved to disk"
             )
 
-        # Resume continues saved progress. Start always begins the listed site from scratch.
-        if self.resume_mode and not self.settings.fresh_site_crawl:
-            restored = self._restore_frontier_from_db()
-            if self.duplicates.visited_count or restored:
-                self.logger.info(
-                    f"Resuming site: visited={self.duplicates.visited_count}, "
-                    f"frontier_restored={restored}"
-                )
-        else:
-            if self.duplicates.visited_count:
+        # Resume never wipes saved pages, even if an old setting asked for a fresh crawl.
+        # Start (resume_mode False) always begins the listed site from scratch.
+        visited_count = self.duplicates.visited_count
+        frontier_pending = self._frontier.count_pending()
+        action = site_resume_action(
+            resume_mode=self.resume_mode,
+            visited_count=visited_count,
+            frontier_pending=frontier_pending,
+        )
+        if action == "scratch":
+            if visited_count:
                 self.duplicates.clear_crawl_state(clear_contacts=True)
             self._frontier.clear()
             self.logger.info("Starting site from scratch")
+        else:
+            restored = self._restore_frontier_from_db()
+            checkpoint = self._read_checkpoint()
+            last_page = checkpoint[0] if checkpoint else ""
+            self.logger.info(
+                f"Resuming site ({action}): already_visited={self.duplicates.visited_count}, "
+                f"saved_queue={frontier_pending}, loaded_into_memory={restored}"
+            )
+            if last_page:
+                self.logger.info(f"Last saved page before shutdown: {last_page}")
+            if action == "continue_queue":
+                self.logger.info(
+                    "Continuing from the saved URL queue. "
+                    "Pages already scanned are not fetched again."
+                )
+            elif action == "rediscover_skip_visited":
+                self.logger.info(
+                    "Saved pages exist but the URL queue was empty. "
+                    "Links will be discovered again and already-scanned pages will be skipped."
+                )
+            else:
+                self.logger.info("This website has no saved pages yet; starting it from the first URL.")
 
         result = SiteResult(
             website=self.item.url,
@@ -298,13 +332,16 @@ class SiteCrawler:
         downloader.on_download = _on_download
 
         root = normalize_url(self.item.url)
-        # Always ensure seeds/sitemaps are present; already-visited URLs are skipped later.
-        self._enqueue(root, 0, priority=True)
-        self._seed_contact_paths(root)
-        self._load_robots(root)
-        self._load_sitemaps(root)
-        # All PDF discovery entry points (sitemap alone is never enough on OJS).
-        self._seed_all_pdf_discovery_methods(root)
+        # continue_queue already has the unfinished URLs. Re-running sitemap/OAI
+        # makes Resume look like a crawl from scratch.
+        if action != "continue_queue":
+            self._enqueue(root, 0, priority=True)
+            self._seed_contact_paths(root)
+            self._load_robots(root)
+            self._load_sitemaps(root)
+            self._seed_all_pdf_discovery_methods(root)
+        elif root and not self.duplicates.has_visited(root):
+            self._enqueue(root, 0, priority=True)
         if not self._wait_until_online():
             result.status = "Cancelled"
             result.error = "Stopped while waiting for internet"
@@ -358,9 +395,19 @@ class SiteCrawler:
         result.site_dir = site_dir
 
         try:
-            self._frontier.flush()
+            self._save_checkpoint(self._last_url)
         except Exception:
             pass
+        try:
+            downloader.close()
+        except Exception:
+            pass
+        if self._page_clients is not None:
+            try:
+                self._page_clients.close()
+            except Exception:
+                pass
+            self._page_clients = None
         self.logger.info(
             f"Finished {self.item.url}: pages={result.pages_crawled} "
             f"docs={result.documents_downloaded} emails={result.emails} phones={result.phones} "
@@ -417,6 +464,7 @@ class SiteCrawler:
                     done = [fut for fut in list(pending_pages) if fut.done()]
                     for fut in done:
                         url, depth = pending_pages.pop(fut)
+                        self._release_inflight(url)
                         try:
                             payload = fut.result()
                         except Exception as exc:
@@ -484,6 +532,8 @@ class SiteCrawler:
                     # Do NOT stop while downloads are still running — PDF scans
                     # enqueue galley/deep HTML pages that must still be crawled.
                     if not pending_pages and not self._has_queued_pages():
+                        if self._maybe_refill_queue():
+                            continue
                         if self._pending_download_count() > 0:
                             time.sleep(0.1)
                             continue
@@ -500,11 +550,12 @@ class SiteCrawler:
             # Final deep passes: anything discovered while draining PDFs/docs.
             extra_passes = 0
             while (
-                self._has_queued_pages()
-                and not self._is_site_abort()
+                not self._is_site_abort()
                 and extra_passes < 500
                 and self.duplicates.visited_count < self.settings.max_pages_per_site
             ):
+                if not self._has_queued_pages() and not self._maybe_refill_queue():
+                    break
                 extra_passes += 1
                 self.logger.info(
                     f"Deep crawl pass {extra_passes}: "
@@ -530,7 +581,7 @@ class SiteCrawler:
                         payload, depth, site_dir, downloader, download_pool, result
                     )
                 self._drain_downloads()
-                if not self._has_queued_pages():
+                if not self._has_queued_pages() and not self._maybe_refill_queue():
                     break
 
         # Cap Playwright fallback so it cannot stall a site for many hours.
@@ -753,9 +804,9 @@ class SiteCrawler:
                 self._submit_download(download_pool, downloader, img_url, is_image=True)
 
         self._processed_since_gc += 1
-        if self._processed_since_gc >= 200:
+        if self._processed_since_gc >= 1000:
             self._processed_since_gc = 0
-            gc.collect()
+            gc.collect(1)
 
         self._emit_progress(
             pages=self.duplicates.visited_count,
@@ -765,55 +816,61 @@ class SiteCrawler:
             current_page=final_url,
         )
 
+    def _page_client(self) -> httpx.Client:
+        if self._page_clients is None:
+            self._page_clients = ClientPool(
+                headers={
+                    "User-Agent": self.settings.user_agent,
+                    "Accept": "text/html,*/*",
+                },
+                timeout=httpx.Timeout(self.settings.download_timeout),
+                follow_redirects=self.settings.follow_redirects,
+                verify=False,
+                http2=False,
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            )
+        return self._page_clients.client()
+
     def _http_fetch_page(self, url: str) -> dict:
-        headers = {"User-Agent": self.settings.user_agent, "Accept": "text/html,*/*"}
-        timeout = httpx.Timeout(self.settings.download_timeout)
         last_error = None
         for attempt in range(1, max(1, self.settings.retry_attempts) + 1):
             try:
-                with httpx.Client(
-                    headers=headers,
-                    timeout=timeout,
-                    follow_redirects=self.settings.follow_redirects,
-                    verify=False,
-                    http2=False,
-                    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
-                ) as client:
-                    response = client.get(url)
-                    if response.status_code in {429, 503}:
-                        wait = min(2.0 * attempt, 15.0)
-                        self.logger.warning(
-                            f"HTTP {response.status_code} for {url}; backing off {wait:.1f}s"
-                        )
-                        time.sleep(wait)
-                        continue
-                    content_type = response.headers.get("content-type", "").lower()
-                    if any(
-                        x in content_type
-                        for x in (
-                            "application/pdf",
-                            "application/msword",
-                            "application/vnd.",
-                            "application/zip",
-                            "image/",
-                        )
-                    ):
-                        return {
-                            "url": url,
-                            "html": "",
-                            "status": response.status_code,
-                            "final_url": str(response.url),
-                            "error": f"binary-content:{content_type}",
-                            "binary": True,
-                        }
-                    text = response.text or ""
+                client = self._page_client()
+                response = client.get(url)
+                if response.status_code in {429, 503}:
+                    wait = min(2.0 * attempt, 15.0)
+                    self.logger.warning(
+                        f"HTTP {response.status_code} for {url}; backing off {wait:.1f}s"
+                    )
+                    time.sleep(wait)
+                    continue
+                content_type = response.headers.get("content-type", "").lower()
+                if any(
+                    x in content_type
+                    for x in (
+                        "application/pdf",
+                        "application/msword",
+                        "application/vnd.",
+                        "application/zip",
+                        "image/",
+                    )
+                ):
                     return {
                         "url": url,
-                        "html": text,
+                        "html": "",
                         "status": response.status_code,
                         "final_url": str(response.url),
-                        "error": None,
+                        "error": f"binary-content:{content_type}",
+                        "binary": True,
                     }
+                text = response.text or ""
+                return {
+                    "url": url,
+                    "html": text,
+                    "status": response.status_code,
+                    "final_url": str(response.url),
+                    "error": None,
+                }
             except Exception as exc:
                 last_error = exc
                 time.sleep(min(0.35 * attempt, 2.0))
@@ -883,7 +940,8 @@ class SiteCrawler:
             f"docs={downloader.stats['documents']} pw_fallback={pw}"
         )
         try:
-            self._frontier.flush()
+            self._save_checkpoint(self._last_url)
+            self.duplicates.db.wal_checkpoint()
         except Exception:
             pass
         self._flush_contacts(force=True)
@@ -1065,14 +1123,24 @@ class SiteCrawler:
         return "Crawl stopped by user"
 
     def _pop_page(self) -> tuple[str, int] | None:
-        """Pop deepest/highest-priority URL first. Frontier stays until finished."""
+        """Pop highest-priority URL first. Refill from SQLite when memory runs low."""
+        if self._queue_size() <= MEMORY_QUEUE_REFILL_AT:
+            self._maybe_refill_queue()
         with self._lock:
             if not self._page_heap:
                 return None
             _rank, _seq, depth, url = heapq.heappop(self._page_heap)
             # Allow re-queue after offline / retry (visited check still applies).
             self._queued.discard(url)
+            self._inflight.add(url)
+            self._last_url = url
             return url, depth
+
+    def _release_inflight(self, url: str) -> None:
+        normalized = normalize_url(url) or url
+        with self._lock:
+            self._inflight.discard(url)
+            self._inflight.discard(normalized)
 
     def _has_queued_pages(self) -> bool:
         with self._lock:
@@ -1088,24 +1156,57 @@ class SiteCrawler:
             return
         if _should_skip_crawl_url(normalized):
             return
+        if self.duplicates.has_visited(normalized):
+            return
         rank = _url_priority_rank(normalized)
         # Explicit priority=True bumps at least to journal-level urgency.
         if priority and rank > 2:
             rank = min(rank, 2)
+        # Always persist. Memory only keeps a window so long runs stay stable.
+        try:
+            self._frontier.add(normalized, depth, priority=rank)
+        except Exception:
+            pass
         with self._lock:
-            if normalized in self._queued or self.duplicates.has_visited(normalized):
+            if normalized in self._queued:
                 return
-            # Deep mode allows a much larger frontier so no page/PDF is dropped.
-            max_queue = self.settings.max_pages_per_site * (10 if self._deep_mode else 3)
-            if len(self._queued) >= max_queue:
+            if len(self._page_heap) >= MEMORY_QUEUE_CAP:
+                return
+            if normalized in self._inflight:
                 return
             self._queued.add(normalized)
             self._queue_seq += 1
             heapq.heappush(self._page_heap, (rank, self._queue_seq, depth, normalized))
-            try:
-                self._frontier.add(normalized, depth, priority=rank)
-            except Exception as exc:
-                self.logger.debug(f"Frontier persist failed for {normalized}: {exc}")
+
+    def _maybe_refill_queue(self) -> int:
+        """Pull the next unvisited URLs from SQLite into the memory heap."""
+        with self._lock:
+            room = MEMORY_QUEUE_CAP - len(self._page_heap)
+            if room <= 0:
+                return 0
+            skip = set(self._queued) | set(self._inflight)
+        try:
+            rows = self._frontier.load_pending_batch(room, skip)
+        except Exception:
+            return 0
+        added = 0
+        with self._lock:
+            for url, depth, _priority in rows:
+                normalized = normalize_url(url)
+                if not normalized or normalized in self._queued:
+                    continue
+                if self.duplicates.has_visited(normalized):
+                    continue
+                if len(self._page_heap) >= MEMORY_QUEUE_CAP:
+                    break
+                rank = _url_priority_rank(normalized)
+                self._queued.add(normalized)
+                self._queue_seq += 1
+                heapq.heappush(
+                    self._page_heap, (rank, self._queue_seq, int(depth), normalized)
+                )
+                added += 1
+        return added
 
     def _enqueue_journal_children(
         self,
@@ -1240,8 +1341,14 @@ class SiteCrawler:
             )
 
     def _mark_visited(self, url: str, status_code: int | None = None) -> None:
-        self.duplicates.mark_visited(url, status_code)
-        self._frontier_forget(url)
+        self._last_url = url
+        try:
+            saved = self.duplicates.mark_visited(url, status_code)
+        except Exception as exc:
+            self.logger.warning(f"Could not save visited page {url}: {exc}")
+            return
+        if saved:
+            self._frontier_forget(url)
 
     def _frontier_forget(self, url: str) -> None:
         try:
@@ -1250,36 +1357,47 @@ class SiteCrawler:
             pass
 
     def _restore_frontier_from_db(self) -> int:
-        """Reload unfinished URLs after power loss / reboot / crash."""
-        rows = self._frontier.load_all()
-        if not rows:
-            return 0
-        restored = 0
-        stale = 0
-        for url, depth, _stored_priority in rows:
-            normalized = normalize_url(url)
-            if not normalized:
-                continue
-            if self.duplicates.has_visited(normalized):
-                self._frontier_forget(normalized)
-                stale += 1
-                continue
-            with self._lock:
-                if normalized in self._queued:
-                    continue
-                self._queued.add(normalized)
-                # Always rank from the URL. Older frontiers stored bool 0/1 which
-                # must not be treated as the new numeric deep-priority scale.
-                rank = _url_priority_rank(normalized)
-                self._queue_seq += 1
-                heapq.heappush(
-                    self._page_heap,
-                    (rank, self._queue_seq, int(depth), normalized),
+        """Load a window of unfinished URLs after power loss / reboot / crash."""
+        try:
+            removed = self._frontier.drop_visited()
+            if removed:
+                self.logger.info(
+                    f"Cleared {removed} already-visited URL(s) from saved frontier"
                 )
-                restored += 1
-        if stale:
-            self.logger.info(f"Cleared {stale} already-visited URL(s) from saved frontier")
-        return restored
+        except Exception:
+            pass
+        return self._maybe_refill_queue()
+
+    def _save_checkpoint(self, last_url: str = "") -> None:
+        self._frontier.flush()
+        now = datetime.now(timezone.utc).isoformat()
+        url = (last_url or self._last_url or "")[:2000]
+        self.duplicates.db.execute(
+            "INSERT INTO crawl_checkpoints "
+            "(site_id, last_url, pages_visited, frontier_count, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(site_id) DO UPDATE SET "
+            "last_url=excluded.last_url, "
+            "pages_visited=excluded.pages_visited, "
+            "frontier_count=excluded.frontier_count, "
+            "updated_at=excluded.updated_at",
+            (
+                self.item.id,
+                url,
+                self.duplicates.visited_count,
+                self._frontier.count_pending(),
+                now,
+            ),
+        )
+
+    def _read_checkpoint(self) -> tuple[str, str] | None:
+        row = self.duplicates.db.fetchone(
+            "SELECT last_url, updated_at FROM crawl_checkpoints WHERE site_id = ?",
+            (self.item.id,),
+        )
+        if not row or not row["last_url"]:
+            return None
+        return str(row["last_url"]), str(row["updated_at"] or "")
 
     def _wait_until_online(self) -> bool:
         """Block while offline. Returns False if the user stops the crawl."""

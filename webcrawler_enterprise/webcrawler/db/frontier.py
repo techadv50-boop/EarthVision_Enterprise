@@ -108,3 +108,55 @@ class FrontierStore:
             (self.site_id,),
         )
         return [(r["url"], int(r["depth"]), int(r["priority"])) for r in rows]
+
+    def drop_visited(self) -> int:
+        """Remove frontier rows that were already crawled."""
+        self.flush()
+        with self.db.connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM frontier WHERE site_id = ? AND normalized_url IN ("
+                "SELECT normalized_url FROM visited_pages WHERE site_id = ?"
+                ")",
+                (self.site_id, self.site_id),
+            )
+            return int(cur.rowcount or 0)
+
+    def count_pending(self) -> int:
+        """Frontier URLs that have not been visited yet."""
+        self.flush()
+        row = self.db.fetchone(
+            "SELECT COUNT(*) AS c FROM frontier f "
+            "WHERE f.site_id = ? AND NOT EXISTS ("
+            "  SELECT 1 FROM visited_pages v "
+            "  WHERE v.site_id = f.site_id AND v.normalized_url = f.normalized_url"
+            ")",
+            (self.site_id,),
+        )
+        return int(row["c"]) if row else 0
+
+    def load_pending_batch(
+        self, limit: int, skip: set[str] | None = None
+    ) -> list[tuple[str, int, int]]:
+        """Next unvisited frontier URLs, skipping ones already held in memory."""
+        self.flush()
+        if limit <= 0:
+            return []
+        skip = skip or set()
+        fetch_n = min(50000, max(limit + len(skip) + 50, limit))
+        rows = self.db.fetchall(
+            "SELECT f.url, f.normalized_url, f.depth, f.priority FROM frontier f "
+            "WHERE f.site_id = ? AND NOT EXISTS ("
+            "  SELECT 1 FROM visited_pages v "
+            "  WHERE v.site_id = f.site_id AND v.normalized_url = f.normalized_url"
+            ") "
+            "ORDER BY f.priority ASC, f.id ASC LIMIT ?",
+            (self.site_id, fetch_n),
+        )
+        out: list[tuple[str, int, int]] = []
+        for row in rows:
+            if row["normalized_url"] in skip:
+                continue
+            out.append((row["url"], int(row["depth"]), int(row["priority"])))
+            if len(out) >= limit:
+                break
+        return out
