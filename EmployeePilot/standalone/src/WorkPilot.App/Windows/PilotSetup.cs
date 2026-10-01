@@ -6,7 +6,7 @@ using WorkPilot.Core;
 
 namespace WorkPilot.Windows;
 
-public sealed record PilotRequest(string FullName, string UserName, string Password, int QuotaGb, int IdleMinutes);
+public sealed record PilotRequest(string FullName, string UserName, string Password, int QuotaGb, int IdleMinutes, int AlarmAfterSeconds);
 
 public static class PilotSetup
 {
@@ -33,7 +33,7 @@ Chrome
 - Clearing browsing history, Incognito, and Guest mode are turned off
 - Page titles can appear in the session report because they are window titles
 
-A short message appears when you sign in to remind you that recording is on.
+A green light means you are working. A red light means you have stopped. The computer beeps while the red light is on, until you use the mouse or keyboard again.
 The administrator receives a report after you sign out.
 """;
 
@@ -50,6 +50,7 @@ The administrator receives a report after you sign out.
         log($"Work folder: {workFolder}");
         log($"Disk limit: {request.QuotaGb} GB on {volume}");
         log($"Idle after: {request.IdleMinutes} minutes");
+        log($"Red light and beep after: {request.AlarmAfterSeconds} seconds");
         if (volume == "C:")
         {
             log("The limit includes this login's Windows profile and Chrome, not only documents.");
@@ -60,11 +61,13 @@ The administrator receives a report after you sign out.
         Directory.CreateDirectory(PilotPaths.Journal);
         Directory.CreateDirectory(PilotPaths.Reports);
         Directory.CreateDirectory(PilotPaths.Logs);
+        Directory.CreateDirectory(PilotPaths.LiveDirectory);
         Directory.CreateDirectory(workFolder);
         CopyProgram(log);
         ProtectFolder(workFolder, request.UserName, modify: true);
         ProtectFolder(PilotPaths.Journal, request.UserName, modify: false);
         ProtectFolder(PilotPaths.Logs, request.UserName, modify: false);
+        ProtectFolder(PilotPaths.LiveDirectory, request.UserName, modify: true);
         ProtectFolder(PilotPaths.Reports, request.UserName, modify: false, employeeAccess: false);
         File.WriteAllText(Path.Combine(workFolder, "READ-ME.txt"),
             $"Save your work in this folder.{Environment.NewLine}Your space limit on drive {volume} is {request.QuotaGb} GB.{Environment.NewLine}Recording is on while you are signed in.{Environment.NewLine}");
@@ -75,6 +78,7 @@ The administrator receives a report after you sign out.
             EmployeeName = request.FullName,
             UserName = request.UserName,
             IdleThresholdSeconds = request.IdleMinutes * 60,
+            AlarmAfterSeconds = request.AlarmAfterSeconds,
             PollSeconds = 5,
             QuotaGB = request.QuotaGb,
             Volume = volume,
@@ -86,6 +90,7 @@ The administrator receives a report after you sign out.
         ApplyQuota(volume, request.UserName, request.QuotaGb, log);
         ApplyChrome(log);
         EnableRemoteDesktop(log);
+        AllowWatch(log);
         RegisterTasks(request.UserName, log);
         CreateReportShortcut(log);
         ApplyAppLocker(enforce: false, log);
@@ -219,6 +224,21 @@ The administrator receives a report after you sign out.
         {
             throw new InvalidOperationException("Idle minutes must be from 1 to 60.");
         }
+        if (request.AlarmAfterSeconds is < 5 or > 3600)
+        {
+            throw new InvalidOperationException("The red light time must be from 5 to 3600 seconds.");
+        }
+    }
+
+    private static void AllowWatch(Action<string> log)
+    {
+        WindowsCommand.Run(WindowsCommand.SystemTool("netsh.exe"), "http", "add", "urlacl", "url=http://+:8777/", "user=Everyone");
+        WindowsCommand.Run(
+            WindowsCommand.SystemTool("netsh.exe"),
+            "advfirewall", "firewall", "add", "rule",
+            "name=WorkPilot watch", "dir=in", "action=allow", "protocol=TCP", "localport=8777", "profile=any");
+        log("On your computer, click Watch employee and use http://127.0.0.1:8777/status while you are testing on this PC.");
+        log("From your other computer, use this PC's Tailscale address with port 8777, for example http://100.x.x.x:8777/status.");
     }
 
     private static string SelectVolume()

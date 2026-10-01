@@ -10,7 +10,19 @@ public static class Program
     {
         if (Has(args, "--track"))
         {
-            SessionTracker.Run();
+            if (!SessionTracker.Run())
+            {
+                return;
+            }
+            TrackMode = true;
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            return;
+        }
+        if (Has(args, "--watch"))
+        {
+            WatchUrl = args.FirstOrDefault(arg => arg.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                ?? "http://127.0.0.1:8777/status";
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
             return;
         }
         if (Has(args, "--report"))
@@ -25,6 +37,9 @@ public static class Program
         }
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
+
+    public static bool TrackMode { get; private set; }
+    public static string? WatchUrl { get; private set; }
 
     public static AppBuilder BuildAvaloniaApp() =>
         AppBuilder.Configure<App>()

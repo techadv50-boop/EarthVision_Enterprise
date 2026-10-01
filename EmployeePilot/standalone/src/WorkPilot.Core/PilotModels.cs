@@ -48,12 +48,26 @@ public sealed class PilotConfig
     public string EmployeeName { get; set; } = "Pilot Employee";
     public string UserName { get; set; } = "employee1";
     public int IdleThresholdSeconds { get; set; } = 300;
+    public int AlarmAfterSeconds { get; set; } = 30;
     public int PollSeconds { get; set; } = 5;
     public int QuotaGB { get; set; } = 80;
     public string Volume { get; set; } = "C:";
     public string WorkFolder { get; set; } = @"C:\WorkPilot\employee1";
     public List<string> AllowedPrograms { get; set; } = new(PilotDefaults.AllowedPrograms);
     public List<string> SystemPrograms { get; set; } = new(PilotDefaults.SystemPrograms);
+}
+
+public sealed class LiveStatus
+{
+    public bool SessionOpen { get; set; }
+    public bool Working { get; set; } = true;
+    public int IdleSeconds { get; set; }
+    public int AlarmAfterSeconds { get; set; } = 30;
+    public string Program { get; set; } = "";
+    public string Title { get; set; } = "";
+    public int ClickCount { get; set; }
+    public string EmployeeName { get; set; } = "";
+    public DateTime UpdatedUtc { get; set; }
 }
 
 public static class PilotDefaults

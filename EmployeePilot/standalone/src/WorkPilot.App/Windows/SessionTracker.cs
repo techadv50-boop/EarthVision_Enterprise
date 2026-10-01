@@ -9,53 +9,110 @@ namespace WorkPilot.Windows;
 
 public static class SessionTracker
 {
-    public static void Run()
+    public static bool Run()
     {
         var config = PilotConfigStore.Load(PilotPaths.Config);
         if (config is null)
         {
-            return;
+            return false;
         }
         Directory.CreateDirectory(PilotPaths.Journal);
         Directory.CreateDirectory(PilotPaths.Logs);
         _mutex = new Mutex(false, @"Local\WorkPilotSessionTracker");
         if (!_mutex.WaitOne(0))
         {
-            return;
+            return false;
         }
         var sessionId = DateTime.Now.ToString("yyyyMMdd-HHmmss");
         var sessionFile = Path.Combine(PilotPaths.Journal, $"{config.UserName}-{sessionId}.jsonl");
         Log($"Session {sessionId} started for {config.UserName}.");
         var poll = Math.Max(2, config.PollSeconds);
-        var worker = new Thread(() => Loop(sessionId, sessionFile, poll))
+        var alarmAfter = config.AlarmAfterSeconds < 5 ? 30 : config.AlarmAfterSeconds;
+        StatusServer.Start();
+        StartLocalAlarm();
+        var worker = new Thread(() => Loop(config, sessionId, sessionFile, poll, alarmAfter))
         {
             IsBackground = false,
             Name = "WorkPilot tracker"
         };
         worker.Start();
-        WindowsAdmin.Show("Work session recording is on. This computer records the programs you use and idle time until you sign out. It does not record keystrokes or screenshots.");
+        return true;
     }
 
     private static Mutex? _mutex;
+    private static volatile int _localBeep;
 
-    private static void Loop(string sessionId, string sessionFile, int poll)
+    private static void StartLocalAlarm()
     {
+        var alarm = new Thread(() =>
+        {
+            while (true)
+            {
+                if (_localBeep == 1)
+                {
+                    SystemBeep.Tone();
+                }
+                Thread.Sleep(1200);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "WorkPilot employee alarm"
+        };
+        alarm.Start();
+    }
+
+    private static void Loop(PilotConfig config, string sessionId, string sessionFile, int poll, int alarmAfter)
+    {
+        var clicks = 0;
+        var leftDown = false;
+        var rightDown = false;
+        var nextJournal = DateTime.UtcNow;
         while (true)
         {
             try
             {
-                var line = Capture(sessionId);
-                File.AppendAllText(sessionFile, line + Environment.NewLine);
+                clicks += CountClick(ref leftDown, 0x01) + CountClick(ref rightDown, 0x02);
+                var sample = Capture(sessionId);
+                var idle = sample.IdleSeconds;
+                var locked = sample.Locked;
+                var working = ActivitySignal.IsWorking(idle, locked, alarmAfter);
+                _localBeep = working ? 0 : 1;
+                LiveBoard.Publish(new LiveStatus
+                {
+                    SessionOpen = true,
+                    Working = working,
+                    IdleSeconds = idle,
+                    AlarmAfterSeconds = alarmAfter,
+                    Program = sample.Process,
+                    Title = sample.Title,
+                    ClickCount = clicks,
+                    EmployeeName = config.EmployeeName,
+                    UpdatedUtc = DateTime.UtcNow
+                });
+                if (DateTime.UtcNow >= nextJournal)
+                {
+                    File.AppendAllText(sessionFile, sample.Line + Environment.NewLine);
+                    nextJournal = DateTime.UtcNow.AddSeconds(poll);
+                }
             }
             catch (Exception ex)
             {
                 Log(ex.Message);
             }
-            Thread.Sleep(TimeSpan.FromSeconds(poll));
+            Thread.Sleep(250);
         }
     }
 
-    private static string Capture(string sessionId)
+    private static int CountClick(ref bool wasDown, int virtualKey)
+    {
+        var down = (Native.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+        var clicked = down && !wasDown;
+        wasDown = down;
+        return clicked ? 1 : 0;
+    }
+
+    private static Sample Capture(string sessionId)
     {
         var idle = Native.IdleSeconds();
         var process = "unknown.exe";
@@ -93,8 +150,10 @@ public static class SessionTracker
             title,
             locked
         };
-        return JsonSerializer.Serialize(payload);
+        return new Sample(idle, locked, process, title, JsonSerializer.Serialize(payload));
     }
+
+    private readonly record struct Sample(int IdleSeconds, bool Locked, string Process, string Title, string Line);
 
     private static void Log(string message)
     {
@@ -111,11 +170,15 @@ public static class SessionTracker
 
     private static class Native
     {
-        public static uint IdleSeconds()
+        public static int IdleSeconds()
         {
             var info = new LastInputInfo { cbSize = (uint)Marshal.SizeOf<LastInputInfo>() };
-            _ = GetLastInputInfo(ref info);
-            return (unchecked((uint)Environment.TickCount) - info.dwTime) / 1000;
+            if (!GetLastInputInfo(ref info))
+            {
+                return 0;
+            }
+            var idleMs = unchecked((uint)Environment.TickCount) - info.dwTime;
+            return (int)Math.Min(idleMs / 1000, int.MaxValue);
         }
 
         public static string ForegroundTitle()
@@ -159,5 +222,8 @@ public static class SessionTracker
 
         [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        public static extern short GetAsyncKeyState(int virtualKey);
     }
 }

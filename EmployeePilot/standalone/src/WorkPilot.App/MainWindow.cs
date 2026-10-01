@@ -14,18 +14,21 @@ public class MainWindow : Window
     private readonly TextBox _confirm = new() { PasswordChar = '●', Watermark = "Type the password again" };
     private readonly TextBox _quota = new() { Text = "80", Watermark = "Disk limit in GB" };
     private readonly TextBox _idle = new() { Text = "5", Watermark = "Idle after this many minutes" };
+    private readonly TextBox _alarm = new() { Text = "30", Watermark = "Seconds before the red light" };
+    private readonly TextBox _watchAddress = new() { Text = "http://127.0.0.1:8777/status" };
     private readonly TextBox _log = new() { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 220 };
     private readonly Button _setup = new() { Content = "Set up this computer" };
     private readonly Button _check = new() { Content = "Check setup" };
     private readonly Button _report = new() { Content = "Open latest report" };
     private readonly Button _audit = new() { Content = "Watch programs only" };
     private readonly Button _block = new() { Content = "Block other programs" };
+    private readonly Button _watch = new() { Content = "Watch employee" };
 
     public MainWindow()
     {
         Title = "Work session pilot";
         Width = 680;
-        Height = 760;
+        Height = 860;
         MinWidth = 560;
         MinHeight = 640;
         Content = Build();
@@ -34,17 +37,18 @@ public class MainWindow : Window
         _report.Click += (_, _) => OpenReport();
         _audit.Click += async (_, _) => await RunBusy(_audit, () => RulesAsync(false));
         _block.Click += async (_, _) => await RunBusy(_block, () => RulesAsync(true));
+        _watch.Click += (_, _) => OpenWatch();
     }
 
     private Control Build()
     {
         var intro = new TextBlock
         {
-            Text = "One employee on this Windows 11 computer. The program creates a normal login, a disk limit, Chrome rules, and a sign-in to sign-out report. It does not record keystrokes, screenshots, or passwords.",
+            Text = "One employee on this Windows 11 computer. Green means they are working. Red means they stopped. Both computers beep while the light is red. The program does not record keystrokes, screenshots, or passwords.",
             TextWrapping = TextWrapping.Wrap
         };
         var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-        foreach (var button in new[] { _setup, _check, _report, _audit, _block })
+        foreach (var button in new[] { _setup, _check, _report, _audit, _block, _watch })
         {
             button.Margin = new Avalonia.Thickness(0, 0, 8, 8);
             button.MinHeight = 36;
@@ -63,8 +67,12 @@ public class MainWindow : Window
         stack.Children.Add(_confirm);
         stack.Children.Add(Label("Disk space in GB"));
         stack.Children.Add(_quota);
-        stack.Children.Add(Label("Minutes without mouse or keyboard before idle"));
+        stack.Children.Add(Label("Minutes without mouse or keyboard before the report counts idle"));
         stack.Children.Add(_idle);
+        stack.Children.Add(Label("Seconds before the red light and the beep"));
+        stack.Children.Add(_alarm);
+        stack.Children.Add(Label("Watch address"));
+        stack.Children.Add(_watchAddress);
         stack.Children.Add(buttons);
         stack.Children.Add(new TextBlock { Text = "Result", FontSize = 16 });
         stack.Children.Add(new ScrollViewer { Content = _log, Height = 220 });
@@ -75,7 +83,7 @@ public class MainWindow : Window
 
     private async Task RunBusy(Button button, Func<Task> work)
     {
-        var buttons = new[] { _setup, _check, _report, _audit, _block };
+        var buttons = new[] { _setup, _check, _report, _audit, _block, _watch };
         foreach (var item in buttons)
         {
             item.IsEnabled = false;
@@ -112,12 +120,17 @@ public class MainWindow : Window
         {
             throw new InvalidOperationException("Enter the idle time as a whole number of minutes.");
         }
+        if (!int.TryParse(_alarm.Text, out var alarm))
+        {
+            throw new InvalidOperationException("Enter the red-light time as a whole number of seconds.");
+        }
         var request = new PilotRequest(
             (_fullName.Text ?? "").Trim(),
             (_userName.Text ?? "").Trim(),
             _password.Text ?? "",
             quota,
-            idle);
+            idle,
+            alarm);
         _password.Text = "";
         _confirm.Text = "";
         return Task.Run(() => PilotSetup.Run(request, Log));
@@ -132,6 +145,18 @@ public class MainWindow : Window
     });
 
     private Task RulesAsync(bool enforce) => Task.Run(() => PilotSetup.ApplyAppLocker(enforce, Log));
+
+    private void OpenWatch()
+    {
+        var address = (_watchAddress.Text ?? "").Trim();
+        if (!address.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            Log("Enter a watch address such as http://127.0.0.1:8777/status");
+            return;
+        }
+        var window = new AlarmWindow(() => LiveBoard.ReadUrl(address));
+        window.Show();
+    }
 
     private void OpenReport()
     {
