@@ -1,0 +1,17 @@
+WorkPilot.exe is the one-employee pilot for this Windows 11 Pro PC.
+
+1. Update Windows first if the PC is still on build 22000. Stay on Windows 11 Pro.
+2. Copy WorkPilot.exe to the PC. A USB drive or a shared folder is enough.
+3. Double-click WorkPilot.exe.
+4. If Windows SmartScreen appears, choose More info, then Run anyway.
+5. Approve the administrator prompt.
+6. Press "Set up this computer". The defaults are login employee1, 80 GB, 5 minutes before the report counts idle, and 30 seconds before the red light. Type a password and the employee name. Change "Seconds before the red light and the beep" if you want a different wait.
+7. Sign in as that employee at this computer. A window stays on screen with a green Working button and a red Not working button. Green means the mouse or keyboard was used inside the time you set. After that time, the button turns red and this computer beeps until the employee uses the mouse or keyboard again.
+8. On your other computer, open the same WorkPilot.exe, click "Watch employee", and set the watch address to http:// and this PC's Tailscale address, then :8777/status. That window uses the same green and red buttons and beeps while the light is red.
+9. Sign out, wait one minute, and open "Work session report" on the administrator desktop.
+
+The report shows programs, window titles, active time, and idle time. It does not record keystrokes, screenshots, or passwords.
+
+Do not open Remote Desktop directly to the internet. Use a private network such as Tailscale, then connect with Remote Desktop.
+
+Block other programs only after one real work day looks right. Use the button "Block other programs" in WorkPilot.
