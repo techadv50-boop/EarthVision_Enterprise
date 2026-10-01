@@ -113,11 +113,11 @@ The administrator receives a report after you sign out.
         {
             return lines;
         }
-        var user = WindowsCommand.Run("net.exe", "user", config.UserName);
-        Add(user.Code == 0, "Employee login", config.UserName);
-        var admins = WindowsCommand.Run("net.exe", "localgroup", "Administrators");
-        Add(user.Code == 0 && admins.Output.IndexOf(config.UserName, StringComparison.OrdinalIgnoreCase) < 0, "Login is not an administrator", config.UserName);
-        var remote = WindowsCommand.Run("net.exe", "localgroup", "Remote Desktop Users");
+        var userExists = WindowsAccount.Exists(config.UserName);
+        Add(userExists, "Employee login", config.UserName);
+        var admins = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Administrators");
+        Add(userExists && admins.Output.IndexOf(config.UserName, StringComparison.OrdinalIgnoreCase) < 0, "Login is not an administrator", config.UserName);
+        var remote = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Remote Desktop Users");
         Add(remote.Output.IndexOf(config.UserName, StringComparison.OrdinalIgnoreCase) >= 0, "Remote Desktop allowed", config.UserName);
         Add(File.Exists(config.WorkFolder), "Work folder", config.WorkFolder);
         Add(Directory.Exists(PilotPaths.Reports), "Report folder", PilotPaths.Reports);
@@ -259,33 +259,23 @@ The administrator receives a report after you sign out.
     private static void EnsureUser(PilotRequest request, Action<string> log)
     {
         log("Creating the Windows login...");
-        var existing = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "user", request.UserName);
-        if (existing.Code != 0)
+        if (!WindowsAccount.Exists(request.UserName))
         {
-            var created = WindowsCommand.Run(
-                WindowsCommand.SystemTool("net.exe"), "user", request.UserName, request.Password, "/add",
-                "/fullname:" + request.FullName,
-                "/comment:WorkPilot pilot employee");
-            if (created.Code != 0)
-            {
-                throw new InvalidOperationException(string.IsNullOrWhiteSpace(created.Output)
-                    ? "Windows could not create the login."
-                    : created.Output);
-            }
+            WindowsAccount.Create(request.UserName, request.Password, request.FullName);
             log($"Created login {request.UserName}.");
         }
         else
         {
             log($"Login {request.UserName} already exists. The password was left unchanged.");
-            WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "user", request.UserName, "/fullname:" + request.FullName);
+            WindowsAccount.SetFullName(request.UserName, request.FullName);
         }
-        WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Users", request.UserName, "/add");
-        WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Administrators", request.UserName, "/delete");
-        var remote = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Remote Desktop Users", request.UserName, "/add");
-        if (remote.Code != 0 && remote.Output.IndexOf("already a member", StringComparison.OrdinalIgnoreCase) < 0)
+        WindowsAccount.AddToGroup(request.UserName, "Users");
+        WindowsAccount.RemoveFromGroup(request.UserName, "Administrators");
+        if (!WindowsAccount.TryAddToGroup(request.UserName, "Remote Desktop Users", out var remoteError))
         {
-            log(remote.Output);
+            log(remoteError);
         }
+        log("Windows login is ready.");
     }
 
     private static void CopyProgram(Action<string> log)
@@ -520,7 +510,8 @@ internal static class WindowsCommand
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = true
+            RedirectStandardError = true,
+            RedirectStandardInput = true
         };
         foreach (var arg in args)
         {
@@ -529,6 +520,8 @@ internal static class WindowsCommand
         using var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {file}.");
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
+        // Windows tools such as net.exe wait forever when input is left open.
+        process.StandardInput.Close();
         if (!process.WaitForExit(60000))
         {
             try
