@@ -1,0 +1,27 @@
+Work session report
+Employee: Pilot Employee
+Windows login: employee1
+Computer: DESKTOP-ENCM4H4
+Session start: 2026-09-30 09:00:00 UTC
+Session end: 2026-09-30 09:43:00 UTC
+Session length: 43 min
+Active time: 33 min
+Idle time: 10 min
+Locked screen (included in idle): 0 s
+Longest idle stretch: 10 min
+Active percent: 76.7
+Idle rule: no mouse or keyboard for 5 min still counts the waiting period as active; after that the time is idle. A locked screen is idle immediately.
+
+Programs
+WINWORD.EXE  16 min  Allowed
+chrome.exe  15 min  Allowed
+game.exe  2 min  Outside
+
+Outside the allowed list
+game.exe  2 min
+
+Timeline
+2026-09-30 09:00:00 UTC  15 min  chrome.exe  Inbox - Chrome
+2026-09-30 09:15:00 UTC  10 min  Idle
+2026-09-30 09:25:00 UTC  16 min  WINWORD.EXE  Report.docx - Word
+2026-09-30 09:41:00 UTC  2 min  game.exe  Level 1

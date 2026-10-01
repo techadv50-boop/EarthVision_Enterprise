@@ -1,0 +1,26 @@
+name: Employee pilot
+
+on:
+  push:
+    paths:
+      - "EmployeePilot/**"
+      - ".github/workflows/employee-pilot.yml"
+  pull_request:
+    paths:
+      - "EmployeePilot/**"
+      - ".github/workflows/employee-pilot.yml"
+
+jobs:
+  report-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PowerShell
+        run: |
+          curl -fsSL -o /tmp/pwsh.tar.gz https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/powershell-7.4.6-linux-x64.tar.gz
+          sudo mkdir -p /opt/microsoft/powershell/7
+          sudo tar zxf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7
+          sudo chmod +x /opt/microsoft/powershell/7/pwsh
+          sudo ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
+      - name: Run report tests
+        run: pwsh -File EmployeePilot/tests/test-report.ps1

@@ -1,0 +1,28 @@
+Work session recording
+
+This computer records your work session while you are signed in.
+
+What is recorded
+- The time you sign in and the time you sign out
+- The program in front of you, and the window title
+- Whether the mouse and keyboard are being used
+- Idle time, including a locked screen
+
+What is not recorded
+- Keys you type
+- Screenshots
+- Passwords
+- Clipboard contents
+- The webcam or microphone
+
+Chrome
+- You can browse and search
+- Clearing browsing history, Incognito, and Guest mode are turned off
+- Page titles can appear in the session report because they are window titles
+
+Your files
+- Save work in the folder that was created for you
+- That folder has a size limit set by the administrator
+
+A short message appears when you sign in to remind you that recording is on.
+The administrator receives a report after you sign out.
