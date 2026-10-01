@@ -1,29 +1,25 @@
-READ ME FIRST — Standalone v1.3.0
+READ ME FIRST — Standalone v1.4.0
 =================================
 
 This program is a NATIVE DESKTOP APP.
-It must open a window titled:
+Window title includes: Standalone v1.4.0
 
-  DOI/URL → ReDIF Standalone v1.3.0
-
-It does NOT open Chrome/Edge/Firefox.
+New in v1.4.0
+-------------
+Crawl an archive / issue URL to collect research ARTICLE page URLs
+(HTML pages only — PDF / galley links are excluded). Then convert
+those URLs to ReDIF for RePEc.
 
 How to run (Windows)
 --------------------
 1. Unzip into a NEW empty folder
-   (do not mix with older DOI_REDIF_Converter.exe files)
 2. Double-click: Run_Standalone.bat
-   or: DOI_URL_REDIF_Standalone.exe
-3. In the desktop window:
-   - Paste DOIs and/or article page URLs (one per line)
-   - Click "Start conversion"
-   - Click "Export ZIP…" when finished
+3. In section 1: paste archive URL, click "Crawl article URLs"
+4. Review URLs in section 2, then "Start conversion"
+5. Export ZIP / save .redif files
 
-URL-only articles (no DOI) are supported.
-Failed/inaccessible items are skipped; a final report lists them.
+Example archive URL:
+https://journal.50sea.com/index.php/IJIST/issue/archive
 
-If a BROWSER opens instead
---------------------------
-You are running an OLD build. Delete it and download v1.3.0 again:
-
-https://github.com/techadv50-boop/EarthVision_Enterprise/releases/tag/doi-redif-v1.3.0
+If a BROWSER opens instead, you have an OLD build — delete it and
+download v1.4.0 again.

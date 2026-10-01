@@ -79,9 +79,15 @@ Authors, affiliations, title, abstract, keywords, journal, volume, issue, pages,
 
 Author emails are included only when publicly available on the article page or Crossref.
 
-## Failures and final report
+## Archive crawler
 
-- Inaccessible / 404 DOIs are skipped automatically; processing continues to the end of the list
-- Live progress shows done / left while running
-- Final report shows total, succeeded, failed, and the exact DOIs that could not be converted
-- ZIP export always includes `_conversion_report.txt` and `_failed.csv`
+In the desktop app, section **1) Crawl archive / issue URL**:
+
+1. Paste an archive URL (example: `https://journal.50sea.com/index.php/IJIST/issue/archive`)
+   or a single issue URL
+2. Click **Crawl article URLs**
+3. The app collects **article page URLs only** (not PDF/galley links)
+4. URLs are placed in the conversion box for ReDIF / RePEc export
+
+You can also **Save URL list…** for later use.
+

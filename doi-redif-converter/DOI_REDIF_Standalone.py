@@ -7,7 +7,7 @@ import sys
 import traceback
 from pathlib import Path
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 APP_TITLE = f"DOI/URL → ReDIF Standalone v{APP_VERSION}"
 
 

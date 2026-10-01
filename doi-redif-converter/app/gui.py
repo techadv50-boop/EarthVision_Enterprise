@@ -29,6 +29,7 @@ from tkinter import (
 )
 import tkinter as tk
 
+from .crawler import crawl_archive_sync
 from .extractor import extract_many, inputs_from_xlsx_bytes, parse_input_list
 from .models import ArticleMeta
 from .redif import DEFAULT_REPEC_HANDLE_PREFIX, build_filename, to_redif
@@ -53,13 +54,17 @@ class ConverterApp(tk.Tk):
 
         self.handle_var = StringVar(value=DEFAULT_REPEC_HANDLE_PREFIX)
         self.concurrency_var = IntVar(value=5)
+        self.archive_var = StringVar(
+            value="https://journal.50sea.com/index.php/IJIST/issue/archive"
+        )
         self.status_var = StringVar(
-            value="Standalone desktop mode. Paste DOIs and/or article URLs (no DOI required), then Start."
+            value="Paste DOIs/URLs, or crawl an archive URL to collect article page links (not PDFs)."
         )
         self.progress_var = StringVar(value="0 / 0 done · 0 left")
         self.percent_var = StringVar(value="0%")
 
         self._metas: list[ArticleMeta] = []
+        self._crawled_urls: list[str] = []
         self._running = False
         self._build()
 
@@ -72,7 +77,7 @@ class ConverterApp(tk.Tk):
         hdr.pack(anchor=W, **pad)
         ttk.Label(
             root,
-            text="True standalone desktop app (no browser). Paste DOIs and/or article page URLs — one per line.",
+            text="Standalone desktop app. Crawl archive pages for article URLs (HTML only, not PDFs), then convert to ReDIF.",
         ).pack(anchor=W, padx=12)
 
         body = ttk.Panedwindow(root, orient=tk.VERTICAL)
@@ -83,8 +88,26 @@ class ConverterApp(tk.Tk):
         body.add(top, weight=3)
         body.add(bottom, weight=2)
 
-        ttk.Label(top, text="Paste DOIs or article URLs").pack(anchor=W)
-        self.text = tk.Text(top, height=12, wrap="word", font=("Consolas", 10))
+        # ---- Archive crawler ----
+        arch = ttk.LabelFrame(top, text="1) Crawl archive / issue URL (collect article page URLs only)")
+        arch.pack(fill=X, pady=(0, 8))
+        ttk.Label(
+            arch,
+            text="Paste a journal archive or issue URL. The app will collect research article page links (not PDF links).",
+        ).pack(anchor=W, padx=8, pady=(6, 2))
+        row = ttk.Frame(arch)
+        row.pack(fill=X, padx=8, pady=(0, 6))
+        ttk.Entry(row, textvariable=self.archive_var).pack(side=LEFT, fill=X, expand=True)
+        self.btn_crawl = ttk.Button(row, text="Crawl article URLs", command=self.crawl_archive)
+        self.btn_crawl.pack(side=LEFT, padx=(8, 0))
+        self.btn_save_urls = ttk.Button(
+            row, text="Save URL list…", command=self.save_crawled_urls, state=DISABLED
+        )
+        self.btn_save_urls.pack(side=LEFT, padx=(6, 0))
+
+        # ---- DOI / URL list ----
+        ttk.Label(top, text="2) DOIs / article URLs to convert (one per line)").pack(anchor=W)
+        self.text = tk.Text(top, height=10, wrap="word", font=("Consolas", 10))
         self.text.pack(fill=BOTH, expand=True, pady=(4, 8))
         self.text.insert(
             "1.0",
@@ -133,6 +156,11 @@ class ConverterApp(tk.Tk):
         self.btn_load.configure(state=state)
         self.btn_start.configure(state=state)
         self.btn_clear.configure(state=state)
+        self.btn_crawl.configure(state=state)
+        if not busy and self._crawled_urls:
+            self.btn_save_urls.configure(state=NORMAL)
+        elif busy:
+            self.btn_save_urls.configure(state=DISABLED)
         if not busy and self._metas:
             self.btn_export.configure(state=NORMAL)
             self.btn_save_dir.configure(state=NORMAL)
@@ -151,6 +179,7 @@ class ConverterApp(tk.Tk):
             return
         self.text.delete("1.0", END)
         self._metas = []
+        self._crawled_urls = []
         self.bar["value"] = 0
         self.progress_var.set("0 / 0 done · 0 left")
         self.percent_var.set("0%")
@@ -158,6 +187,145 @@ class ConverterApp(tk.Tk):
         self._write_report("")
         self.btn_export.configure(state=DISABLED)
         self.btn_save_dir.configure(state=DISABLED)
+        self.btn_save_urls.configure(state=DISABLED)
+
+    def crawl_archive(self) -> None:
+        if self._running:
+            return
+        url = self.archive_var.get().strip()
+        if not url:
+            messagebox.showwarning(APP_TITLE, "Enter an archive or issue URL first.")
+            return
+        concurrency = max(1, min(int(self.concurrency_var.get() or 5), 10))
+        self._set_busy(True)
+        self.bar["value"] = 0
+        self.percent_var.set("…")
+        self.progress_var.set("Crawling archive…")
+        self.status_var.set(f"Crawling: {url}")
+        self._write_report(f"Archive crawl started\nURL: {url}\n\nCollecting article page URLs (excluding PDFs)…\n")
+
+        def worker() -> None:
+            issue_total = 0
+            issue_done = 0
+
+            def on_progress(event: dict) -> None:
+                nonlocal issue_total, issue_done
+                phase = event.get("phase")
+                msg = event.get("message") or ""
+                total_articles = event.get("total_articles")
+                if phase == "issues":
+                    issue_total = int(event.get("count") or 0)
+
+                def ui() -> None:
+                    nonlocal issue_done
+                    if phase == "done_page":
+                        issue_done += 1
+                    if issue_total:
+                        pct = min(100.0, round(100.0 * issue_done / issue_total, 1))
+                        self.bar["value"] = pct
+                        self.percent_var.set(f"{pct}%")
+                        self.progress_var.set(
+                            f"Issues {min(issue_done, issue_total)}/{issue_total} · "
+                            f"Articles {total_articles if total_articles is not None else 0}"
+                        )
+                    else:
+                        self.progress_var.set(
+                            f"Articles found: {total_articles if total_articles is not None else 0}"
+                        )
+                    if msg:
+                        self.status_var.set(msg)
+
+                self.after(0, ui)
+
+            try:
+                result = crawl_archive_sync(
+                    url,
+                    concurrency=concurrency,
+                    progress_cb=on_progress,
+                )
+            except Exception:
+                err = traceback.format_exc()
+
+                def fail() -> None:
+                    self._set_busy(False)
+                    self.status_var.set("Archive crawl failed.")
+                    self._write_report(err)
+                    messagebox.showerror(APP_TITLE, "Archive crawl failed. See report panel.")
+
+                self.after(0, fail)
+                return
+
+            def done_ui() -> None:
+                self._crawled_urls = list(result.article_urls)
+                # Put crawled article URLs into the conversion box
+                self.text.delete("1.0", END)
+                if self._crawled_urls:
+                    self.text.insert("1.0", "\n".join(self._crawled_urls) + "\n")
+                lines = [
+                    "Archive crawl report",
+                    "====================",
+                    f"Archive URL     : {result.archive_url}",
+                    f"Issue pages     : {len(result.issue_urls)}",
+                    f"Pages visited   : {result.pages_visited}",
+                    f"Article URLs    : {result.count}  (HTML article pages only; PDFs excluded)",
+                    "",
+                ]
+                if result.errors:
+                    lines.append("Warnings/errors:")
+                    lines.extend(f"- {e}" for e in result.errors[:30])
+                    lines.append("")
+                if self._crawled_urls:
+                    lines.append("Article URLs (first 50):")
+                    lines.extend(self._crawled_urls[:50])
+                    if result.count > 50:
+                        lines.append(f"... and {result.count - 50} more")
+                else:
+                    lines.append("No article URLs found.")
+                self._write_report("\n".join(lines))
+                self._set_busy(False)
+                self.bar["value"] = 100
+                self.percent_var.set("100%")
+                self.progress_var.set(f"{result.count} article URL(s) collected")
+                self.status_var.set(
+                    f"Crawl finished: {result.count} article page URL(s). "
+                    "Review the list, then click Start conversion."
+                )
+                if result.count:
+                    self.btn_save_urls.configure(state=NORMAL)
+                    messagebox.showinfo(
+                        APP_TITLE,
+                        f"Collected {result.count} article URL(s).\n\n"
+                        "PDF links were excluded.\n"
+                        "They are now in the conversion box — click Start conversion when ready.",
+                    )
+                else:
+                    messagebox.showwarning(
+                        APP_TITLE,
+                        "No article URLs found.\nTry an OJS archive or issue URL.",
+                    )
+
+            self.after(0, done_ui)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def save_crawled_urls(self) -> None:
+        urls = self._crawled_urls or parse_input_list(self.text.get("1.0", END))
+        # Keep only http(s) article-looking URLs if mixed
+        urls = [u for u in urls if u.lower().startswith("http")]
+        if not urls:
+            messagebox.showwarning(APP_TITLE, "No URLs to save. Crawl an archive first.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save article URL list",
+            defaultextension=".txt",
+            initialfile="article-urls.txt",
+            filetypes=[("Text", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        Path(path).write_text("\n".join(urls) + "\n", encoding="utf-8")
+        self.status_var.set(f"Saved {len(urls)} URL(s) to {path}")
+        messagebox.showinfo(APP_TITLE, f"Saved {len(urls)} article URL(s) to:\n{path}")
 
     def load_file(self) -> None:
         path = filedialog.askopenfilename(

@@ -15,6 +15,7 @@ a = Analysis(
         'app.models',
         'app.report',
         'app.paths',
+        'app.crawler',
         'openpyxl',
         'bs4',
         'lxml',
