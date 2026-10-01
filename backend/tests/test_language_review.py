@@ -6,7 +6,7 @@ import io
 import zipfile
 from xml.sax.saxutils import escape
 
-from app.services.language_review import review_document, review_local, tool_catalog
+from app.services.language_review import apply_gpt_settings, resolve_gpt, review_document, review_local, tool_catalog
 
 
 def _docx(*texts: str) -> bytes:
@@ -109,6 +109,39 @@ def test_tool_catalog_lists_requested_checks():
     assert len(catalog["tools"]) >= 20
     assert catalog["gpt"]["available"] in {True, False}
     assert catalog["groups"]
+    assert catalog["gpt"]["can_configure"] is True
+
+
+class _FakeUser:
+    def __init__(self):
+        self.openai_api_key = ""
+        self.openai_model = "gpt-4o-mini"
+        self.gpt_review_enabled = None
+
+
+async def test_apply_gpt_settings_saves_key_and_can_turn_off(monkeypatch):
+    async def _ok(key: str, base: str):
+        assert key.startswith("sk-")
+        return None
+
+    monkeypatch.setattr("app.services.language_review.verify_openai_key", _ok)
+    user = _FakeUser()
+    off = resolve_gpt(user)
+    assert off.available is False
+    runtime = await apply_gpt_settings(
+        user,
+        enabled=True,
+        api_key="sk-test-abcdefghijklmnopqrstuvwxyz012345",
+        model="gpt-4o-mini",
+    )
+    assert runtime.available is True
+    assert user.gpt_review_enabled is True
+    assert runtime.key_hint.endswith("2345")
+    stopped = await apply_gpt_settings(user, enabled=False)
+    assert stopped.available is False
+    assert stopped.configured is True
+    resumed = await apply_gpt_settings(user, enabled=True)
+    assert resumed.available is True
 
 
 async def test_review_document_returns_highlighted_payload():

@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from pydantic import BaseModel, Field
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +59,12 @@ router = APIRouter(tags=["Citation Assistant"])
 Db = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 CitationAdmin = Annotated[User, Depends(require_citation_admin)]
+
+
+class GptSettingsIn(BaseModel):
+    enabled: bool = True
+    api_key: Optional[str] = None
+    model: Optional[str] = Field(default=None, max_length=100)
 
 
 def _article_out(article: Article) -> ArticleOut:
@@ -953,16 +960,38 @@ async def reference_integrity_check(
 
 
 @router.get("/review/language/tools")
-async def language_review_tools(_user: CurrentUser):
+async def language_review_tools(user: CurrentUser):
     """Catalog of English-review tools and whether GPT correction is configured."""
     from app.services.language_review import tool_catalog
 
-    return tool_catalog()
+    return tool_catalog(user)
+
+
+@router.put("/review/language/gpt")
+async def language_review_gpt_settings(
+    body: GptSettingsIn,
+    user: CurrentUser,
+    db: Db,
+):
+    """Turn GPT correction on or off for this user from the English review page."""
+    from app.services.language_review import apply_gpt_settings, tool_catalog
+
+    try:
+        await apply_gpt_settings(
+            user,
+            enabled=body.enabled,
+            api_key=body.api_key,
+            model=body.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.flush()
+    return tool_catalog(user)
 
 
 @router.post("/review/language")
 async def language_review_check(
-    _user: CurrentUser,
+    user: CurrentUser,
     file: UploadFile = File(...),
 ):
     """Review a manuscript for grammar, structure, slang, abusive wording, and related issues."""
@@ -970,6 +999,6 @@ async def language_review_check(
 
     data, filename = await _read_review_upload(file, require_docx=False)
     try:
-        return await review_document(data, filename)
+        return await review_document(data, filename, user=user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

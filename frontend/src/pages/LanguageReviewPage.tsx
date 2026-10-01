@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Sparkles } from 'lucide-react';
+import { KeyRound, Sparkles } from 'lucide-react';
 import { citationApi } from '@/services/api';
 
 interface Issue {
@@ -34,8 +34,13 @@ interface ToolGroup {
 
 interface GptStatus {
   available: boolean;
+  enabled?: boolean;
+  configured?: boolean;
+  source?: string;
   provider: string;
   model?: string | null;
+  key_hint?: string;
+  can_configure?: boolean;
   note: string;
 }
 
@@ -185,6 +190,12 @@ export default function LanguageReviewPage() {
   const [tools, setTools] = useState<ToolDef[]>([]);
   const [groups, setGroups] = useState<ToolGroup[]>([]);
   const [gpt, setGpt] = useState<GptStatus | null>(null);
+  const [showKeyForm, setShowKeyForm] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [gptModel, setGptModel] = useState('gpt-4o-mini');
+  const [gptBusy, setGptBusy] = useState(false);
+  const [gptError, setGptError] = useState('');
+  const [gptMessage, setGptMessage] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -200,6 +211,7 @@ export default function LanguageReviewPage() {
         setTools(payload.tools || []);
         setGroups(payload.groups || []);
         setGpt(payload.gpt || null);
+        if (payload.gpt?.model) setGptModel(payload.gpt.model);
       })
       .catch(() => {
         if (!cancelled) setGpt(null);
@@ -211,7 +223,7 @@ export default function LanguageReviewPage() {
 
   const catalogTools = result?.tools?.length ? result.tools : tools;
   const catalogGroups = result?.groups?.length ? result.groups : groups;
-  const gptStatus = result?.gpt || gpt;
+  const gptStatus = gpt;
   const counts = result?.summary.by_category || {};
 
   const filteredIssues = useMemo(() => {
@@ -247,7 +259,10 @@ export default function LanguageReviewPage() {
       setResult(payload);
       if (payload.tools?.length) setTools(payload.tools);
       if (payload.groups?.length) setGroups(payload.groups);
-      if (payload.gpt) setGpt(payload.gpt);
+      if (payload.gpt) {
+        setGpt(payload.gpt);
+        if (payload.gpt.model) setGptModel(payload.gpt.model);
+      }
     } catch (err: unknown) {
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
@@ -256,6 +271,46 @@ export default function LanguageReviewPage() {
       setResult(null);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const applyCatalog = (payload: { tools?: ToolDef[]; groups?: ToolGroup[]; gpt?: GptStatus }) => {
+    if (payload.tools?.length) setTools(payload.tools);
+    if (payload.groups?.length) setGroups(payload.groups);
+    if (payload.gpt) {
+      setGpt(payload.gpt);
+      if (payload.gpt.model) setGptModel(payload.gpt.model);
+    }
+  };
+
+  const saveGpt = async (enabled: boolean, withKey = false) => {
+    setGptBusy(true);
+    setGptError('');
+    setGptMessage('');
+    try {
+      const body: { enabled: boolean; api_key?: string; model?: string } = {
+        enabled,
+        model: gptModel.trim() || 'gpt-4o-mini',
+      };
+      if (withKey) body.api_key = apiKey.trim();
+      const { data } = await citationApi.review.languageGpt(body);
+      applyCatalog(data as { tools?: ToolDef[]; groups?: ToolGroup[]; gpt?: GptStatus });
+      const next = (data as { gpt?: GptStatus }).gpt;
+      if (enabled && next?.available) {
+        setGptMessage('GPT is on. Upload a manuscript to use it with the tools below.');
+        setShowKeyForm(false);
+        setApiKey('');
+      } else if (!enabled) {
+        setGptMessage('GPT is off. The built-in checker still runs.');
+        setShowKeyForm(false);
+      }
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not save the API key.';
+      setGptError(String(detail));
+    } finally {
+      setGptBusy(false);
     }
   };
 
@@ -271,28 +326,156 @@ export default function LanguageReviewPage() {
         Upload the manuscript that will be published. Each tool below runs on the full
         document: grammar, sentence structure, broken sentences, run-ons, slang, formality,
         conciseness, ambiguity, word choice, repetition, passive voice, abusive language,
-        and related academic-English checks. GPT correction is merged when the server has
-        an API key. Click a tool to filter marks after you upload.
+        and related academic-English checks. Turn GPT on with an API key on this page, then
+        click a tool to filter marks after you upload.
       </p>
 
-      {gptStatus && (
-        <div
-          className={`mb-4 panel p-3 max-w-3xl flex items-start gap-3 ${
-            gptStatus.available ? 'border-earth-700' : 'border-gray-800'
-          }`}
-        >
-          <Sparkles className={`w-5 h-5 mt-0.5 ${gptStatus.available ? 'text-earth-400' : 'text-gray-500'}`} />
-          <div>
-            <p className="text-sm font-medium">
-              {gptStatus.available ? 'GPT correction is on' : 'Built-in checker only'}
-              {gptStatus.available && gptStatus.model ? (
-                <span className="text-gray-500 font-normal"> · {gptStatus.model}</span>
-              ) : null}
-            </p>
-            <p className="text-xs text-gray-400 mt-1">{gptStatus.note}</p>
+      <div
+        className={`mb-5 panel p-4 max-w-3xl ${
+          gptStatus?.available ? 'border-earth-700' : 'border-gray-800'
+        }`}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0">
+            <Sparkles
+              className={`w-5 h-5 mt-0.5 shrink-0 ${
+                gptStatus?.available ? 'text-earth-400' : 'text-gray-500'
+              }`}
+            />
+            <div>
+              <p className="text-sm font-medium">
+                {gptStatus?.available ? 'GPT correction is on' : 'Built-in checker only'}
+                {gptStatus?.available && gptStatus.model ? (
+                  <span className="text-gray-500 font-normal"> · {gptStatus.model}</span>
+                ) : null}
+                {gptStatus?.key_hint ? (
+                  <span className="text-gray-500 font-normal"> · {gptStatus.key_hint}</span>
+                ) : null}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                {gptStatus?.note ||
+                  'Paste an OpenAI API key here to turn GPT on for these tools.'}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {gptStatus?.available ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-secondary text-sm"
+                  onClick={() => {
+                    setShowKeyForm((open) => !open);
+                    setGptError('');
+                    setGptMessage('');
+                  }}
+                >
+                  Change API key
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary text-sm"
+                  disabled={gptBusy}
+                  onClick={() => void saveGpt(false)}
+                >
+                  Turn GPT off
+                </button>
+              </>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn-primary text-sm inline-flex items-center gap-2"
+                  onClick={() => {
+                    setShowKeyForm(true);
+                    setGptError('');
+                    setGptMessage('');
+                  }}
+                >
+                  <KeyRound className="w-4 h-4" />
+                  API key · Turn GPT on
+                </button>
+                {gptStatus?.configured ? (
+                  <button
+                    type="button"
+                    className="btn-secondary text-sm"
+                    disabled={gptBusy}
+                    onClick={() => void saveGpt(true)}
+                  >
+                    Turn GPT on with saved key
+                  </button>
+                ) : null}
+              </div>
+            )}
           </div>
         </div>
-      )}
+        {showKeyForm && (
+          <form
+            className="mt-4 space-y-3 border-t border-gray-800 pt-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveGpt(true, true);
+            }}
+          >
+            <label className="block text-sm text-gray-300" htmlFor="openai-api-key">
+              OpenAI API key
+            </label>
+            <input
+              id="openai-api-key"
+              type="password"
+              autoComplete="off"
+              className="input-field"
+              placeholder="sk-..."
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              required
+            />
+            <label className="block text-sm text-gray-300" htmlFor="openai-model">
+              Model
+            </label>
+            <input
+              id="openai-model"
+              className="input-field"
+              value={gptModel}
+              onChange={(e) => setGptModel(e.target.value)}
+              placeholder="gpt-4o-mini"
+            />
+            <p className="text-xs text-gray-500">
+              The key is stored for your account on this server and used only for English
+              review. Get a key from platform.openai.com.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="submit" className="btn-primary text-sm" disabled={gptBusy || !apiKey.trim()}>
+                {gptBusy ? 'Checking key…' : 'Save and turn GPT on'}
+              </button>
+              {gptStatus?.configured && !gptStatus.available ? (
+                <button
+                  type="button"
+                  className="btn-secondary text-sm"
+                  disabled={gptBusy}
+                  onClick={() => void saveGpt(true)}
+                >
+                  Turn GPT on with saved key
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn-secondary text-sm"
+                onClick={() => {
+                  setShowKeyForm(false);
+                  setApiKey('');
+                  setGptError('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+        {gptBusy && !showKeyForm && <p className="text-earth-400 text-sm mt-3">Updating GPT…</p>}
+        {gptError && <p className="text-red-400 text-sm mt-3">{gptError}</p>}
+        {gptMessage && !gptError && <p className="text-emerald-400 text-sm mt-3">{gptMessage}</p>}
+      </div>
 
       <div className="space-y-4 mb-6">
         {groupedTools.map((group) => (

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -1375,13 +1376,153 @@ def _summarize(paragraphs: list[str], issues: list[dict[str, Any]]) -> dict[str,
     }
 
 
-async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], Optional[str]]:
+def _mask_key(key: str) -> str:
+    compact = re.sub(r"\s+", "", key or "")
+    if len(compact) < 8:
+        return ""
+    return f"{compact[:3]}…{compact[-4:]}"
+
+
+def _looks_like_key(key: str) -> bool:
+    compact = (key or "").strip()
+    if len(compact) < 20 or any(ch.isspace() for ch in compact):
+        return False
+    return True
+
+
+@dataclass
+class GptRuntime:
+    available: bool
+    enabled: bool
+    configured: bool
+    source: str
+    key: str
+    model: str
+    base: str
+    key_hint: str
+    note: str
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "enabled": self.enabled,
+            "configured": self.configured,
+            "source": self.source,
+            "provider": "openai" if self.available else "local",
+            "model": self.model if self.available else None,
+            "key_hint": self.key_hint,
+            "can_configure": True,
+            "note": self.note,
+        }
+
+
+def resolve_gpt(user: Any = None) -> GptRuntime:
     settings = get_settings()
-    key = (getattr(settings, "openai_api_key", None) or "").strip()
-    if not key:
-        return [], None
-    model = (getattr(settings, "openai_model", None) or "gpt-4o-mini").strip()
+    env_key = (getattr(settings, "openai_api_key", None) or "").strip()
+    env_model = (getattr(settings, "openai_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini"
     base = (getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/")
+    user_key = (getattr(user, "openai_api_key", None) or "").strip() if user is not None else ""
+    user_model = (getattr(user, "openai_model", None) or "").strip() if user is not None else ""
+    preference = getattr(user, "gpt_review_enabled", None) if user is not None else None
+    stored = user_key or env_key
+    source = "user" if user_key else ("env" if env_key else "none")
+    model = user_model or env_model
+    if preference is False:
+        return GptRuntime(
+            available=False,
+            enabled=False,
+            configured=bool(stored),
+            source=source if stored else "none",
+            key="",
+            model=model,
+            base=base,
+            key_hint=_mask_key(user_key),
+            note=(
+                "GPT is off on this page. Paste an API key and turn it on to add GPT corrections."
+                if stored
+                else "Built-in academic English checker is on. Paste an OpenAI API key to turn GPT on."
+            ),
+        )
+    if not stored:
+        return GptRuntime(
+            available=False,
+            enabled=False,
+            configured=False,
+            source="none",
+            key="",
+            model=model,
+            base=base,
+            key_hint="",
+            note="Built-in academic English checker is on. Paste an OpenAI API key to turn GPT on.",
+        )
+    return GptRuntime(
+        available=True,
+        enabled=True,
+        configured=True,
+        source=source,
+        key=stored,
+        model=model,
+        base=base,
+        key_hint=_mask_key(user_key) or ("server key" if source == "env" else ""),
+        note=f"GPT correction is on ({model}). Built-in checks still run and are merged.",
+    )
+
+
+async def verify_openai_key(key: str, base: str) -> Optional[str]:
+    timeout = httpx.Timeout(20.0, connect=8.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                f"{base.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+    except Exception as exc:
+        return f"Could not reach the GPT API ({exc.__class__.__name__}). Check the network and try again."
+    if response.status_code in {401, 403}:
+        return "That API key was rejected. Check the key and try again."
+    if response.status_code >= 400:
+        return f"The GPT API returned HTTP {response.status_code}. The key was not saved."
+    return None
+
+
+async def apply_gpt_settings(
+    user: Any,
+    *,
+    enabled: bool,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> GptRuntime:
+    settings = get_settings()
+    env_key = (getattr(settings, "openai_api_key", None) or "").strip()
+    env_model = (getattr(settings, "openai_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini"
+    base = (getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/")
+    if model is not None:
+        cleaned_model = (model or "").strip()[:100]
+        user.openai_model = cleaned_model or env_model
+    incoming = None if api_key is None else api_key.strip()
+    if incoming:
+        if not _looks_like_key(incoming):
+            raise ValueError("Paste a valid API key (OpenAI keys are long and usually start with sk-).")
+        error = await verify_openai_key(incoming, base)
+        if error:
+            raise ValueError(error)
+        user.openai_api_key = incoming
+    user.gpt_review_enabled = bool(enabled)
+    stored = (getattr(user, "openai_api_key", None) or "").strip() or env_key
+    if enabled and not stored:
+        raise ValueError("Paste an OpenAI API key to turn GPT on.")
+    return resolve_gpt(user)
+
+
+async def _openai_review(
+    paragraphs: list[str], runtime: Optional[GptRuntime] = None
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    runtime = runtime or resolve_gpt()
+    key = (runtime.key or "").strip()
+    if not key or not runtime.available:
+        return [], None
+    model = (runtime.model or "gpt-4o-mini").strip()
+    base = (runtime.base or "https://api.openai.com/v1").rstrip("/")
 
     numbered: list[tuple[int, str]] = []
     in_references = False
@@ -1535,32 +1676,12 @@ def _merge_issues(local: list[dict[str, Any]], remote: list[dict[str, Any]]) -> 
     return merged
 
 
-def gpt_status() -> dict[str, Any]:
-    settings = get_settings()
-    key = (getattr(settings, "openai_api_key", None) or "").strip()
-    model = (getattr(settings, "openai_model", None) or "gpt-4o-mini").strip()
-    if key:
-        return {
-            "available": True,
-            "provider": "openai",
-            "model": model,
-            "note": (
-                f"GPT correction is on ({model}). Built-in checks still run and are merged."
-            ),
-        }
-    return {
-        "available": False,
-        "provider": "local",
-        "model": None,
-        "note": (
-            "Built-in academic English checker is on. Set OPENAI_API_KEY on the server "
-            "to add GPT corrections for the same tools."
-        ),
-    }
+def gpt_status(user: Any = None) -> dict[str, Any]:
+    return resolve_gpt(user).status()
 
 
-def tool_catalog() -> dict[str, Any]:
-    gpt = gpt_status()
+def tool_catalog(user: Any = None) -> dict[str, Any]:
+    gpt = gpt_status(user)
     return {
         "tools": [dict(item) for item in TOOLS],
         "groups": [dict(item) for item in TOOL_GROUPS],
@@ -1570,12 +1691,13 @@ def tool_catalog() -> dict[str, Any]:
     }
 
 
-async def review_document(data: bytes, filename: str = "") -> dict[str, Any]:
+async def review_document(data: bytes, filename: str = "", user: Any = None) -> dict[str, Any]:
     paragraphs = paragraphs_from_upload(data, filename)
     if not paragraphs:
         raise ValueError("Could not read text from that file.")
+    runtime = resolve_gpt(user)
     local = review_local(paragraphs)
-    remote, engine = await _openai_review(paragraphs)
+    remote, engine = await _openai_review(paragraphs, runtime)
     issues = _merge_issues(local, remote)
     issues = _assign_ids(issues)
     note = "Built-in academic English checker."
@@ -1586,17 +1708,13 @@ async def review_document(data: bytes, filename: str = "") -> dict[str, Any]:
         engine = "local"
     elif not engine:
         engine = "local"
-        settings = get_settings()
-        if not (getattr(settings, "openai_api_key", None) or "").strip():
-            note = (
-                "Built-in academic English checker. Set OPENAI_API_KEY on the server "
-                "to add GPT suggestions."
-            )
+        if not runtime.available:
+            note = runtime.note
     para_payload = []
     for index, text in enumerate(paragraphs):
         ids = [issue["id"] for issue in issues if issue["paragraph_index"] == index]
         para_payload.append({"index": index, "text": text, "issue_ids": ids})
-    catalog = tool_catalog()
+    catalog = tool_catalog(user)
     return {
         "filename": filename,
         "engine": engine,

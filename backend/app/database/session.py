@@ -72,6 +72,9 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("crawl_jobs", "articles_already", "INTEGER DEFAULT 0")
     _add_if_missing("crawl_jobs", "articles_failed", "INTEGER DEFAULT 0")
     _add_if_missing("crawl_jobs", "articles_removed", "INTEGER DEFAULT 0")
+    _add_if_missing("users", "openai_api_key", "TEXT DEFAULT ''")
+    _add_if_missing("users", "openai_model", "VARCHAR(100) DEFAULT 'gpt-4o-mini'")
+    _add_if_missing("users", "gpt_review_enabled", "BOOLEAN")
 
 
 def _ensure_postgres_columns(sync_conn) -> None:
@@ -92,5 +95,14 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "ALTER TABLE crawl_jobs ADD COLUMN IF NOT EXISTS articles_removed INTEGER DEFAULT 0"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS openai_api_key TEXT DEFAULT ''"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS openai_model VARCHAR(100) DEFAULT 'gpt-4o-mini'"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS gpt_review_enabled BOOLEAN"
     )
 

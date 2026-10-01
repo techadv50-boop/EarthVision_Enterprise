@@ -238,6 +238,8 @@ export const citationApi = {
       });
     },
     languageTools: () => api.get('/review/language/tools'),
+    languageGpt: (body: { enabled: boolean; api_key?: string; model?: string }) =>
+      api.put('/review/language/gpt', body),
     language: (file: File) => {
       const form = new FormData();
       form.append('file', file);

@@ -137,3 +137,61 @@ async def test_reference_integrity_and_language_review_endpoints(
 
     unauth_tools = await client.get("/api/v1/review/language/tools")
     assert unauth_tools.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_language_review_gpt_toggle(client: AsyncClient, auth_headers: dict[str, str], monkeypatch):
+    async def _ok(key: str, base: str):
+        return None
+
+    monkeypatch.setattr("app.services.language_review.verify_openai_key", _ok)
+
+    bad = await client.put(
+        "/api/v1/review/language/gpt",
+        headers=auth_headers,
+        json={"enabled": True, "api_key": "short"},
+    )
+    assert bad.status_code == 400
+
+    empty = await client.put(
+        "/api/v1/review/language/gpt",
+        headers=auth_headers,
+        json={"enabled": True},
+    )
+    assert empty.status_code == 400
+
+    on = await client.put(
+        "/api/v1/review/language/gpt",
+        headers=auth_headers,
+        json={
+            "enabled": True,
+            "api_key": "sk-test-abcdefghijklmnopqrstuvwxyz012345",
+            "model": "gpt-4o-mini",
+        },
+    )
+    assert on.status_code == 200, on.text
+    gpt = on.json()["gpt"]
+    assert gpt["available"] is True
+    assert gpt["model"] == "gpt-4o-mini"
+    assert gpt["key_hint"]
+    assert "sk-" not in (gpt["key_hint"] or "") or "…" in gpt["key_hint"]
+
+    tools = await client.get("/api/v1/review/language/tools", headers=auth_headers)
+    assert tools.json()["gpt"]["available"] is True
+
+    off = await client.put(
+        "/api/v1/review/language/gpt",
+        headers=auth_headers,
+        json={"enabled": False},
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["gpt"]["available"] is False
+    assert off.json()["gpt"]["configured"] is True
+
+    resume = await client.put(
+        "/api/v1/review/language/gpt",
+        headers=auth_headers,
+        json={"enabled": True},
+    )
+    assert resume.status_code == 200, resume.text
+    assert resume.json()["gpt"]["available"] is True

@@ -74,6 +74,9 @@ class User(Base):
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     organization: Mapped[Optional[str]] = mapped_column(String(255))
     access_status: Mapped[str] = mapped_column(String(32), default="approved")
+    openai_api_key: Mapped[str] = mapped_column(Text, default="")
+    openai_model: Mapped[str] = mapped_column(String(100), default="gpt-4o-mini")
+    gpt_review_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
