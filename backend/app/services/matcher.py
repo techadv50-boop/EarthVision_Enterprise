@@ -20,6 +20,7 @@ from app.models.citation import (
 )
 from app.services.citation_parser import format_house_citation, parse_ijist_header, split_paragraphs
 from app.services.embeddings import cosine, embed_text, overlap_terms
+from app.services.ingest import article_metadata_needs_repair, repair_article_metadata
 
 MAX_SUGGESTIONS_PER_MANUSCRIPT = 10
 MAX_SUGGESTIONS_PER_PARAGRAPH = 1
@@ -340,6 +341,39 @@ def house_citation_for(article: Article) -> str:
         month=issue.month if issue else None,
         year=issue.year if issue else None,
         abbreviation=(journal.abbreviation if journal and journal.abbreviation else "IJIST"),
+        journal_name=(journal.name if journal and journal.name else None),
+        doi=article.doi,
+    )
+
+
+_NOISY_CITE_RE = re.compile(r"(\[\d+\]){2,}")
+_NOISY_REVIEW_RE = re.compile(
+    r"\b(cites research|literature cited|prenatal stress)\b",
+    re.I,
+)
+
+
+def _is_noisy_chunk(text: str) -> bool:
+    compact = text or ""
+    if _NOISY_CITE_RE.search(compact):
+        return True
+    cites = len(re.findall(r"\[\d+\]", compact))
+    if cites >= 3 and len(compact) < 500:
+        return True
+    if _NOISY_REVIEW_RE.search(compact) and cites >= 1:
+        return True
+    return False
+
+
+def _focus_text(article: Article) -> str:
+    return " ".join(
+        part
+        for part in (
+            article.title or "",
+            article.abstract or "",
+            " ".join(_keyword_list(article)),
+        )
+        if part
     )
 
 
@@ -462,6 +496,25 @@ async def suggest_for_manuscript(
             )
     chunks = list((await db.execute(chunk_stmt)).scalars().all()) if chunk_stmt is not None else []
 
+    seen_articles: dict[int, Article] = {}
+    repaired_any = False
+    for chunk in chunks:
+        article = chunk.article
+        if article is None or article.id in seen_articles:
+            continue
+        seen_articles[article.id] = article
+        issue = article.issue
+        journal = issue.journal if issue else None
+        if journal and article_metadata_needs_repair(article, journal):
+            if await repair_article_metadata(db, article, journal):
+                repaired_any = True
+    if repaired_any and chunk_stmt is not None:
+        chunks = list((await db.execute(chunk_stmt)).scalars().all())
+        seen_articles = {}
+        for chunk in chunks:
+            if chunk.article is not None:
+                seen_articles[chunk.article.id] = chunk.article
+
     old = await db.execute(
         select(CitationSuggestion).where(CitationSuggestion.manuscript_id == manuscript.id)
     )
@@ -474,6 +527,10 @@ async def suggest_for_manuscript(
         manuscript.status = "suggested"
         await db.flush()
         return created
+
+    focus_vecs: dict[int, list[float]] = {}
+    for article in seen_articles.values():
+        focus_vecs[article.id] = embed_text(_focus_text(article))
 
     per_paragraph = max(1, int(per_paragraph or MAX_SUGGESTIONS_PER_PARAGRAPH))
     raw_matches: list[RankedCandidate] = []
@@ -493,7 +550,18 @@ async def suggest_for_manuscript(
             emb = chunk.embedding or []
             if not emb:
                 continue
-            score = cosine(query_vec, emb)
+            article = chunk.article
+            if article is None:
+                continue
+            chunk_score = cosine(query_vec, emb)
+            focus_score = cosine(query_vec, focus_vecs.get(article.id) or [])
+            if _is_noisy_chunk(chunk.text or "") and focus_score < min_score + 0.06:
+                continue
+            score = max(chunk_score, focus_score)
+            if focus_score >= 0.18:
+                score = min(1.0, score + 0.08)
+            elif focus_score < 0.10 and chunk_score < min_score + 0.10:
+                continue
             prev = best.get(chunk.article_id)
             if prev is None or score > prev[0]:
                 best[chunk.article_id] = (score, chunk)

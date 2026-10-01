@@ -117,6 +117,7 @@ export default function JournalVolumesPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [repairing, setRepairing] = useState(false);
 
   const inventory = useMemo(
     () => (Array.isArray(crawl?.inventory) ? (crawl?.inventory as InventoryRow[]) : []),
@@ -234,6 +235,23 @@ export default function JournalVolumesPage() {
       setMsg('Could not refresh citation counts. Try again in a moment.');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const repairMetadata = async () => {
+    if (repairing) return;
+    setRepairing(true);
+    setMsg('Re-reading stored PDFs to restore titles, authors, pages, and DOIs…');
+    try {
+      const { data } = await citationApi.journals.repairMetadata(id);
+      await load();
+      setMsg(
+        `Restored citation metadata on ${data.repaired} of ${data.scanned} stored papers. Run suggestions again on the manuscript.`
+      );
+    } catch {
+      setMsg('Could not repair paper metadata. Try again in a moment.');
+    } finally {
+      setRepairing(false);
     }
   };
 
@@ -397,6 +415,16 @@ export default function JournalVolumesPage() {
                 Cancel
               </button>
             ) : null}
+            {localIssues.length > 0 && (
+              <button
+                className="btn-secondary"
+                type="button"
+                disabled={repairing || scanning || downloading || updating}
+                onClick={() => void repairMetadata()}
+              >
+                {repairing ? 'Repairing metadata…' : 'Repair citation metadata'}
+              </button>
+            )}
             {localIssues.length > 0 && (
               <button className="btn-secondary" type="button" disabled={syncing} onClick={() => void refreshCitations()}>
                 {syncing ? 'Refreshing citations…' : 'Refresh citation counts'}

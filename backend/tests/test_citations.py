@@ -9,7 +9,7 @@ import pytest
 from httpx import AsyncClient
 from reportlab.pdfgen import canvas
 
-from tests.test_citation_parser import GALLEY_EDDSA, GALLEY_WATER
+from tests.test_citation_parser import GALLEY_EDDSA, GALLEY_FCSI, GALLEY_WATER
 from app.services.citation_counts import normalize_doi
 from xml.sax.saxutils import escape
 import zipfile
@@ -835,6 +835,112 @@ async def test_archive_state_update_adds_and_removes_live_articles(client: Async
     assert "State Update Extra Paper" in blob
     assert not any("Digital Signature Scheme" in t for t in titles)
     assert any("Drinking Water" in t or "Water" in t for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_fcsi_suggestions_use_real_title_authors_and_ieee_citation(client: AsyncClient):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={
+            "name": "Frontiers in Computational Spatial Intelligence",
+            "abbreviation": "FCSI",
+        },
+    )
+    jid = created.json()["id"]
+    paper = await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={"filename": "safflower.txt", "text": GALLEY_FCSI},
+    )
+    assert paper.status_code == 200, paper.text
+    article = paper.json()["article"]
+    assert "Safflower" in article["title"]
+    assert "Frontiers in Computational Spatial Intelligence" not in article["title"]
+    assert article["authors"]
+    assert article["doi"]
+    assert article["page_start"] == 66
+    assert article["page_end"] == 76
+
+    broken = await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={
+            "filename": "broken.txt",
+            "text": (
+                "Frontiers in Computational Spatial Intelligence underexplored. Efficient scheduling "
+                "and conflict-free coordination among multiple robots in constrained environments, "
+                "such as safflower fields, is therefore a critical research direction[7][8].\n"
+                "May 2025|Vol 03 | Issue 02 Page |210\n"
+            ),
+        },
+    )
+    assert broken.status_code == 200
+    broken_id = broken.json()["article"]["id"]
+    restored = (
+        GALLEY_FCSI.replace("66-76", "210-218")
+        .replace("Page |66", "Page |210")
+        .replace("Issue 02", "Issue 03")
+        .replace("Issue. 2", "Issue. 3")
+        .replace(
+            "An Integrated Ant Colony and Dynamic Window Approach for Cooperative Multi-Robot Trajectory Planning in Safflower Cultivation",
+            "Cooperative Multi-Robot Harvesting With Spatial Planning",
+        )
+    )
+    from sqlalchemy import select
+    from app.database.session import AsyncSessionLocal
+    from app.models.citation import Article
+
+    async with AsyncSessionLocal() as db:
+        row = await db.get(Article, broken_id)
+        assert row is not None
+        row.full_text = restored
+        row.title = "Frontiers in Computational Spatial Intelligence underexplored. Efficient scheduling."
+        row.authors = []
+        await db.commit()
+
+    repaired = await client.post(f"/api/v1/journals/{jid}/repair-metadata", headers=headers)
+    assert repaired.status_code == 200, repaired.text
+    assert repaired.json()["repaired"] >= 1
+    stored = (await client.get(f"/api/v1/articles/{broken_id}", headers=headers)).json()
+    assert "Spatial Planning" in stored["title"] or "Safflower" in stored["title"]
+    assert stored["authors"]
+    assert not stored["title"].startswith("Frontiers in Computational Spatial Intelligence")
+
+    pdf = _pdf_from_text(
+        "Introduction\n"
+        "This manuscript studies cooperative multi-robot trajectory planning in safflower "
+        "cultivation using ant colony optimization and the dynamic window approach.\n"
+        "Materials and Methods\n"
+        "Robots were scheduled in a safflower field with collision-free coordination.\n"
+        "Results\n"
+        "The results should not receive archive citation suggestions."
+    )
+    up = await client.post(
+        "/api/v1/manuscripts",
+        headers=headers,
+        files={"file": ("fcsi-ms.pdf", pdf, "application/pdf")},
+    )
+    assert up.status_code == 201, up.text
+    mid = up.json()["id"]
+    sug = await client.post(f"/api/v1/manuscripts/{mid}/suggest", headers=headers)
+    assert sug.status_code == 200, sug.text
+    assert sug.json()["suggestion_count"] >= 1
+    detail = (await client.get(f"/api/v1/manuscripts/{mid}", headers=headers)).json()
+    sugs = [s for p in detail["paragraphs"] for s in p["suggestions"]]
+    assert sugs
+    cite = sugs[0]["house_citation"]
+    assert "Authors," not in cite
+    assert "vol." in cite and "no." in cite and "pp." in cite
+    assert "FCSI" in cite or "Frontiers in Computational Spatial Intelligence" in cite
+    assert "Safflower" in cite or "Spatial Planning" in cite or (sugs[0].get("article_title") or "")
+    assert not cite.lower().startswith("authors")
+    exported = await client.get(f"/api/v1/manuscripts/{mid}/export", headers=headers)
+    assert exported.status_code == 200
+    document = zipfile.ZipFile(io.BytesIO(exported.content)).read("word/document.xml").decode()
+    assert "vol." in document
+    assert "underexplored. Efficient scheduling" not in document
 
 
 @pytest.mark.asyncio

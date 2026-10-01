@@ -10,7 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.citation import Article, ArticleChunk, Issue, Journal
-from app.services.citation_parser import parse_ijist_header, split_paragraphs
+from app.services.citation_parser import (
+    metadata_looks_broken,
+    parse_ijist_header,
+    split_paragraphs,
+)
 from app.services.embeddings import embed_text
 from app.services.pdf_text import extract_pdf_text
 
@@ -60,7 +64,11 @@ async def ingest_article_text(
     ocr_status: str = "extracted",
     original_filename: Optional[str] = None,
 ) -> tuple[Article, bool]:
-    meta = parse_ijist_header(text)
+    meta = parse_ijist_header(
+        text,
+        journal_name=journal.name,
+        abbreviation=journal.abbreviation,
+    )
     volume = int(meta.get("volume") or 0)
     issue_no = int(meta.get("issue") or 0)
     page_start = int(meta.get("page_start") or 0) or 1
@@ -168,7 +176,11 @@ async def ingest_pdf_bytes(
     if not text.strip():
         text = f"Untitled article from {filename}"
         ocr_status = "empty"
-    meta = parse_ijist_header(text)
+    meta = parse_ijist_header(
+        text,
+        journal_name=journal.name,
+        abbreviation=journal.abbreviation,
+    )
     dest = archive_pdf_path(
         journal.id, int(meta.get("volume") or 0), int(meta.get("issue") or 0), filename
     )
@@ -232,6 +244,94 @@ def compute_issue_coverage(articles: list[Article], issue: Issue) -> dict[str, A
     }
 
 
+async def _rebuild_chunks(db: AsyncSession, article: Article, text: str, title: str) -> None:
+    await db.execute(delete(ArticleChunk).where(ArticleChunk.article_id == article.id))
+    paras = split_paragraphs(text)
+    if not paras:
+        paras = [p for p in (article.abstract, title) if p]
+    for idx, para in enumerate(paras):
+        db.add(
+            ArticleChunk(
+                article_id=article.id,
+                paragraph_index=idx,
+                text=para,
+                embedding=embed_text(para),
+            )
+        )
+    await db.flush()
+
+
+def article_metadata_needs_repair(article: Article, journal: Journal) -> bool:
+    return metadata_looks_broken(
+        article.title,
+        article.authors if isinstance(article.authors, list) else [],
+        journal_name=journal.name,
+    )
+
+
+async def repair_article_metadata(db: AsyncSession, article: Article, journal: Journal) -> bool:
+    """Re-read stored galley text and replace placeholder titles/authors/DOI."""
+    text = article.full_text or article.header_raw or ""
+    if len(text.strip()) < 40:
+        return False
+    meta = parse_ijist_header(
+        text,
+        journal_name=journal.name,
+        abbreviation=journal.abbreviation,
+    )
+    title = meta.get("title") or article.title
+    authors = meta.get("authors") or article.authors or []
+    changed = False
+    if title and title != article.title:
+        article.title = title
+        changed = True
+    if authors and authors != (article.authors or []):
+        article.authors = authors
+        changed = True
+    if meta.get("doi") and meta.get("doi") != article.doi:
+        article.doi = meta["doi"]
+        changed = True
+    if meta.get("page_end") and meta.get("page_end") != article.page_end:
+        article.page_end = meta["page_end"]
+        changed = True
+    if meta.get("citation_raw"):
+        article.citation_raw = meta["citation_raw"]
+        changed = True
+    if meta.get("abstract") and not article.abstract:
+        article.abstract = meta["abstract"]
+        changed = True
+    if meta.get("keywords") and not article.keywords:
+        article.keywords = meta["keywords"]
+        changed = True
+    if changed:
+        await _rebuild_chunks(db, article, text, str(title or article.title or ""))
+    return changed
+
+
+async def repair_journal_metadata(db: AsyncSession, journal: Journal) -> dict[str, int]:
+    rows = list(
+        (
+            await db.execute(
+                select(Article)
+                .join(Issue, Article.issue_id == Issue.id)
+                .where(Issue.journal_id == journal.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    repaired = 0
+    for article in rows:
+        if not article_metadata_needs_repair(article, journal):
+            continue
+        if await repair_article_metadata(db, article, journal):
+            repaired += 1
+    await db.flush()
+    return {"scanned": len(rows), "repaired": repaired}
+
+
 ingest_article_text = ingest_article_text
 ingest_pdf_bytes = ingest_pdf_bytes
 compute_issue_coverage = compute_issue_coverage
+repair_journal_metadata = repair_journal_metadata
+repair_article_metadata = repair_article_metadata

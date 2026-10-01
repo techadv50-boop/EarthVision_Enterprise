@@ -45,7 +45,7 @@ from app.schemas.citation import (
 )
 from app.services.citation_counts import sync_article_citations
 from app.services.crawler import run_crawl_job, run_download_job, run_state_update_job
-from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
+from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes, repair_journal_metadata
 from app.services.journal_access import allowed_journal_ids, require_journal_access
 from app.services.matcher import house_citation_for, split_manuscript_paragraphs, suggest_for_manuscript
 from app.services.citation_parser import split_paragraphs
@@ -473,6 +473,13 @@ async def start_state_update(
     await db.commit()
     background.add_task(run_state_update_job, job_id)
     return CrawlJobOut.model_validate(job)
+
+
+@router.post("/journals/{journal_id}/repair-metadata")
+async def repair_journal_article_metadata(journal_id: int, db: Db, _admin: CitationAdmin):
+    journal = await _journal_or_404(db, journal_id)
+    result = await repair_journal_metadata(db, journal)
+    return result
 
 
 @router.get("/journals/{journal_id}/latest-crawl", response_model=CrawlJobOut)
