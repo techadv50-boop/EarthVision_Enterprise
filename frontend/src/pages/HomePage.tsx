@@ -33,7 +33,8 @@ export default function HomePage() {
           <h3 className="text-2xl font-semibold">Article Review / Comparison</h3>
           <p className="text-gray-400 mt-3 leading-relaxed">
             Compare the References section of the file you sent to staff with the file they
-            returned. Review English, sentence structure, slang, and ambiguity before publish.
+            returned. Review English with in-depth AI tools (grammar, sentence structure,
+            abusive language, and more) before publish.
           </p>
           <p className="text-earth-400 text-sm mt-6">Open Article Review / Comparison →</p>
         </Link>

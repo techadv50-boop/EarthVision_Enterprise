@@ -23,9 +23,10 @@ export default function ReviewHubPage() {
           <Languages className="w-8 h-8 text-earth-400 mb-3" />
           <h3 className="text-xl font-semibold">English review</h3>
           <p className="text-gray-400 text-sm mt-2 leading-relaxed">
-            Upload the document going to publish. Marks English, sentence structure, broken
-            sentences, slang, ambiguity, and filler in the full text, with a side list of
-            corrections.
+            Upload the document going to publish. In-depth AI tools cover grammar, sentence
+            structure, run-ons, slang, formality, conciseness, ambiguity, word choice,
+            repetition, passive voice, and abusive language. GPT correction is used when
+            the server has an API key.
           </p>
         </Link>
       </div>

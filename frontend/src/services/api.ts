@@ -237,6 +237,7 @@ export const citationApi = {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
     },
+    languageTools: () => api.get('/review/language/tools'),
     language: (file: File) => {
       const form = new FormData();
       form.append('file', file);

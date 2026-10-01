@@ -952,12 +952,20 @@ async def reference_integrity_check(
     )
 
 
+@router.get("/review/language/tools")
+async def language_review_tools(_user: CurrentUser):
+    """Catalog of English-review tools and whether GPT correction is configured."""
+    from app.services.language_review import tool_catalog
+
+    return tool_catalog()
+
+
 @router.post("/review/language")
 async def language_review_check(
     _user: CurrentUser,
     file: UploadFile = File(...),
 ):
-    """Review a manuscript for English, structure, slang, and ambiguity."""
+    """Review a manuscript for grammar, structure, slang, abusive wording, and related issues."""
     from app.services.language_review import review_document
 
     data, filename = await _read_review_upload(file, require_docx=False)

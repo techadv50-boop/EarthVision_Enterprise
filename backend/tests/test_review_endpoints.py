@@ -125,3 +125,15 @@ async def test_reference_integrity_and_language_review_endpoints(
     assert review["issues"]
     assert review["paragraphs"]
     assert any(item["category"] == "slang" for item in review["issues"])
+    assert review["tools"]
+    assert any(item["id"] == "abusive" for item in review["tools"])
+
+    tools = await client.get("/api/v1/review/language/tools", headers=auth_headers)
+    assert tools.status_code == 200, tools.text
+    catalog = tools.json()
+    ids = {item["id"] for item in catalog["tools"]}
+    assert "grammar" in ids and "abusive" in ids and "run_on" in ids
+    assert "gpt" in catalog
+
+    unauth_tools = await client.get("/api/v1/review/language/tools")
+    assert unauth_tools.status_code == 401
