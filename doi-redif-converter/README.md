@@ -4,7 +4,7 @@ Turn a list of **DOIs and/or article page URLs** into one **ReDIF-Article 1.0** 
 
 ## Easiest: download and run (standalone desktop)
 
-Download **v1.3.0** from GitHub Releases:
+Download **v1.4.0** from GitHub Releases:
 
 | System | File |
 |--------|------|
@@ -14,10 +14,11 @@ Download **v1.3.0** from GitHub Releases:
 
 1. Unzip into a **new empty folder** (delete old builds first)
 2. Double-click `Run_Standalone.bat` / the executable
-3. Window title must be: **DOI/URL → ReDIF Standalone v1.3.0**
-4. Paste **DOIs and/or article URLs** → **Start conversion** → **Export ZIP**
+3. Window title must include: **Standalone v1.4.0**
+4. Optionally crawl an **archive URL** to collect article page links (not PDFs)
+5. Click **Start conversion** → **Export ZIP**
 
-If a browser opens, you are still running an old EXE — delete it and download v1.3.0 again.
+If a browser opens, you are still running an old EXE — delete it and download v1.4.0 again.
 
 Internet is required (to open each DOI/URL / Crossref).
 
@@ -90,4 +91,11 @@ In the desktop app, section **1) Crawl archive / issue URL**:
 4. URLs are placed in the conversion box for ReDIF / RePEc export
 
 You can also **Save URL list…** for later use.
+
+## Failures and final report
+
+- Inaccessible / 404 items are skipped automatically; processing continues to the end of the list
+- Live progress shows done / left while running
+- Final report shows total, succeeded, failed, and the exact items that could not be converted
+- ZIP export always includes `_conversion_report.txt` and `_failed.csv`
 

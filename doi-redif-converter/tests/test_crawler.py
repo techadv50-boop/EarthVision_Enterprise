@@ -1,5 +1,6 @@
 from app.crawler import (
     extract_article_urls_from_html,
+    extract_urls_from_sitemap_xml,
     is_article_html_url,
     is_pdf_or_galley_url,
 )
@@ -29,3 +30,20 @@ def test_extract_article_urls_excludes_pdf_galleys():
         "https://journal.50sea.com/index.php/IJIST/article/view/2028",
         "https://journal.50sea.com/index.php/IJIST/article/view/2039",
     ]
+
+
+def test_sitemap_parser_keeps_articles_excludes_galleys():
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+    <urlset>
+      <url><loc>https://journal.50sea.com/index.php/IJIST/article/view/2028</loc></url>
+      <url><loc>https://journal.50sea.com/index.php/IJIST/article/view/2028/3639</loc></url>
+      <url><loc>https://journal.50sea.com/index.php/IJIST/issue/view/97</loc></url>
+      <url><loc>https://journal.50sea.com/index.php/IJIST/article/view/urban-heat-island-3</loc></url>
+    </urlset>
+    """
+    arts, issues = extract_urls_from_sitemap_xml(xml)
+    assert arts == [
+        "https://journal.50sea.com/index.php/IJIST/article/view/2028",
+        "https://journal.50sea.com/index.php/IJIST/article/view/urban-heat-island-3",
+    ]
+    assert issues == ["https://journal.50sea.com/index.php/IJIST/issue/view/97"]

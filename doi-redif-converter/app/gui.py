@@ -265,11 +265,19 @@ class ConverterApp(tk.Tk):
                     "Archive crawl report",
                     "====================",
                     f"Archive URL     : {result.archive_url}",
+                    f"Sources used    : {', '.join(result.sources_used) if result.sources_used else '(none)'}",
                     f"Issue pages     : {len(result.issue_urls)}",
                     f"Pages visited   : {result.pages_visited}",
                     f"Article URLs    : {result.count}  (HTML article pages only; PDFs excluded)",
                     "",
+                    "Note: OJS editorial 'Archives' counts often include declined/unpublished",
+                    "submissions. This crawler collects PUBLIC published article page URLs.",
+                    "",
                 ]
+                if result.notes:
+                    lines.append("Notes:")
+                    lines.extend(f"- {n}" for n in result.notes)
+                    lines.append("")
                 if result.errors:
                     lines.append("Warnings/errors:")
                     lines.extend(f"- {e}" for e in result.errors[:30])
@@ -287,21 +295,23 @@ class ConverterApp(tk.Tk):
                 self.percent_var.set("100%")
                 self.progress_var.set(f"{result.count} article URL(s) collected")
                 self.status_var.set(
-                    f"Crawl finished: {result.count} article page URL(s). "
+                    f"Crawl finished: {result.count} public article page URL(s). "
                     "Review the list, then click Start conversion."
                 )
                 if result.count:
                     self.btn_save_urls.configure(state=NORMAL)
                     messagebox.showinfo(
                         APP_TITLE,
-                        f"Collected {result.count} article URL(s).\n\n"
+                        f"Collected {result.count} public article URL(s).\n\n"
                         "PDF links were excluded.\n"
-                        "They are now in the conversion box — click Start conversion when ready.",
+                        "Editorial archive totals can be higher because they include\n"
+                        "declined/unpublished submissions.\n\n"
+                        "URLs are in the conversion box — click Start conversion when ready.",
                     )
                 else:
                     messagebox.showwarning(
                         APP_TITLE,
-                        "No article URLs found.\nTry an OJS archive or issue URL.",
+                        "No article URLs found.\nTry the journal archive URL or sitemap.",
                     )
 
             self.after(0, done_ui)
