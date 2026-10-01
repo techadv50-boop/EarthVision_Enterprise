@@ -238,11 +238,12 @@ The administrator receives a report after you sign out.
 
     private static void EnsureUser(PilotRequest request, Action<string> log)
     {
-        var existing = WindowsCommand.Run("net.exe", "user", request.UserName);
+        log("Creating the Windows login...");
+        var existing = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "user", request.UserName);
         if (existing.Code != 0)
         {
             var created = WindowsCommand.Run(
-                "net.exe", "user", request.UserName, request.Password, "/add",
+                WindowsCommand.SystemTool("net.exe"), "user", request.UserName, request.Password, "/add",
                 "/fullname:" + request.FullName,
                 "/comment:WorkPilot pilot employee");
             if (created.Code != 0)
@@ -256,11 +257,11 @@ The administrator receives a report after you sign out.
         else
         {
             log($"Login {request.UserName} already exists. The password was left unchanged.");
-            WindowsCommand.Run("net.exe", "user", request.UserName, "/fullname:" + request.FullName);
+            WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "user", request.UserName, "/fullname:" + request.FullName);
         }
-        WindowsCommand.Run("net.exe", "localgroup", "Users", request.UserName, "/add");
-        WindowsCommand.Run("net.exe", "localgroup", "Administrators", request.UserName, "/delete");
-        var remote = WindowsCommand.Run("net.exe", "localgroup", "Remote Desktop Users", request.UserName, "/add");
+        WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Users", request.UserName, "/add");
+        WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Administrators", request.UserName, "/delete");
+        var remote = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Remote Desktop Users", request.UserName, "/add");
         if (remote.Code != 0 && remote.Output.IndexOf("already a member", StringComparison.OrdinalIgnoreCase) < 0)
         {
             log(remote.Output);
@@ -490,6 +491,8 @@ The administrator receives a report after you sign out.
 
 internal static class WindowsCommand
 {
+    public static string SystemTool(string name) => Path.Combine(Environment.SystemDirectory, name);
+
     public static (int Code, string Output) Run(string file, params string[] args)
     {
         var start = new ProcessStartInfo(file)
@@ -504,8 +507,21 @@ internal static class WindowsCommand
             start.ArgumentList.Add(arg);
         }
         using var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {file}.");
-        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        return (process.ExitCode, output.Trim());
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(60000))
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // The step already failed. Report that instead of the kill error.
+            }
+            throw new InvalidOperationException($"{Path.GetFileName(file)} did not finish within one minute.");
+        }
+        var output = (stdout.Result + stderr.Result).Trim();
+        return (process.ExitCode, output);
     }
 }
