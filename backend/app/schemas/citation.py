@@ -141,6 +141,9 @@ class CrawlJobOut(BaseModel):
     articles_found: int = 0
     articles_saved: int = 0
     articles_skipped: int = 0
+    articles_already: int = 0
+    articles_failed: int = 0
+    articles_removed: int = 0
     articles_remaining: int = 0
     pages_crawled: int = 0
     phase: Optional[str] = None

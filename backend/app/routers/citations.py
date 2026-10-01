@@ -44,7 +44,7 @@ from app.schemas.citation import (
     VolumeOut,
 )
 from app.services.citation_counts import sync_article_citations
-from app.services.crawler import run_crawl_job, run_download_job
+from app.services.crawler import run_crawl_job, run_download_job, run_state_update_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
 from app.services.journal_access import allowed_journal_ids, require_journal_access
 from app.services.matcher import house_citation_for, split_manuscript_paragraphs, suggest_for_manuscript
@@ -444,6 +444,34 @@ async def start_crawl(
     job_id = job.id
     await db.commit()
     background.add_task(run_crawl_job, job_id)
+    return CrawlJobOut.model_validate(job)
+
+
+@router.post("/journals/{journal_id}/sync-state", response_model=CrawlJobOut)
+async def start_state_update(
+    journal_id: int,
+    body: CrawlStart,
+    background: BackgroundTasks,
+    db: Db,
+    _admin: CitationAdmin,
+):
+    journal = await _journal_or_404(db, journal_id)
+    archive_url = (body.archive_url or journal.archive_url or "").strip()
+    if not archive_url:
+        raise HTTPException(status_code=400, detail="Set the journal archive URL first")
+    journal.archive_url = archive_url
+    job = CrawlJob(
+        journal_id=journal.id,
+        archive_url=archive_url,
+        status="queued",
+        phase="updating",
+        message="Queued archive state update…",
+    )
+    db.add(job)
+    await db.flush()
+    job_id = job.id
+    await db.commit()
+    background.add_task(run_state_update_job, job_id)
     return CrawlJobOut.model_validate(job)
 
 

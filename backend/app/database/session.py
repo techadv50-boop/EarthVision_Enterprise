@@ -69,6 +69,9 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("crawl_jobs", "inventory", "JSON")
     _add_if_missing("articles", "citing_works", "JSON")
     _add_if_missing("users", "access_status", "VARCHAR(32) DEFAULT 'approved'")
+    _add_if_missing("crawl_jobs", "articles_already", "INTEGER DEFAULT 0")
+    _add_if_missing("crawl_jobs", "articles_failed", "INTEGER DEFAULT 0")
+    _add_if_missing("crawl_jobs", "articles_removed", "INTEGER DEFAULT 0")
 
 
 def _ensure_postgres_columns(sync_conn) -> None:
@@ -80,5 +83,14 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "UPDATE users SET access_status = 'approved' WHERE access_status IS NULL"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE crawl_jobs ADD COLUMN IF NOT EXISTS articles_already INTEGER DEFAULT 0"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE crawl_jobs ADD COLUMN IF NOT EXISTS articles_failed INTEGER DEFAULT 0"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE crawl_jobs ADD COLUMN IF NOT EXISTS articles_removed INTEGER DEFAULT 0"
     )
 

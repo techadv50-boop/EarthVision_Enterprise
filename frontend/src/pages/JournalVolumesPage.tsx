@@ -60,18 +60,24 @@ function CrawlProgress({ crawl }: { crawl: CrawlJob }) {
   const found = Number(crawl.articles_found || 0);
   const saved = Number(crawl.articles_saved || 0);
   const skipped = Number(crawl.articles_skipped || 0);
+  const already = Number(crawl.articles_already || 0);
+  const failed = Number(crawl.articles_failed || 0);
+  const removed = Number(crawl.articles_removed || 0);
   const remaining = Math.max(0, found - saved - skipped);
   const processed = saved + skipped;
   const phase = String(crawl.phase || crawl.status || '');
   const scanning = phase === 'scanning' || (found === 0 && (phase === 'running' || phase === 'queued'));
-  const percent = found > 0 ? Math.min(100, Math.round((processed / found) * 100)) : scanning ? 8 : 0;
+  const updating = phase === 'updating';
+  const percent = found > 0 ? Math.min(100, Math.round((processed / found) * 100)) : scanning || updating ? 8 : 0;
   const message = String(
     crawl.message ||
       (scanning
         ? 'Listing issues and article counts…'
-        : found
-          ? `Found ${found} PDFs. Loaded ${saved}, ${remaining} left.`
-          : String(crawl.status))
+        : updating
+          ? 'Comparing the live journal with this server…'
+          : found
+            ? `Found ${found} PDFs. Loaded ${saved}, ${remaining} left.`
+            : String(crawl.status))
   );
 
   return (
@@ -81,11 +87,19 @@ function CrawlProgress({ crawl }: { crawl: CrawlJob }) {
         <div className="h-full bg-earth-500 transition-all" style={{ width: `${percent}%` }} />
       </div>
       <p className="text-xs text-gray-400">
-        {scanning
+        {scanning || (updating && found === 0)
           ? `Searching… ${Number(crawl.pages_crawled || 0)} pages opened`
           : `PDFs found: ${found} · loaded ${saved} · left ${remaining}` +
-            (skipped ? ` · skipped ${skipped}` : '')}
+            (already ? ` · already on server ${already}` : '') +
+            (failed ? ` · failed ${failed}` : '') +
+            (removed ? ` · removed ${removed}` : '') +
+            (!already && skipped ? ` · skipped ${skipped}` : '')}
       </p>
+      {already || failed ? (
+        <p className="text-xs text-gray-500">
+          Already on server means the paper is in citation matching. Failed downloads are not stored.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -109,7 +123,8 @@ export default function JournalVolumesPage() {
     [crawl]
   );
   const downloading = isActiveStatus(crawl?.status) && String(crawl?.phase || '') === 'downloading';
-  const scanning = isActiveStatus(crawl?.status) && !downloading;
+  const updating = isActiveStatus(crawl?.status) && String(crawl?.phase || '') === 'updating';
+  const scanning = isActiveStatus(crawl?.status) && !downloading && !updating;
 
   const localByKey = useMemo(() => {
     const map = new Map<string, LocalIssue>();
@@ -275,6 +290,18 @@ export default function JournalVolumesPage() {
     void pollJob(data.id);
   };
 
+  const startStateUpdate = async () => {
+    if (!archiveUrl) {
+      setMsg('Set the archive URL first.');
+      return;
+    }
+    setMsg('Updating this server to match the live journal…');
+    setSelected({});
+    const { data } = await citationApi.journals.syncState(id, archiveUrl);
+    setCrawl(data);
+    void pollJob(data.id);
+  };
+
   const startDownload = async () => {
     if (!crawl?.id) return;
     const issueUrls = Object.entries(selected)
@@ -332,9 +359,11 @@ export default function JournalVolumesPage() {
         <div className="panel p-4 space-y-3">
           <h3 className="font-medium">2. Scan archive issues</h3>
           <p className="text-xs text-gray-400">
-            Lists every issue and how many articles it contains. Article pages are opened when the
-            PDF is not on the issue table of contents. PDFs are not downloaded until you choose which
-            issues to fetch. Citation counts come from the DOI (Crossref) and Google Scholar.
+            Lists every issue and how many articles it contains. Duplicate PDF links for the same paper
+            count as already on this server — those papers stay in citation matching. Use{' '}
+            <strong>Update archive state</strong> to match this server to the live journal: new
+            volumes, issues, and articles are added, and papers the journal no longer lists are removed.
+            Manual uploads with no journal URL are kept.
           </p>
           <input
             className="input-field"
@@ -346,12 +375,20 @@ export default function JournalVolumesPage() {
             <button
               className="btn-primary"
               type="button"
-              disabled={scanning || downloading || !archiveUrl}
+              disabled={scanning || downloading || updating || !archiveUrl}
               onClick={() => void startCrawl()}
             >
               Scan issues
             </button>
-            {(scanning || downloading) && crawl?.id ? (
+            <button
+              className="btn-primary"
+              type="button"
+              disabled={scanning || downloading || updating || !archiveUrl}
+              onClick={() => void startStateUpdate()}
+            >
+              Update archive state
+            </button>
+            {(scanning || downloading || updating) && crawl?.id ? (
               <button
                 className="btn-secondary"
                 type="button"
@@ -366,7 +403,13 @@ export default function JournalVolumesPage() {
               </button>
             )}
           </div>
-          {crawl && (scanning || downloading) && <CrawlProgress crawl={crawl} />}
+          {crawl &&
+            (scanning ||
+              downloading ||
+              updating ||
+              crawl.status === 'completed' ||
+              crawl.status === 'failed' ||
+              crawl.status === 'cancelled') && <CrawlProgress crawl={crawl} />}
         </div>
       </div>
       )}

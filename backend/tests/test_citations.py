@@ -20,6 +20,24 @@ def test_normalize_doi():
     assert normalize_doi("doi:10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
 
 
+def test_unique_pdfs_by_article_keeps_one_galley():
+    from app.services.crawler import _unique_pdfs_by_article as unique_pdfs
+
+    urls = [
+        "https://example.test/article/view/9/11",
+        "https://example.test/article/download/9/11",
+        "https://example.test/article/view/9",
+        "https://example.test/article/view/10/12",
+        "https://files.example.test/extra.pdf",
+    ]
+    out = unique_pdfs(urls)
+    assert out.count("https://example.test/article/download/9/11") == 1
+    assert not any(item.endswith("/view/9/11") for item in out)
+    assert "https://example.test/article/view/10/12" in out
+    assert "https://files.example.test/extra.pdf" in out
+    assert len(out) == 3
+
+
 def test_article_page_pdfs_ignore_related_links():
     from app.services.crawler import _pdfs_for_article as pdfs_for_article
 
@@ -715,9 +733,108 @@ async def test_archive_crawler_mock(client: AsyncClient, monkeypatch):
     )
     dup = (await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)).json()
     assert dup["articles_skipped"] >= 1
+    assert dup.get("articles_already", 0) >= 1
     listing = await client.get("/api/v1/journals", headers=headers)
     crawled = next(row for row in listing.json() if row["id"] == jid)
     assert crawled["article_count"] == first_count
+
+
+@pytest.mark.asyncio
+async def test_archive_state_update_adds_and_removes_live_articles(client: AsyncClient, monkeypatch):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "State Update Journal", "abbreviation": "SUJ"},
+    )
+    jid = created.json()["id"]
+    manual = await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={"filename": "manual.txt", "text": GALLEY_WATER},
+    )
+    assert manual.status_code == 200, manual.text
+    extra_galley = GALLEY_EDDSA.replace("1788", "3001").replace("1813", "3010").replace(
+        "Digital Signature Scheme", "State Update Extra Paper"
+    )
+    live = {
+        "https://example.test/issue/archive": (
+            b"<html><a href='https://example.test/issue/view/1'>Vol. 8 No. 5 (2026)</a></html>"
+        ),
+        "https://example.test/issue/view/1": (
+            b"<html>"
+            b'<a href="https://example.test/article/view/9">One</a>'
+            b'<a href="https://example.test/article/view/9/11">PDF</a>'
+            b'<a href="https://example.test/article/view/10">Two</a>'
+            b'<a href="https://example.test/article/view/10/12">PDF</a>'
+            b"</html>"
+        ),
+    }
+    pdf_by_url = {
+        "https://example.test/article/view/9/11": _pdf_from_text(GALLEY_EDDSA),
+        "https://example.test/article/view/10/12": _pdf_from_text(GALLEY_WATER.replace("2211", "4001").replace("2224", "4010")),
+        "https://example.test/article/view/21/31": _pdf_from_text(extra_galley),
+    }
+
+    async def fake_fetch(url: str):
+        if url in live:
+            return 200, live[url], "text/html"
+        if url in pdf_by_url:
+            return 200, pdf_by_url[url], "application/pdf"
+        if url.endswith("/robots.txt"):
+            return 404, b"", "text/plain"
+        return 404, b"", "text/plain"
+
+    from app.services import crawler as crawler_mod
+
+    monkeypatch.setattr(crawler_mod, "default_fetch", fake_fetch)
+    start = await client.post(
+        f"/api/v1/journals/{jid}/crawl",
+        headers=headers,
+        json={"archive_url": "https://example.test/issue/archive"},
+    )
+    job_id = start.json()["id"]
+    await crawler_mod.run_crawl_job(job_id, fetch=fake_fetch)
+    await crawler_mod.run_download_job(job_id, ["https://example.test/issue/view/1"], fetch=fake_fetch)
+    before = await client.get("/api/v1/journals", headers=headers)
+    count_before = next(row for row in before.json() if row["id"] == jid)["article_count"]
+    assert count_before >= 2
+
+    live["https://example.test/issue/view/1"] = (
+        b"<html>"
+        b'<a href="https://example.test/article/view/10">Two</a>'
+        b'<a href="https://example.test/article/view/10/12">PDF</a>'
+        b'<a href="https://example.test/article/view/21">New</a>'
+        b'<a href="https://example.test/article/view/21/31">PDF</a>'
+        b"</html>"
+    )
+    sync = await client.post(
+        f"/api/v1/journals/{jid}/sync-state",
+        headers=headers,
+        json={"archive_url": "https://example.test/issue/archive"},
+    )
+    assert sync.status_code == 200, sync.text
+    sync_id = sync.json()["id"]
+    await crawler_mod.run_state_update_job(sync_id, fetch=fake_fetch)
+    result = (await client.get(f"/api/v1/crawl-jobs/{sync_id}", headers=headers)).json()
+    assert result["status"] == "completed", result
+    assert result["articles_saved"] >= 1
+    assert result["articles_removed"] >= 1
+    arts = await client.get(f"/api/v1/journals/{jid}/issues", headers=headers)
+    assert arts.status_code == 200
+    titles = []
+    for issue in arts.json():
+        if not issue["id"] or not issue["article_count"]:
+            continue
+        payload = await client.get(
+            f"/api/v1/journals/{jid}/volumes/{issue['volume']}/issues/{issue['issue_number']}/articles",
+            headers=headers,
+        )
+        titles.extend(a["title"] for a in payload.json()["articles"])
+    blob = " ".join(titles)
+    assert "State Update Extra Paper" in blob
+    assert not any("Digital Signature Scheme" in t for t in titles)
+    assert any("Drinking Water" in t or "Water" in t for t in titles)
 
 
 @pytest.mark.asyncio

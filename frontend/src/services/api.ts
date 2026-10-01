@@ -195,6 +195,8 @@ export const citationApi = {
     uploadText: (id: number, data: Record<string, unknown>) =>
       api.post(`/journals/${id}/papers-text`, data),
     crawl: (id: number, archive_url: string) => api.post(`/journals/${id}/crawl`, { archive_url }),
+    syncState: (id: number, archive_url: string) =>
+      api.post(`/journals/${id}/sync-state`, { archive_url }),
     latestCrawl: (id: number) => api.get(`/journals/${id}/latest-crawl`),
     allIssues: (id: number) => api.get(`/journals/${id}/issues`),
     syncCitations: (id: number) => api.post(`/journals/${id}/sync-citations`),
