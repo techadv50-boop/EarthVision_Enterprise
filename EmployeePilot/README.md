@@ -1,6 +1,21 @@
 # One-employee pilot for Windows 11 Pro
 
-This pilot is for the Dell Precision 5820 (`DESKTOP-ENCM4H4`) as it is today: Windows 11 Pro, one employee signed in at a time. It does not install Windows Server and it does not use Ubuntu.
+Yes. One standalone program is enough for this pilot. Copy `WorkPilot.exe` to the Dell Precision 5820 and double-click it. Windows 11 Pro stays as it is. One employee can be signed in at a time. This does not install Windows Server and it does not use Ubuntu.
+
+`WorkPilot.exe` is a single file. It does not need Python, PowerShell scripts, or a separate installer. The first time Windows SmartScreen appears, choose **More info**, then **Run anyway**. The program asks for administrator approval, then shows a window:
+
+- Employee name, Windows login, and password
+- Disk limit, default 80 GB
+- Idle time, default 5 minutes
+- **Set up this computer**
+- **Check setup**
+- **Open latest report**
+- **Watch programs only** leaves every program able to run and marks others in the report
+- **Block other programs** after you have seen one real work day
+
+Sign in as the employee to test it before you give them the password. A message says recording is on. Chrome can browse, and clearing history, Incognito, and Guest mode are turned off. After sign-out, wait one minute and open **Work session report** on the administrator desktop.
+
+The same rules are also in the `scripts` folder if you ever want to run them by hand. The program is the one to use.
 
 What the employee gets:
 

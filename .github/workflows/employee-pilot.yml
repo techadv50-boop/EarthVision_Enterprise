@@ -24,3 +24,14 @@ jobs:
           sudo ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
       - name: Run report tests
         run: pwsh -File EmployeePilot/tests/test-report.ps1
+
+  standalone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Test the standalone program
+        working-directory: EmployeePilot/standalone
+        run: dotnet test --nologo

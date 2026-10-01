@@ -1,0 +1,16 @@
+WorkPilot.exe is the one-employee pilot for this Windows 11 Pro PC.
+
+1. Update Windows first if the PC is still on build 22000. Stay on Windows 11 Pro.
+2. Copy WorkPilot.exe to the PC. A USB drive or a shared folder is enough.
+3. Double-click WorkPilot.exe.
+4. If Windows SmartScreen appears, choose More info, then Run anyway.
+5. Approve the administrator prompt.
+6. Press "Set up this computer". The defaults are login employee1, 80 GB, and 5 minutes of idle time. Type a password and the employee name.
+7. Sign in as that employee at this computer. Confirm the recording message, and confirm Chrome will not clear history.
+8. Sign out, wait one minute, and open "Work session report" on the administrator desktop.
+
+The report shows programs, window titles, active time, and idle time. It does not record keystrokes, screenshots, or passwords.
+
+Do not open Remote Desktop directly to the internet. Use a private network such as Tailscale, then connect with Remote Desktop.
+
+Block other programs only after one real work day looks right. Use the button "Block other programs" in WorkPilot.
