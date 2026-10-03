@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Minus, Plus } from 'lucide-react';
 import { citationApi } from '@/services/api';
+import { isFullAdmin, useAuthStore } from '@/store/authStore';
 
 type Wing = 'in_process' | 'published';
 
@@ -284,6 +286,38 @@ function dateTones(data: {
   };
 }
 
+function recordPath(wing: Wing, id: number) {
+  return wing === 'in_process' ? `/authors/in-process/${id}` : `/authors/published/${id}`;
+}
+
+function slaTextClass(tone: SlaTone) {
+  if (tone === 'red') return 'text-red-400';
+  if (tone === 'green') return 'text-emerald-400';
+  return 'text-gray-200';
+}
+
+function ReportField({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value?: string | null;
+  tone?: SlaTone;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-gray-500 inline-flex items-center gap-2">
+        {tone ? <SlaDot tone={tone} label={label} /> : null}
+        {label}
+      </p>
+      <p className={`text-sm break-words ${tone ? slaTextClass(tone) : 'text-gray-200'}`}>
+        {value && String(value).trim() ? value : '—'}
+      </p>
+    </div>
+  );
+}
+
 type DisplayRow = {
   key: string;
   article: AuthorRow;
@@ -292,6 +326,52 @@ type DisplayRow = {
   dated: string | null;
   isOriginal: boolean;
 };
+
+function HistoryCard({ ver }: { ver: DisplayRow }) {
+  const data = ver.data;
+  const tones = dateTones(data);
+  const journal = data.journal_name || data.journal_title || '';
+  return (
+    <section className="panel p-4 mb-4">
+      <div className="mb-4">
+        <h3 className={ver.isOriginal ? 'text-gray-100 font-semibold' : 'text-earth-400 font-semibold'}>
+          {ver.label}
+        </h3>
+        <p className="text-xs text-gray-500">{formatDay(ver.dated)}</p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <ReportField label="OJS number" value={data.ojs_number} />
+        <ReportField label="Journal" value={journal} />
+        <ReportField label="Status" value={data.editorial_status || 'Submission'} />
+        <ReportField label="Title" value={data.title} />
+        <ReportField label="Authors" value={data.author_names} />
+        <ReportField label="Email addresses of authors" value={data.author_emails} />
+        <ReportField label="Email sent date" value={data.email_sent_date} />
+        <ReportField label="Plagiarism" value={data.plagiarism} />
+        <ReportField label="ORCID ID" value={data.orcid_id} />
+        <ReportField label="Receive date" value={data.received_date} />
+        {(data.review_rounds || [emptyRound(1)]).map((round, index) => (
+          <div key={`${ver.key}-r${index}`} className="md:col-span-2 grid gap-4 md:grid-cols-2">
+            <ReportField
+              label={`Round ${index + 1} review sent date`}
+              value={round.sent_date}
+              tone={tones.rounds[index]?.sent}
+            />
+            <ReportField
+              label={`Round ${index + 1} review receive date`}
+              value={round.received_date}
+              tone={tones.rounds[index]?.received}
+            />
+          </div>
+        ))}
+        <ReportField label="Acceptance date" value={data.accepted_date} tone={tones.accepted} />
+        <ReportField label="Galley sent date" value={data.galley_sent_date} tone={tones.galleySent} />
+        <ReportField label="Galley received date" value={data.galley_received_date} tone={tones.galleyReceived} />
+        <ReportField label="Publish date" value={data.publish_date} tone={tones.publish} />
+      </div>
+    </section>
+  );
+}
 
 function displayRows(row: AuthorRow): DisplayRow[] {
   const original = applySnapshot(row, row.original_snapshot);
@@ -320,6 +400,14 @@ function displayRows(row: AuthorRow): DisplayRow[] {
 }
 
 export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
+  const { articleId } = useParams();
+  if (articleId) {
+    return <AuthorRecord wing={wing} articleId={Number(articleId)} />;
+  }
+  return <AuthorList wing={wing} />;
+}
+
+function AuthorList({ wing }: { wing: Wing }) {
   const inProcess = wing === 'in_process';
   const [journals, setJournals] = useState<JournalOption[]>([]);
   const [rows, setRows] = useState<AuthorRow[]>([]);
@@ -405,40 +493,6 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     }
   };
 
-  const addDetails = async (row: AuthorRow) => {
-    const [{ data }, journalsRes] = await Promise.all([
-      citationApi.authorArticles.list(wing),
-      citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
-    ]);
-    const latestList = (data || []) as AuthorRow[];
-    const catalog = (journalsRes.data || []) as JournalOption[];
-    setRows(latestList);
-    setJournals(catalog);
-    const latest = latestList.find((item) => item.id === row.id) || row;
-    setForm(rowToForm(latest, catalog));
-    setEditingId(row.id);
-    setShowForm(true);
-    setMsg('');
-    setError('');
-    window.setTimeout(() => {
-      document.getElementById('author-article-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 50);
-  };
-
-  const move = async (row: AuthorRow, next: Wing) => {
-    setBusy(true);
-    setError('');
-    try {
-      await citationApi.authorArticles.update(row.id, { wing: next });
-      await load();
-      setMsg(next === 'published' ? 'Moved to published articles.' : 'Moved back to under process.');
-    } catch {
-      setError('Could not move that article.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const downloadTemplate = async () => {
     const { data } = await citationApi.authorArticles.template();
     const blob = data instanceof Blob ? data : new Blob([data]);
@@ -514,8 +568,8 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
       </h2>
       <p className="text-gray-400 text-sm mb-4 max-w-4xl">
         {inProcess
-          ? 'Add or update articles. Users cannot delete rows. Add details reopens this article so you can save a new modification row with the date of the change.'
-          : 'Published records keep the original row and every modification made while the article was under process. Users can update fields but cannot delete.'}
+          ? 'This list stays quiet: only OJS numbers. Click a number to open that article’s full historical record in a new tab. Users cannot delete records.'
+          : 'Published OJS numbers only. Click a number to open the archived original row and every modification in a new tab.'}
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
@@ -744,138 +798,415 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
         </form>
       )}
 
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-gray-500 border-b border-gray-800">
-              <th className="py-2 pr-3">Article</th>
-              <th className="py-2 pr-3">Status</th>
-              <th className="py-2 pr-3">Title</th>
-              <th className="py-2 pr-3">Authors</th>
-              <th className="py-2 pr-3">Email sent date</th>
-              <th className="py-2 pr-3">Plagiarism</th>
-              <th className="py-2 pr-3">ORCID</th>
-              <th className="py-2 pr-3">Review rounds</th>
-              <th className="py-2 pr-3">Dates</th>
-              <th className="py-2 pr-3" />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td className="py-4 text-gray-500" colSpan={10}>
-                  {inProcess
-                    ? 'No under process articles yet. Add one or import an Excel file.'
-                    : 'No published articles yet. Move a finished record from Under process or import Excel.'}
-                </td>
-              </tr>
-            )}
-            {rows.flatMap((row) =>
-              displayRows(row).map((ver) => {
-              const rowTones = dateTones(ver.data);
-              return (
-              <tr key={ver.key} className="border-b border-gray-800/80 align-top">
-                <td className="py-3 pr-3 whitespace-nowrap min-w-[12rem]">
-                  <p className={ver.isOriginal ? 'text-gray-200 font-medium' : 'text-earth-400 font-medium'}>{ver.label}</p>
-                  <p className="text-xs text-gray-500">{formatDay(ver.dated)}</p>
-                  <p className="mt-1">{ver.data.ojs_number || '—'}</p>
-                  {ver.data.journal_name ? (
-                    <p className="text-xs text-gray-500 max-w-[14rem] whitespace-normal">{ver.data.journal_name}</p>
-                  ) : null}
-                </td>
-                <td className="py-3 pr-3 min-w-[10rem] text-sm text-gray-300">
-                  {ver.data.editorial_status || 'Submission'}
-                </td>
-                <td className="py-3 pr-3 min-w-[12rem]">{ver.data.title || '—'}</td>
-                <td className="py-3 pr-3 min-w-[10rem]">
-                  <p>{ver.data.author_names || '—'}</p>
-                  <p className="text-xs text-gray-500">{ver.data.author_emails}</p>
-                </td>
-                <td className="py-3 pr-3">{ver.data.email_sent_date || '—'}</td>
-                <td className="py-3 pr-3">{ver.data.plagiarism || '—'}</td>
-                <td className="py-3 pr-3">{ver.data.orcid_id || '—'}</td>
-                <td className="py-3 pr-3 text-xs whitespace-nowrap min-w-[12rem]">
-                  {(ver.data.review_rounds || []).map((round, index) => (
-                    <p key={round.round} className="flex flex-col gap-0.5">
-                      <span className="inline-flex items-center gap-1">
-                        <SlaDot tone={rowTones.rounds[index]?.sent || 'white'} label={`Round ${index + 1} review sent date`} />
-                        <span className={rowTones.rounds[index]?.sent === 'red' ? 'text-red-400' : rowTones.rounds[index]?.sent === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
-                          R{round.round} sent {round.sent_date || '—'}
-                        </span>
-                      </span>
-                      <span className="inline-flex items-center gap-1">
-                        <SlaDot tone={rowTones.rounds[index]?.received || 'white'} label={`Round ${index + 1} review receive date`} />
-                        <span className={rowTones.rounds[index]?.received === 'red' ? 'text-red-400' : rowTones.rounds[index]?.received === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
-                          rec {round.received_date || '—'}
-                        </span>
-                      </span>
-                    </p>
-                  ))}
-                  {(ver.data.review_rounds || []).length === 0 ? '—' : null}
-                </td>
-                <td className="py-3 pr-3 text-xs whitespace-nowrap min-w-[12rem]">
-                  <p className="inline-flex items-center gap-1">
-                    <SlaDot tone={rowTones.accepted} label="Acceptance date" />
-                    <span className={rowTones.accepted === 'red' ? 'text-red-400' : rowTones.accepted === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
-                      Acc {ver.data.accepted_date || '—'}
-                    </span>
-                  </p>
-                  <p className="inline-flex items-center gap-1">
-                    <SlaDot tone={rowTones.galleySent} label="Galley sent date" />
-                    <span className={rowTones.galleySent === 'red' ? 'text-red-400' : rowTones.galleySent === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
-                      Gal sent {ver.data.galley_sent_date || '—'}
-                    </span>
-                  </p>
-                  <p className="inline-flex items-center gap-1">
-                    <SlaDot tone={rowTones.galleyReceived} label="Galley received date" />
-                    <span className={rowTones.galleyReceived === 'red' ? 'text-red-400' : rowTones.galleyReceived === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
-                      Gal rec {ver.data.galley_received_date || '—'}
-                    </span>
-                  </p>
-                  <p className="inline-flex items-center gap-1">
-                    <SlaDot tone={rowTones.publish} label="Publish date" />
-                    <span className={rowTones.publish === 'red' ? 'text-red-400' : rowTones.publish === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
-                      Pub {ver.data.publish_date || '—'}
-                    </span>
-                  </p>
-                </td>
-                <td className="py-3">
-                  {ver.isOriginal ? (
-                  <div className="flex flex-wrap gap-2">
-                    {inProcess && (
-                      <button className="btn-primary" type="button" disabled={busy} onClick={() => addDetails(row)}>
-                        Add details
+      <div className="panel p-4">
+        <h3 className="text-sm font-medium mb-3">OJS numbers</h3>
+        {rows.length === 0 ? (
+          <p className="text-gray-500 text-sm">
+            {inProcess
+              ? 'No under process articles yet. Add one or import an Excel file.'
+              : 'No published articles yet. Move a finished record from Under process or import Excel.'}
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {rows.map((row) => (
+              <a
+                key={row.id}
+                className="btn-secondary font-medium"
+                href={recordPath(wing, row.id)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {row.ojs_number || `No OJS #${row.id}`}
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
+  const admin = isFullAdmin(useAuthStore((s) => s.user));
+  const navigate = useNavigate();
+  const inProcess = wing === 'in_process';
+  const [journals, setJournals] = useState<JournalOption[]>([]);
+  const [row, setRow] = useState<AuthorRow | null>(null);
+  const [form, setForm] = useState(emptyForm);
+  const [editing, setEditing] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [askPassword, setAskPassword] = useState(false);
+  const [password, setPassword] = useState('');
+
+  const load = async () => {
+    const [{ data }, journalsRes] = await Promise.all([
+      citationApi.authorArticles.get(articleId),
+      citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
+    ]);
+    const article = data as AuthorRow;
+    setRow(article);
+    setJournals((journalsRes.data || []) as JournalOption[]);
+    return article;
+  };
+
+  useEffect(() => {
+    setEditing(false);
+    setForm(emptyForm);
+    setMsg('');
+    setError('');
+    setAskPassword(false);
+    setPassword('');
+    void load().catch(() => setError('Could not load that OJS record.'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [articleId, wing]);
+
+  const payload = () => {
+    const selected = journals.find((journal) => journalKey(journal) === form.journal_key);
+    const parsed = parseJournalKey(form.journal_key);
+    return {
+      wing,
+      journal_id: parsed.journal_id,
+      journal_title: parsed.journal_title || selected?.name || selected?.abbreviation || '',
+      ojs_number: form.ojs_number,
+      title: form.title,
+      author_names: form.author_names,
+      author_emails: form.author_emails,
+      email_sent_date: form.email_sent_date || null,
+      plagiarism: form.plagiarism,
+      orcid_id: form.orcid_id,
+      received_date: form.received_date || null,
+      review_rounds: form.review_rounds.map((round, index) => ({
+        round: index + 1,
+        sent_date: round.sent_date || null,
+        received_date: round.received_date || null,
+      })),
+      accepted_date: form.accepted_date || null,
+      galley_sent_date: form.galley_sent_date || null,
+      galley_received_date: form.galley_received_date || null,
+      publish_date: form.publish_date || null,
+      editorial_status: form.editorial_status,
+    };
+  };
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!row) return;
+    setBusy(true);
+    setMsg('');
+    setError('');
+    try {
+      await citationApi.authorArticles.update(row.id, payload());
+      setMsg('Details saved as a new modification row, with the date of this change.');
+      setEditing(false);
+      setForm(emptyForm);
+      await load();
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not save that article.';
+      setError(String(detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addDetails = async () => {
+    const [{ data }, journalsRes] = await Promise.all([
+      citationApi.authorArticles.get(articleId),
+      citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
+    ]);
+    const article = data as AuthorRow;
+    const catalog = (journalsRes.data || []) as JournalOption[];
+    setRow(article);
+    setJournals(catalog);
+    setForm(rowToForm(article, catalog));
+    setEditing(true);
+    setMsg('');
+    setError('');
+  };
+
+  const move = async (next: Wing) => {
+    if (!row) return;
+    setBusy(true);
+    setError('');
+    try {
+      await citationApi.authorArticles.update(row.id, { wing: next });
+      navigate(recordPath(next, row.id), { replace: true });
+      setMsg(next === 'published' ? 'Moved to published articles.' : 'Moved back to under process.');
+    } catch {
+      setError('Could not move that article.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeRecord = async () => {
+    if (!row) return;
+    setBusy(true);
+    setError('');
+    try {
+      await citationApi.authorArticles.remove(row.id, password);
+      setAskPassword(false);
+      setPassword('');
+      setMsg(`Deleted OJS ${row.ojs_number || row.id} and every linked record.`);
+      window.setTimeout(() => {
+        if (window.opener) window.close();
+        else navigate(inProcess ? '/authors/in-process' : '/authors/published');
+      }, 600);
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not delete that OJS record.';
+      setError(String(detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field = (key: keyof typeof emptyForm, value: string | number | '') => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  };
+  const setRound = (index: number, key: 'sent_date' | 'received_date', value: string) => {
+    setForm((prev) => ({
+      ...prev,
+      review_rounds: prev.review_rounds.map((round, idx) =>
+        idx === index ? { ...round, [key]: value } : round,
+      ),
+    }));
+  };
+  const addRound = () => {
+    setForm((prev) => ({
+      ...prev,
+      review_rounds: [...prev.review_rounds, emptyRound(prev.review_rounds.length + 1)],
+    }));
+  };
+  const removeRound = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      review_rounds:
+        prev.review_rounds.length === 1
+          ? prev.review_rounds
+          : prev.review_rounds.filter((_, idx) => idx !== index).map((round, idx) => ({ ...round, round: idx + 1 })),
+    }));
+  };
+
+  const tones = dateTones({ ...form, created_at: row?.created_at });
+
+  if (!row) {
+    return (
+      <div>
+        <p className="text-gray-400">{error || 'Loading OJS record…'}</p>
+        <Link className="text-earth-400 text-sm" to={inProcess ? '/authors/in-process' : '/authors/published'}>
+          Back to OJS numbers
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="text-xs text-gray-500 mb-2">
+        <Link className="text-earth-400" to={inProcess ? '/authors/in-process' : '/authors/published'}>
+          {inProcess ? 'Under process' : 'Published'}
+        </Link>
+        {' / historical record'}
+      </p>
+      <h2 className="text-2xl font-semibold mb-1">{row.ojs_number || 'No OJS number'}</h2>
+      <p className="text-gray-400 text-sm mb-4 max-w-4xl">
+        Original row and every later modification for this OJS number. All fields are shown here.
+      </p>
+      {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
+      {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+
+      <div className="flex flex-wrap gap-2 mb-4">
+        {inProcess && (
+          <button className="btn-primary" type="button" disabled={busy} onClick={() => void addDetails()}>
+            Add details
+          </button>
+        )}
+        {inProcess ? (
+          <button className="btn-secondary" type="button" disabled={busy} onClick={() => void move('published')}>
+            Move to published
+          </button>
+        ) : (
+          <button className="btn-secondary" type="button" disabled={busy} onClick={() => void move('in_process')}>
+            Back to under process
+          </button>
+        )}
+        {admin && (
+          <button
+            className="btn-secondary text-red-400"
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setAskPassword(true);
+              setPassword('');
+              setError('');
+            }}
+          >
+            Delete this OJS record
+          </button>
+        )}
+      </div>
+
+      {askPassword && admin && (
+        <div className="panel p-4 mb-4 max-w-lg">
+          <p className="text-sm text-gray-200 mb-2">
+            Enter the admin password to delete OJS {row.ojs_number || row.id} and every linked
+            original and modification record.
+          </p>
+          <label className="text-sm text-gray-400">
+            Password
+            <input
+              className="input-field mt-1"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+          <div className="flex flex-wrap gap-2 mt-3">
+            <button className="btn-primary" type="button" disabled={busy || !password} onClick={() => void removeRecord()}>
+              {busy ? 'Deleting…' : 'Delete'}
+            </button>
+            <button
+              className="btn-secondary"
+              type="button"
+              onClick={() => {
+                setAskPassword(false);
+                setPassword('');
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <form className="panel p-4 mb-6 grid gap-3 md:grid-cols-2" onSubmit={(e) => void save(e)}>
+          <h3 className="md:col-span-2 text-sm font-medium" id="author-article-form">
+            Add details
+          </h3>
+          <label className="text-sm text-gray-400">
+            Select journal
+            <select
+              className="input-field mt-1"
+              value={form.journal_key}
+              onChange={(e) => field('journal_key', e.target.value)}
+            >
+              <option value="">Select journal</option>
+              {journals.map((journal) => (
+                <option key={journalKey(journal)} value={journalKey(journal)}>
+                  {journalLabel(journal)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm text-gray-400">
+            OJS number
+            <input className="input-field mt-1" value={form.ojs_number} onChange={(e) => field('ojs_number', e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400 md:col-span-2">
+            Title
+            <input className="input-field mt-1" value={form.title} onChange={(e) => field('title', e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400">
+            Author names
+            <textarea className="input-field mt-1 min-h-[5rem]" value={form.author_names} onChange={(e) => field('author_names', e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400">
+            Email addresses of authors
+            <textarea className="input-field mt-1 min-h-[5rem]" value={form.author_emails} onChange={(e) => field('author_emails', e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400">
+            Email sent date
+            <input className="input-field mt-1" type="date" value={form.email_sent_date} onChange={(e) => field('email_sent_date', e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400">
+            Plagiarism
+            <input className="input-field mt-1" value={form.plagiarism} onChange={(e) => field('plagiarism', e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400">
+            ORCID ID
+            <input className="input-field mt-1" value={form.orcid_id} onChange={(e) => field('orcid_id', e.target.value)} />
+          </label>
+          <label className="text-sm text-gray-400">
+            Receive date
+            <input className="input-field mt-1" type="date" value={form.received_date} onChange={(e) => field('received_date', e.target.value)} />
+          </label>
+          <div className="md:col-span-2 space-y-3">
+            {form.review_rounds.map((round, index) => (
+              <div key={round.round} className="border border-gray-800 rounded-md p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-200">Round {index + 1}</p>
+                  <div className="flex items-center gap-1">
+                    {index === form.review_rounds.length - 1 && (
+                      <button type="button" className="text-gray-400 hover:text-white p-1" onClick={addRound}>
+                        <Plus className="w-4 h-4" />
                       </button>
                     )}
-                    {inProcess ? (
-                      <button
-                        className="btn-secondary"
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void move(row, 'published')}
-                      >
-                        Move to published
-                      </button>
-                    ) : (
-                      <button
-                        className="btn-secondary"
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void move(row, 'in_process')}
-                      >
-                        Back to under process
+                    {index > 0 && (
+                      <button type="button" className="text-gray-400 hover:text-white p-1" onClick={() => removeRound(index)}>
+                        <Minus className="w-4 h-4" />
                       </button>
                     )}
                   </div>
-                  ) : null}
-                </td>
-              </tr>
-              );
-              }),
-            )}
-          </tbody>
-        </table>
-      </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <DateSlaField
+                    label="Review sent date"
+                    value={round.sent_date || ''}
+                    onChange={(value) => setRound(index, 'sent_date', value)}
+                    tone={tones.rounds[index]?.sent || 'white'}
+                  />
+                  <DateSlaField
+                    label="Review receive date"
+                    value={round.received_date || ''}
+                    onChange={(value) => setRound(index, 'received_date', value)}
+                    tone={tones.rounds[index]?.received || 'white'}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <DateSlaField label="Acceptance date" value={form.accepted_date} onChange={(value) => field('accepted_date', value)} tone={tones.accepted} />
+          <DateSlaField label="Galley sent date" value={form.galley_sent_date} onChange={(value) => field('galley_sent_date', value)} tone={tones.galleySent} />
+          <DateSlaField label="Galley received date" value={form.galley_received_date} onChange={(value) => field('galley_received_date', value)} tone={tones.galleyReceived} />
+          <DateSlaField label="Publish date" value={form.publish_date} onChange={(value) => field('publish_date', value)} tone={tones.publish} />
+          <label className="text-sm text-gray-400 md:col-span-2">
+            Status
+            <select className="input-field mt-1" value={form.editorial_status} onChange={(e) => field('editorial_status', e.target.value)}>
+              {EDITORIAL_STATUSES.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="md:col-span-2 flex flex-wrap gap-2">
+            <button className="btn-primary" type="submit" disabled={busy}>
+              {busy ? 'Saving…' : 'Save article'}
+            </button>
+            <button
+              className="btn-secondary"
+              type="button"
+              onClick={() => {
+                setEditing(false);
+                setForm(emptyForm);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {displayRows(row).map((ver) => (
+        <HistoryCard key={ver.key} ver={ver} />
+      ))}
     </div>
   );
 }

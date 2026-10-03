@@ -253,9 +253,11 @@ export const citationApi = {
     addJournal: (data: { name: string; abbreviation?: string }) =>
       api.post('/author-articles/journals', data),
     list: (wing?: string) => api.get('/author-articles', { params: wing ? { wing } : {} }),
+    get: (id: number) => api.get(`/author-articles/${id}`),
     create: (data: Record<string, unknown>) => api.post('/author-articles', data),
     update: (id: number, data: Record<string, unknown>) => api.patch(`/author-articles/${id}`, data),
-    remove: (id: number) => api.delete(`/author-articles/${id}`),
+    remove: (id: number, password: string) =>
+      api.delete(`/author-articles/${id}`, { data: { password } }),
     template: () => api.get('/author-articles/template', { responseType: 'blob' }),
     importFile: (file: File, wing: string) => {
       const form = new FormData();

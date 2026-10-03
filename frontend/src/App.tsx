@@ -221,7 +221,27 @@ export default function App() {
           }
         />
         <Route
+          path="/authors/in-process/:articleId"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorWingRoute wing="in_process">
+                <AuthorArticlesPage wing="in_process" />
+              </AuthorWingRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
           path="/authors/published"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorWingRoute wing="published">
+                <AuthorArticlesPage wing="published" />
+              </AuthorWingRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors/published/:articleId"
           element={
             <ServiceRoute service="authors">
               <AuthorWingRoute wing="published">
