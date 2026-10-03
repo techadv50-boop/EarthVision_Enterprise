@@ -260,24 +260,27 @@ function dateTones(data: {
 }) {
   const rounds = data.review_rounds?.length ? data.review_rounds : [emptyRound(1)];
   let previous = data.received_date || (data.created_at ? data.created_at.slice(0, 10) : '') || '';
-  const roundTones = rounds.map((round) => {
-    const sent = slaTone(previous, round.sent_date);
-    const received = slaTone(round.sent_date || previous, round.received_date);
-    previous = round.received_date || round.sent_date || previous;
-    return { sent, received };
-  });
-  const accepted = slaTone(previous, data.accepted_date);
-  previous = data.accepted_date || previous;
-  const galleySent = slaTone(previous, data.galley_sent_date);
-  previous = data.galley_sent_date || previous;
-  const galleyReceived = slaTone(previous, data.galley_received_date);
-  previous = data.galley_received_date || previous;
+  let waitingSeen = false;
+  const step = (current?: string | null): SlaTone => {
+    if (current) {
+      const tone = slaTone(previous, current);
+      previous = current;
+      return tone;
+    }
+    if (waitingSeen) return 'white';
+    waitingSeen = true;
+    return slaTone(previous, current);
+  };
+  const roundTones = rounds.map((round) => ({
+    sent: step(round.sent_date),
+    received: step(round.received_date),
+  }));
   return {
     rounds: roundTones,
-    accepted,
-    galleySent,
-    galleyReceived,
-    publish: slaTone(previous, data.publish_date),
+    accepted: step(data.accepted_date),
+    galleySent: step(data.galley_sent_date),
+    galleyReceived: step(data.galley_received_date),
+    publish: step(data.publish_date),
   };
 }
 
@@ -791,7 +794,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                 <td className="py-3 pr-3">{ver.data.email_sent_date || '—'}</td>
                 <td className="py-3 pr-3">{ver.data.plagiarism || '—'}</td>
                 <td className="py-3 pr-3">{ver.data.orcid_id || '—'}</td>
-                <td className="py-3 pr-3 text-xs whitespace-nowrap">
+                <td className="py-3 pr-3 text-xs whitespace-nowrap min-w-[12rem]">
                   {(ver.data.review_rounds || []).map((round, index) => (
                     <p key={round.round} className="flex flex-col gap-0.5">
                       <span className="inline-flex items-center gap-1">
@@ -810,7 +813,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                   ))}
                   {(ver.data.review_rounds || []).length === 0 ? '—' : null}
                 </td>
-                <td className="py-3 pr-3 text-xs whitespace-nowrap">
+                <td className="py-3 pr-3 text-xs whitespace-nowrap min-w-[12rem]">
                   <p className="inline-flex items-center gap-1">
                     <SlaDot tone={rowTones.accepted} label="Acceptance date" />
                     <span className={rowTones.accepted === 'red' ? 'text-red-400' : rowTones.accepted === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
