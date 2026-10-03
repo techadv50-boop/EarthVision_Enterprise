@@ -277,8 +277,11 @@ export const citationApi = {
       api.post('/author-articles/sanitization/check', data),
     publishSanitization: (article_id: number, extra?: Record<string, unknown>) =>
       api.post('/author-articles/sanitization/publish', { article_id, ...(extra || {}) }),
-    storeJournals: () => api.get('/author-articles/store/journals'),
-    storeFiles: (journalKey: string) => api.get(`/author-articles/store/${encodeURIComponent(journalKey)}/files`),
+    storeJournals: () => api.get('/author-articles/store/journals', { params: { _: Date.now() } }),
+    storeFiles: (journalKey: string) =>
+      api.get(`/author-articles/store/${encodeURIComponent(journalKey)}/files`, {
+        params: { _: Date.now() },
+      }),
     storeUpload: (journalKey: string, file: File) => {
       const form = new FormData();
       form.append('file', file);

@@ -109,7 +109,9 @@ export default function AuthorStorePage() {
     setMsg('');
     setError('');
     try {
-      await citationApi.authorArticles.storeUpload(active.key, file);
+      const { data } = await citationApi.authorArticles.storeUpload(active.key, file);
+      const saved = data as StoreFile;
+      setFiles((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)]);
       setMsg(`Stored ${file.name} under ${active.name}.`);
       await loadJournals(active.key);
       await loadFiles(active.key);
