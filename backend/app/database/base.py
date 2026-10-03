@@ -32,4 +32,5 @@ from app.models.citation import (  # noqa: E402, F401
     ManuscriptParagraph,
     CitationSuggestion,
     AuthorArticle,
+    AuthorArticleChange,
 )

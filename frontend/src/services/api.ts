@@ -253,5 +253,14 @@ export const citationApi = {
     create: (data: Record<string, unknown>) => api.post('/author-articles', data),
     update: (id: number, data: Record<string, unknown>) => api.patch(`/author-articles/${id}`, data),
     remove: (id: number) => api.delete(`/author-articles/${id}`),
+    template: () => api.get('/author-articles/template', { responseType: 'blob' }),
+    importFile: (file: File, wing: string) => {
+      const form = new FormData();
+      form.append('file', file);
+      return api.post('/author-articles/import', form, {
+        params: { wing },
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    },
   },
 };

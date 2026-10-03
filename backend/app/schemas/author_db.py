@@ -10,6 +10,24 @@ from pydantic import BaseModel, Field
 
 WINGS = ("in_process", "published")
 
+FIELD_LABELS = {
+    "wing": "Wing",
+    "journal_id": "Journal",
+    "ojs_number": "OJS number",
+    "title": "Title",
+    "author_names": "Author names",
+    "author_emails": "Email addresses of authors",
+    "email_sent": "Email sent",
+    "plagiarism": "Plagiarism",
+    "orcid_id": "ORCID ID",
+    "received_date": "Receive date",
+    "review_date": "Review date",
+    "accepted_date": "Accepted date",
+    "publish_date": "Publish date",
+    "repeat_done": "Repeat done",
+    "doi_in_pdf": "DOI in PDF",
+}
+
 
 class AuthorArticleIn(BaseModel):
     wing: str = Field(default="in_process")
@@ -47,6 +65,23 @@ class AuthorArticlePatch(BaseModel):
     doi_in_pdf: Optional[str] = None
 
 
+class AuthorFieldChangeOut(BaseModel):
+    field: str
+    label: str
+    previous: str
+    new: str
+
+
+class AuthorModificationOut(BaseModel):
+    mod_number: int
+    changed_at: datetime
+    account: str
+    account_username: str = ""
+    account_email: str = ""
+    account_name: str = ""
+    changes: list[AuthorFieldChangeOut] = Field(default_factory=list)
+
+
 class AuthorArticleOut(BaseModel):
     id: int
     wing: str
@@ -68,5 +103,14 @@ class AuthorArticleOut(BaseModel):
     doi_in_pdf: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    modifications: list[AuthorModificationOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+
+class AuthorImportResult(BaseModel):
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: list[str] = Field(default_factory=list)
+    articles: list[AuthorArticleOut] = Field(default_factory=list)

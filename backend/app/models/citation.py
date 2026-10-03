@@ -251,3 +251,32 @@ class AuthorArticle(Base):
     )
 
     journal: Mapped[Optional["Journal"]] = relationship()
+    changes: Mapped[List["AuthorArticleChange"]] = relationship(
+        back_populates="article",
+        cascade="all, delete-orphan",
+        order_by="AuthorArticleChange.mod_number",
+    )
+
+
+class AuthorArticleChange(Base):
+    """One numbered modification event on an author-database article."""
+
+    __tablename__ = "author_article_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    article_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("author_articles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    mod_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    account_username: Mapped[str] = mapped_column(String(100), default="")
+    account_email: Mapped[str] = mapped_column(String(255), default="")
+    account_name: Mapped[str] = mapped_column(String(255), default="")
+    changes: Mapped[Any] = mapped_column(JSON, default=list)
+
+    article: Mapped["AuthorArticle"] = relationship(back_populates="changes")
