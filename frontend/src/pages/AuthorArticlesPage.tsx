@@ -414,8 +414,8 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
       </h2>
       <p className="text-gray-400 text-sm mb-4 max-w-4xl">
         {inProcess
-          ? 'Add or modify articles. Users cannot delete rows. Every saved change gets a MOD button with the date, time, account, previous value, and new value.'
-          : 'Published records keep the same modification history. Users can update fields but cannot delete.'}
+          ? 'Add or update articles. Users cannot delete rows. Add details reopens this article so you can save a new modification row with the date of the change.'
+          : 'Published records keep the original row and every modification made while the article was under process. Users can update fields but cannot delete.'}
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
@@ -652,9 +652,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-gray-500 border-b border-gray-800">
-              <th className="py-2 pr-3">Record</th>
-              <th className="py-2 pr-3">Date</th>
-              <th className="py-2 pr-3">OJS</th>
+              <th className="py-2 pr-3">Article</th>
               <th className="py-2 pr-3">Title</th>
               <th className="py-2 pr-3">Authors</th>
               <th className="py-2 pr-3">Email sent date</th>
@@ -668,7 +666,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="py-4 text-gray-500" colSpan={11}>
+                <td className="py-4 text-gray-500" colSpan={9}>
                   {inProcess
                     ? 'No under process articles yet. Add one or import an Excel file.'
                     : 'No published articles yet. Move a finished record from Under process or import Excel.'}
@@ -678,12 +676,10 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
             {rows.flatMap((row) =>
               displayRows(row).map((ver) => (
               <tr key={ver.key} className="border-b border-gray-800/80 align-top">
-                <td className="py-3 pr-3 whitespace-nowrap">
-                  <p className={ver.isOriginal ? 'text-gray-200' : 'text-earth-400'}>{ver.label}</p>
-                </td>
-                <td className="py-3 pr-3 whitespace-nowrap text-xs text-gray-400">{formatDay(ver.dated)}</td>
-                <td className="py-3 pr-3 whitespace-nowrap">
-                  {ver.data.ojs_number || '—'}
+                <td className="py-3 pr-3 whitespace-nowrap min-w-[12rem]">
+                  <p className={ver.isOriginal ? 'text-gray-200 font-medium' : 'text-earth-400 font-medium'}>{ver.label}</p>
+                  <p className="text-xs text-gray-500">{formatDay(ver.dated)}</p>
+                  <p className="mt-1">{ver.data.ojs_number || '—'}</p>
                   {ver.data.journal_name ? (
                     <p className="text-xs text-gray-500 max-w-[14rem] whitespace-normal">{ver.data.journal_name}</p>
                   ) : null}
