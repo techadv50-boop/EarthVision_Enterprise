@@ -1,0 +1,89 @@
+import { useMemo, useState } from "react";
+import type { Galley, Journal } from "../types";
+
+export function Shelf({
+  journals,
+  galleys,
+  onAdd,
+  onEdit,
+  onOpenJournal,
+  onOpenGalley,
+  onDeleteGalley,
+}: {
+  journals: Journal[];
+  galleys: Galley[];
+  onAdd: () => void;
+  onEdit: (journal: Journal) => void;
+  onOpenJournal: (journal: Journal) => void;
+  onOpenGalley: (galley: Galley) => void;
+  onDeleteGalley: (galley: Galley) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const shown = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return journals
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .filter((journal) => {
+        if (!needle) return true;
+        return (
+          journal.name.toLowerCase().includes(needle) || journal.abbreviation.toLowerCase().includes(needle)
+        );
+      });
+  }, [journals, query]);
+
+  return (
+    <div className="panel">
+      <header className="bar">
+        <h1>Galley</h1>
+        <button type="button" onClick={onAdd}>
+          + Add journal
+        </button>
+      </header>
+      <label className="search">
+        Search journals
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name or abbreviation" />
+      </label>
+      <ul className="journal-list">
+        {shown.map((journal) => (
+          <li key={journal.id}>
+            <button type="button" className="journal-main" onClick={() => onOpenJournal(journal)}>
+              <strong>{journal.abbreviation}</strong>
+              <span>{journal.name}</span>
+              <small>
+                {journal.partnerIcons.length} partner icons
+                {journal.issnP ? ` · ISSN-P ${journal.issnP}` : ""}
+                {journal.issnE ? ` · ISSN-E ${journal.issnE}` : ""}
+              </small>
+            </button>
+            <button type="button" className="ghost" onClick={() => onEdit(journal)}>
+              Edit
+            </button>
+          </li>
+        ))}
+        {shown.length === 0 && <li className="muted">No journal matches that search.</li>}
+      </ul>
+      <h2>Saved galleys</h2>
+      <ul className="journal-list">
+        {galleys
+          .slice()
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .map((galley) => {
+            const journal = journals.find((item) => item.id === galley.journalId);
+            return (
+              <li key={galley.id}>
+                <button type="button" className="journal-main" onClick={() => onOpenGalley(galley)}>
+                  <strong>{journal?.abbreviation ?? "Journal"}</strong>
+                  <span>{galley.title.trim() || "Untitled galley"}</span>
+                </button>
+                <button type="button" className="ghost" onClick={() => onDeleteGalley(galley)}>
+                  Remove
+                </button>
+              </li>
+            );
+          })}
+        {galleys.length === 0 && <li className="muted">A galley you save will stay in this list.</li>}
+      </ul>
+    </div>
+  );
+}
