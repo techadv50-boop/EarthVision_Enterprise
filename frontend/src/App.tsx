@@ -29,6 +29,7 @@ import LanguageReviewPage from '@/pages/LanguageReviewPage';
 import AuthorHubPage from '@/pages/AuthorHubPage';
 import AuthorArticlesPage from '@/pages/AuthorArticlesPage';
 import GalleyPage from '@/pages/GalleyPage';
+import WebCrawlerPage from '@/pages/WebCrawlerPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
 import BillingSuccessPage from '@/pages/BillingSuccessPage';
 import BillingCancelPage from '@/pages/BillingCancelPage';
@@ -258,6 +259,7 @@ export default function App() {
             </ServiceRoute>
           }
         />
+        <Route path="/crawler" element={<WebCrawlerPage />} />
         <Route
           path="/archive"
           element={
