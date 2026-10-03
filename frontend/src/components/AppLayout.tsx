@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { BookOpen, CheckSquare, ClipboardList, FilePlus, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
+import { BookOpen, CheckSquare, ClipboardList, FilePlus, FilePenLine, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 function navClass(isActive: boolean) {
@@ -13,6 +13,7 @@ export default function AppLayout() {
   const admin = isCitationAdmin(user);
   const inReview = location.pathname.startsWith('/review');
   const inAuthors = location.pathname.startsWith('/authors');
+  const inGalley = location.pathname.startsWith('/galley');
   const inCitation =
     location.pathname.startsWith('/journals') ||
     location.pathname.startsWith('/manuscripts') ||
@@ -34,6 +35,9 @@ export default function AppLayout() {
           </NavLink>
           <NavLink to="/authors" className={({ isActive }) => navClass(isActive)}>
             Author DB
+          </NavLink>
+          <NavLink to="/galley" className={({ isActive }) => navClass(isActive)}>
+            Galley composition
           </NavLink>
           {inCitation && (
             <>
@@ -83,6 +87,11 @@ export default function AppLayout() {
               </NavLink>
             </>
           )}
+          {inGalley && (
+            <span className="inline-flex items-center gap-1 text-earth-400">
+              <FilePenLine className="w-4 h-4" /> Desk
+            </span>
+          )}
           {admin && (
             <NavLink to="/users" className={({ isActive }) => navClass(isActive)}>
               <span className="inline-flex items-center gap-1">
@@ -108,7 +117,7 @@ export default function AppLayout() {
           </button>
         </nav>
       </header>
-      <main className="max-w-7xl mx-auto px-6 py-6">
+      <main className={inGalley ? 'w-full' : 'max-w-7xl mx-auto px-6 py-6'}>
         <Outlet />
       </main>
     </div>

@@ -18,6 +18,7 @@ import ReferenceCheckPage from '@/pages/ReferenceCheckPage';
 import LanguageReviewPage from '@/pages/LanguageReviewPage';
 import AuthorHubPage from '@/pages/AuthorHubPage';
 import AuthorArticlesPage from '@/pages/AuthorArticlesPage';
+import GalleyPage from '@/pages/GalleyPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
 import BillingSuccessPage from '@/pages/BillingSuccessPage';
 import BillingCancelPage from '@/pages/BillingCancelPage';
@@ -86,6 +87,7 @@ export default function App() {
         <Route path="/authors" element={<AuthorHubPage />} />
         <Route path="/authors/in-process" element={<AuthorArticlesPage wing="in_process" />} />
         <Route path="/authors/published" element={<AuthorArticlesPage wing="published" />} />
+        <Route path="/galley" element={<GalleyPage />} />
         <Route
           path="/archive"
           element={
