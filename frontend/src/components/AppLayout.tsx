@@ -1,6 +1,6 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { BookOpen, CheckSquare, ClipboardList, FilePlus, FilePenLine, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import { hasAnyDesk, hasDesk, isCitationAdmin, isFullAdmin, useAuthStore } from '@/store/authStore';
 
 function navClass(isActive: boolean) {
   return isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white';
@@ -11,6 +11,9 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const admin = isCitationAdmin(user);
+  const usersAdmin = hasDesk(user, 'users');
+  const anyDesk = hasAnyDesk(user);
+  const inAdmin = location.pathname.startsWith('/admin') || location.pathname.startsWith('/users');
   const inReview = location.pathname.startsWith('/review');
   const inAuthors = location.pathname.startsWith('/authors');
   const inGalley = location.pathname.startsWith('/galley');
@@ -92,17 +95,26 @@ export default function AppLayout() {
               <FilePenLine className="w-4 h-4" /> Desk
             </span>
           )}
-          {admin && (
+          {inAdmin && usersAdmin && (
             <NavLink to="/users" className={({ isActive }) => navClass(isActive)}>
+              Adding users
+            </NavLink>
+          )}
+          {anyDesk && (
+            <NavLink to="/admin" className={({ isActive }) => navClass(isActive)}>
               <span className="inline-flex items-center gap-1">
-                <Shield className="w-4 h-4" /> Users
+                <Shield className="w-4 h-4" /> Admin
               </span>
             </NavLink>
           )}
           {user && (
             <span className="text-gray-500">
               {user.full_name || user.username}
-              {admin ? ' · admin' : ' · user'}
+              {isFullAdmin(user)
+                ? ' · all desks'
+                : anyDesk
+                  ? ' · desk admin'
+                  : ' · user'}
             </span>
           )}
           <button

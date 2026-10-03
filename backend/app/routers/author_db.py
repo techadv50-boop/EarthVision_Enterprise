@@ -140,7 +140,7 @@ async def _visible_query(db: AsyncSession, user: User, wing: Optional[str]):
     stmt = select(AuthorArticle).options(*_load_options()).order_by(AuthorArticle.id.desc())
     if wing:
         stmt = stmt.where(AuthorArticle.wing == wing)
-    allowed = await allowed_journal_ids(db, user)
+    allowed = await allowed_journal_ids(db, user, desk="authors")
     if allowed is not None:
         if not allowed:
             stmt = stmt.where(AuthorArticle.owner_id == user.id, AuthorArticle.journal_id.is_(None))
@@ -159,7 +159,7 @@ async def _load_row(db: AsyncSession, article_id: int, user: User) -> AuthorArti
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Article not found")
-    allowed = await allowed_journal_ids(db, user)
+    allowed = await allowed_journal_ids(db, user, desk="authors")
     if allowed is None:
         return row
     if row.owner_id == user.id:
@@ -234,7 +234,7 @@ async def _apply_update(
     if "journal_id" in data:
         journal_id = data["journal_id"]
         if journal_id is not None:
-            await require_journal_access(db, user, int(journal_id))
+            await require_journal_access(db, user, int(journal_id), desk="authors")
             journal_id = int(journal_id)
         if row.journal_id != journal_id:
             diffs.append(
@@ -362,7 +362,7 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
     if wing not in WINGS:
         raise HTTPException(status_code=400, detail="Wing must be in_process or published")
     if body.journal_id is not None:
-        await require_journal_access(db, user, body.journal_id)
+        await require_journal_access(db, user, body.journal_id, desk="authors")
     row = AuthorArticle(
         wing=wing,
         journal_id=body.journal_id,
@@ -401,7 +401,7 @@ async def update_author_article(
 
 @router.delete("/{article_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_author_article(article_id: int, db: Db, user: CurrentUser):
-    if not user.is_citation_admin():
+    if not user.has_desk("authors"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Users cannot delete author-database records. Save a modification instead.",
@@ -533,7 +533,7 @@ async def _journal_by_name(db: AsyncSession, user: User, name: str) -> Optional[
     if not needle:
         return None
     journals = list((await db.execute(select(Journal))).scalars().all())
-    allowed = await allowed_journal_ids(db, user)
+    allowed = await allowed_journal_ids(db, user, desk="authors")
     for journal in journals:
         label = (journal.abbreviation or journal.name or "").strip().lower()
         full = (journal.name or "").strip().lower()

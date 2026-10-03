@@ -30,8 +30,8 @@ export function Admin({
         </button>
       </header>
       <p className="muted">
-        Accounts stay on the Citation Assistant Users tab so composers keep one username and password.{" "}
-        <Link to="/users">Open Users</Link>
+        Accounts stay on Admin → Adding users so composers keep one username and password.{" "}
+        <Link to="/admin">Open Admin desks</Link>
       </p>
 
       <h2>Journals</h2>

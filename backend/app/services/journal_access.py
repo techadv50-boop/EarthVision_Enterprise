@@ -12,12 +12,14 @@ from app.models.citation import Journal
 from app.models.user import User, user_journals
 
 
-async def allowed_journal_ids(db: AsyncSession, user: User) -> Optional[set[int]]:
+async def allowed_journal_ids(
+    db: AsyncSession, user: User, *, desk: str = "citation"
+) -> Optional[set[int]]:
     """Journal IDs this user may see and cite from.
 
-    ``None`` means every journal (citation admin). An empty set means none.
+    ``None`` means every journal (that desk's admin). An empty set means none.
     """
-    if user.is_citation_admin():
+    if user.has_desk(desk):
         return None
     result = await db.execute(
         select(user_journals.c.journal_id).where(user_journals.c.user_id == user.id)
@@ -25,18 +27,22 @@ async def allowed_journal_ids(db: AsyncSession, user: User) -> Optional[set[int]
     return set(result.scalars().all())
 
 
-async def user_can_access_journal(db: AsyncSession, user: User, journal_id: int) -> bool:
-    allowed = await allowed_journal_ids(db, user)
+async def user_can_access_journal(
+    db: AsyncSession, user: User, journal_id: int, *, desk: str = "citation"
+) -> bool:
+    allowed = await allowed_journal_ids(db, user, desk=desk)
     if allowed is None:
         return True
     return journal_id in allowed
 
 
-async def require_journal_access(db: AsyncSession, user: User, journal_id: int) -> Journal:
+async def require_journal_access(
+    db: AsyncSession, user: User, journal_id: int, *, desk: str = "citation"
+) -> Journal:
     journal = await db.get(Journal, journal_id)
     if journal is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal not found")
-    if not await user_can_access_journal(db, user, journal.id):
+    if not await user_can_access_journal(db, user, journal.id, desk=desk):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal not found")
     return journal
 

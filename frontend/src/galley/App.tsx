@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { isCitationAdmin, useAuthStore } from "@/store/authStore";
+import { hasDesk, useAuthStore } from "@/store/authStore";
 import type { Galley, IconAsset, Journal } from "./types";
 import { newGalley, normalizeGalley } from "./storage";
 import { seedStore } from "./seed";
@@ -29,7 +29,7 @@ function accountFromAuth(): Account | null {
     id: String(user.id),
     name: user.full_name || user.username,
     email: user.email,
-    role: isCitationAdmin(user) ? "admin" : "user",
+    role: hasDesk(user, "galley") ? "admin" : "user",
     status: "approved",
   };
 }

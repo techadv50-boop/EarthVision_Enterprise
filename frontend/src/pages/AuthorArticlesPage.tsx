@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { citationApi } from '@/services/api';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import { hasDesk, useAuthStore } from '@/store/authStore';
 
 type Wing = 'in_process' | 'published';
 
@@ -93,7 +93,7 @@ function formatWhen(value?: string) {
 }
 
 export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
-  const admin = isCitationAdmin(useAuthStore((s) => s.user));
+  const admin = hasDesk(useAuthStore((s) => s.user), 'authors');
   const inProcess = wing === 'in_process';
   const [journals, setJournals] = useState<JournalOption[]>([]);
   const [rows, setRows] = useState<AuthorRow[]>([]);

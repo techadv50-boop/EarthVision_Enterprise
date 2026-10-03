@@ -1,13 +1,16 @@
 import { Link } from 'react-router-dom';
 import { GitCompare, Languages } from 'lucide-react';
+import { hasDesk, useAuthStore } from '@/store/authStore';
 
 export default function ReviewHubPage() {
+  const reviewAdmin = hasDesk(useAuthStore((s) => s.user), 'review');
   return (
     <div>
       <h2 className="text-2xl font-semibold mb-2">Article Review / Comparison</h2>
       <p className="text-gray-400 mb-6 max-w-3xl">
         Tools for the file you gave to staff and the manuscript that will be published. They do
         not change the journal archive.
+        {reviewAdmin ? ' You are the admin for this desk.' : ''}
       </p>
       <div className="grid md:grid-cols-2 gap-4">
         <Link to="/review/references" className="panel p-6 hover:border-earth-500 transition-colors block">

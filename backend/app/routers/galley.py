@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.core.dependencies import get_current_user, require_citation_admin
+from app.core.dependencies import get_current_user, require_desk
 from app.database.session import get_db
 from app.models.galley import GalleyJournal, GalleyProof, GalleySetting
 from app.models.user import User
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/galley", tags=["Galley composition"])
 
 Db = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
-CitationAdmin = Annotated[User, Depends(require_citation_admin)]
+CitationAdmin = Annotated[User, Depends(require_desk("galley"))]
 
 
 class OcrBody(BaseModel):
@@ -107,7 +107,7 @@ async def list_galleys(user: CurrentUser, db: Db) -> list[dict[str, Any]]:
         .options(selectinload(GalleyProof.owner))
         .order_by(GalleyProof.updated_at.desc())
     )
-    if not user.is_citation_admin():
+    if not user.has_desk("galley"):
         query = query.where(GalleyProof.owner_id == user.id)
     result = await db.execute(query)
     return [_record(row) for row in result.scalars().all()]
@@ -137,7 +137,7 @@ async def update_galley(
     row = await db.get(GalleyProof, galley_id)
     if row is None:
         raise HTTPException(404, "Galley not found")
-    if not user.is_citation_admin() and row.owner_id != user.id:
+    if not user.has_desk("galley") and row.owner_id != user.id:
         raise HTTPException(403, "You can edit only your own galley")
     body["id"] = galley_id
     body["updatedAt"] = int(time.time() * 1000)

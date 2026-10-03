@@ -44,6 +44,7 @@ async def register(
         is_active=user.is_active,
         is_superuser=user.is_superuser,
         roles=[r.name for r in user.roles],
+        desks=user.admin_desks(),
         access_status=user.portal_status(),
         created_at=user.created_at,
     )
@@ -124,6 +125,7 @@ async def get_me(current_user: Annotated[User, Depends(get_current_user)]):
         is_active=current_user.is_active,
         is_superuser=current_user.is_superuser,
         roles=[r.name for r in current_user.roles],
+        desks=current_user.admin_desks(),
         access_status=current_user.portal_status(),
         created_at=current_user.created_at,
     )

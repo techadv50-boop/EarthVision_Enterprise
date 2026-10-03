@@ -74,7 +74,8 @@ class UserAdminCreate(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=128)
     full_name: Optional[str] = None
-    role: str = Field(default="user", description="Citation role: admin or user")
+    role: str = Field(default="user", description="admin = every desk; user = staff plus optional desks")
+    desks: list[str] = Field(default_factory=list)
     assigned_journal_ids: list[int] = Field(default_factory=list)
 
 
@@ -83,7 +84,8 @@ class UserAdminUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
     role_ids: Optional[list[int]] = None
-    role: Optional[str] = Field(default=None, description="Citation role: admin or user")
+    role: Optional[str] = Field(default=None, description="admin = every desk; user = staff plus optional desks")
+    desks: Optional[list[str]] = None
     access_status: Optional[str] = Field(
         default=None, description="pending, approved, or restricted"
     )

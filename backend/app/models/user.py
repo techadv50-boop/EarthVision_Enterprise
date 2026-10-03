@@ -114,8 +114,25 @@ class User(Base):
     def has_role(self, role_name: str) -> bool:
         return any(role.name == role_name for role in self.roles)
 
-    def is_citation_admin(self) -> bool:
+    def is_full_admin(self) -> bool:
+        """Operator account: every desk."""
         return bool(self.is_superuser or self.has_role("admin"))
+
+    def has_desk(self, desk: str) -> bool:
+        if self.is_full_admin():
+            return True
+        return self.has_role(f"admin_{desk}")
+
+    def admin_desks(self) -> list[str]:
+        from app.core.desks import DESKS
+
+        if self.is_full_admin():
+            return list(DESKS)
+        return [desk for desk in DESKS if self.has_role(f"admin_{desk}")]
+
+    def is_citation_admin(self) -> bool:
+        """Admin of the citation archive (journals, crawl, manuscripts)."""
+        return self.has_desk("citation")
 
     def portal_status(self) -> str:
         status = (self.access_status or "approved").strip().lower()

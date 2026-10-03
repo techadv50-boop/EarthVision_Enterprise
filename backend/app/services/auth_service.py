@@ -155,7 +155,8 @@ class AuthService:
         await self.ensure_operator_user()
 
     async def ensure_citation_roles(self) -> None:
-        """Keep admin and user roles available after the first seed."""
+        """Keep admin, user, and per-desk admin roles available after the first seed."""
+        from app.core.desks import DESK_LABELS
         from app.models.user import Permission
 
         existing = {
@@ -163,13 +164,42 @@ class AuthService:
             for row in (await self.db.execute(select(Role))).scalars().all()
         }
         if "admin" not in existing:
-            admin_role = Role(name="admin", description="Administrator — full Citation Assistant")
+            admin_role = Role(name="admin", description="Administrator — every desk")
             perms = list((await self.db.execute(select(Permission))).scalars().all())
             admin_role.permissions = perms
             self.db.add(admin_role)
         if "user" not in existing:
-            self.db.add(Role(name="user", description="Citation user — New manuscript only"))
+            self.db.add(Role(name="user", description="Staff — work assigned journals"))
+        for desk, label in DESK_LABELS.items():
+            name = f"admin_{desk}"
+            if name not in existing:
+                self.db.add(Role(name=name, description=f"Admin — {label}"))
         await self.db.flush()
+
+    async def roles_named(self, names: list[str]) -> list[Role]:
+        if not names:
+            return []
+        result = await self.db.execute(select(Role).where(Role.name.in_(names)))
+        found = {row.name: row for row in result.scalars().all()}
+        missing = [name for name in names if name not in found]
+        if missing:
+            await self.ensure_citation_roles()
+            result = await self.db.execute(select(Role).where(Role.name.in_(names)))
+            found = {row.name: row for row in result.scalars().all()}
+        return [found[name] for name in names if name in found]
+
+    async def apply_desks(self, user: User, *, full_admin: bool, desks: list[str]) -> None:
+        from app.core.desks import normalize_desks
+
+        desks = normalize_desks(desks)
+        if full_admin:
+            roles = await self.roles_named(["admin"])
+            user.roles = roles
+            user.is_superuser = True
+            return
+        names = ["user", *[f"admin_{desk}" for desk in desks]]
+        user.roles = await self.roles_named(names)
+        user.is_superuser = False
 
     async def ensure_operator_user(self) -> None:
         """Create the XDGEN operator login if it is missing (does not overwrite an existing password)."""

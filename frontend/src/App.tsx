@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import { hasAnyDesk, hasDesk, isCitationAdmin, useAuthStore, type AdminDeskId } from '@/store/authStore';
+import AdminHubPage from '@/pages/AdminHubPage';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import AppLayout from '@/components/AppLayout';
@@ -48,7 +49,23 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
   if (!isCitationAdmin(user)) {
-    return <Navigate to="/manuscripts" replace />;
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
+function DeskRoute({ desk, children }: { desk: AdminDeskId; children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!hasDesk(user, desk)) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
+function AnyDeskRoute({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!hasAnyDesk(user)) {
+    return <Navigate to="/" replace />;
   }
   return <>{children}</>;
 }
@@ -69,6 +86,14 @@ export default function App() {
         }
       >
         <Route path="/" element={<HomePage />} />
+        <Route
+          path="/admin"
+          element={
+            <AnyDeskRoute>
+              <AdminHubPage />
+            </AnyDeskRoute>
+          }
+        />
         <Route path="/journals" element={<DashboardPage />} />
         <Route path="/journals/:journalId" element={<JournalVolumesPage />} />
         <Route
@@ -99,9 +124,9 @@ export default function App() {
         <Route
           path="/users"
           element={
-            <AdminRoute>
+            <DeskRoute desk="users">
               <UsersPage />
-            </AdminRoute>
+            </DeskRoute>
           }
         />
       </Route>

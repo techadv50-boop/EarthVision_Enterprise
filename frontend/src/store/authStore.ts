@@ -1,6 +1,16 @@
 import { create } from 'zustand';
 import { authApi } from '@/services/api';
 
+export const ADMIN_DESKS = [
+  { id: 'citation', label: 'Citation project', hint: 'Journals, archive, and manuscripts' },
+  { id: 'authors', label: 'Author database', hint: 'Under process and published records' },
+  { id: 'review', label: 'Article review', hint: 'Reference check and English review' },
+  { id: 'users', label: 'Adding users', hint: 'Create accounts and assign desks' },
+  { id: 'galley', label: 'Galley composition', hint: 'Journal shelf and Word proofs' },
+] as const;
+
+export type AdminDeskId = (typeof ADMIN_DESKS)[number]['id'];
+
 interface User {
   id: number;
   email: string;
@@ -10,11 +20,39 @@ interface User {
   is_active: boolean;
   is_superuser: boolean;
   roles: string[];
+  desks?: string[];
+}
+
+function desksFromRoles(user: User | null | undefined): AdminDeskId[] {
+  if (!user) return [];
+  if (user.desks && user.desks.length) {
+    return ADMIN_DESKS.map((d) => d.id).filter((id) => user.desks!.includes(id));
+  }
+  if (user.is_superuser || (user.roles || []).includes('admin')) {
+    return ADMIN_DESKS.map((d) => d.id);
+  }
+  return ADMIN_DESKS.map((d) => d.id).filter((id) => (user.roles || []).includes(`admin_${id}`));
+}
+
+export function isFullAdmin(user: User | null | undefined): boolean {
+  if (!user) return false;
+  return Boolean(user.is_superuser || (user.roles || []).includes('admin'));
+}
+
+export function hasDesk(user: User | null | undefined, desk: AdminDeskId): boolean {
+  return desksFromRoles(user).includes(desk);
+}
+
+export function hasAnyDesk(user: User | null | undefined): boolean {
+  return desksFromRoles(user).length > 0;
+}
+
+export function deskList(user: User | null | undefined): AdminDeskId[] {
+  return desksFromRoles(user);
 }
 
 export function isCitationAdmin(user: User | null | undefined): boolean {
-  if (!user) return false;
-  return Boolean(user.is_superuser || (user.roles || []).includes('admin'));
+  return hasDesk(user, 'citation');
 }
 
 interface AuthState {

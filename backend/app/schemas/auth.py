@@ -28,6 +28,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_superuser: bool
     roles: list[str] = []
+    desks: list[str] = []
     access_status: str = "approved"
     assigned_journal_ids: list[int] = []
     created_at: datetime

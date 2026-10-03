@@ -168,15 +168,29 @@ async def get_current_user_or_api_key(
     return await get_current_user(credentials=credentials, db=db)
 
 
+def require_desk(desk: str):
+    async def desk_checker(
+        current_user: Annotated[User, Depends(get_current_user)],
+    ) -> User:
+        if current_user.has_desk(desk):
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Admin for the {desk} desk is required",
+        )
+
+    return desk_checker
+
+
 async def require_citation_admin(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    """Admin role sees Journals, Search, and user management. User role does not."""
-    if current_user.is_citation_admin():
+    """Citation-project admin: journals, archive search, and crawl."""
+    if current_user.has_desk("citation"):
         return current_user
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Admin role required",
+        detail="Admin for the citation project is required",
     )
 
 
