@@ -74,6 +74,24 @@ docker compose logs -f cloudflared
 
 Visit https://citation.xdgen.com and sign in with `citation@xdgen.com` / `pak123`.
 
+## Galley at galley.drxdhr.com
+
+The galley desk is a separate site from Citation Assistant. It is the `galley` service in Docker and is served when the request host is `galley.drxdhr.com`.
+
+1. Put `drxdhr.com` on Cloudflare.
+2. On the same tunnel (or a tunnel that can reach this stack), add a public hostname:
+   - **Subdomain**: `galley`
+   - **Domain**: `drxdhr.com`
+   - **Type**: HTTP
+   - **URL**: `nginx:80`
+3. Start the stack: `docker compose --profile tunnel up -d --build`
+
+Nginx sends `galley.drxdhr.com` to the galley desk and leaves `citation.xdgen.com` on the citation app. Accounts, journals, and galleys are stored in the galley container (`galley-data` volume). The Word file is what you send to the authors.
+
+The first start creates an admin at `admin@drxdhr.com` with password `GalleyAdmin#2026`, unless `GALLEY_ADMIN_EMAIL` and `GALLEY_ADMIN_PASSWORD` are set. Change that password before the site is public. An admin adds journals, approves or restricts users, and deletes galleys from the archive. A composer signs in after approval and can only build a galley proof.
+
+On the VPS without the public name, the desk is also at `http://localhost:8090`.
+
 ## SSL
 
 Cloudflare terminates HTTPS for `citation.xdgen.com`. Keep the tunnel service as **HTTP** to nginx; you do not need Let's Encrypt on the VPS.

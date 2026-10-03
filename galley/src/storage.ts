@@ -1,0 +1,154 @@
+import type { BodyBlock, EquationBlock, Galley, IconAsset, Journal, Store } from "./types";
+import { cloneIcons, newId } from "./metrics";
+import { parseReference } from "./references";
+
+const KEY = "galley-composer-v1";
+
+export const EMPTY_STORE: Store = { openAccessIcon: null, journals: [], galleys: [] };
+
+export function loadStore(): Store {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return EMPTY_STORE;
+    const parsed = JSON.parse(raw) as Store;
+    if (!parsed || !Array.isArray(parsed.journals) || !Array.isArray(parsed.galleys)) return EMPTY_STORE;
+    return { ...parsed, galleys: parsed.galleys.map(normalizeGalley) };
+  } catch {
+    return EMPTY_STORE;
+  }
+}
+
+export function saveStore(store: Store): void {
+  localStorage.setItem(KEY, JSON.stringify(store));
+}
+
+export function blankAuthor(): Galley["authors"][number] {
+  return { id: newId(), name: "", affiliation: "", corresponding: false, email: "" };
+}
+
+export function newGalley(journal: Journal): Galley {
+  return {
+    id: newId(),
+    journalId: journal.id,
+    title: "",
+    authors: [{ ...blankAuthor(), corresponding: true }],
+    volume: "",
+    issue: "",
+    startPage: "",
+    received: "",
+    revised: "",
+    accepted: "",
+    published: "",
+    doi: "",
+    abstract: "",
+    keywords: "",
+    topIcons: cloneIcons(journal.topIcons),
+    partnerIcons: cloneIcons(journal.partnerIcons),
+    blocks: [{ id: newId(), type: "section", heading: "Introduction:", text: "" }],
+    references: [],
+    referenceSource: "",
+    referenceStyle: "ieee",
+    updatedAt: Date.now(),
+  };
+}
+
+export function normalizeGalley(galley: Galley): Galley {
+  const blocks: BodyBlock[] = [];
+  const recovered: string[] = [];
+  const source = galley.blocks || [];
+  for (let index = 0; index < source.length; index += 1) {
+    const block = source[index];
+    if (block.type === "heading" && /^references\b/i.test(block.text)) {
+      const next = source[index + 1];
+      if (next?.type === "paragraph" && next.text.trim()) {
+        recovered.push(...next.text.split(/\n+/).map((line) => line.trim()).filter(Boolean));
+        index += 1;
+      }
+      continue;
+    }
+    if (block.type === "heading") {
+      const next = source[index + 1];
+      if (next?.type === "paragraph") {
+        blocks.push({ id: block.id, type: "section", heading: block.text, text: next.text });
+        index += 1;
+      } else {
+        blocks.push({ id: block.id, type: "section", heading: block.text, text: "" });
+      }
+      continue;
+    }
+    if (block.type === "paragraph") {
+      blocks.push({ id: newId(), type: "section", heading: "", text: block.text });
+      continue;
+    }
+    if (block.type === "table" && block.source === undefined) {
+      blocks.push({ ...block, source: block.rows.map((row) => row.join("\t")).join("\n") });
+      continue;
+    }
+    if (block.type === "equation") {
+      const legacy = block as EquationBlock & { text?: string };
+      const source = block.source || (legacy.text ? legacy.text : "");
+      const atoms = block.atoms?.length ? block.atoms : source ? [{ kind: "text" as const, value: source }] : [];
+      blocks.push({
+        id: block.id,
+        type: "equation",
+        imageUrl: block.imageUrl || "",
+        source: block.source || source,
+        atoms,
+        number: block.number || "",
+      });
+      continue;
+    }
+    blocks.push(block);
+  }
+  const references = (galley.references?.length ? galley.references : recovered.map(parseReference)).map((item) => ({
+    ...item,
+    month: item.month || "",
+    url: item.url || "",
+  }));
+  return {
+    ...galley,
+    doi: galley.doi || "",
+    blocks: blocks.length ? blocks : [{ id: newId(), type: "section", heading: "Introduction:", text: "" }],
+    references,
+    referenceSource: galley.referenceSource ?? references.map((item) => item.raw).filter(Boolean).join("\n\n"),
+    referenceStyle: galley.referenceStyle || "ieee",
+  };
+}
+
+export async function readIconFile(file: File, maxHeight: number): Promise<IconAsset> {
+  const dataUrl = await fileToDataUrl(file);
+  const size = await measure(dataUrl);
+  const height = Math.min(maxHeight, size.height || maxHeight);
+  const width = Math.max(12, Math.round(((size.width || height) / (size.height || height)) * height));
+  return { id: newId(), name: file.name, dataUrl, widthPx: width, heightPx: height };
+}
+
+export function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function measure(dataUrl: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => resolve({ width: maxFallback(dataUrl), height: 40 });
+    image.src = dataUrl;
+  });
+}
+
+function maxFallback(dataUrl: string): number {
+  return dataUrl.startsWith("data:image/jpeg") ? 160 : 120;
+}
+
+export async function fetchIcon(path: string, name: string, maxHeight: number): Promise<IconAsset> {
+  const response = await fetch(path);
+  if (!response.ok) throw new Error(`Could not load ${path}`);
+  const blob = await response.blob();
+  const file = new File([blob], name, { type: blob.type || "image/png" });
+  return readIconFile(file, maxHeight);
+}
