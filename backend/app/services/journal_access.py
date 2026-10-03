@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from fastapi import HTTPException, status
@@ -10,6 +11,59 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.citation import Journal
 from app.models.user import User, user_journals
+
+REMOVED_JOURNAL_ABBREVIATIONS = frozenset({"ijist-a", "jaes-b", "jhc-c", "sudj"})
+REMOVED_JOURNAL_NAMES = frozenset(
+    {
+        "journal a - innovations in science & technology",
+        "journal a, innovation in science and technology",
+        "journal b - applied earth studies",
+        "journal b, applied earth sciences",
+        "journal c - hidden from standard users",
+        "journal c, hidden from standard users",
+        "state update demo journal",
+        "journal state audition demo journal",
+        "journal state update demo journal",
+    }
+)
+
+
+def _journal_label_key(value: Optional[str]) -> str:
+    text = (value or "").strip().lower()
+    text = text.replace("—", "-").replace("–", "-")
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def is_removed_journal(name: Optional[str] = None, abbreviation: Optional[str] = None) -> bool:
+    if _journal_label_key(abbreviation) in REMOVED_JOURNAL_ABBREVIATIONS:
+        return True
+    key = _journal_label_key(name)
+    if key in REMOVED_JOURNAL_NAMES:
+        return True
+    if key.startswith("journal a -") or key.startswith("journal a,"):
+        return True
+    if key.startswith("journal b -") or key.startswith("journal b,"):
+        return True
+    if key.startswith("journal c -") or key.startswith("journal c,"):
+        return True
+    if "state update demo" in key or "state audition demo" in key:
+        return True
+    return False
+
+
+async def purge_removed_journals(db: AsyncSession) -> int:
+    """Delete leftover demo journals so they never appear on the shelf or author list."""
+    rows = list((await db.execute(select(Journal))).scalars().all())
+    removed = 0
+    for row in rows:
+        if not is_removed_journal(row.name, row.abbreviation):
+            continue
+        await db.delete(row)
+        removed += 1
+    if removed:
+        await db.flush()
+    return removed
 
 
 async def _assigned_ids(db: AsyncSession, user: User) -> set[int]:
@@ -62,6 +116,8 @@ async def require_journal_access(
     if journal is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal not found")
     if not await user_can_access_journal(db, user, journal.id, desk=desk):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal not found")
+    if is_removed_journal(journal.name, journal.abbreviation):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal not found")
     return journal
 

@@ -206,6 +206,14 @@ async def test_under_process_review_rounds_and_journal_catalog(client: AsyncClie
     assert "Journal of International Relations and Social Dynamics" in names
     assert "International Journal of NT Diseases" in names
     assert "Demo Extra Journal" not in names
+    assert "Journal A — Innovations in Science & Technology" not in names
+    assert "Journal B — Applied Earth Studies" not in names
+    assert "Journal C — Hidden from standard users" not in names
+    assert "State Update Demo Journal" not in names
+    assert "IJIST-A" not in {row.get("abbreviation") for row in journals.json()}
+    assert "JAES-B" not in {row.get("abbreviation") for row in journals.json()}
+    assert "JHC-C" not in {row.get("abbreviation") for row in journals.json()}
+    assert "SUDJ" not in {row.get("abbreviation") for row in journals.json()}
     cite_journals = await client.get("/api/v1/journals", headers=headers)
     assert cite_journals.status_code == 200
     assert "FCSI" not in {row.get("abbreviation") for row in cite_journals.json()}

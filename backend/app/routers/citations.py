@@ -47,7 +47,7 @@ from app.schemas.citation import (
 from app.services.citation_counts import sync_article_citations
 from app.services.crawler import run_crawl_job, run_download_job, run_state_update_job
 from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes, repair_journal_metadata
-from app.services.journal_access import allowed_journal_ids, require_journal_access
+from app.services.journal_access import allowed_journal_ids, require_journal_access, is_removed_journal, purge_removed_journals
 from app.services.matcher import house_citation_for, split_manuscript_paragraphs, suggest_for_manuscript
 from app.services.citation_parser import split_paragraphs
 from app.services.manuscript_export import assign_citations
@@ -203,6 +203,9 @@ def _issue_stats(issue: Issue, arts: list[Article]) -> IssueStatsOut:
 
 @router.post("/journals", response_model=JournalOut, status_code=status.HTTP_201_CREATED)
 async def create_journal(body: JournalCreate, db: Db, _admin: CitationAdmin):
+    await purge_removed_journals(db)
+    if is_removed_journal(body.name, body.abbreviation):
+        raise HTTPException(status_code=400, detail="That journal was removed.")
     taken = await db.execute(
         select(Journal).where(func.lower(Journal.name) == body.name.strip().lower())
     )
@@ -272,6 +275,7 @@ async def _journal_out(db: AsyncSession, journal: Journal) -> JournalOut:
 
 @router.get("/journals", response_model=list[JournalOut])
 async def list_journals(db: Db, user: CurrentUser):
+    await purge_removed_journals(db)
     result = await db.execute(select(Journal).order_by(Journal.name))
     journals = list(result.scalars().all())
     if user.can_manage_users():
@@ -281,6 +285,11 @@ async def list_journals(db: Db, user: CurrentUser):
         allowed = await allowed_journal_ids(db, user, desk=desk)
     if allowed is not None:
         journals = [journal for journal in journals if journal.id in allowed]
+    journals = [
+        journal
+        for journal in journals
+        if not is_removed_journal(journal.name, journal.abbreviation)
+    ]
     return [await _journal_out(db, journal) for journal in journals]
 
 
