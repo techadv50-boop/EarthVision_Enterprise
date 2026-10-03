@@ -1,7 +1,9 @@
 import type { BodyBlock, Galley, IconAsset, Journal } from "../types";
 import { figureNumber, flowBody, newId, parseStartPage, tableNumber } from "../metrics";
+import { composedBlocks } from "../references";
 import { fileToDataUrl } from "../storage";
 import { SheetFooter, SheetHeader } from "./FirstPage";
+import { ReferencesPanel } from "./ReferencesPanel";
 
 export function BodyDesk({
   galley,
@@ -22,7 +24,7 @@ export function BodyDesk({
   const update = (id: string, block: BodyBlock) => setBlocks(galley.blocks.map((item) => (item.id === id ? block : item)));
   const insert = (block: BodyBlock) => setBlocks([...galley.blocks, block]);
   const start = parseStartPage(galley.startPage);
-  const pages = flowBody(galley.blocks);
+  const pages = flowBody(composedBlocks(galley));
   const firstPortrait = pages.find((page) => page.kind === "portrait");
 
   return (
@@ -41,12 +43,15 @@ export function BodyDesk({
       <div className="desk-grid">
         <div className="form-stack">
           <div className="tool-row">
-            <button type="button" onClick={() => insert({ id: newId(), type: "heading", text: "Heading:" })}>
-              Heading
+            <button
+              type="button"
+              className="plus"
+              aria-label="Add heading and paragraph"
+              onClick={() => insert({ id: newId(), type: "section", heading: "", text: "" })}
+            >
+              +
             </button>
-            <button type="button" onClick={() => insert({ id: newId(), type: "paragraph", text: "" })}>
-              Paragraph
-            </button>
+            <span className="muted">Add a heading and its paragraph</span>
             <button
               type="button"
               onClick={() => insert({ id: newId(), type: "figure", dataUrl: "", widthPx: 0, heightPx: 0, caption: "" })}
@@ -89,6 +94,25 @@ export function BodyDesk({
                   Remove
                 </button>
               </div>
+              {block.type === "section" && (
+                <>
+                  <label>
+                    Heading
+                    <input
+                      value={block.heading}
+                      onChange={(event) => update(block.id, { ...block, heading: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Paragraph
+                    <textarea
+                      rows={6}
+                      value={block.text}
+                      onChange={(event) => update(block.id, { ...block, text: event.target.value })}
+                    />
+                  </label>
+                </>
+              )}
               {block.type === "heading" && (
                 <input value={block.text} onChange={(event) => update(block.id, { ...block, text: event.target.value })} />
               )}
@@ -196,6 +220,7 @@ export function BodyDesk({
               {block.type === "pageBreak" && <p className="muted">The next block starts on a fresh 7.5 × 10 inch page.</p>}
             </article>
           ))}
+          <ReferencesPanel galley={galley} onChange={onChange} />
         </div>
         <aside className="preview-column">
           <p className="muted">Page 2 onward · 7.5 × 10 in</p>
@@ -218,6 +243,15 @@ export function BodyDesk({
 
 function BlockPreview({ block, galley }: { block: BodyBlock; galley: Galley }) {
   if (block.type === "heading") return <p className="heading-line">{block.text}</p>;
+  if (block.type === "section") {
+    return (
+      <>
+        {block.heading && <p className="heading-line">{block.heading.endsWith(":") ? block.heading : `${block.heading}:`}</p>}
+        {block.text && <p className="indent">{block.text}</p>}
+      </>
+    );
+  }
+  if (block.type === "referenceLine") return <p>{block.text}</p>;
   if (block.type === "paragraph") return <p className="indent">{block.text}</p>;
   if (block.type === "figure") {
     return (

@@ -163,7 +163,10 @@ export function linesForBlock(block: BodyBlock): number {
   switch (block.type) {
     case "heading":
       return 2;
+    case "section":
+      return 2 + textLines(block.text);
     case "paragraph":
+    case "referenceLine":
       return textLines(block.text);
     case "figure":
       return 16 + textLines(block.caption, 60);

@@ -33,6 +33,7 @@ import {
   parseStartPage,
   tableNumber,
 } from "./metrics";
+import { composedBlocks } from "./references";
 
 const FONT = "Garamond";
 const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
@@ -266,8 +267,18 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
   switch (block.type) {
     case "heading":
       return [bodyParagraph([run(block.text.trim().endsWith(":") ? block.text.trim() : `${block.text.trim()}:`, { bold: true })], { after: 60 })];
+    case "section": {
+      const heading = block.heading.trim();
+      const titled = heading ? (heading.endsWith(":") ? heading : `${heading}:`) : "";
+      return [
+        ...(titled ? [bodyParagraph([run(titled, { bold: true })], { after: 60 })] : []),
+        ...(block.text.trim() ? [bodyParagraph([run(block.text)], { indent: true })] : []),
+      ];
+    }
     case "paragraph":
       return [bodyParagraph([run(block.text)], { indent: true })];
+    case "referenceLine":
+      return [bodyParagraph([run(block.text)], { after: 60 })];
     case "figure": {
       const image = block.dataUrl
         ? picture(
@@ -329,7 +340,8 @@ function pageProperties(widthIn: number, heightIn: number, landscape: boolean, s
 
 export function galleyDocument(galley: Galley, journal: Journal, openAccess: IconAsset | null): Document {
   const start = parseStartPage(galley.startPage) ?? 1;
-  const bodyPages = flowBody(galley.blocks);
+  const manuscript = composedBlocks(galley);
+  const bodyPages = flowBody(manuscript);
   const end = endPageNumber(start, bodyPages.length);
   const citation = buildCitation({
     authors: galley.authors,
@@ -377,7 +389,7 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
     bucket = [];
   };
 
-  for (const block of galley.blocks) {
+  for (const block of manuscript) {
     if (block.type === "pageBreak") {
       bucket.push(new Paragraph({ children: [], pageBreakBefore: true }));
       continue;

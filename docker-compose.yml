@@ -54,6 +54,12 @@ services:
     depends_on:
       - backend
 
+  galley:
+    build:
+      context: ./galley
+    ports:
+      - '8090:80'
+
   nginx:
     image: nginx:alpine
     ports:
@@ -63,6 +69,7 @@ services:
     depends_on:
       - backend
       - frontend
+      - galley
 
   cloudflared:
     image: cloudflare/cloudflared:latest

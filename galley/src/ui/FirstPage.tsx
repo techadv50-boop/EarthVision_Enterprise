@@ -8,6 +8,7 @@ import {
   numberAuthors,
   parseStartPage,
 } from "../metrics";
+import { composedBlocks } from "../references";
 import { blankAuthor } from "../storage";
 import { IconTray } from "./IconTray";
 
@@ -28,7 +29,7 @@ export function FirstPage({
 }) {
   const patch = (partial: Partial<Galley>) => onChange({ ...galley, ...partial, updatedAt: Date.now() });
   const start = parseStartPage(galley.startPage);
-  const bodyPages = flowBody(galley.blocks).length;
+  const bodyPages = flowBody(composedBlocks(galley)).length;
   const end = start ? endPageNumber(start, bodyPages) : null;
   const numbered = numberAuthors(galley.authors);
   const citation = buildCitation({
@@ -216,7 +217,7 @@ export function FrontSheet({
   openAccess: IconAsset | null;
 }) {
   const start = parseStartPage(galley.startPage);
-  const end = start ? endPageNumber(start, flowBody(galley.blocks).length) : null;
+  const end = start ? endPageNumber(start, flowBody(composedBlocks(galley)).length) : null;
   const numbered = numberAuthors(galley.authors);
   const citation = buildCitation({
     authors: galley.authors,

@@ -44,6 +44,8 @@ const galley: Galley = {
   keywords: "Heart Disease; Machine Learning",
   topIcons: journal.topIcons,
   partnerIcons: journal.partnerIcons,
+  references: [],
+  referenceStyle: "ieee",
   blocks: [
     { id: "h", type: "heading", text: "Introduction:" },
     { id: "p", type: "paragraph", text: "Cardiovascular diseases remain a global burden." },

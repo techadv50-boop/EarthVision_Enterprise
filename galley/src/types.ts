@@ -26,6 +26,8 @@ export type Author = {
 
 export type HeadingBlock = { id: string; type: "heading"; text: string };
 export type ParagraphBlock = { id: string; type: "paragraph"; text: string };
+export type SectionBlock = { id: string; type: "section"; heading: string; text: string };
+export type ReferenceLineBlock = { id: string; type: "referenceLine"; text: string };
 export type FigureBlock = {
   id: string;
   type: "figure";
@@ -44,9 +46,31 @@ export type TableBlock = {
 export type EquationBlock = { id: string; type: "equation"; text: string; number: string };
 export type PageBreakBlock = { id: string; type: "pageBreak" };
 
+export type ReferenceKind = "journal" | "book" | "conference";
+
+export type ReferenceStyleId = "ieee" | "apa" | "chicago" | "vancouver" | "harvard" | "mla";
+
+export type ReferenceItem = {
+  id: string;
+  kind: ReferenceKind;
+  raw: string;
+  authors: string;
+  title: string;
+  container: string;
+  volume: string;
+  issue: string;
+  pages: string;
+  year: string;
+  doi: string;
+  publisher: string;
+  city: string;
+};
+
 export type BodyBlock =
   | HeadingBlock
   | ParagraphBlock
+  | SectionBlock
+  | ReferenceLineBlock
   | FigureBlock
   | TableBlock
   | EquationBlock
@@ -69,6 +93,8 @@ export type Galley = {
   topIcons: IconAsset[];
   partnerIcons: IconAsset[];
   blocks: BodyBlock[];
+  references: ReferenceItem[];
+  referenceStyle: ReferenceStyleId;
   updatedAt: number;
 };
 

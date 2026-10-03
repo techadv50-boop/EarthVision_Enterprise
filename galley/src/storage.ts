@@ -1,5 +1,6 @@
-import type { Galley, IconAsset, Journal, Store } from "./types";
+import type { BodyBlock, Galley, IconAsset, Journal, Store } from "./types";
 import { cloneIcons, newId } from "./metrics";
+import { parseReference } from "./references";
 
 const KEY = "galley-composer-v1";
 
@@ -11,7 +12,7 @@ export function loadStore(): Store {
     if (!raw) return EMPTY_STORE;
     const parsed = JSON.parse(raw) as Store;
     if (!parsed || !Array.isArray(parsed.journals) || !Array.isArray(parsed.galleys)) return EMPTY_STORE;
-    return parsed;
+    return { ...parsed, galleys: parsed.galleys.map(normalizeGalley) };
   } catch {
     return EMPTY_STORE;
   }
@@ -42,13 +43,48 @@ export function newGalley(journal: Journal): Galley {
     keywords: "",
     topIcons: cloneIcons(journal.topIcons),
     partnerIcons: cloneIcons(journal.partnerIcons),
-    blocks: [
-      { id: newId(), type: "heading", text: "Introduction:" },
-      { id: newId(), type: "paragraph", text: "" },
-      { id: newId(), type: "heading", text: "References:" },
-      { id: newId(), type: "paragraph", text: "" },
-    ],
+    blocks: [{ id: newId(), type: "section", heading: "Introduction:", text: "" }],
+    references: [],
+    referenceStyle: "ieee",
     updatedAt: Date.now(),
+  };
+}
+
+function normalizeGalley(galley: Galley): Galley {
+  const blocks: BodyBlock[] = [];
+  const recovered: string[] = [];
+  const source = galley.blocks || [];
+  for (let index = 0; index < source.length; index += 1) {
+    const block = source[index];
+    if (block.type === "heading" && /^references\b/i.test(block.text)) {
+      const next = source[index + 1];
+      if (next?.type === "paragraph" && next.text.trim()) {
+        recovered.push(...next.text.split(/\n+/).map((line) => line.trim()).filter(Boolean));
+        index += 1;
+      }
+      continue;
+    }
+    if (block.type === "heading") {
+      const next = source[index + 1];
+      if (next?.type === "paragraph") {
+        blocks.push({ id: block.id, type: "section", heading: block.text, text: next.text });
+        index += 1;
+      } else {
+        blocks.push({ id: block.id, type: "section", heading: block.text, text: "" });
+      }
+      continue;
+    }
+    if (block.type === "paragraph") {
+      blocks.push({ id: newId(), type: "section", heading: "", text: block.text });
+      continue;
+    }
+    blocks.push(block);
+  }
+  return {
+    ...galley,
+    blocks: blocks.length ? blocks : [{ id: newId(), type: "section", heading: "Introduction:", text: "" }],
+    references: galley.references?.length ? galley.references : recovered.map(parseReference),
+    referenceStyle: galley.referenceStyle || "ieee",
   };
 }
 

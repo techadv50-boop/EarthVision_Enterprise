@@ -35,7 +35,10 @@ export function Shelf({
   return (
     <div className="panel">
       <header className="bar">
-        <h1>Galley</h1>
+        <div>
+          <h1>Galley</h1>
+          <p className="muted">galley.drxdhr.com</p>
+        </div>
         <button type="button" onClick={onAdd}>
           + Add journal
         </button>

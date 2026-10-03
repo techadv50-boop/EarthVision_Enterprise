@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Galley, IconAsset, Journal } from "../types";
 import { flowBody, parseStartPage } from "../metrics";
+import { composedBlocks } from "../references";
 import { FrontSheet, SheetFooter, SheetHeader } from "./FirstPage";
 import { figureNumber, tableNumber } from "../metrics";
 import type { BodyBlock } from "../types";
@@ -17,7 +18,7 @@ export function Proof({
   onBack: () => void;
 }) {
   const start = parseStartPage(galley.startPage);
-  const pages = flowBody(galley.blocks);
+  const pages = flowBody(composedBlocks(galley));
   const [index, setIndex] = useState(0);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
@@ -133,6 +134,15 @@ export function Proof({
 
 function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
   if (block.type === "heading") return <p className="heading-line">{block.text}</p>;
+  if (block.type === "section") {
+    return (
+      <>
+        {block.heading && <p className="heading-line">{block.heading}</p>}
+        {block.text && <p className="indent">{block.text}</p>}
+      </>
+    );
+  }
+  if (block.type === "referenceLine") return <p>{block.text}</p>;
   if (block.type === "paragraph") return <p className="indent">{block.text}</p>;
   if (block.type === "figure") {
     return (
