@@ -312,3 +312,25 @@ class AuthorDbJournal(Base):
     created_by: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+
+
+class AuthorIssueSet(Base):
+    """Published articles selected as the current issue for author sanitization."""
+
+    __tablename__ = "author_issue_sets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    journal_title: Mapped[str] = mapped_column(String(500), default="", unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(255), default="Current issue")
+    article_ids: Mapped[Any] = mapped_column(JSON, default=list)
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

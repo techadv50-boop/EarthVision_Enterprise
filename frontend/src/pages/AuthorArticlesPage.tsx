@@ -1147,8 +1147,11 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
       await citationApi.authorArticles.update(row.id, { wing: next });
       navigate(recordPath(next, row.id), { replace: true });
       setMsg(next === 'published' ? 'Moved to published articles.' : 'Moved back to under process.');
-    } catch {
-      setError('Could not move that article.');
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not move that article.';
+      setError(String(detail));
     } finally {
       setBusy(false);
     }
@@ -1210,9 +1213,14 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
           </button>
         )}
         {inProcess ? (
-          <button className="btn-secondary" type="button" disabled={busy} onClick={() => void move('published')}>
-            Move to published
-          </button>
+          <>
+            <button className="btn-secondary" type="button" disabled={busy} onClick={() => void move('published')}>
+              Move to published
+            </button>
+            <Link className="btn-secondary" to="/authors/sanitization">
+              Check sanitization
+            </Link>
+          </>
         ) : (
           <button className="btn-secondary" type="button" disabled={busy} onClick={() => void move('in_process')}>
             Back to under process

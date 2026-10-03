@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { CheckSquare, ClipboardList } from 'lucide-react';
+import { CheckSquare, ClipboardList, ShieldAlert } from 'lucide-react';
 import { hasAuthorWing, useAuthStore } from '@/store/authStore';
 
 export default function AuthorHubPage() {
@@ -10,9 +10,9 @@ export default function AuthorHubPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">Author database management system</h2>
       <p className="text-gray-400 mb-6 max-w-3xl">
-        Two wings. Under process is the working list of articles still in the editorial pipeline.
-        Published holds articles after they are issued. Only the wings granted to this account are
-        shown.
+        Two wings plus sanitization. Under process is the working list of articles still in the
+        editorial pipeline. Published holds articles after they are issued. Sanitization keeps the
+        same authors from appearing twice in the current issue.
       </p>
       <div className="grid md:grid-cols-2 gap-4">
         {inProcess && (
@@ -43,6 +43,18 @@ export default function AuthorHubPage() {
             <p className="text-earth-400 text-sm mt-6">Open published articles →</p>
           </Link>
         )}
+        <Link
+          to="/authors/sanitization"
+          className="panel p-6 hover:border-earth-500 transition-colors block min-h-[14rem]"
+        >
+          <ShieldAlert className="w-8 h-8 text-earth-400 mb-3" />
+          <h3 className="text-xl font-semibold">Sanitization</h3>
+          <p className="text-gray-400 text-sm mt-2 leading-relaxed">
+            Mark the published articles of the current issue, then check the next scheduled article.
+            The same authors may not appear twice in one issue.
+          </p>
+          <p className="text-earth-400 text-sm mt-6">Open sanitization →</p>
+        </Link>
       </div>
     </div>
   );

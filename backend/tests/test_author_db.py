@@ -506,3 +506,115 @@ async def test_under_process_reminders_comments_and_current_stage(client: AsyncC
     assert labels["Current state"]["new"] == "Round 1 review receive date"
     assert labels["Current state passed"]["new"] == "Yes"
 
+
+@pytest.mark.asyncio
+async def test_current_issue_sanitization_blocks_same_authors(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    journal = "International Journal of Innovations in Science & Technology"
+    first = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-ISSUE-1",
+            "title": "Already in the issue",
+            "author_names": "Ali Khan; Noor Ali",
+            "author_emails": "ali@example.com",
+        },
+    )
+    assert first.status_code == 201, first.text
+    other = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-ISSUE-2",
+            "title": "Second paper in the issue",
+            "author_names": "Sara Ahmed",
+        },
+    )
+    assert other.status_code == 201, other.text
+    saved = await client.put(
+        "/api/v1/author-articles/sanitization",
+        headers=headers,
+        json={
+            "journal_title": "IJIST",
+            "label": "Current issue",
+            "article_ids": [first.json()["id"], other.json()["id"]],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["journal_title"] == journal
+    assert set(saved.json()["article_ids"]) == {first.json()["id"], other.json()["id"]}
+
+    scheduled = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-NEXT",
+            "title": "Scheduled for the same issue",
+            "author_names": "Khan, Ali",
+        },
+    )
+    assert scheduled.status_code == 201, scheduled.text
+    checked = await client.post(
+        "/api/v1/author-articles/sanitization/check",
+        headers=headers,
+        json={"article_id": scheduled.json()["id"]},
+    )
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["allowed"] is False
+    assert checked.json()["overlaps"]
+    blocked = await client.patch(
+        f"/api/v1/author-articles/{scheduled.json()['id']}",
+        headers=headers,
+        json={"wing": "published"},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "same issue" in blocked.json()["detail"].lower()
+    publish = await client.post(
+        "/api/v1/author-articles/sanitization/publish",
+        headers=headers,
+        json={"article_id": scheduled.json()["id"]},
+    )
+    assert publish.status_code == 409
+
+    clean = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-CLEAN",
+            "title": "Different authors",
+            "author_names": "Hassan Raza",
+        },
+    )
+    assert clean.status_code == 201, clean.text
+    ok = await client.post(
+        "/api/v1/author-articles/sanitization/check",
+        headers=headers,
+        json={"article_id": clean.json()["id"]},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["allowed"] is True
+    published = await client.post(
+        "/api/v1/author-articles/sanitization/publish",
+        headers=headers,
+        json={"article_id": clean.json()["id"]},
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["allowed"] is True
+    basket = await client.get(
+        "/api/v1/author-articles/sanitization",
+        headers=headers,
+        params={"journal_title": "IJIST"},
+    )
+    assert clean.json()["id"] in basket.json()["article_ids"]
+
