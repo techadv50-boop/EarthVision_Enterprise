@@ -1,14 +1,15 @@
 """Academic English review for a manuscript going to publish.
 
 Uses OpenAI when OPENAI_API_KEY is configured; always includes a local
-checker for slang, fragments, ambiguity, and filler so the wing works
-without an external key.
+checker so the wing works without an external key. Tools cover grammar,
+sentence structure, abusive language, and related academic-English checks.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -19,21 +20,38 @@ from app.services.reference_integrity import NUMBER_RE, paragraphs_from_upload
 
 CATEGORIES = (
     "grammar",
+    "agreement",
     "spelling",
     "punctuation",
+    "capitalization",
     "sentence_structure",
     "broken_sentence",
     "run_on",
+    "dangling_modifier",
+    "parallelism",
     "slang",
     "formality",
+    "second_person",
+    "abusive",
+    "bias_language",
+    "cliche",
     "conciseness",
-    "clarity",
-    "ambiguity",
-    "word_choice",
-    "repetition",
-    "capitalization",
-    "passive_voice",
+    "hedging",
+    "redundancy",
     "irrelevant_word",
+    "passive_voice",
+    "overclaiming",
+    "weasel",
+    "opinion",
+    "ambiguity",
+    "clarity",
+    "word_choice",
+    "confused_words",
+    "repetition",
+    "anthropomorphism",
+    "latin_abbrev",
+    "hyphenation",
+    "exclamation",
 )
 
 CATEGORY_ALIASES = {
@@ -42,7 +60,239 @@ CATEGORY_ALIASES = {
     "tone": "formality",
     "informal": "slang",
     "filler": "irrelevant_word",
+    "profanity": "abusive",
+    "offensive": "abusive",
+    "hate": "abusive",
+    "abuse": "abusive",
+    "hedge": "hedging",
+    "tautology": "redundancy",
+    "subject_verb": "agreement",
+    "sva": "agreement",
+    "comma_splice": "run_on",
+    "fragment": "broken_sentence",
+    "inclusive": "bias_language",
+    "bias": "bias_language",
+    "cliché": "cliche",
+    "you": "second_person",
+    "first_person": "opinion",
+    "weasel_word": "weasel",
+    "absolute": "overclaiming",
+    "dangling": "dangling_modifier",
+    "latin": "latin_abbrev",
+    "confused": "confused_words",
+    "hyphen": "hyphenation",
+    "exclaim": "exclamation",
+    "parallel": "parallelism",
 }
+
+TOOL_GROUPS = (
+    {"id": "mechanics", "label": "Mechanics"},
+    {"id": "sentences", "label": "Sentences"},
+    {"id": "tone", "label": "Tone"},
+    {"id": "style", "label": "Style"},
+    {"id": "precision", "label": "Precision"},
+)
+
+TOOLS = (
+    {
+        "id": "grammar",
+        "group": "mechanics",
+        "label": "Grammar",
+        "description": "Articles, verb form, and standard written English.",
+    },
+    {
+        "id": "agreement",
+        "group": "mechanics",
+        "label": "Subject–verb agreement",
+        "description": "Singular/plural subjects matched to the verb.",
+    },
+    {
+        "id": "spelling",
+        "group": "mechanics",
+        "label": "Spelling",
+        "description": "Common academic misspellings.",
+    },
+    {
+        "id": "punctuation",
+        "group": "mechanics",
+        "label": "Punctuation",
+        "description": "Commas, spaces, and repeated marks.",
+    },
+    {
+        "id": "capitalization",
+        "group": "mechanics",
+        "label": "Capitalization",
+        "description": "Sentence case and proper names.",
+    },
+    {
+        "id": "sentence_structure",
+        "group": "sentences",
+        "label": "Sentence structure",
+        "description": "Capital starts, length, and clause order.",
+    },
+    {
+        "id": "broken_sentence",
+        "group": "sentences",
+        "label": "Broken sentence",
+        "description": "Fragments and unfinished thoughts.",
+    },
+    {
+        "id": "run_on",
+        "group": "sentences",
+        "label": "Run-on / comma splice",
+        "description": "Independent clauses joined incorrectly.",
+    },
+    {
+        "id": "dangling_modifier",
+        "group": "sentences",
+        "label": "Dangling modifier",
+        "description": "Opening phrases that do not modify the subject.",
+    },
+    {
+        "id": "parallelism",
+        "group": "sentences",
+        "label": "Parallelism",
+        "description": "Matched grammar in lists and paired clauses.",
+    },
+    {
+        "id": "slang",
+        "group": "tone",
+        "label": "Slang / informal",
+        "description": "Colloquial words that do not belong in a journal.",
+    },
+    {
+        "id": "formality",
+        "group": "tone",
+        "label": "Formality",
+        "description": "Contractions and casual academic tone.",
+    },
+    {
+        "id": "second_person",
+        "group": "tone",
+        "label": "Second person",
+        "description": "You / your addressed to the reader.",
+    },
+    {
+        "id": "abusive",
+        "group": "tone",
+        "label": "Abusive language",
+        "description": "Profanity, insults, and hostile wording.",
+    },
+    {
+        "id": "bias_language",
+        "group": "tone",
+        "label": "Inclusive language",
+        "description": "Gendered or dated terms that can be recast.",
+    },
+    {
+        "id": "cliche",
+        "group": "tone",
+        "label": "Cliché",
+        "description": "Stock phrases that sound unscientific.",
+    },
+    {
+        "id": "conciseness",
+        "group": "style",
+        "label": "Conciseness",
+        "description": "Filler and wordy lead-ins.",
+    },
+    {
+        "id": "hedging",
+        "group": "style",
+        "label": "Hedging",
+        "description": "Empty intensifiers and vague mitigators.",
+    },
+    {
+        "id": "redundancy",
+        "group": "style",
+        "label": "Redundancy",
+        "description": "Tautologies such as true fact or past history.",
+    },
+    {
+        "id": "irrelevant_word",
+        "group": "style",
+        "label": "Filler",
+        "description": "Words that add no meaning.",
+    },
+    {
+        "id": "passive_voice",
+        "group": "style",
+        "label": "Passive voice",
+        "description": "Overused passive verbs when the actor is known.",
+    },
+    {
+        "id": "overclaiming",
+        "group": "style",
+        "label": "Overclaiming",
+        "description": "Absolute wording such as always, never, proves.",
+    },
+    {
+        "id": "weasel",
+        "group": "style",
+        "label": "Weasel words",
+        "description": "Unsupported 'it is known that' constructions.",
+    },
+    {
+        "id": "opinion",
+        "group": "style",
+        "label": "Personal opinion",
+        "description": "I think / I believe in place of evidence.",
+    },
+    {
+        "id": "ambiguity",
+        "group": "precision",
+        "label": "Ambiguity",
+        "description": "Unclear pronouns, open lists, and vague nouns.",
+    },
+    {
+        "id": "clarity",
+        "group": "precision",
+        "label": "Clarity",
+        "description": "Sentences that hide the claim.",
+    },
+    {
+        "id": "word_choice",
+        "group": "precision",
+        "label": "Word choice",
+        "description": "Imprecise or incorrect academic wording.",
+    },
+    {
+        "id": "confused_words",
+        "group": "precision",
+        "label": "Confused words",
+        "description": "Then/than, affect/effect, and similar pairs.",
+    },
+    {
+        "id": "repetition",
+        "group": "precision",
+        "label": "Repetition",
+        "description": "Immediate duplicate words.",
+    },
+    {
+        "id": "anthropomorphism",
+        "group": "precision",
+        "label": "Anthropomorphism",
+        "description": "Papers or results that 'believe' or 'think'.",
+    },
+    {
+        "id": "latin_abbrev",
+        "group": "precision",
+        "label": "Latin abbreviations",
+        "description": "e.g., i.e., etc., and et al. punctuation.",
+    },
+    {
+        "id": "hyphenation",
+        "group": "precision",
+        "label": "Hyphenation",
+        "description": "Compound adjectives that usually take a hyphen.",
+    },
+    {
+        "id": "exclamation",
+        "group": "precision",
+        "label": "Exclamation",
+        "description": "Exclamation marks in academic prose.",
+    },
+)
 
 MISSPELLINGS: dict[str, str] = {
     "recieve": "receive",
@@ -122,6 +372,12 @@ WORD_CHOICE: dict[str, str] = {
     "should of": "should have",
     "would of": "would have",
     "must of": "must have",
+    "less people": "fewer people",
+    "amount of people": "number of people",
+    "comprised of": "composed of / consisted of",
+    "based off of": "based on",
+    "different than": "different from",
+    "in regards to": "regarding / with regard to",
 }
 
 CONTRACTIONS: dict[str, str] = {
@@ -194,6 +450,20 @@ SLANG: dict[str, str] = {
     "literally": "omit unless used in the literal sense",
     "basically": "omit, or state the claim directly",
     "actually": "omit unless contrasting a prior claim",
+    "dude": "omit",
+    "bro": "omit",
+    "lmao": "omit",
+    "omg": "omit",
+    "tbh": "omit",
+    "idk": "is not known / remains unknown",
+    "ngl": "omit",
+    "lowkey": "omit",
+    "vibe": "omit informal wording",
+    "lit": "omit informal wording",
+    "salty": "omit informal wording",
+    "meh": "omit",
+    "nah": "no",
+    "yikes": "omit",
 }
 
 # Multi-word first so they are not split by the single-word pass.
@@ -218,7 +488,212 @@ FILLER_PHRASES: dict[str, str] = {
     "the fact that": "rephrase without this filler",
     "in terms of": "about / regarding (or recast the sentence)",
     "a number of": "several / many (prefer a count)",
+    "in the event that": "if",
+    "for the purpose of": "to / for",
+    "with regard to": "about / regarding",
+    "on the other hand": "by contrast (or split the contrast)",
+    "in light of the fact that": "because",
+    "with a view to": "to",
+    "in the near future": "soon / by a named date",
+    "at the present time": "now / currently",
+    "in the majority of cases": "usually / in most cases (prefer a percentage)",
+    "has the ability to": "can",
+    "is able to": "can",
+    "make a decision": "decide",
+    "conduct an investigation": "investigate",
 }
+
+HEDGING_PHRASES: dict[str, str] = {
+    "it seems that": "state the finding directly, or name the evidence",
+    "it appears that": "state the finding directly, or name the evidence",
+    "it could be argued that": "state the claim and the support",
+    "to some extent": "quantify the extent, or omit",
+    "more or less": "omit, or give the range",
+    "in a sense": "omit, or specify the sense",
+    "to a certain extent": "quantify the extent, or omit",
+    "it may be that": "state the finding or the uncertainty with evidence",
+    "it is possible that": "state the probability or the supporting result",
+    "perhaps": "omit, or give the evidence for uncertainty",
+}
+
+REDUNDANT_PHRASES: dict[str, str] = {
+    "each and every": "each / every",
+    "end result": "result",
+    "final outcome": "outcome",
+    "advance planning": "planning",
+    "past history": "history",
+    "future plans": "plans",
+    "true fact": "fact",
+    "basic fundamentals": "fundamentals",
+    "close proximity": "proximity / near",
+    "completely unique": "unique",
+    "unexpected surprise": "surprise",
+    "free gift": "gift",
+    "revert back": "revert",
+    "repeat again": "repeat",
+    "still remains": "remains",
+    "added bonus": "bonus",
+    "exact same": "same",
+    "new innovation": "innovation",
+    "reason why": "reason",
+    "whether or not": "whether (unless the 'or not' is required)",
+    "period of time": "period",
+    "summarize briefly": "summarize",
+}
+
+ABUSIVE_WORDS: dict[str, str] = {
+    "stupid": "omit the insult; describe the limitation of the method or result",
+    "idiot": "omit the insult",
+    "idiotic": "omit the insult; describe the limitation",
+    "dumb": "omit the insult; use a precise critique",
+    "moron": "omit the insult",
+    "imbecile": "omit the insult",
+    "retard": "omit; this wording is abusive and unsuitable for publication",
+    "retarded": "omit; this wording is abusive and unsuitable for publication",
+    "hate": "omit hostile wording, or recast as a technical disagreement",
+    "shut up": "omit",
+    "crap": "omit; use a precise description",
+    "shit": "omit profanity",
+    "shitty": "omit profanity",
+    "fuck": "omit profanity",
+    "fucking": "omit profanity",
+    "fucked": "omit profanity",
+    "bullshit": "omit profanity; state the objection",
+    "bitch": "omit abusive wording",
+    "bastard": "omit abusive wording",
+    "asshole": "omit abusive wording",
+    "dick": "omit abusive wording",
+    "piss": "omit profanity",
+    "pissed": "omit profanity",
+    "slut": "omit abusive wording",
+    "whore": "omit abusive wording",
+    "worthless": "omit the insult; describe the limitation",
+    "pathetic": "omit the insult; describe the limitation",
+    "garbage": "omit abusive wording; use a precise critique",
+    "trash": "omit abusive wording; use a precise critique",
+    "sucks": "is inadequate / is unsuitable",
+    "suck": "omit abusive wording",
+    "bloody": "omit informal intensifier",
+    "dumbass": "omit the insult",
+    "jackass": "omit the insult",
+    "loser": "omit the insult",
+    "nasty": "omit hostile wording, or use a precise technical term",
+}
+
+AGREEMENT_PATTERNS = (
+    (r"\bresults was\b", "results were"),
+    (r"\bthis methods\b", "these methods / this method"),
+    (r"\bthese method\b", "this method / these methods"),
+    (r"\bthere is many\b", "there are many"),
+    (r"\bthere is several\b", "there are several"),
+    (r"\bthere are a\b", "there is a"),
+    (r"\bthe data shows\b", "the data show (if treating data as plural)"),
+    (r"\beach of the \w+ were\b", "each of the … was"),
+    (r"\bone of the \w+ were\b", "one of the … was"),
+)
+
+CLICHE_PHRASES: dict[str, str] = {
+    "in this day and age": "currently / today",
+    "at the end of the day": "omit, or state the conclusion",
+    "last but not least": "finally",
+    "in a nutshell": "in summary",
+    "food for thought": "omit; state the implication",
+    "only time will tell": "omit; state what remains unknown",
+    "it goes without saying": "omit",
+    "tip of the iceberg": "omit; quantify the remaining gap",
+    "think outside the box": "omit; name the alternative approach",
+    "in the long run": "over the longer term (name the period)",
+    "a mixed bag": "mixed results (be specific)",
+}
+
+BIAS_PHRASES: dict[str, str] = {
+    "mankind": "humankind / people",
+    "manpower": "staff / workforce",
+    "chairman": "chair / chairperson",
+    "policeman": "police officer",
+    "policemen": "police officers",
+    "freshman": "first-year student",
+    "man-made": "synthetic / anthropogenic",
+    "manned": "crewed / staffed",
+}
+
+WEASEL_PHRASES: dict[str, str] = {
+    "it is known that": "cite the source, or state the finding",
+    "it is believed that": "name who believes it and on what evidence",
+    "it has been said that": "cite the source",
+    "some researchers say": "name the researchers and the evidence",
+    "many people think": "cite a source, or omit",
+    "it is clear that": "state the evidence that makes it clear",
+    "needless to say": "omit",
+}
+
+OPINION_PHRASES: dict[str, str] = {
+    "i think": "state the claim and the support",
+    "i believe": "state the claim and the support",
+    "i feel": "state the finding; feelings are not evidence",
+    "we feel": "state the finding",
+    "in my opinion": "omit; present the evidence",
+    "personally": "omit",
+    "i would argue": "state the argument and the support",
+}
+
+ANTHROPOMORPHISM_PATTERNS = (
+    (r"\b(this|the)\s+(paper|study|article|research)\s+(believes|thinks|feels|hopes|tries|wants)\b",
+     "Recast so the authors perform the action, e.g. 'We argue' or 'This study shows'."),
+    (r"\b(the|these)\s+(results|data|findings)\s+(believe|think|feel|hope)\b",
+     "Results cannot believe or think. State what they show."),
+)
+
+CONFUSED_PATTERNS = (
+    (r"\bmore then\b", "more than"),
+    (r"\bless then\b", "less than"),
+    (r"\bbetter then\b", "better than"),
+    (r"\bworse then\b", "worse than"),
+    (r"\brather then\b", "rather than"),
+    (r"\bother then\b", "other than"),
+    (r"\bthe affect of\b", "the effect of"),
+    (r"\ban affect\b", "an effect"),
+    (r"\bprinciple investigator\b", "principal investigator"),
+    (r"\bits'\b", "its"),
+    (r"\bbetween you and i\b", "between you and me"),
+    (r"\bcould care less\b", "could not care less"),
+    (r"\bshould of\b", "should have"),
+)
+
+HYPHEN_PHRASES: dict[str, str] = {
+    "well known": "well-known (when used as an adjective before a noun)",
+    "high resolution": "high-resolution (when used as an adjective before a noun)",
+    "real time": "real-time (when used as an adjective before a noun)",
+    "peer reviewed": "peer-reviewed (when used as an adjective before a noun)",
+    "open source": "open-source (when used as an adjective before a noun)",
+    "state of the art": "state-of-the-art (when used as an adjective before a noun)",
+    "long term": "long-term (when used as an adjective before a noun)",
+    "short term": "short-term (when used as an adjective before a noun)",
+}
+
+OVERCLAIMING_PATTERNS = (
+    (r"\balways\b", "always — qualify the claim unless it is literally universal"),
+    (r"\bnever\b", "never — qualify the claim unless it is literally universal"),
+    (r"\bproves that\b", "shows that / indicates that (unless a formal proof)"),
+    (r"\bproven that\b", "shown that / indicated that"),
+    (r"\bobviously\b", "omit, or state the evidence"),
+    (r"\bundoubtedly\b", "omit, or state the evidence"),
+    (r"\beveryone knows\b", "cite a source; do not assume shared knowledge"),
+)
+
+DANGLING_RE = re.compile(
+    r"\b(?:After|When|While|By|Using|Based on|Having|Considering)\s+"
+    r"(?:[A-Za-z]+ing|[A-Za-z]+ed)\b[^.]{0,90},\s+the\s+"
+    r"(?:results?|data|findings?|analysis|paper|study|model)\b",
+    re.I,
+)
+
+LATIN_ABBREV_PATTERNS = (
+    (r"\beg\b(?!\.)", "e.g."),
+    (r"\bie\b(?!\.)", "i.e."),
+    (r"\betc\b(?!\.)", "etc."),
+    (r"\bet al\b(?!\.)", "et al."),
+)
 
 AMBIGUOUS_OPENERS = {"this", "that", "these", "those", "it", "they", "them"}
 
@@ -285,6 +760,7 @@ def _add_issue(
     suggestion: str,
     explanation: str,
     severity: str = "medium",
+    rewrite: str = "",
 ) -> None:
     quote = re.sub(r"\s+", " ", (quote or "").strip())
     if not quote:
@@ -300,6 +776,7 @@ def _add_issue(
             "severity": severity,
             "suggestion": suggestion,
             "explanation": explanation,
+            "rewrite": (rewrite or "").strip()[:500],
             "source": "local",
         }
     )
@@ -323,6 +800,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 category="slang",
                 severity="high",
                 suggestion=SLANG.get(phrase, "Use a formal equivalent."),
+                rewrite=SLANG.get(phrase, ""),
                 explanation="Informal phrasing is not suitable for a paper going to publish.",
             )
     for phrase, replacement in FILLER_PHRASES.items():
@@ -334,13 +812,14 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 category="conciseness",
                 severity="medium",
                 suggestion=replacement,
+                rewrite=replacement,
                 explanation="Filler phrasing weakens academic English; prefer a direct wording.",
             )
 
     for match in re.finditer(r"\b[A-Za-z']+\b", compact):
         word = match.group(0)
         key = word.lower()
-        if key in SLANG:
+        if key in SLANG and key not in ABUSIVE_WORDS:
             _add_issue(
                 issues,
                 paragraph_index=index,
@@ -350,6 +829,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 ),
                 severity="high" if key in {"gonna", "wanna", "ain't", "yeah", "ok", "okay", "stuff", "kids"} else "medium",
                 suggestion=SLANG[key],
+                rewrite=SLANG[key],
                 explanation="This word is informal, slang, or too vague for a journal manuscript.",
             )
 
@@ -488,6 +968,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 category="spelling",
                 severity="high",
                 suggestion=right,
+                rewrite=right,
                 explanation="Likely spelling error.",
             )
 
@@ -500,6 +981,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 category="word_choice",
                 severity="medium",
                 suggestion=right,
+                rewrite=right,
                 explanation="Prefer the precise academic wording.",
             )
 
@@ -513,6 +995,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 category="formality",
                 severity="medium",
                 suggestion=right,
+                rewrite=right,
                 explanation="Contractions are too informal for a journal manuscript.",
             )
 
@@ -559,6 +1042,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 category="grammar",
                 severity="high",
                 suggestion=f"an {noun}",
+                rewrite=f"an {noun}",
                 explanation="Use 'an' before a vowel sound.",
             )
         if article == "an" and not starts_vowel and noun[0].lower() not in "aeiou":
@@ -569,6 +1053,7 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 category="grammar",
                 severity="high",
                 suggestion=f"a {noun}",
+                rewrite=f"a {noun}",
                 explanation="Use 'a' before a consonant sound.",
             )
 
@@ -621,6 +1106,216 @@ def review_paragraph_local(index: int, text: str, *, in_references: bool) -> lis
                 explanation="Two independent clauses joined by only a comma form a comma splice.",
             )
 
+    for phrase, replacement in HEDGING_PHRASES.items():
+        if phrase in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=phrase,
+                category="hedging",
+                severity="medium",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="Hedging without evidence weakens the claim. Be specific or omit.",
+            )
+
+    for phrase, replacement in REDUNDANT_PHRASES.items():
+        if phrase in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=phrase,
+                category="redundancy",
+                severity="medium",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="This pairing repeats the same idea. Keep one term.",
+            )
+
+    for word, replacement in ABUSIVE_WORDS.items():
+        if re.search(rf"\b{re.escape(word)}\b", compact, re.I):
+            found = re.search(rf"\b{re.escape(word)}\b", compact, re.I)
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=found.group(0) if found else word,
+                category="abusive",
+                severity="high",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="Abusive, insulting, or profane wording is not acceptable in a journal manuscript.",
+            )
+
+    for pattern, replacement in AGREEMENT_PATTERNS:
+        hit = re.search(pattern, compact, re.I)
+        if hit:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=hit.group(0),
+                category="agreement",
+                severity="high",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="The subject and verb do not agree in number.",
+            )
+
+    for phrase, replacement in CLICHE_PHRASES.items():
+        if phrase in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=phrase,
+                category="cliche",
+                severity="medium",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="This stock phrase is too casual or empty for a journal manuscript.",
+            )
+
+    for phrase, replacement in BIAS_PHRASES.items():
+        if phrase in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=phrase,
+                category="bias_language",
+                severity="medium",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="Prefer inclusive or precise wording.",
+            )
+
+    for phrase, replacement in WEASEL_PHRASES.items():
+        if phrase in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=phrase,
+                category="weasel",
+                severity="medium",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="This construction hides the source. Cite evidence or omit.",
+            )
+
+    for phrase, replacement in OPINION_PHRASES.items():
+        if phrase in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=phrase,
+                category="opinion",
+                severity="medium",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="Personal opinion should be replaced by a claim with evidence.",
+            )
+
+    for phrase, replacement in HYPHEN_PHRASES.items():
+        if phrase in lower:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=phrase,
+                category="hyphenation",
+                severity="low",
+                suggestion=replacement,
+                rewrite=replacement.split(" (")[0],
+                explanation="Compound adjectives before a noun usually take hyphens.",
+            )
+
+    for pattern, replacement in ANTHROPOMORPHISM_PATTERNS:
+        hit = re.search(pattern, compact, re.I)
+        if hit:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=hit.group(0),
+                category="anthropomorphism",
+                severity="medium",
+                suggestion=replacement,
+                explanation="A paper or result cannot think or believe. Recast with the authors or a verb such as show.",
+            )
+
+    for pattern, replacement in CONFUSED_PATTERNS:
+        hit = re.search(pattern, compact, re.I)
+        if hit:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=hit.group(0),
+                category="confused_words",
+                severity="high",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="These look-alike words are easy to mix up.",
+            )
+
+    for pattern, replacement in OVERCLAIMING_PATTERNS:
+        hit = re.search(pattern, compact, re.I)
+        if hit:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=hit.group(0),
+                category="overclaiming",
+                severity="medium",
+                suggestion=replacement,
+                explanation="Absolute wording overstates the result unless the claim is truly universal.",
+            )
+
+    for pattern, replacement in LATIN_ABBREV_PATTERNS:
+        hit = re.search(pattern, compact, re.I)
+        if hit:
+            _add_issue(
+                issues,
+                paragraph_index=index,
+                quote=hit.group(0),
+                category="latin_abbrev",
+                severity="low",
+                suggestion=replacement,
+                rewrite=replacement,
+                explanation="Latin abbreviations in academic English take standard punctuation.",
+            )
+
+    you_hit = re.search(r"\b(you|your|yours)\b(?!')", compact, re.I)
+    if you_hit:
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote=you_hit.group(0),
+            category="second_person",
+            severity="medium",
+            suggestion="Recast without addressing the reader (use one / the researcher / the method).",
+            explanation="Second person is too informal for a journal manuscript.",
+        )
+
+    dangling = DANGLING_RE.search(compact)
+    if dangling:
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote=dangling.group(0)[:220],
+            category="dangling_modifier",
+            severity="high",
+            suggestion="Make the subject of the main clause the actor of the opening phrase.",
+            explanation="The opening phrase does not modify the grammatical subject.",
+        )
+
+    if "!" in compact:
+        bang = re.search(r"!+", compact)
+        _add_issue(
+            issues,
+            paragraph_index=index,
+            quote=bang.group(0) if bang else "!",
+            category="exclamation",
+            severity="medium",
+            suggestion="Use a period. Exclamation marks are not used in academic prose.",
+            rewrite=".",
+            explanation="Exclamation marks read as informal or rhetorical, not scientific.",
+        )
+
     return issues
 
 
@@ -639,6 +1334,8 @@ def _assign_ids(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for i, issue in enumerate(issues, start=1):
         row = dict(issue)
         row["id"] = i
+        row.setdefault("rewrite", "")
+        row.setdefault("source", "local")
         out.append(row)
     return out
 
@@ -679,13 +1376,153 @@ def _summarize(paragraphs: list[str], issues: list[dict[str, Any]]) -> dict[str,
     }
 
 
-async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], Optional[str]]:
+def _mask_key(key: str) -> str:
+    compact = re.sub(r"\s+", "", key or "")
+    if len(compact) < 8:
+        return ""
+    return f"{compact[:3]}…{compact[-4:]}"
+
+
+def _looks_like_key(key: str) -> bool:
+    compact = (key or "").strip()
+    if len(compact) < 20 or any(ch.isspace() for ch in compact):
+        return False
+    return True
+
+
+@dataclass
+class GptRuntime:
+    available: bool
+    enabled: bool
+    configured: bool
+    source: str
+    key: str
+    model: str
+    base: str
+    key_hint: str
+    note: str
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "enabled": self.enabled,
+            "configured": self.configured,
+            "source": self.source,
+            "provider": "openai" if self.available else "local",
+            "model": self.model if self.available else None,
+            "key_hint": self.key_hint,
+            "can_configure": True,
+            "note": self.note,
+        }
+
+
+def resolve_gpt(user: Any = None) -> GptRuntime:
     settings = get_settings()
-    key = (getattr(settings, "openai_api_key", None) or "").strip()
-    if not key:
-        return [], None
-    model = (getattr(settings, "openai_model", None) or "gpt-4o-mini").strip()
+    env_key = (getattr(settings, "openai_api_key", None) or "").strip()
+    env_model = (getattr(settings, "openai_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini"
     base = (getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/")
+    user_key = (getattr(user, "openai_api_key", None) or "").strip() if user is not None else ""
+    user_model = (getattr(user, "openai_model", None) or "").strip() if user is not None else ""
+    preference = getattr(user, "gpt_review_enabled", None) if user is not None else None
+    stored = user_key or env_key
+    source = "user" if user_key else ("env" if env_key else "none")
+    model = user_model or env_model
+    if preference is False:
+        return GptRuntime(
+            available=False,
+            enabled=False,
+            configured=bool(stored),
+            source=source if stored else "none",
+            key="",
+            model=model,
+            base=base,
+            key_hint=_mask_key(user_key),
+            note=(
+                "GPT is off on this page. Paste an API key and turn it on to add GPT corrections."
+                if stored
+                else "Built-in academic English checker is on. Paste an OpenAI API key to turn GPT on."
+            ),
+        )
+    if not stored:
+        return GptRuntime(
+            available=False,
+            enabled=False,
+            configured=False,
+            source="none",
+            key="",
+            model=model,
+            base=base,
+            key_hint="",
+            note="Built-in academic English checker is on. Paste an OpenAI API key to turn GPT on.",
+        )
+    return GptRuntime(
+        available=True,
+        enabled=True,
+        configured=True,
+        source=source,
+        key=stored,
+        model=model,
+        base=base,
+        key_hint=_mask_key(user_key) or ("server key" if source == "env" else ""),
+        note=f"GPT correction is on ({model}). Built-in checks still run and are merged.",
+    )
+
+
+async def verify_openai_key(key: str, base: str) -> Optional[str]:
+    timeout = httpx.Timeout(20.0, connect=8.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                f"{base.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+    except Exception as exc:
+        return f"Could not reach the GPT API ({exc.__class__.__name__}). Check the network and try again."
+    if response.status_code in {401, 403}:
+        return "That API key was rejected. Check the key and try again."
+    if response.status_code >= 400:
+        return f"The GPT API returned HTTP {response.status_code}. The key was not saved."
+    return None
+
+
+async def apply_gpt_settings(
+    user: Any,
+    *,
+    enabled: bool,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> GptRuntime:
+    settings = get_settings()
+    env_key = (getattr(settings, "openai_api_key", None) or "").strip()
+    env_model = (getattr(settings, "openai_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini"
+    base = (getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/")
+    if model is not None:
+        cleaned_model = (model or "").strip()[:100]
+        user.openai_model = cleaned_model or env_model
+    incoming = None if api_key is None else api_key.strip()
+    if incoming:
+        if not _looks_like_key(incoming):
+            raise ValueError("Paste a valid API key (OpenAI keys are long and usually start with sk-).")
+        error = await verify_openai_key(incoming, base)
+        if error:
+            raise ValueError(error)
+        user.openai_api_key = incoming
+    user.gpt_review_enabled = bool(enabled)
+    stored = (getattr(user, "openai_api_key", None) or "").strip() or env_key
+    if enabled and not stored:
+        raise ValueError("Paste an OpenAI API key to turn GPT on.")
+    return resolve_gpt(user)
+
+
+async def _openai_review(
+    paragraphs: list[str], runtime: Optional[GptRuntime] = None
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    runtime = runtime or resolve_gpt()
+    key = (runtime.key or "").strip()
+    if not key or not runtime.available:
+        return [], None
+    model = (runtime.model or "gpt-4o-mini").strip()
+    base = (runtime.base or "https://api.openai.com/v1").rstrip("/")
 
     numbered: list[tuple[int, str]] = []
     in_references = False
@@ -715,18 +1552,27 @@ async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], O
         chunks.append(current)
 
     collected: list[dict[str, Any]] = []
+    category_pipe = "|".join(CATEGORIES)
     system = (
         "You are a Grammarly-style academic English editor for a scientific journal. "
-        "Check grammar, spelling, punctuation, sentence structure, broken sentences, "
-        "run-ons / comma splices, slang, formality / contractions, conciseness, clarity, "
-        "ambiguity, word choice, repetition, capitalization, passive voice, and filler. "
+        "Check every issue type in this list: grammar, subject-verb agreement, spelling, "
+        "punctuation, capitalization, sentence structure, broken/fragment sentences, "
+        "run-on sentences and comma splices, dangling modifiers, parallelism, slang and "
+        "informal wording, formality and contractions, second person (you/your), abusive "
+        "language and profanity, inclusive/bias language, clichés, conciseness, hedging, "
+        "redundancy, filler, passive voice, overclaiming (always/never/proves), weasel "
+        "words, personal opinion (I think/I believe), ambiguity, clarity, word choice, "
+        "confused word pairs, repetition, anthropomorphism, Latin abbreviations, "
+        "hyphenation of compound adjectives, and exclamation marks. "
+        "Flag abusive, insulting, or profane wording as category 'abusive' with high severity. "
         "Do not rewrite the whole paper. Do not comment on scientific correctness. "
         "Quotes MUST be exact substrings of the given paragraph. "
+        "For each issue also give a short 'rewrite' that replaces only the quoted span "
+        "with a publishable wording. "
         "Return JSON: {\"issues\":[{\"paragraph_index\":0,\"quote\":\"...\",\"category\":"
-        "\"grammar|spelling|punctuation|sentence_structure|broken_sentence|run_on|slang|"
-        "formality|conciseness|clarity|ambiguity|word_choice|repetition|capitalization|"
-        "passive_voice|irrelevant_word\","
-        "\"severity\":\"high|medium|low\",\"suggestion\":\"...\",\"explanation\":\"...\"}]}"
+        f"\"{category_pipe}\","
+        "\"severity\":\"high|medium|low\",\"suggestion\":\"...\",\"explanation\":\"...\","
+        "\"rewrite\":\"...\"}]}"
     )
     timeout = httpx.Timeout(90.0, connect=20.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -790,6 +1636,9 @@ async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], O
                 sev = str(row.get("severity") or "medium").strip().lower()
                 if sev not in {"high", "medium", "low"}:
                     sev = "medium"
+                rewrite = str(
+                    row.get("rewrite") or row.get("correction") or row.get("replacement") or ""
+                ).strip()
                 collected.append(
                     {
                         "paragraph_index": pidx,
@@ -798,6 +1647,7 @@ async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], O
                         "severity": sev,
                         "suggestion": str(row.get("suggestion") or "").strip()[:500],
                         "explanation": str(row.get("explanation") or "").strip()[:600],
+                        "rewrite": rewrite[:500],
                         "source": "openai",
                     }
                 )
@@ -806,13 +1656,16 @@ async def _openai_review(paragraphs: list[str]) -> tuple[list[dict[str, Any]], O
 
 def _merge_issues(local: list[dict[str, Any]], remote: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
+    seen: dict[tuple[Any, ...], int] = {}
     for issue in remote + local:
         quote = re.sub(r"\s+", " ", (issue.get("quote") or "").strip()).lower()[:160]
         key = (issue.get("paragraph_index"), issue.get("category"), quote)
         if key in seen:
+            idx = seen[key]
+            if not (merged[idx].get("rewrite") or "").strip() and (issue.get("rewrite") or "").strip():
+                merged[idx]["rewrite"] = issue["rewrite"]
             continue
-        seen.add(key)
+        seen[key] = len(merged)
         merged.append(issue)
     merged.sort(
         key=lambda row: (
@@ -823,12 +1676,28 @@ def _merge_issues(local: list[dict[str, Any]], remote: list[dict[str, Any]]) -> 
     return merged
 
 
-async def review_document(data: bytes, filename: str = "") -> dict[str, Any]:
+def gpt_status(user: Any = None) -> dict[str, Any]:
+    return resolve_gpt(user).status()
+
+
+def tool_catalog(user: Any = None) -> dict[str, Any]:
+    gpt = gpt_status(user)
+    return {
+        "tools": [dict(item) for item in TOOLS],
+        "groups": [dict(item) for item in TOOL_GROUPS],
+        "categories": list(CATEGORIES),
+        "gpt": gpt,
+        "engine_note": gpt["note"],
+    }
+
+
+async def review_document(data: bytes, filename: str = "", user: Any = None) -> dict[str, Any]:
     paragraphs = paragraphs_from_upload(data, filename)
     if not paragraphs:
         raise ValueError("Could not read text from that file.")
+    runtime = resolve_gpt(user)
     local = review_local(paragraphs)
-    remote, engine = await _openai_review(paragraphs)
+    remote, engine = await _openai_review(paragraphs, runtime)
     issues = _merge_issues(local, remote)
     issues = _assign_ids(issues)
     note = "Built-in academic English checker."
@@ -839,20 +1708,20 @@ async def review_document(data: bytes, filename: str = "") -> dict[str, Any]:
         engine = "local"
     elif not engine:
         engine = "local"
-        settings = get_settings()
-        if not (getattr(settings, "openai_api_key", None) or "").strip():
-            note = (
-                "Built-in academic English checker. Set OPENAI_API_KEY on the server "
-                "to add GPT suggestions."
-            )
+        if not runtime.available:
+            note = runtime.note
     para_payload = []
     for index, text in enumerate(paragraphs):
         ids = [issue["id"] for issue in issues if issue["paragraph_index"] == index]
         para_payload.append({"index": index, "text": text, "issue_ids": ids})
+    catalog = tool_catalog(user)
     return {
         "filename": filename,
         "engine": engine,
         "engine_note": note,
+        "gpt": catalog["gpt"],
+        "tools": catalog["tools"],
+        "groups": catalog["groups"],
         "summary": _summarize(paragraphs, issues),
         "paragraphs": para_payload,
         "issues": issues,

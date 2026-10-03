@@ -1,6 +1,14 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { BookOpen, FilePlus, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import { BookOpen, CheckSquare, ClipboardList, FilePlus, FilePenLine, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
+import {
+  canManageUsers,
+  hasAuthorWing,
+  hasReviewBranch,
+  hasService,
+  isCitationAdmin,
+  isFullAdmin,
+  useAuthStore,
+} from '@/store/authStore';
 
 function navClass(isActive: boolean) {
   return isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white';
@@ -11,7 +19,15 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const admin = isCitationAdmin(user);
+  const usersAdmin = canManageUsers(user);
+  const citation = hasService(user, 'citation');
+  const review = hasService(user, 'review');
+  const authors = hasService(user, 'authors');
+  const galley = hasService(user, 'galley');
+  const inAdmin = location.pathname.startsWith('/admin') || location.pathname.startsWith('/users');
   const inReview = location.pathname.startsWith('/review');
+  const inAuthors = location.pathname.startsWith('/authors');
+  const inGalley = location.pathname.startsWith('/galley');
   const inCitation =
     location.pathname.startsWith('/journals') ||
     location.pathname.startsWith('/manuscripts') ||
@@ -24,24 +40,32 @@ export default function AppLayout() {
           <BookOpen className="w-6 h-6 text-earth-400" />
           <div>
             <h1 className="text-sm font-bold tracking-wide">Citation Assistant</h1>
-            <p className="text-xs text-gray-500">Home · two workspaces</p>
+            <p className="text-xs text-gray-500">Home · workspaces</p>
           </div>
         </Link>
         <nav className="flex items-center gap-3 text-sm flex-wrap justify-end">
           <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
             Home
           </NavLink>
-          {inCitation && (
+          {authors && (
+            <NavLink to="/authors" className={({ isActive }) => navClass(isActive)}>
+              Author DB
+            </NavLink>
+          )}
+          {galley && (
+            <NavLink to="/galley" className={({ isActive }) => navClass(isActive)}>
+              Galley composition
+            </NavLink>
+          )}
+          {inCitation && citation && (
             <>
+              <NavLink to="/journals" className={({ isActive }) => navClass(isActive)}>
+                Journals
+              </NavLink>
               {admin && (
-                <>
-                  <NavLink to="/journals" className={({ isActive }) => navClass(isActive)}>
-                    Journals
-                  </NavLink>
-                  <NavLink to="/archive" className={({ isActive }) => navClass(isActive)}>
-                    Search
-                  </NavLink>
-                </>
+                <NavLink to="/archive" className={({ isActive }) => navClass(isActive)}>
+                  Search
+                </NavLink>
               )}
               <NavLink to="/manuscripts" className={({ isActive }) => navClass(isActive)}>
                 <span className="inline-flex items-center gap-1">
@@ -50,34 +74,61 @@ export default function AppLayout() {
               </NavLink>
             </>
           )}
-          {inReview && (
+          {inReview && review && (
             <>
               <NavLink to="/review" end className={({ isActive }) => navClass(isActive)}>
                 Review home
               </NavLink>
-              <NavLink to="/review/references" className={({ isActive }) => navClass(isActive)}>
-                <span className="inline-flex items-center gap-1">
-                  <GitCompare className="w-4 h-4" /> Reference check
-                </span>
-              </NavLink>
-              <NavLink to="/review/language" className={({ isActive }) => navClass(isActive)}>
-                <span className="inline-flex items-center gap-1">
-                  <Languages className="w-4 h-4" /> English review
-                </span>
-              </NavLink>
+              {hasReviewBranch(user, 'references') && (
+                <NavLink to="/review/references" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <GitCompare className="w-4 h-4" /> Reference check
+                  </span>
+                </NavLink>
+              )}
+              {hasReviewBranch(user, 'language') && (
+                <NavLink to="/review/language" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <Languages className="w-4 h-4" /> English review
+                  </span>
+                </NavLink>
+              )}
             </>
           )}
-          {admin && (
-            <NavLink to="/users" className={({ isActive }) => navClass(isActive)}>
+          {inAuthors && authors && (
+            <>
+              {hasAuthorWing(user, 'in_process') && (
+                <NavLink to="/authors/in-process" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <ClipboardList className="w-4 h-4" /> Under process
+                  </span>
+                </NavLink>
+              )}
+              {hasAuthorWing(user, 'published') && (
+                <NavLink to="/authors/published" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <CheckSquare className="w-4 h-4" /> Published
+                  </span>
+                </NavLink>
+              )}
+            </>
+          )}
+          {inGalley && galley && (
+            <span className="inline-flex items-center gap-1 text-earth-400">
+              <FilePenLine className="w-4 h-4" /> Desk
+            </span>
+          )}
+          {usersAdmin && (
+            <NavLink to="/admin" className={({ isActive }) => navClass(isActive) + (inAdmin ? '' : '')}>
               <span className="inline-flex items-center gap-1">
-                <Shield className="w-4 h-4" /> Users
+                <Shield className="w-4 h-4" /> Admin
               </span>
             </NavLink>
           )}
           {user && (
             <span className="text-gray-500">
               {user.full_name || user.username}
-              {admin ? ' · admin' : ' · user'}
+              {isFullAdmin(user) ? ' · operator' : usersAdmin ? ' · admin' : ' · user'}
             </span>
           )}
           <button
@@ -92,7 +143,7 @@ export default function AppLayout() {
           </button>
         </nav>
       </header>
-      <main className="max-w-7xl mx-auto px-6 py-6">
+      <main className={inGalley ? 'w-full' : 'max-w-7xl mx-auto px-6 py-6'}>
         <Outlet />
       </main>
     </div>

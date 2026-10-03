@@ -40,7 +40,10 @@ async def _load_user_from_token(
 
     result = await db.execute(
         select(User)
-        .options(selectinload(User.roles).selectinload(Role.permissions))
+        .options(
+            selectinload(User.roles).selectinload(Role.permissions),
+            selectinload(User.allowed_journals),
+        )
         .where(User.id == int(user_id))
     )
     user = result.scalar_one_or_none()
@@ -168,15 +171,75 @@ async def get_current_user_or_api_key(
     return await get_current_user(credentials=credentials, db=db)
 
 
+def require_desk(desk: str):
+    async def desk_checker(
+        current_user: Annotated[User, Depends(get_current_user)],
+    ) -> User:
+        if desk == "users":
+            if current_user.can_manage_users():
+                return current_user
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access is required to add or restrict users",
+            )
+        if current_user.has_service(desk):
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This account is not granted the {desk} service",
+        )
+
+    return desk_checker
+
+
+def require_service(service: str):
+    async def service_checker(
+        current_user: Annotated[User, Depends(get_current_user)],
+    ) -> User:
+        if current_user.has_service(service):
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This account is not granted the {service} service",
+        )
+
+    return service_checker
+
+
+def require_review_branch(branch: str):
+    async def branch_checker(
+        current_user: Annotated[User, Depends(get_current_user)],
+    ) -> User:
+        if current_user.has_review_branch(branch):
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not granted that article-review branch",
+        )
+
+    return branch_checker
+
+
 async def require_citation_admin(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    """Admin role sees Journals, Search, and user management. User role does not."""
+    """Operator: journals, archive search, and crawl."""
     if current_user.is_citation_admin():
         return current_user
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Admin role required",
+        detail="Operator access is required to change the citation archive",
+    )
+
+
+async def require_full_admin(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    if current_user.is_full_admin():
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Operator access is required",
     )
 
 

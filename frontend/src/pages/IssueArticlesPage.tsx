@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { citationApi } from '@/services/api';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 interface Article {
   id: number;
@@ -104,6 +105,7 @@ interface Payload {
 }
 
 export default function IssueArticlesPage() {
+  const admin = isCitationAdmin(useAuthStore((s) => s.user));
   const { journalId, volume, issueNumber } = useParams();
   const id = Number(journalId);
   const vol = Number(volume);
@@ -123,6 +125,7 @@ export default function IssueArticlesPage() {
     void (async () => {
       const payload = await load();
       if (!payload.issue.id) return;
+      if (!admin) return;
       const marker = `citing-works-v2-${payload.issue.id}`;
       const needCounts = (payload.articles || []).some((a) => !a.citation_synced_at);
       const needLists =
@@ -134,7 +137,7 @@ export default function IssueArticlesPage() {
       await load();
       setMsg('');
     })();
-  }, [id, vol, iss]);
+  }, [id, vol, iss, admin]);
 
   const sync = async () => {
     if (!data?.issue.id) return;
@@ -178,6 +181,8 @@ export default function IssueArticlesPage() {
           </p>
         </div>
         <div className="flex gap-2 items-center">
+          {admin && (
+            <>
           <label className="btn-secondary cursor-pointer">
             Upload PDFs
             <input
@@ -191,6 +196,8 @@ export default function IssueArticlesPage() {
           <button className="btn-primary" disabled={busy} onClick={() => void sync()}>
             Refresh citations
           </button>
+            </>
+          )}
         </div>
       </div>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
@@ -200,7 +207,9 @@ export default function IssueArticlesPage() {
           <span className="text-amber-300">
             Missing pages {g.page_start}–{g.page_end}
           </span>
-          <span className="text-gray-500 text-sm"> — upload a PDF above to fill this gap.</span>
+          <span className="text-gray-500 text-sm">
+            {admin ? ' — upload a PDF above to fill this gap.' : ' — this range is not in the archive yet.'}
+          </span>
         </div>
       ))}
 
@@ -221,6 +230,8 @@ export default function IssueArticlesPage() {
                 : ''}
             </p>
             <div className="flex flex-wrap gap-2 mt-3">
+              {admin ? (
+                <>
               <input
                 className="input-field max-w-xs"
                 placeholder={a.doi || 'DOI'}
@@ -240,6 +251,10 @@ export default function IssueArticlesPage() {
               >
                 Sync this paper
               </button>
+                </>
+              ) : (
+                a.doi && <p className="text-xs text-gray-500">DOI {a.doi}</p>
+              )}
             </div>
             {(a.crossref_work_url || a.doi) && (
               <a

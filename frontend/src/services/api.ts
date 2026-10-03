@@ -195,6 +195,9 @@ export const citationApi = {
     uploadText: (id: number, data: Record<string, unknown>) =>
       api.post(`/journals/${id}/papers-text`, data),
     crawl: (id: number, archive_url: string) => api.post(`/journals/${id}/crawl`, { archive_url }),
+    syncState: (id: number, archive_url: string) =>
+      api.post(`/journals/${id}/sync-state`, { archive_url }),
+    repairMetadata: (id: number) => api.post(`/journals/${id}/repair-metadata`),
     latestCrawl: (id: number) => api.get(`/journals/${id}/latest-crawl`),
     allIssues: (id: number) => api.get(`/journals/${id}/issues`),
     syncCitations: (id: number) => api.post(`/journals/${id}/sync-citations`),
@@ -234,10 +237,31 @@ export const citationApi = {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
     },
+    languageTools: () => api.get('/review/language/tools'),
+    languageGpt: (body: { enabled: boolean; api_key?: string; model?: string }) =>
+      api.put('/review/language/gpt', body),
     language: (file: File) => {
       const form = new FormData();
       form.append('file', file);
       return api.post('/review/language', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+    },
+  },
+  authorArticles: {
+    journals: () => api.get('/author-articles/journals'),
+    addJournal: (data: { name: string; abbreviation?: string }) =>
+      api.post('/author-articles/journals', data),
+    list: (wing?: string) => api.get('/author-articles', { params: wing ? { wing } : {} }),
+    create: (data: Record<string, unknown>) => api.post('/author-articles', data),
+    update: (id: number, data: Record<string, unknown>) => api.patch(`/author-articles/${id}`, data),
+    remove: (id: number) => api.delete(`/author-articles/${id}`),
+    template: () => api.get('/author-articles/template', { responseType: 'blob' }),
+    importFile: (file: File, wing: string) => {
+      const form = new FormData();
+      form.append('file', file);
+      return api.post('/author-articles/import', form, {
+        params: { wing },
         headers: { 'Content-Type': 'multipart/form-data' },
       });
     },

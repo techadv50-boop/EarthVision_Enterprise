@@ -8,7 +8,37 @@ from app.core.config import get_settings
 from app.core.security import create_access_token, create_refresh_token, get_password_hash, verify_password
 from app.models.subscription import Subscription
 from app.models.user import Role, User, user_roles
-from app.schemas.auth import UserCreate
+from app.schemas.auth import ServicePrivileges, UserCreate, UserResponse
+
+
+def public_user(user: User) -> UserResponse:
+    priv = user.resolved_privileges()
+    journals = []
+    try:
+        journals = [journal.id for journal in (user.allowed_journals or [])]
+    except Exception:
+        journals = []
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        username=user.username,
+        full_name=user.full_name,
+        organization=user.organization,
+        is_active=user.is_active,
+        is_superuser=user.is_superuser,
+        roles=[role.name for role in user.roles],
+        desks=user.admin_desks(),
+        privileges=ServicePrivileges(
+            services=list(priv.get("services") or []),
+            review_branches=list(priv.get("review_branches") or []),
+            author_wings=list(priv.get("author_wings") or []),
+            all_journals=bool(priv.get("all_journals")),
+        ),
+        can_manage_users=user.can_manage_users(),
+        access_status=user.portal_status(),
+        assigned_journal_ids=journals,
+        created_at=user.created_at,
+    )
 
 
 class AuthService:
@@ -38,6 +68,8 @@ class AuthService:
         role_name: str = "user",
         approved: bool = True,
     ) -> User:
+        from app.core.privileges import empty_privileges
+
         status = "approved" if approved else "pending"
         user = User(
             email=user_data.email,
@@ -48,6 +80,7 @@ class AuthService:
             is_active=approved,
             access_status=status,
             is_superuser=approved and role_name == "admin",
+            service_privileges=empty_privileges(),
         )
         self.db.add(user)
         await self.db.flush()
@@ -155,7 +188,8 @@ class AuthService:
         await self.ensure_operator_user()
 
     async def ensure_citation_roles(self) -> None:
-        """Keep admin and user roles available after the first seed."""
+        """Keep admin, user, and per-desk admin roles available after the first seed."""
+        from app.core.desks import DESK_LABELS
         from app.models.user import Permission
 
         existing = {
@@ -163,13 +197,72 @@ class AuthService:
             for row in (await self.db.execute(select(Role))).scalars().all()
         }
         if "admin" not in existing:
-            admin_role = Role(name="admin", description="Administrator — full Citation Assistant")
+            admin_role = Role(name="admin", description="Administrator — every desk")
             perms = list((await self.db.execute(select(Permission))).scalars().all())
             admin_role.permissions = perms
             self.db.add(admin_role)
         if "user" not in existing:
-            self.db.add(Role(name="user", description="Citation user — New manuscript only"))
+            self.db.add(Role(name="user", description="Staff — work assigned journals"))
+        for desk, label in DESK_LABELS.items():
+            name = f"admin_{desk}"
+            if name not in existing:
+                self.db.add(Role(name=name, description=f"Admin — {label}"))
         await self.db.flush()
+
+    async def roles_named(self, names: list[str]) -> list[Role]:
+        if not names:
+            return []
+        result = await self.db.execute(select(Role).where(Role.name.in_(names)))
+        found = {row.name: row for row in result.scalars().all()}
+        missing = [name for name in names if name not in found]
+        if missing:
+            await self.ensure_citation_roles()
+            result = await self.db.execute(select(Role).where(Role.name.in_(names)))
+            found = {row.name: row for row in result.scalars().all()}
+        return [found[name] for name in names if name in found]
+
+    async def apply_desks(self, user: User, *, full_admin: bool, desks: list[str]) -> None:
+        from app.core.desks import normalize_desks
+
+        desks = normalize_desks(desks)
+        if full_admin:
+            roles = await self.roles_named(["admin"])
+            user.roles = roles
+            user.is_superuser = True
+            return
+        names = ["user", *[f"admin_{desk}" for desk in desks]]
+        user.roles = await self.roles_named(names)
+        user.is_superuser = False
+        from app.core.privileges import privileges_from_desks, full_privileges
+
+        user.service_privileges = full_privileges() if full_admin else privileges_from_desks(desks)
+
+    async def apply_privileges(
+        self,
+        user: User,
+        privileges: dict | ServicePrivileges | None,
+        *,
+        full_admin: bool = False,
+        manage_users: bool = False,
+    ) -> None:
+        from app.core.privileges import full_privileges, normalize_privileges
+
+        if full_admin:
+            user.roles = await self.roles_named(["admin"])
+            user.is_superuser = True
+            user.service_privileges = full_privileges()
+            return
+        raw = privileges.model_dump() if isinstance(privileges, ServicePrivileges) else privileges
+        normalized = normalize_privileges(raw)
+        names = ["user"]
+        if manage_users:
+            names.append("admin_users")
+        user.roles = await self.roles_named(names)
+        user.is_superuser = False
+        user.service_privileges = normalized
+
+    def public_user(self, user: User) -> UserResponse:
+        return public_user(user)
 
     async def ensure_operator_user(self) -> None:
         """Create the XDGEN operator login if it is missing (does not overwrite an existing password)."""

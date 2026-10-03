@@ -8,12 +8,16 @@ from collections import deque
 from datetime import datetime, timezone
 from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 
+from pathlib import Path
+
 import httpx
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.database.session import AsyncSessionLocal
-from app.models.citation import CrawlJob, Journal
+from app.models.citation import Article, CrawlJob, Issue, Journal
 from app.services.ingest import ingest_pdf_bytes
 
 USER_AGENT = "CitationAssistant/1.0 (journal archive ingest)"
@@ -24,6 +28,7 @@ ISSUE_VIEW_HREF = re.compile(r"/issue/view/\d+", re.I)
 ARCHIVE_HREF = re.compile(r"/issue/archive(?:/\d+)?/?$", re.I)
 ARTICLE_VIEW_HREF = re.compile(r"/article/view/(\d+)(?:/(\d+))?", re.I)
 ARTICLE_DOWNLOAD_HREF = re.compile(r"/article/download/", re.I)
+OJS_ARTICLE_ID = re.compile(r"/article/(?:view|download)/(\d+)", re.I)
 VOL_ISSUE_HREF = re.compile(
     r"Vol\.?\s*(\d+)\s*(?:No\.?|Issue)\s*(\d+)(?:\s*\((\d{4})\))?",
     re.I,
@@ -71,7 +76,11 @@ def is_pdf_url(url: str, link_text: str = "") -> bool:
 
 
 def _article_id(url: str) -> str | None:
-    match = ARTICLE_VIEW_HREF.search(urlparse(url).path or "")
+    path = urlparse(url or "").path or ""
+    match = ARTICLE_VIEW_HREF.search(path)
+    if match:
+        return match.group(1)
+    match = OJS_ARTICLE_ID.search(path)
     return match.group(1) if match else None
 
 
@@ -210,6 +219,44 @@ def _unique(urls: list[str]) -> list[str]:
     return out
 
 
+def _pdf_url_rank(url: str) -> int:
+    """Prefer a real download galley over an article landing/view URL."""
+    path = (urlparse(url).path or "").lower()
+    if "/article/download/" in path:
+        return 0
+    view = ARTICLE_VIEW_HREF.search(path)
+    if view and view.group(2):
+        return 1
+    if path.endswith(".pdf"):
+        return 2
+    return 3
+
+
+def _unique_pdfs_by_article(urls: list[str]) -> list[str]:
+    """One PDF URL per OJS article id. Extra galleys are why 'skipped' looked huge."""
+    chosen: dict[str, str] = {}
+    order: list[str] = []
+    no_id: list[str] = []
+    seen_plain: set[str] = set()
+    for url in urls:
+        cleaned = _clean(str(url or ""))
+        if not cleaned:
+            continue
+        aid = _article_id(cleaned)
+        if not aid:
+            if cleaned not in seen_plain:
+                seen_plain.add(cleaned)
+                no_id.append(cleaned)
+            continue
+        current = chosen.get(aid)
+        if current is None:
+            chosen[aid] = cleaned
+            order.append(aid)
+        elif _pdf_url_rank(cleaned) < _pdf_url_rank(current):
+            chosen[aid] = cleaned
+    return [chosen[aid] for aid in order] + no_id
+
+
 async def _commit_progress(db: AsyncSession, job: CrawlJob) -> None:
     await db.commit()
     await db.refresh(job)
@@ -219,6 +266,56 @@ def _inventory_message(job: CrawlJob) -> str:
     issues = int(job.issues_found or 0)
     articles = int(job.articles_found or 0)
     return f"Found {issues} issues · {articles} articles. Choose which issues to download."
+
+
+def _reset_job_counts(job: CrawlJob) -> None:
+    job.articles_saved = 0
+    job.articles_skipped = 0
+    job.articles_already = 0
+    job.articles_failed = 0
+    job.articles_removed = 0
+
+
+def _live_article_index(inventory: list[dict]) -> tuple[set[str], set[str], set[str]]:
+    ids: set[str] = set()
+    pdfs: set[str] = set()
+    landings: set[str] = set()
+    for row in inventory:
+        for url in row.get("pdf_urls") or []:
+            cleaned = _clean(str(url or ""))
+            if not cleaned:
+                continue
+            pdfs.add(cleaned)
+            aid = _article_id(cleaned)
+            if aid:
+                ids.add(aid)
+        for url in row.get("article_urls") or []:
+            cleaned = _clean(str(url or ""))
+            if not cleaned:
+                continue
+            landings.add(cleaned)
+            aid = _article_id(cleaned)
+            if aid:
+                ids.add(aid)
+    return ids, pdfs, landings
+
+
+def _unlink_stored_pdf(path: str | None) -> None:
+    if not path:
+        return
+    stored = Path(path)
+    if stored.is_file():
+        stored.unlink()
+
+
+def _article_is_live(article: Article, live_ids: set[str], live_pdfs: set[str], live_landings: set[str]) -> bool:
+    url = _clean(article.source_url or "")
+    if not url:
+        return True
+    aid = _article_id(url)
+    if aid and aid in live_ids:
+        return True
+    return url in live_pdfs or url in live_landings
 
 
 async def run_crawl_job(job_id: int, fetch=default_fetch, delay: float = 0.0) -> None:
@@ -292,12 +389,11 @@ async def run_download_job(
                         continue
                     pdfs.extend(await _pdfs_from_article_page(fetch, art_url, aid, delay))
             pdf_urls.extend(pdfs)
-        pdf_urls = _unique(pdf_urls)
+        pdf_urls = _unique_pdfs_by_article(_unique(pdf_urls))
         job.status = "running"
         job.phase = "downloading"
         job.articles_found = len(pdf_urls)
-        job.articles_saved = 0
-        job.articles_skipped = 0
+        _reset_job_counts(job)
         job.cancel_requested = False
         job.finished_at = None
         job.message = (
@@ -317,8 +413,18 @@ async def run_download_job(
                 job.status = "completed"
                 job.phase = "completed"
                 job.message = (
-                    f"Done. Loaded {job.articles_saved} PDFs from {len(chosen)} issue(s), "
-                    f"skipped {job.articles_skipped}."
+                    f"Done. Loaded {job.articles_saved} new PDFs"
+                    + (
+                        f", {job.articles_already} already on this server"
+                        if job.articles_already
+                        else ""
+                    )
+                    + (
+                        f", {job.articles_failed} could not be downloaded"
+                        if job.articles_failed
+                        else ""
+                    )
+                    + "."
                 )
                 for row in inventory:
                     if _clean(str(row.get("url") or "")) in selected:
@@ -329,6 +435,165 @@ async def run_download_job(
             job.status = "failed"
             job.phase = "failed"
             job.message = f"Download failed: {exc}"
+            job.error_log = (job.error_log or []) + [str(exc)]
+        job.finished_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def run_state_update_job(job_id: int, fetch=default_fetch, delay: float = 0.02) -> None:
+    """Re-scan the live journal and make the server archive match it.
+
+    New articles/issues/volumes are ingested. Papers that are no longer listed
+    on the journal site are removed. Manual uploads with no source URL are kept.
+    """
+    async with AsyncSessionLocal() as db:
+        job = await db.get(CrawlJob, job_id)
+        if job is None:
+            return
+        journal = await db.get(Journal, job.journal_id)
+        if journal is None:
+            job.status = "failed"
+            job.message = "Journal not found"
+            await db.commit()
+            return
+        job.status = "running"
+        job.phase = "updating"
+        job.started_at = datetime.now(timezone.utc)
+        job.finished_at = None
+        job.cancel_requested = False
+        _reset_job_counts(job)
+        job.message = "Reading the live journal archive…"
+        await db.commit()
+        try:
+            await _scan_issues(db, job, fetch, delay)
+            if job.cancel_requested:
+                job.status = "cancelled"
+                job.phase = "cancelled"
+                job.message = "State update cancelled."
+                job.finished_at = datetime.now(timezone.utc)
+                await db.commit()
+                return
+            inventory = list(job.inventory or [])
+            live_ids, live_pdfs, live_landings = _live_article_index(inventory)
+            if not live_ids and not live_pdfs:
+                job.status = "failed"
+                job.phase = "failed"
+                job.message = (
+                    "State update stopped: the live archive listing was empty, "
+                    "so nothing was added or removed."
+                )
+                job.finished_at = datetime.now(timezone.utc)
+                await db.commit()
+                return
+
+            local = list(
+                (
+                    await db.execute(
+                        select(Article)
+                        .options(selectinload(Article.issue))
+                        .join(Issue, Article.issue_id == Issue.id)
+                        .where(Issue.journal_id == journal.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            local_ids = {_article_id(a.source_url or "") for a in local}
+            local_ids.discard(None)
+            local_urls = {_clean(a.source_url or "") for a in local}
+            live_pdf_list = _unique_pdfs_by_article(sorted(live_pdfs))
+            to_fetch = [
+                url
+                for url in live_pdf_list
+                if (_article_id(url) not in local_ids) and (url not in local_urls)
+            ]
+            already_here = max(0, len(live_pdf_list) - len(to_fetch))
+            job.phase = "downloading"
+            job.articles_found = len(live_pdf_list)
+            job.articles_already = already_here
+            job.articles_skipped = already_here
+            job.message = (
+                f"Live archive has {len(live_ids)} articles. "
+                f"{already_here} already on this server. "
+                f"Downloading {len(to_fetch)} missing PDF(s)…"
+            )
+            await db.commit()
+            if to_fetch:
+                await _download_pdfs(db, job, journal, to_fetch, fetch, delay)
+
+            local = list(
+                (
+                    await db.execute(
+                        select(Article)
+                        .options(selectinload(Article.issue))
+                        .join(Issue, Article.issue_id == Issue.id)
+                        .where(Issue.journal_id == journal.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            removed = 0
+            if not job.cancel_requested:
+                job.phase = "updating"
+                job.message = "Removing papers that are no longer on the journal site…"
+                await db.commit()
+                for article in local:
+                    if _article_is_live(article, live_ids, live_pdfs, live_landings):
+                        continue
+                    _unlink_stored_pdf(article.pdf_path)
+                    await db.delete(article)
+                    removed += 1
+                job.articles_removed = removed
+                await db.flush()
+                issues = list(
+                    (
+                        await db.execute(select(Issue).where(Issue.journal_id == journal.id))
+                    )
+                    .scalars()
+                    .all()
+                )
+                for issue in issues:
+                    remaining = int(
+                        (
+                            await db.execute(
+                                select(func.count(Article.id)).where(Article.issue_id == issue.id)
+                            )
+                        ).scalar()
+                        or 0
+                    )
+                    if remaining == 0:
+                        await db.delete(issue)
+
+            if job.cancel_requested:
+                job.status = "cancelled"
+                job.phase = "cancelled"
+                job.message = (
+                    f"State update cancelled. Added {job.articles_saved}, "
+                    f"removed {job.articles_removed}."
+                )
+            else:
+                job.status = "completed"
+                job.phase = "completed"
+                job.message = (
+                    f"Archive state updated. Added {job.articles_saved} new paper(s). "
+                    f"{job.articles_already} already on this server. "
+                    f"Removed {job.articles_removed} no longer listed on the journal site"
+                    + (
+                        f". {job.articles_failed} could not be downloaded"
+                        if job.articles_failed
+                        else ""
+                    )
+                    + "."
+                )
+                for row in inventory:
+                    row["downloaded"] = True
+                job.inventory = inventory
+                flag_modified(job, "inventory")
+        except Exception as exc:
+            job.status = "failed"
+            job.phase = "failed"
+            job.message = f"State update failed: {exc}"
             job.error_log = (job.error_log or []) + [str(exc)]
         job.finished_at = datetime.now(timezone.utc)
         await db.commit()
@@ -468,9 +733,15 @@ async def _download_pdfs(
     fetch,
     delay: float,
 ) -> None:
+    seen_aids: set[str] = set()
     for index, pdf_url in enumerate(pdf_urls):
         if job.cancel_requested:
             return
+        aid = _article_id(pdf_url)
+        if aid and aid in seen_aids:
+            job.articles_already += 1
+            job.articles_skipped += 1
+            continue
         left = max(0, len(pdf_urls) - index)
         job.message = (
             f"Downloading PDFs… loaded {job.articles_saved}, {left} left "
@@ -483,6 +754,7 @@ async def _download_pdfs(
         try:
             status, content, ctype = await fetch(pdf_url)
             if status >= 400:
+                job.articles_failed += 1
                 job.articles_skipped += 1
                 job.error_log = (job.error_log or []) + [f"{pdf_url}: HTTP {status}"]
                 continue
@@ -503,9 +775,11 @@ async def _download_pdfs(
                         fetched = True
                         break
                 if not fetched:
+                    job.articles_failed += 1
                     job.articles_skipped += 1
                     continue
             if not _is_pdf_payload(content, ctype):
+                job.articles_failed += 1
                 job.articles_skipped += 1
                 continue
             name = pdf_url.rstrip("/").split("/")[-1] or f"article_{index + 1}.pdf"
@@ -517,8 +791,12 @@ async def _download_pdfs(
             if created:
                 job.articles_saved += 1
             else:
+                job.articles_already += 1
                 job.articles_skipped += 1
+            if aid:
+                seen_aids.add(aid)
         except Exception as exc:
+            job.articles_failed += 1
             job.articles_skipped += 1
             job.error_log = (job.error_log or []) + [f"{pdf_url}: {exc}"]
     await db.commit()

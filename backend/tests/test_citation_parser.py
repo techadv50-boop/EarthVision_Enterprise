@@ -54,7 +54,7 @@ def test_parse_water_galley():
 
 def test_house_citation_format():
     text = format_house_citation(
-        authors=["Hasanain. S"],
+        authors=["Hasanain. S", "Ali. Q. E"],
         title="Secure Scheme",
         volume=8,
         issue=5,
@@ -62,7 +62,67 @@ def test_house_citation_format():
         page_end=1813,
         month="August",
         year=2026,
+        journal_name="International Journal of Innovations in Science & Technology",
+        abbreviation="IJIST",
+        doi="10.33411/IJIST/202608051788",
     )
     assert "IJIST" in text
-    assert "Vol. 8" in text
+    assert "vol. 8" in text
+    assert "no. 5" in text
     assert "1788-1813" in text
+    assert "doi: 10.33411/IJIST/202608051788" in text
+    assert ", doi:" in text
+    assert "Secure Scheme" in text
+    assert text.endswith(".")
+
+
+GALLEY_FCSI = """
+Frontiers in Computational Spatial Intelligence
+May 2025|Vol 03 | Issue 02 Page |66
+An Integrated Ant Colony and Dynamic Window Approach for
+Cooperative Multi-Robot Trajectory Planning in Safflower
+Cultivation
+Rashida Naseer1, Shahid Khan1
+1Quaid e Azam university, Lahore
+*Correspondence: rabia.naseer@gmail.com
+Citation| Azeem. N, Khan. S, “An Integrated Ant Colony and Dynamic Window Approach for Cooperative Multi-Robot Trajectory Planning in Safflower Cultivation”, FCSI, Vol. 03 Issue. 2 pp 66-76, May 2025
+DOI| https://doi.org/10.33411/fcsi/202532066076
+Received| April 08, 2025 Revised| May 06, 2025 Accepted| May 07, 2025 Published| May 08, 2025.
+The increasing adoption of agricultural robotics has highlighted the need for efficient trajectory planning in crop fields.
+Keywords: Agricultural Robotics; Trajectory Planning; Ant Colony Optimization (ACO)
+Introduction:
+Safflower is an oilseed crop. Multi-robot coordination in safflower fields remains a research direction.
+"""
+
+
+def test_parse_fcsi_galley():
+    meta = parse_ijist_header(
+        GALLEY_FCSI,
+        journal_name="Frontiers in Computational Spatial Intelligence",
+        abbreviation="FCSI",
+    )
+    assert meta["abbreviation"] == "FCSI"
+    assert meta["volume"] == 3
+    assert meta["issue"] == 2
+    assert meta["page_start"] == 66
+    assert meta["page_end"] == 76
+    assert "Safflower" in (meta["title"] or "")
+    assert "Frontiers in Computational Spatial Intelligence" not in (meta["title"] or "")
+    assert meta["authors"]
+    assert "Azeem" in " ".join(meta["authors"])
+    assert meta["doi"] == "10.33411/fcsi/202532066076"
+
+
+def test_broken_banner_title_is_detected():
+    from app.services.citation_parser import metadata_looks_broken
+
+    assert metadata_looks_broken(
+        "Frontiers in Computational Spatial Intelligence underexplored. Efficient scheduling.",
+        [],
+        journal_name="Frontiers in Computational Spatial Intelligence",
+    )
+    assert not metadata_looks_broken(
+        "Harnessing Drone Swarms for Enhanced Search and Rescue Operations",
+        ["Khan. A"],
+        journal_name="Frontiers in Computational Spatial Intelligence",
+    )

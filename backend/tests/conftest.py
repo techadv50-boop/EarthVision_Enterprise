@@ -42,7 +42,7 @@ async def client():
 async def auth_headers(client: AsyncClient) -> dict[str, str]:
     response = await client.post(
         "/api/v1/auth/login",
-        json={"username": "demo", "password": "Demo@123456"},
+        json={"username": "citation@xdgen.com", "password": "pak123"},
     )
     assert response.status_code == 200, response.text
     token = response.json()["access_token"]

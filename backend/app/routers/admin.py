@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import get_current_user, require_desk, require_permission
+from app.core.privileges import empty_privileges, full_privileges, normalize_privileges, privileges_from_desks
 from app.database.session import get_db
 from app.models.analysis import AnalysisJob
 from app.models.project import Project
@@ -33,6 +34,8 @@ from app.schemas.admin import (
     UserAdminUpdate,
 )
 from app.schemas.auth import UserCreate, UserResponse as AuthUserResponse
+from app.services.auth_service import public_user
+from app.services.journal_access import set_user_journals
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
@@ -80,27 +83,43 @@ async def get_stats(
 
 
 def _user_payload(user: User) -> AuthUserResponse:
-    return AuthUserResponse(
-        id=user.id,
-        email=user.email,
-        username=user.username,
-        full_name=user.full_name,
-        organization=user.organization,
-        is_active=user.is_active,
-        is_superuser=user.is_superuser,
-        roles=[r.name for r in user.roles],
-        access_status=user.portal_status(),
-        created_at=user.created_at,
+    return public_user(user)
+
+
+def _want_full_admin(role: str | None) -> bool:
+    return (role or "").strip().lower() == "admin"
+
+
+def _create_privileges(data: UserAdminCreate) -> dict:
+    if data.privileges is not None:
+        priv = normalize_privileges(data.privileges.model_dump())
+    elif data.desks:
+        priv = privileges_from_desks(data.desks)
+    else:
+        priv = empty_privileges()
+    if data.assigned_journal_ids and "citation" not in priv["services"]:
+        priv["services"] = [*priv["services"], "citation"]
+    return priv
+
+
+async def _reload_user(db: AsyncSession, user_id: int) -> User:
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.allowed_journals))
+        .where(User.id == user_id)
     )
+    return result.scalar_one()
 
 
 @router.get("/users", response_model=list[AuthUserResponse])
 async def list_users(
-    _admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    _admin: Annotated[User, Depends(require_desk("users"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     result = await db.execute(
-        select(User).options(selectinload(User.roles)).order_by(User.created_at.desc())
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.allowed_journals))
+        .order_by(User.created_at.desc())
     )
     return [_user_payload(u) for u in result.scalars().all()]
 
@@ -108,7 +127,7 @@ async def list_users(
 @router.post("/users", response_model=AuthUserResponse, status_code=201)
 async def create_user(
     data: UserAdminCreate,
-    _admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    actor: Annotated[User, Depends(require_desk("users"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     from app.services.auth_service import AuthService
@@ -121,6 +140,14 @@ async def create_user(
     role = (data.role or "user").strip().lower()
     if role not in ("admin", "user"):
         raise HTTPException(status_code=400, detail="Role must be admin or user")
+    if role == "admin" and not actor.is_full_admin():
+        raise HTTPException(
+            status_code=403,
+            detail="Only the operator can grant operator access",
+        )
+    status_name = (data.access_status or "approved").strip().lower()
+    if status_name not in ("pending", "approved", "restricted"):
+        raise HTTPException(status_code=400, detail="Status must be pending, approved, or restricted")
     user = await service.create_user(
         UserCreate(
             email=data.email,
@@ -128,20 +155,37 @@ async def create_user(
             password=data.password,
             full_name=data.full_name,
         ),
-        role_name=role,
-        approved=True,
+        role_name="user",
+        approved=status_name == "approved",
     )
-    return _user_payload(user)
+    if status_name != "approved":
+        user.access_status = status_name
+        user.is_active = False
+    await service.apply_privileges(
+        user,
+        full_privileges() if role == "admin" else _create_privileges(data),
+        full_admin=role == "admin",
+        manage_users="users" in (data.desks or []),
+    )
+    journal_ids = [] if role == "admin" or (
+        data.privileges is not None and data.privileges.all_journals
+    ) else data.assigned_journal_ids
+    await set_user_journals(db, user, journal_ids)
+    return _user_payload(await _reload_user(db, user.id))
 
 
 @router.patch("/users/{user_id}")
 async def update_user(
     user_id: int,
     data: UserAdminUpdate,
-    admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    admin: Annotated[User, Depends(require_desk("users"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(User).options(selectinload(User.roles)).where(User.id == user_id))
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.allowed_journals))
+        .where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -150,7 +194,16 @@ async def update_user(
         user.email = data.email
     if data.full_name is not None:
         user.full_name = data.full_name
-    if data.access_status is not None:
+
+    approval = (data.approval or "").strip().lower() or None
+    if approval and approval not in ("full", "partial", "restrict"):
+        raise HTTPException(status_code=400, detail="Approval must be full, partial, or restrict")
+    if approval == "restrict":
+        if user.id == admin.id:
+            raise HTTPException(status_code=400, detail="You cannot restrict your own account")
+        user.access_status = "restricted"
+        user.is_active = False
+    elif data.access_status is not None:
         status_name = data.access_status.strip().lower()
         if status_name not in ("pending", "approved", "restricted"):
             raise HTTPException(status_code=400, detail="Status must be pending, approved, or restricted")
@@ -163,34 +216,77 @@ async def update_user(
             raise HTTPException(status_code=400, detail="You cannot restrict your own account")
         user.is_active = data.is_active
         user.access_status = "approved" if data.is_active else "restricted"
-    if data.role is not None:
-        name = data.role.strip().lower()
-        if name not in ("admin", "user"):
-            raise HTTPException(status_code=400, detail="Role must be admin or user")
-        if user.id == admin.id and name != "admin":
+
+    from app.core.desks import normalize_desks
+    from app.services.auth_service import AuthService
+
+    service = AuthService(db)
+    privileges_changed = (
+        data.privileges is not None
+        or data.desks is not None
+        or data.role is not None
+        or approval in ("full", "partial")
+    )
+    if privileges_changed:
+        full = user.is_full_admin()
+        manage_users = user.has_role("admin_users")
+        priv = user.resolved_privileges()
+        if approval == "full":
+            full = False
+            priv = full_privileges()
+            user.access_status = "approved"
+            user.is_active = True
+        elif data.privileges is not None:
+            full = False
+            priv = normalize_privileges(data.privileges.model_dump())
+        elif data.desks is not None:
+            full = False
+            priv = privileges_from_desks(data.desks)
+            manage_users = "users" in normalize_desks(data.desks)
+        if data.role is not None:
+            name = data.role.strip().lower()
+            if name not in ("admin", "user"):
+                raise HTTPException(status_code=400, detail="Role must be admin or user")
+            full = name == "admin"
+            if full:
+                priv = full_privileges()
+            elif data.privileges is None and data.desks is None and approval != "full":
+                priv = empty_privileges()
+                manage_users = False
+        if full and not admin.is_full_admin():
+            raise HTTPException(
+                status_code=403,
+                detail="Only the operator can grant operator access",
+            )
+        if user.id == admin.id and admin.is_full_admin() and not full:
             raise HTTPException(status_code=400, detail="You cannot remove your own admin role")
-        role_row = await db.execute(select(Role).where(Role.name == name))
-        assigned = role_row.scalar_one_or_none()
-        if assigned is None:
-            raise HTTPException(status_code=400, detail="Role not found")
-        user.roles = [assigned]
-        user.is_superuser = name == "admin"
+        await service.apply_privileges(
+            user,
+            priv,
+            full_admin=full,
+            manage_users=manage_users and not full,
+        )
     elif data.role_ids is not None:
         roles_result = await db.execute(select(Role).where(Role.id.in_(data.role_ids)))
         user.roles = list(roles_result.scalars().all())
 
+    if data.assigned_journal_ids is not None:
+        await set_user_journals(db, user, data.assigned_journal_ids)
+
     await db.flush()
-    result = await db.execute(
-        select(User).options(selectinload(User.roles)).where(User.id == user.id)
-    )
-    updated = result.scalar_one()
+    updated = await _reload_user(db, user.id)
+    payload = _user_payload(updated)
     return {
         "message": "User updated",
-        "id": updated.id,
-        "roles": [r.name for r in updated.roles],
-        "is_superuser": updated.is_superuser,
-        "is_active": updated.is_active,
-        "access_status": updated.portal_status(),
+        "id": payload.id,
+        "roles": payload.roles,
+        "desks": payload.desks,
+        "privileges": payload.privileges.model_dump(),
+        "can_manage_users": payload.can_manage_users,
+        "is_superuser": payload.is_superuser,
+        "is_active": payload.is_active,
+        "access_status": payload.access_status,
+        "assigned_journal_ids": payload.assigned_journal_ids,
     }
 
 

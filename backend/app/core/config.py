@@ -41,6 +41,7 @@ class Settings(BaseSettings):
             "https://xdgen.com",
             "https://www.xdgen.com",
             "https://citation.xdgen.com",
+            "https://citation.drxdhr.com",
         ]
     )
 

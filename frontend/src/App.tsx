@@ -1,6 +1,16 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import {
+  canManageUsers,
+  hasAuthorWing,
+  hasReviewBranch,
+  hasService,
+  isCitationAdmin,
+  useAuthStore,
+  type AuthorWingId,
+  type ReviewBranchId,
+  type ServiceId,
+} from '@/store/authStore';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import AppLayout from '@/components/AppLayout';
@@ -16,6 +26,9 @@ import HomePage from '@/pages/HomePage';
 import ReviewHubPage from '@/pages/ReviewHubPage';
 import ReferenceCheckPage from '@/pages/ReferenceCheckPage';
 import LanguageReviewPage from '@/pages/LanguageReviewPage';
+import AuthorHubPage from '@/pages/AuthorHubPage';
+import AuthorArticlesPage from '@/pages/AuthorArticlesPage';
+import GalleyPage from '@/pages/GalleyPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
 import BillingSuccessPage from '@/pages/BillingSuccessPage';
 import BillingCancelPage from '@/pages/BillingCancelPage';
@@ -45,7 +58,45 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
   if (!isCitationAdmin(user)) {
-    return <Navigate to="/manuscripts" replace />;
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
+function UsersAdminRoute({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!canManageUsers(user)) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
+function ServiceRoute({ service, children }: { service: ServiceId; children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!hasService(user, service)) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
+function ReviewBranchRoute({
+  branch,
+  children,
+}: {
+  branch: ReviewBranchId;
+  children: React.ReactNode;
+}) {
+  const user = useAuthStore((s) => s.user);
+  if (!hasReviewBranch(user, branch)) {
+    return <Navigate to="/review" replace />;
+  }
+  return <>{children}</>;
+}
+
+function AuthorWingRoute({ wing, children }: { wing: AuthorWingId; children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!hasAuthorWing(user, wing)) {
+    return <Navigate to="/authors" replace />;
   }
   return <>{children}</>;
 }
@@ -67,55 +118,131 @@ export default function App() {
       >
         <Route path="/" element={<HomePage />} />
         <Route
+          path="/admin"
+          element={
+            <UsersAdminRoute>
+              <UsersPage />
+            </UsersAdminRoute>
+          }
+        />
+        <Route path="/users" element={<Navigate to="/admin" replace />} />
+        <Route
           path="/journals"
           element={
-            <AdminRoute>
+            <ServiceRoute service="citation">
               <DashboardPage />
-            </AdminRoute>
+            </ServiceRoute>
           }
         />
         <Route
           path="/journals/:journalId"
           element={
-            <AdminRoute>
+            <ServiceRoute service="citation">
               <JournalVolumesPage />
-            </AdminRoute>
+            </ServiceRoute>
           }
         />
         <Route
           path="/journals/:journalId/volumes/:volume"
           element={
-            <AdminRoute>
+            <ServiceRoute service="citation">
               <VolumeIssuesPage />
-            </AdminRoute>
+            </ServiceRoute>
           }
         />
         <Route
           path="/journals/:journalId/volumes/:volume/issues/:issueNumber"
           element={
-            <AdminRoute>
+            <ServiceRoute service="citation">
               <IssueArticlesPage />
-            </AdminRoute>
+            </ServiceRoute>
           }
         />
-        <Route path="/manuscripts" element={<ManuscriptsPage />} />
-        <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
-        <Route path="/review" element={<ReviewHubPage />} />
-        <Route path="/review/references" element={<ReferenceCheckPage />} />
-        <Route path="/review/language" element={<LanguageReviewPage />} />
+        <Route
+          path="/manuscripts"
+          element={
+            <ServiceRoute service="citation">
+              <ManuscriptsPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/manuscripts/:manuscriptId"
+          element={
+            <ServiceRoute service="citation">
+              <ManuscriptReviewPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/review"
+          element={
+            <ServiceRoute service="review">
+              <ReviewHubPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/review/references"
+          element={
+            <ServiceRoute service="review">
+              <ReviewBranchRoute branch="references">
+                <ReferenceCheckPage />
+              </ReviewBranchRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/review/language"
+          element={
+            <ServiceRoute service="review">
+              <ReviewBranchRoute branch="language">
+                <LanguageReviewPage />
+              </ReviewBranchRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorHubPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors/in-process"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorWingRoute wing="in_process">
+                <AuthorArticlesPage wing="in_process" />
+              </AuthorWingRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors/published"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorWingRoute wing="published">
+                <AuthorArticlesPage wing="published" />
+              </AuthorWingRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/galley"
+          element={
+            <ServiceRoute service="galley">
+              <GalleyPage />
+            </ServiceRoute>
+          }
+        />
         <Route
           path="/archive"
           element={
             <AdminRoute>
               <ArchiveSearchPage />
-            </AdminRoute>
-          }
-        />
-        <Route
-          path="/users"
-          element={
-            <AdminRoute>
-              <UsersPage />
             </AdminRoute>
           }
         />

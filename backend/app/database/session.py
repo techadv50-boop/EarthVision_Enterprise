@@ -15,6 +15,12 @@ _engine_kwargs: dict = {
 }
 if settings.database_url.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"timeout": 30}
+else:
+    _engine_kwargs["pool_size"] = 8
+    _engine_kwargs["max_overflow"] = 8
+    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_recycle"] = 1800
+    _engine_kwargs["pool_timeout"] = 30
 
 engine = create_async_engine(settings.database_url, **_engine_kwargs)
 
@@ -69,6 +75,22 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("crawl_jobs", "inventory", "JSON")
     _add_if_missing("articles", "citing_works", "JSON")
     _add_if_missing("users", "access_status", "VARCHAR(32) DEFAULT 'approved'")
+    _add_if_missing("crawl_jobs", "articles_already", "INTEGER DEFAULT 0")
+    _add_if_missing("crawl_jobs", "articles_failed", "INTEGER DEFAULT 0")
+    _add_if_missing("crawl_jobs", "articles_removed", "INTEGER DEFAULT 0")
+    _add_if_missing("users", "openai_api_key", "TEXT DEFAULT ''")
+    _add_if_missing("users", "openai_model", "VARCHAR(100) DEFAULT 'gpt-4o-mini'")
+    _add_if_missing("users", "gpt_review_enabled", "BOOLEAN")
+    _add_if_missing("users", "service_privileges", "JSON")
+    _add_if_missing("manuscripts", "owner_id", "INTEGER")
+    _add_if_missing("author_articles", "email_sent_date", "VARCHAR(32)")
+    _add_if_missing("author_articles", "galley_sent_date", "VARCHAR(32)")
+    _add_if_missing("author_articles", "galley_received_date", "VARCHAR(32)")
+    _add_if_missing("author_articles", "review_rounds", "JSON")
+    _add_if_missing("author_articles", "journal_title", "VARCHAR(500) DEFAULT ''")
+    _add_if_missing("author_articles", "original_snapshot", "JSON")
+    _add_if_missing("author_article_changes", "snapshot", "JSON")
+    _add_if_missing("author_articles", "editorial_status", "VARCHAR(120) DEFAULT 'Submission'")
 
 
 def _ensure_postgres_columns(sync_conn) -> None:
@@ -80,5 +102,53 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "UPDATE users SET access_status = 'approved' WHERE access_status IS NULL"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE crawl_jobs ADD COLUMN IF NOT EXISTS articles_already INTEGER DEFAULT 0"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE crawl_jobs ADD COLUMN IF NOT EXISTS articles_failed INTEGER DEFAULT 0"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE crawl_jobs ADD COLUMN IF NOT EXISTS articles_removed INTEGER DEFAULT 0"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS openai_api_key TEXT DEFAULT ''"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS openai_model VARCHAR(100) DEFAULT 'gpt-4o-mini'"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS gpt_review_enabled BOOLEAN"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE manuscripts ADD COLUMN IF NOT EXISTS owner_id INTEGER"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS service_privileges JSON"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS email_sent_date VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS galley_sent_date VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS galley_received_date VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS review_rounds JSON"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS journal_title VARCHAR(500) DEFAULT ''"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS original_snapshot JSON"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_article_changes ADD COLUMN IF NOT EXISTS snapshot JSON"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS editorial_status VARCHAR(120) DEFAULT 'Submission'"
     )
 

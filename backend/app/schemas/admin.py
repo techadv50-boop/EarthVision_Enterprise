@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.schemas.auth import ServicePrivileges
+
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -74,7 +76,11 @@ class UserAdminCreate(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=128)
     full_name: Optional[str] = None
-    role: str = Field(default="user", description="Citation role: admin or user")
+    role: str = Field(default="user", description="admin = operator; user = staff with optional services")
+    desks: list[str] = Field(default_factory=list)
+    privileges: Optional[ServicePrivileges] = None
+    assigned_journal_ids: list[int] = Field(default_factory=list)
+    access_status: Optional[str] = Field(default="approved")
 
 
 class UserAdminUpdate(BaseModel):
@@ -82,9 +88,15 @@ class UserAdminUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
     role_ids: Optional[list[int]] = None
-    role: Optional[str] = Field(default=None, description="Citation role: admin or user")
+    role: Optional[str] = Field(default=None, description="admin = every desk; user = staff plus optional desks")
+    desks: Optional[list[str]] = None
+    privileges: Optional[ServicePrivileges] = None
     access_status: Optional[str] = Field(
         default=None, description="pending, approved, or restricted"
+    )
+    assigned_journal_ids: Optional[list[int]] = None
+    approval: Optional[str] = Field(
+        default=None, description="full, partial, or restrict"
     )
 
 

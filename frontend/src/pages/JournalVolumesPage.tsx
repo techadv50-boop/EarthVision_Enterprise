@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { citationApi } from '@/services/api';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 interface Volume {
   volume: number;
@@ -59,18 +60,24 @@ function CrawlProgress({ crawl }: { crawl: CrawlJob }) {
   const found = Number(crawl.articles_found || 0);
   const saved = Number(crawl.articles_saved || 0);
   const skipped = Number(crawl.articles_skipped || 0);
+  const already = Number(crawl.articles_already || 0);
+  const failed = Number(crawl.articles_failed || 0);
+  const removed = Number(crawl.articles_removed || 0);
   const remaining = Math.max(0, found - saved - skipped);
   const processed = saved + skipped;
   const phase = String(crawl.phase || crawl.status || '');
   const scanning = phase === 'scanning' || (found === 0 && (phase === 'running' || phase === 'queued'));
-  const percent = found > 0 ? Math.min(100, Math.round((processed / found) * 100)) : scanning ? 8 : 0;
+  const updating = phase === 'updating';
+  const percent = found > 0 ? Math.min(100, Math.round((processed / found) * 100)) : scanning || updating ? 8 : 0;
   const message = String(
     crawl.message ||
       (scanning
         ? 'Listing issues and article counts…'
-        : found
-          ? `Found ${found} PDFs. Loaded ${saved}, ${remaining} left.`
-          : String(crawl.status))
+        : updating
+          ? 'Comparing the live journal with this server…'
+          : found
+            ? `Found ${found} PDFs. Loaded ${saved}, ${remaining} left.`
+            : String(crawl.status))
   );
 
   return (
@@ -80,16 +87,25 @@ function CrawlProgress({ crawl }: { crawl: CrawlJob }) {
         <div className="h-full bg-earth-500 transition-all" style={{ width: `${percent}%` }} />
       </div>
       <p className="text-xs text-gray-400">
-        {scanning
+        {scanning || (updating && found === 0)
           ? `Searching… ${Number(crawl.pages_crawled || 0)} pages opened`
           : `PDFs found: ${found} · loaded ${saved} · left ${remaining}` +
-            (skipped ? ` · skipped ${skipped}` : '')}
+            (already ? ` · already on server ${already}` : '') +
+            (failed ? ` · failed ${failed}` : '') +
+            (removed ? ` · removed ${removed}` : '') +
+            (!already && skipped ? ` · skipped ${skipped}` : '')}
       </p>
+      {already || failed ? (
+        <p className="text-xs text-gray-500">
+          Already on server means the paper is in citation matching. Failed downloads are not stored.
+        </p>
+      ) : null}
     </div>
   );
 }
 
 export default function JournalVolumesPage() {
+  const admin = isCitationAdmin(useAuthStore((s) => s.user));
   const { journalId } = useParams();
   const id = Number(journalId);
   const [journal, setJournal] = useState<{ name: string; archive_url?: string } | null>(null);
@@ -101,13 +117,15 @@ export default function JournalVolumesPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [repairing, setRepairing] = useState(false);
 
   const inventory = useMemo(
     () => (Array.isArray(crawl?.inventory) ? (crawl?.inventory as InventoryRow[]) : []),
     [crawl]
   );
   const downloading = isActiveStatus(crawl?.status) && String(crawl?.phase || '') === 'downloading';
-  const scanning = isActiveStatus(crawl?.status) && !downloading;
+  const updating = isActiveStatus(crawl?.status) && String(crawl?.phase || '') === 'updating';
+  const scanning = isActiveStatus(crawl?.status) && !downloading && !updating;
 
   const localByKey = useMemo(() => {
     const map = new Map<string, LocalIssue>();
@@ -187,18 +205,20 @@ export default function JournalVolumesPage() {
     const issues: LocalIssue[] = issuesRes.data || [];
     setLocalIssues(issues);
     setArchiveUrl(j.archive_url || '');
-    try {
-      const { data: job } = await citationApi.journals.latestCrawl(id);
-      if (job?.inventory?.length) {
-        setCrawl(job);
-        const next: Record<string, boolean> = {};
-        for (const row of job.inventory as InventoryRow[]) {
-          next[row.url] = false;
+    if (admin) {
+      try {
+        const { data: job } = await citationApi.journals.latestCrawl(id);
+        if (job?.inventory?.length) {
+          setCrawl(job);
+          const next: Record<string, boolean> = {};
+          for (const row of job.inventory as InventoryRow[]) {
+            next[row.url] = false;
+          }
+          setSelected(next);
         }
-        setSelected(next);
+      } catch {
+        /* no prior scan */
       }
-    } catch {
-      /* no prior scan */
     }
     return issues;
   };
@@ -218,15 +238,33 @@ export default function JournalVolumesPage() {
     }
   };
 
+  const repairMetadata = async () => {
+    if (repairing) return;
+    setRepairing(true);
+    setMsg('Re-reading stored PDFs to restore titles, authors, pages, and DOIs…');
+    try {
+      const { data } = await citationApi.journals.repairMetadata(id);
+      await load();
+      setMsg(
+        `Restored citation metadata on ${data.repaired} of ${data.scanned} stored papers. Run suggestions again on the manuscript.`
+      );
+    } catch {
+      setMsg('Could not repair paper metadata. Try again in a moment.');
+    } finally {
+      setRepairing(false);
+    }
+  };
+
   useEffect(() => {
     void (async () => {
       const issues = await load();
+      if (!admin) return;
       const needsSync = issues.some((iss) => iss.article_count > 0 && !iss.citations_synced);
       if (needsSync) {
         await refreshCitations();
       }
     })();
-  }, [id]);
+  }, [id, admin]);
 
   const pollJob = async (jobId: number) => {
     const { data: job } = await citationApi.crawlJob(jobId);
@@ -270,6 +308,18 @@ export default function JournalVolumesPage() {
     void pollJob(data.id);
   };
 
+  const startStateUpdate = async () => {
+    if (!archiveUrl) {
+      setMsg('Set the archive URL first.');
+      return;
+    }
+    setMsg('Updating this server to match the live journal…');
+    setSelected({});
+    const { data } = await citationApi.journals.syncState(id, archiveUrl);
+    setCrawl(data);
+    void pollJob(data.id);
+  };
+
   const startDownload = async () => {
     if (!crawl?.id) return;
     const issueUrls = Object.entries(selected)
@@ -304,8 +354,13 @@ export default function JournalVolumesPage() {
         <Link to="/journals">Journals</Link> / {journal?.name}
       </p>
       <h2 className="text-2xl font-semibold mb-2">{journal?.name}</h2>
-      <p className="text-gray-400 mb-6">Volumes and article totals. Missing volume numbers are flagged.</p>
+      <p className="text-gray-400 mb-6">
+        {admin
+          ? 'Volumes and article totals. Missing volume numbers are flagged. Papers stay on the server archive.'
+          : 'Browse articles stored for this journal. Upload, crawl, and delete stay with the admin account.'}
+      </p>
 
+      {admin && (
       <div className="grid md:grid-cols-2 gap-4 mb-4">
         <div className="panel p-4 space-y-3">
           <h3 className="font-medium">1. Upload PDFs</h3>
@@ -322,9 +377,11 @@ export default function JournalVolumesPage() {
         <div className="panel p-4 space-y-3">
           <h3 className="font-medium">2. Scan archive issues</h3>
           <p className="text-xs text-gray-400">
-            Lists every issue and how many articles it contains. Article pages are opened when the
-            PDF is not on the issue table of contents. PDFs are not downloaded until you choose which
-            issues to fetch. Citation counts come from the DOI (Crossref) and Google Scholar.
+            Lists every issue and how many articles it contains. Duplicate PDF links for the same paper
+            count as already on this server — those papers stay in citation matching. Use{' '}
+            <strong>Update archive state</strong> to match this server to the live journal: new
+            volumes, issues, and articles are added, and papers the journal no longer lists are removed.
+            Manual uploads with no journal URL are kept.
           </p>
           <input
             className="input-field"
@@ -336,12 +393,20 @@ export default function JournalVolumesPage() {
             <button
               className="btn-primary"
               type="button"
-              disabled={scanning || downloading || !archiveUrl}
+              disabled={scanning || downloading || updating || !archiveUrl}
               onClick={() => void startCrawl()}
             >
               Scan issues
             </button>
-            {(scanning || downloading) && crawl?.id ? (
+            <button
+              className="btn-primary"
+              type="button"
+              disabled={scanning || downloading || updating || !archiveUrl}
+              onClick={() => void startStateUpdate()}
+            >
+              Update archive state
+            </button>
+            {(scanning || downloading || updating) && crawl?.id ? (
               <button
                 className="btn-secondary"
                 type="button"
@@ -351,14 +416,31 @@ export default function JournalVolumesPage() {
               </button>
             ) : null}
             {localIssues.length > 0 && (
+              <button
+                className="btn-secondary"
+                type="button"
+                disabled={repairing || scanning || downloading || updating}
+                onClick={() => void repairMetadata()}
+              >
+                {repairing ? 'Repairing metadata…' : 'Repair citation metadata'}
+              </button>
+            )}
+            {localIssues.length > 0 && (
               <button className="btn-secondary" type="button" disabled={syncing} onClick={() => void refreshCitations()}>
                 {syncing ? 'Refreshing citations…' : 'Refresh citation counts'}
               </button>
             )}
           </div>
-          {crawl && (scanning || downloading) && <CrawlProgress crawl={crawl} />}
+          {crawl &&
+            (scanning ||
+              downloading ||
+              updating ||
+              crawl.status === 'completed' ||
+              crawl.status === 'failed' ||
+              crawl.status === 'cancelled') && <CrawlProgress crawl={crawl} />}
         </div>
       </div>
+      )}
       {msg && <p className="text-earth-400 text-sm mb-4">{msg}</p>}
 
       {issueRows.length > 0 && (
@@ -369,10 +451,10 @@ export default function JournalVolumesPage() {
               <p className="text-sm text-gray-400">
                 {issueRows.length} issues ·{' '}
                 {issueRows.reduce((n, row) => n + Number(row.article_count || 0), 0)} articles.
-                Tick remote issues to download; leave the rest on the site.
+                {admin ? ' Tick remote issues to download; leave the rest on the site.' : ' Open an issue to see stored articles.'}
               </p>
             </div>
-            {inventory.length > 0 && (
+            {admin && inventory.length > 0 && (
               <div className="flex gap-2">
                 <button className="btn-secondary" type="button" onClick={() => toggleAll(true)}>
                   Select all
@@ -387,7 +469,7 @@ export default function JournalVolumesPage() {
             <table className="w-full text-sm">
               <thead className="text-left text-gray-400 border-b border-gray-800">
                 <tr>
-                  <th className="py-2 pr-3 w-10">Get</th>
+                  <th className="py-2 pr-3 w-10">{admin ? 'Get' : ''}</th>
                   <th className="py-2 pr-3">Issue</th>
                   <th className="py-2 pr-3 text-right">Articles</th>
                   <th className="py-2 pr-3 text-right">Scholar</th>
@@ -399,7 +481,7 @@ export default function JournalVolumesPage() {
                 {issueRows.map((row) => (
                   <tr key={row.key} className="border-b border-gray-800/80">
                     <td className="py-2 pr-3">
-                      {row.url ? (
+                      {admin && row.url ? (
                         <input
                           type="checkbox"
                           checked={Boolean(selected[row.url])}
@@ -440,16 +522,18 @@ export default function JournalVolumesPage() {
                         ? row.cited_count
                           ? `On file · ${row.cited_count} cited`
                           : 'On file'
-                        : selected[row.url || '']
+                        : admin && selected[row.url || '']
                           ? 'Will download'
-                          : 'Leave'}
+                          : admin
+                            ? 'Leave'
+                            : ''}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {inventory.length > 0 && (
+          {admin && inventory.length > 0 && (
             <button className="btn-primary" type="button" onClick={() => void startDownload()}>
               Download {selectedCount} selected issue{selectedCount === 1 ? '' : 's'}
               {selectedArticles ? ` (${selectedArticles} articles)` : ''}

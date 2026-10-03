@@ -6,12 +6,13 @@ from collections import defaultdict
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from pydantic import BaseModel, Field
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.dependencies import get_current_user, require_citation_admin
+from app.core.dependencies import get_current_user, require_citation_admin, require_review_branch
 from app.database.session import get_db
 from app.models.citation import (
     Article,
@@ -44,8 +45,9 @@ from app.schemas.citation import (
     VolumeOut,
 )
 from app.services.citation_counts import sync_article_citations
-from app.services.crawler import run_crawl_job, run_download_job
-from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
+from app.services.crawler import run_crawl_job, run_download_job, run_state_update_job
+from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes, repair_journal_metadata
+from app.services.journal_access import allowed_journal_ids, require_journal_access
 from app.services.matcher import house_citation_for, split_manuscript_paragraphs, suggest_for_manuscript
 from app.services.citation_parser import split_paragraphs
 from app.services.manuscript_export import assign_citations
@@ -57,6 +59,59 @@ router = APIRouter(tags=["Citation Assistant"])
 Db = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 CitationAdmin = Annotated[User, Depends(require_citation_admin)]
+
+
+def _manuscript_visible(manuscript: Manuscript, user: User) -> bool:
+    if manuscript.owner_id is None:
+        return user.is_citation_admin()
+    return manuscript.owner_id == user.id or user.is_citation_admin()
+
+
+async def _owned_manuscript(db: AsyncSession, manuscript_id: int, user: User) -> Manuscript:
+    manuscript = await db.get(Manuscript, manuscript_id)
+    if manuscript is None or not _manuscript_visible(manuscript, user):
+        raise HTTPException(status_code=404, detail="Manuscript not found")
+    return manuscript
+
+
+async def _citation_report(db: AsyncSession, user: User, created: list) -> dict:
+    allowed = await allowed_journal_ids(db, user)
+    names: list[str] = []
+    if allowed is None:
+        rows = list((await db.execute(select(Journal).order_by(Journal.id))).scalars().all())
+        names = [row.abbreviation or row.name for row in rows]
+        scope = "your journals"
+    elif not allowed:
+        scope = "your assigned journals"
+    else:
+        rows = list(
+            (await db.execute(select(Journal).where(Journal.id.in_(allowed)).order_by(Journal.id))).scalars().all()
+        )
+        names = [row.abbreviation or row.name for row in rows]
+        scope = ", ".join(names) if names else "your assigned journals"
+    count = len(created)
+    if allowed is not None and len(allowed) == 0:
+        message = (
+            "0 citations found. No journals are assigned to this account. "
+            "Ask an admin to assign journals, then run the manuscript again."
+        )
+    elif count == 0:
+        message = f"0 citations found. No relevant papers matched this manuscript in {scope}."
+    elif count == 1:
+        message = f"1 citation found from {scope}."
+    else:
+        message = f"{count} citations found from {scope}."
+    return {
+        "citations_found": count,
+        "message": message,
+        "journals": names,
+    }
+
+
+class GptSettingsIn(BaseModel):
+    enabled: bool = True
+    api_key: Optional[str] = None
+    model: Optional[str] = Field(default=None, max_length=100)
 
 
 def _article_out(article: Article) -> ArticleOut:
@@ -81,7 +136,7 @@ def _article_out(article: Article) -> ArticleOut:
         abstract=article.abstract,
         doi=article.doi,
         ocr_status=article.ocr_status,
-        pdf_path=article.pdf_path,
+        pdf_path=None,
         source_url=article.source_url,
         crossref_citation_count=article.crossref_citation_count or 0,
         scholar_citation_count=article.scholar_citation_count or 0,
@@ -170,66 +225,78 @@ async def create_journal(body: JournalCreate, db: Db, _admin: CitationAdmin):
     )
 
 
+async def _journal_out(db: AsyncSession, journal: Journal) -> JournalOut:
+    issues = list((await db.execute(select(Issue).where(Issue.journal_id == journal.id))).scalars().all())
+    vols = {issue.volume for issue in issues}
+    article_count = int(
+        (
+            await db.execute(
+                select(func.count(Article.id))
+                .join(Issue, Article.issue_id == Issue.id)
+                .where(Issue.journal_id == journal.id)
+            )
+        ).scalar()
+        or 0
+    )
+    has_gaps = bool(vols and (set(range(min(vols), max(vols) + 1)) - vols))
+    if issues and not has_gaps:
+        arts = list(
+            (
+                await db.execute(
+                    select(Article)
+                    .join(Issue, Article.issue_id == Issue.id)
+                    .where(Issue.journal_id == journal.id)
+                )
+            ).scalars().all()
+        )
+        by_issue: dict[int, list[Article]] = defaultdict(list)
+        for art in arts:
+            by_issue[art.issue_id].append(art)
+        for issue in issues:
+            if compute_issue_coverage(by_issue.get(issue.id, []), issue).get("gaps"):
+                has_gaps = True
+                break
+    return JournalOut(
+        id=journal.id,
+        name=journal.name,
+        abbreviation=journal.abbreviation,
+        publisher=journal.publisher,
+        issn=journal.issn,
+        archive_url=journal.archive_url,
+        article_count=article_count,
+        volume_count=len(vols),
+        has_gaps=has_gaps,
+        created_at=journal.created_at,
+    )
+
+
 @router.get("/journals", response_model=list[JournalOut])
-async def list_journals(db: Db, _admin: CitationAdmin):
+async def list_journals(db: Db, user: CurrentUser):
     result = await db.execute(select(Journal).order_by(Journal.name))
     journals = list(result.scalars().all())
-    out: list[JournalOut] = []
-    for journal in journals:
-        issues_res = await db.execute(select(Issue).where(Issue.journal_id == journal.id))
-        issues = list(issues_res.scalars().all())
-        vols = {i.volume for i in issues}
-        count_res = await db.execute(
-            select(func.count(Article.id))
-            .join(Issue, Article.issue_id == Issue.id)
-            .where(Issue.journal_id == journal.id)
-        )
-        article_count = int(count_res.scalar() or 0)
-        has_gaps = False
-        if vols:
-            expected = set(range(min(vols), max(vols) + 1))
-            if expected - vols:
-                has_gaps = True
-        for issue in issues:
-            arts = (
-                await db.execute(select(Article).where(Article.issue_id == issue.id))
-            ).scalars().all()
-            cov = compute_issue_coverage(list(arts), issue)
-            if cov["gaps"]:
-                has_gaps = True
-        out.append(
-            JournalOut(
-                id=journal.id,
-                name=journal.name,
-                abbreviation=journal.abbreviation,
-                publisher=journal.publisher,
-                issn=journal.issn,
-                archive_url=journal.archive_url,
-                article_count=article_count,
-                volume_count=len(vols),
-                has_gaps=has_gaps,
-                created_at=journal.created_at,
-            )
-        )
-    return out
+    if user.can_manage_users():
+        allowed = None
+    else:
+        desk = "authors" if user.has_service("authors") and not user.has_service("citation") else "citation"
+        allowed = await allowed_journal_ids(db, user, desk=desk)
+    if allowed is not None:
+        journals = [journal for journal in journals if journal.id in allowed]
+    return [await _journal_out(db, journal) for journal in journals]
 
 
 @router.get("/journals/{journal_id}", response_model=JournalOut)
-async def get_journal(journal_id: int, db: Db, _admin: CitationAdmin):
-    rows = await list_journals(db, _user)
-    for row in rows:
-        if row.id == journal_id:
-            return row
-    raise HTTPException(status_code=404, detail="Journal not found")
+async def get_journal(journal_id: int, db: Db, user: CurrentUser):
+    journal = await require_journal_access(db, user, journal_id)
+    return await _journal_out(db, journal)
 
 
 @router.patch("/journals/{journal_id}", response_model=JournalOut)
-async def update_journal(journal_id: int, body: JournalUpdate, db: Db, _admin: CitationAdmin):
+async def update_journal(journal_id: int, body: JournalUpdate, db: Db, admin: CitationAdmin):
     journal = await _journal_or_404(db, journal_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(journal, field, value)
     await db.flush()
-    return await get_journal(journal_id, db, _user)
+    return await get_journal(journal_id, db, admin)
 
 
 @router.delete("/journals/{journal_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -240,8 +307,8 @@ async def delete_journal(journal_id: int, db: Db, _admin: CitationAdmin):
 
 
 @router.get("/journals/{journal_id}/volumes", response_model=list[VolumeOut])
-async def list_volumes(journal_id: int, db: Db, _admin: CitationAdmin):
-    await _journal_or_404(db, journal_id)
+async def list_volumes(journal_id: int, db: Db, user: CurrentUser):
+    await require_journal_access(db, user, journal_id)
     issues = list(
         (await db.execute(select(Issue).where(Issue.journal_id == journal_id))).scalars().all()
     )
@@ -276,8 +343,8 @@ async def list_volumes(journal_id: int, db: Db, _admin: CitationAdmin):
 
 
 @router.get("/journals/{journal_id}/issues", response_model=list[IssueStatsOut])
-async def list_journal_issues(journal_id: int, db: Db, _admin: CitationAdmin):
-    await _journal_or_404(db, journal_id)
+async def list_journal_issues(journal_id: int, db: Db, user: CurrentUser):
+    await require_journal_access(db, user, journal_id)
     issues = list(
         (
             await db.execute(
@@ -300,8 +367,8 @@ async def list_journal_issues(journal_id: int, db: Db, _admin: CitationAdmin):
     "/journals/{journal_id}/volumes/{volume}/issues",
     response_model=list[IssueStatsOut],
 )
-async def list_issues(journal_id: int, volume: int, db: Db, _admin: CitationAdmin):
-    await _journal_or_404(db, journal_id)
+async def list_issues(journal_id: int, volume: int, db: Db, user: CurrentUser):
+    await require_journal_access(db, user, journal_id)
     issues = list(
         (
             await db.execute(
@@ -333,9 +400,9 @@ async def list_issues(journal_id: int, volume: int, db: Db, _admin: CitationAdmi
 
 @router.get("/journals/{journal_id}/volumes/{volume}/issues/{issue_number}/articles")
 async def list_issue_articles(
-    journal_id: int, volume: int, issue_number: int, db: Db, _admin: CitationAdmin
+    journal_id: int, volume: int, issue_number: int, db: Db, user: CurrentUser
 ):
-    await _journal_or_404(db, journal_id)
+    await require_journal_access(db, user, journal_id)
     issue = (
         await db.execute(
             select(Issue).where(
@@ -370,9 +437,9 @@ async def list_issue_articles(
     response_model=CoverageOut,
 )
 async def issue_coverage(
-    journal_id: int, volume: int, issue_number: int, db: Db, _admin: CitationAdmin
+    journal_id: int, volume: int, issue_number: int, db: Db, user: CurrentUser
 ):
-    data = await list_issue_articles(journal_id, volume, issue_number, db, _user)
+    data = await list_issue_articles(journal_id, volume, issue_number, db, user)
     return data["coverage"]
 
 
@@ -440,6 +507,41 @@ async def start_crawl(
     await db.commit()
     background.add_task(run_crawl_job, job_id)
     return CrawlJobOut.model_validate(job)
+
+
+@router.post("/journals/{journal_id}/sync-state", response_model=CrawlJobOut)
+async def start_state_update(
+    journal_id: int,
+    body: CrawlStart,
+    background: BackgroundTasks,
+    db: Db,
+    _admin: CitationAdmin,
+):
+    journal = await _journal_or_404(db, journal_id)
+    archive_url = (body.archive_url or journal.archive_url or "").strip()
+    if not archive_url:
+        raise HTTPException(status_code=400, detail="Set the journal archive URL first")
+    journal.archive_url = archive_url
+    job = CrawlJob(
+        journal_id=journal.id,
+        archive_url=archive_url,
+        status="queued",
+        phase="updating",
+        message="Queued archive state update…",
+    )
+    db.add(job)
+    await db.flush()
+    job_id = job.id
+    await db.commit()
+    background.add_task(run_state_update_job, job_id)
+    return CrawlJobOut.model_validate(job)
+
+
+@router.post("/journals/{journal_id}/repair-metadata")
+async def repair_journal_article_metadata(journal_id: int, db: Db, _admin: CitationAdmin):
+    journal = await _journal_or_404(db, journal_id)
+    result = await repair_journal_metadata(db, journal)
+    return result
 
 
 @router.get("/journals/{journal_id}/latest-crawl", response_model=CrawlJobOut)
@@ -561,7 +663,7 @@ async def search_archive(
 
 
 @router.get("/articles/{article_id}")
-async def get_article(article_id: int, db: Db, _admin: CitationAdmin):
+async def get_article(article_id: int, db: Db, user: CurrentUser):
     article = (
         await db.execute(
             select(Article)
@@ -571,8 +673,13 @@ async def get_article(article_id: int, db: Db, _admin: CitationAdmin):
     ).scalar_one_or_none()
     if article is None:
         raise HTTPException(status_code=404, detail="Article not found")
+    journal_id = article.issue.journal_id if article.issue else None
+    if journal_id is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    await require_journal_access(db, user, journal_id)
     data = _article_out(article).model_dump()
-    data["full_text"] = article.full_text or ""
+    if user.is_citation_admin():
+        data["full_text"] = article.full_text or ""
     return data
 
 
@@ -691,6 +798,7 @@ async def upload_manuscript(
         pdf_path=str(dest),
         full_text=text,
         status="uploaded",
+        owner_id=_user.id,
     )
     db.add(manuscript)
     await db.flush()
@@ -706,7 +814,8 @@ async def upload_manuscript(
 
 
 @router.post("/manuscripts/{manuscript_id}/suggest")
-async def run_suggestions(manuscript_id: int, db: Db, _user: CurrentUser):
+async def run_suggestions(manuscript_id: int, db: Db, user: CurrentUser):
+    await _owned_manuscript(db, manuscript_id, user)
     manuscript = (
         await db.execute(
             select(Manuscript)
@@ -716,13 +825,24 @@ async def run_suggestions(manuscript_id: int, db: Db, _user: CurrentUser):
     ).scalar_one_or_none()
     if manuscript is None:
         raise HTTPException(status_code=404, detail="Manuscript not found")
-    created = await suggest_for_manuscript(db, manuscript)
-    return {"suggestion_count": len(created), "status": manuscript.status}
+    allowed = await allowed_journal_ids(db, user)
+    created = await suggest_for_manuscript(db, manuscript, allowed_journal_ids=allowed)
+    report = await _citation_report(db, user, created)
+    return {
+        "suggestion_count": len(created),
+        "status": manuscript.status,
+        "report": report,
+    }
 
 
 @router.get("/manuscripts", response_model=list[ManuscriptOut])
-async def list_manuscripts(db: Db, _user: CurrentUser):
-    rows = list((await db.execute(select(Manuscript).order_by(Manuscript.id.desc()))).scalars().all())
+async def list_manuscripts(db: Db, user: CurrentUser):
+    stmt = select(Manuscript).order_by(Manuscript.id.desc())
+    if user.is_citation_admin():
+        pass
+    else:
+        stmt = stmt.where(Manuscript.owner_id == user.id)
+    rows = list((await db.execute(stmt)).scalars().all())
     out = []
     for ms in rows:
         pc = int(
@@ -759,10 +879,8 @@ async def list_manuscripts(db: Db, _user: CurrentUser):
 
 
 @router.delete("/manuscripts/{manuscript_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
-    manuscript = await db.get(Manuscript, manuscript_id)
-    if manuscript is None:
-        raise HTTPException(status_code=404, detail="Manuscript not found")
+async def delete_manuscript(manuscript_id: int, db: Db, user: CurrentUser):
+    manuscript = await _owned_manuscript(db, manuscript_id, user)
     path = manuscript.pdf_path
     await db.delete(manuscript)
     await db.flush()
@@ -776,7 +894,8 @@ async def delete_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
 
 
 @router.get("/manuscripts/{manuscript_id}", response_model=ManuscriptDetail)
-async def get_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
+async def get_manuscript(manuscript_id: int, db: Db, user: CurrentUser):
+    await _owned_manuscript(db, manuscript_id, user)
     manuscript = (
         await db.execute(
             select(Manuscript)
@@ -832,10 +951,10 @@ async def patch_suggestion(suggestion_id: int, body: SuggestionPatch, db: Db, _u
 
 
 @router.get("/manuscripts/{manuscript_id}/export")
-async def export_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
+async def export_manuscript(manuscript_id: int, db: Db, user: CurrentUser):
     from pathlib import Path
 
-    detail = await get_manuscript(manuscript_id, db, _user)
+    detail = await get_manuscript(manuscript_id, db, user)
     original = None
     stored = await db.get(Manuscript, manuscript_id)
     if stored and stored.pdf_path:
@@ -889,7 +1008,7 @@ async def _read_review_upload(file: UploadFile, *, require_docx: bool = False) -
 
 @router.post("/review/reference-integrity")
 async def reference_integrity_check(
-    _user: CurrentUser,
+    _user: Annotated[User, Depends(require_review_branch("references"))],
     original: UploadFile = File(...),
     returned: UploadFile = File(...),
 ):
@@ -906,16 +1025,46 @@ async def reference_integrity_check(
     )
 
 
+@router.get("/review/language/tools")
+async def language_review_tools(user: Annotated[User, Depends(require_review_branch("language"))]):
+    """Catalog of English-review tools and whether GPT correction is configured."""
+    from app.services.language_review import tool_catalog
+
+    return tool_catalog(user)
+
+
+@router.put("/review/language/gpt")
+async def language_review_gpt_settings(
+    body: GptSettingsIn,
+    user: Annotated[User, Depends(require_review_branch("language"))],
+    db: Db,
+):
+    """Turn GPT correction on or off for this user from the English review page."""
+    from app.services.language_review import apply_gpt_settings, tool_catalog
+
+    try:
+        await apply_gpt_settings(
+            user,
+            enabled=body.enabled,
+            api_key=body.api_key,
+            model=body.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.flush()
+    return tool_catalog(user)
+
+
 @router.post("/review/language")
 async def language_review_check(
-    _user: CurrentUser,
+    user: Annotated[User, Depends(require_review_branch("language"))],
     file: UploadFile = File(...),
 ):
-    """Review a manuscript for English, structure, slang, and ambiguity."""
+    """Review a manuscript for grammar, structure, slang, abusive wording, and related issues."""
     from app.services.language_review import review_document
 
     data, filename = await _read_review_upload(file, require_docx=False)
     try:
-        return await review_document(data, filename)
+        return await review_document(data, filename, user=user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

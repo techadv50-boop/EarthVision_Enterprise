@@ -5,8 +5,8 @@ import { useAuthStore } from '@/store/authStore';
 import { authApi } from '@/services/api';
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('citation@xdgen.com');
-  const [password, setPassword] = useState('pak123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [masterPassword, setMasterPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [showReset, setShowReset] = useState(false);
@@ -28,11 +28,7 @@ export default function LoginPage() {
         err && typeof err === 'object' && 'response' in err
           ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
           : undefined;
-      setError(
-        typeof detail === 'string'
-          ? detail
-          : 'Invalid credentials. Use citation@xdgen.com / pak123',
-      );
+      setError(typeof detail === 'string' ? detail : 'Invalid email or password.');
     }
   };
 
@@ -43,7 +39,7 @@ export default function LoginPage() {
     setResetting(true);
     try {
       await authApi.resetPassword(username, masterPassword, newPassword);
-      setPassword(newPassword);
+      setPassword('');
       setMasterPassword('');
       setNewPassword('');
       setShowReset(false);
@@ -63,13 +59,13 @@ export default function LoginPage() {
         <div className="text-center mb-8">
           <BookOpen className="w-16 h-16 text-earth-400 mx-auto mb-4" />
           <h1 className="text-2xl font-bold">Citation Assistant</h1>
-          <p className="text-gray-500 mt-2">citation.xdgen.com · IJIST archive</p>
+          <p className="text-gray-500 mt-2">Sign in with your own account</p>
         </div>
 
         {!showReset ? (
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="on">
             <div>
-              <label className="text-sm text-gray-400 mb-1 block">Email</label>
+              <label className="text-sm text-gray-400 mb-1 block">Email or username</label>
               <input
                 type="text"
                 value={username}
@@ -113,21 +109,15 @@ export default function LoginPage() {
               Forgot password? Use master reset
             </button>
             <p className="text-center text-sm text-gray-500">
-              Need an account?{' '}
-              <button
-                type="button"
-                className="text-earth-400 hover:underline"
-                onClick={() => navigate('/register')}
-              >
-                Create one
-              </button>
+              Need an account? Ask an administrator to add you from Users while they are signed in.
+              Do not share login details.
             </p>
           </form>
         ) : (
           <form onSubmit={handleReset} className="space-y-4">
             <p className="text-sm text-gray-400">
-              Enter the account email, the master reset password <span className="text-gray-200">NTZHSS</span>, and a
-              new login password.
+              Enter the account email, the master reset password, and a new login password. The
+              master password is not shown on this page.
             </p>
             <div>
               <label className="text-sm text-gray-400 mb-1 block">Email</label>
@@ -136,6 +126,7 @@ export default function LoginPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="input-field"
+                autoComplete="username"
                 required
               />
             </div>
@@ -146,6 +137,7 @@ export default function LoginPage() {
                 value={masterPassword}
                 onChange={(e) => setMasterPassword(e.target.value)}
                 className="input-field"
+                autoComplete="off"
                 required
               />
             </div>
@@ -156,6 +148,7 @@ export default function LoginPage() {
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="input-field"
+                autoComplete="new-password"
                 minLength={6}
                 required
               />

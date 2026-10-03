@@ -139,6 +139,9 @@ class CrawlJob(Base):
     articles_found: Mapped[int] = mapped_column(Integer, default=0)
     articles_saved: Mapped[int] = mapped_column(Integer, default=0)
     articles_skipped: Mapped[int] = mapped_column(Integer, default=0)
+    articles_already: Mapped[int] = mapped_column(Integer, default=0)
+    articles_failed: Mapped[int] = mapped_column(Integer, default=0)
+    articles_removed: Mapped[int] = mapped_column(Integer, default=0)
     pages_crawled: Mapped[int] = mapped_column(Integer, default=0)
     phase: Mapped[Optional[str]] = mapped_column(String(32), default="queued")
     message: Mapped[Optional[str]] = mapped_column(String(500))
@@ -158,6 +161,9 @@ class Manuscript(Base):
     pdf_path: Mapped[Optional[str]] = mapped_column(String(1000))
     full_text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="uploaded")
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -207,3 +213,94 @@ class CitationSuggestion(Base):
     manuscript: Mapped["Manuscript"] = relationship(back_populates="suggestions")
     paragraph: Mapped["ManuscriptParagraph"] = relationship(back_populates="suggestions")
     article: Mapped["Article"] = relationship()
+
+
+class AuthorArticle(Base):
+    """Editorial author-database row: under process or published."""
+
+    __tablename__ = "author_articles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wing: Mapped[str] = mapped_column(String(32), default="in_process", index=True)
+    journal_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("journals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    journal_title: Mapped[str] = mapped_column(String(500), default="")
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    ojs_number: Mapped[str] = mapped_column(String(120), default="")
+    title: Mapped[str] = mapped_column(String(2000), default="")
+    author_names: Mapped[str] = mapped_column(Text, default="")
+    author_emails: Mapped[str] = mapped_column(Text, default="")
+    email_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_sent_date: Mapped[Optional[str]] = mapped_column(String(32))
+    plagiarism: Mapped[str] = mapped_column(String(255), default="")
+    orcid_id: Mapped[str] = mapped_column(Text, default="")
+    received_date: Mapped[Optional[str]] = mapped_column(String(32))
+    review_date: Mapped[Optional[str]] = mapped_column(String(32))
+    accepted_date: Mapped[Optional[str]] = mapped_column(String(32))
+    galley_sent_date: Mapped[Optional[str]] = mapped_column(String(32))
+    galley_received_date: Mapped[Optional[str]] = mapped_column(String(32))
+    publish_date: Mapped[Optional[str]] = mapped_column(String(32))
+    editorial_status: Mapped[str] = mapped_column(String(120), default="Submission")
+    repeat_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    doi_in_pdf: Mapped[str] = mapped_column(String(500), default="")
+    review_rounds: Mapped[Any] = mapped_column(JSON, default=list)
+    original_snapshot: Mapped[Any] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    journal: Mapped[Optional["Journal"]] = relationship()
+    changes: Mapped[List["AuthorArticleChange"]] = relationship(
+        back_populates="article",
+        cascade="all, delete-orphan",
+        order_by="AuthorArticleChange.mod_number",
+    )
+
+
+class AuthorArticleChange(Base):
+    """One numbered modification event on an author-database article."""
+
+    __tablename__ = "author_article_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    article_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("author_articles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    mod_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    account_username: Mapped[str] = mapped_column(String(100), default="")
+    account_email: Mapped[str] = mapped_column(String(255), default="")
+    account_name: Mapped[str] = mapped_column(String(255), default="")
+    changes: Mapped[Any] = mapped_column(JSON, default=list)
+    snapshot: Mapped[Any] = mapped_column(JSON, default=dict)
+
+    article: Mapped["AuthorArticle"] = relationship(back_populates="changes")
+
+
+class AuthorDbJournal(Base):
+    """Author-database journal catalog. Separate from citation archive journals."""
+
+    __tablename__ = "author_db_journals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
+    abbreviation: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )

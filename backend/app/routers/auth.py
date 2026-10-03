@@ -19,7 +19,7 @@ from app.schemas.auth import (
     UserLogin,
     UserResponse,
 )
-from app.services.auth_service import AuthService
+from app.services.auth_service import AuthService, public_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -35,18 +35,7 @@ async def register(
     if await service.get_user_by_email(user_data.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     user = await service.create_user(user_data, role_name="user", approved=False)
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        username=user.username,
-        full_name=user.full_name,
-        organization=user.organization,
-        is_active=user.is_active,
-        is_superuser=user.is_superuser,
-        roles=[r.name for r in user.roles],
-        access_status=user.portal_status(),
-        created_at=user.created_at,
-    )
+    return public_user(user)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -115,18 +104,7 @@ async def refresh_token(
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: Annotated[User, Depends(get_current_user)]):
-    return UserResponse(
-        id=current_user.id,
-        email=current_user.email,
-        username=current_user.username,
-        full_name=current_user.full_name,
-        organization=current_user.organization,
-        is_active=current_user.is_active,
-        is_superuser=current_user.is_superuser,
-        roles=[r.name for r in current_user.roles],
-        access_status=current_user.portal_status(),
-        created_at=current_user.created_at,
-    )
+    return public_user(current_user)
 
 
 @router.post("/change-password")
