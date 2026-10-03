@@ -188,6 +188,39 @@ function parseJournalKey(key: string): { journal_id: number | null; journal_titl
   return { journal_id: null, journal_title: key };
 }
 
+type CrawlJob = {
+  id: number;
+  status: string;
+  phase?: string | null;
+  message?: string | null;
+  articles_found?: number;
+  articles_saved?: number;
+  articles_skipped?: number;
+  articles_already?: number;
+  articles_failed?: number;
+  pages_crawled?: number;
+};
+
+function isCrawlActive(status?: string) {
+  return status === 'running' || status === 'queued';
+}
+
+function guessArchiveUrl(journal?: JournalOption | null) {
+  const abbr = (journal?.abbreviation || '').trim();
+  if (!abbr) return '';
+  return `https://journal.50sea.com/index.php/${encodeURIComponent(abbr)}/issue/archive`;
+}
+
+function downloadBlob(data: Blob | ArrayBuffer, filename: string) {
+  const blob = data instanceof Blob ? data : new Blob([data]);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function applySnapshot(row: AuthorRow, snap?: Partial<AuthorRow> | null): AuthorRow {
   if (!snap || Object.keys(snap).length === 0) return row;
   return {
@@ -909,7 +942,9 @@ function AuthorList({ wing }: { wing: Wing }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(inProcess);
-
+  const [crawlJournal, setCrawlJournal] = useState('');
+  const [archiveUrl, setArchiveUrl] = useState('');
+  const [crawl, setCrawl] = useState<CrawlJob | null>(null);
 
   const load = async () => {
     const [{ data }, journalsRes] = await Promise.all([
@@ -917,7 +952,13 @@ function AuthorList({ wing }: { wing: Wing }) {
       citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
     ]);
     setRows(data as AuthorRow[]);
-    setJournals((journalsRes.data || []) as JournalOption[]);
+    const listed = (journalsRes.data || []) as JournalOption[];
+    setJournals(listed);
+    if (!inProcess && listed.length && !crawlJournal) {
+      const first = listed[0];
+      setCrawlJournal(journalKey(first));
+      setArchiveUrl(guessArchiveUrl(first));
+    }
   };
 
   useEffect(() => {
@@ -961,13 +1002,68 @@ function AuthorList({ wing }: { wing: Wing }) {
 
   const downloadTemplate = async () => {
     const { data } = await citationApi.authorArticles.template();
-    const blob = data instanceof Blob ? data : new Blob([data]);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'author-database-template.xlsx';
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(data, 'author-database-template.xlsx');
+  };
+
+  const exportExcel = async () => {
+    setBusy(true);
+    setMsg('');
+    setError('');
+    try {
+      const { data } = await citationApi.authorArticles.exportFile(wing);
+      downloadBlob(data, inProcess ? 'author-database-under-process.xlsx' : 'author-database-published.xlsx');
+      setMsg('Excel export downloaded. Fill author emails if needed, then import the same file.');
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not export that Excel file.';
+      setError(String(detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pollCrawl = async (jobId: number) => {
+    const { data: job } = await citationApi.authorArticles.crawlJob(jobId);
+    setCrawl(job as CrawlJob);
+    if (isCrawlActive(job.status)) {
+      setTimeout(() => void pollCrawl(jobId), 700);
+      return;
+    }
+    setMsg(String(job.message || `Crawl ${job.status}`));
+    await load();
+  };
+
+  const startCrawl = async () => {
+    const selected = journals.find((journal) => journalKey(journal) === crawlJournal);
+    const parsed = parseJournalKey(crawlJournal);
+    const title = parsed.journal_title || selected?.name || selected?.abbreviation || '';
+    if (!title) {
+      setError('Select a journal before crawling.');
+      return;
+    }
+    if (!archiveUrl.trim()) {
+      setError('Enter the journal archive URL.');
+      return;
+    }
+    setBusy(true);
+    setMsg('Scanning the archive…');
+    setError('');
+    try {
+      const { data } = await citationApi.authorArticles.startCrawl({
+        journal_title: title,
+        archive_url: archiveUrl.trim(),
+      });
+      setCrawl(data as CrawlJob);
+      void pollCrawl(Number(data.id));
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not start that archive crawl.';
+      setError(String(detail));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const importExcel = async (file: File) => {
@@ -1004,6 +1100,102 @@ function AuthorList({ wing }: { wing: Wing }) {
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
 
+      {!inProcess && (
+        <div className="panel p-4 mb-4 space-y-3">
+          <h3 className="font-medium">Crawl published articles</h3>
+          <p className="text-xs text-gray-400 max-w-3xl">
+            Paste the journal archive URL and start crawling. The same archive walk used by Citation
+            Assistant fills published-article fields (title, authors, receive / accept / publish
+            dates, DOI). Author emails are often missing — export the spreadsheet, paste emails next
+            to author names, then import again.
+          </p>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-sm text-gray-300">
+              Journal
+              <select
+                className="input-field mt-1"
+                value={crawlJournal}
+                onChange={(e) => {
+                  const key = e.target.value;
+                  const selected = journals.find((journal) => journalKey(journal) === key);
+                  const previous = journals.find((journal) => journalKey(journal) === crawlJournal);
+                  setCrawlJournal(key);
+                  if (!archiveUrl || archiveUrl === guessArchiveUrl(previous)) {
+                    setArchiveUrl(guessArchiveUrl(selected));
+                  }
+                }}
+              >
+                <option value="">Select journal</option>
+                {journals.map((journal) => (
+                  <option key={journalKey(journal)} value={journalKey(journal)}>
+                    {journal.abbreviation ? `${journal.abbreviation} — ${journal.name}` : journal.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm text-gray-300 md:col-span-1">
+              Archive URL
+              <input
+                className="input-field mt-1"
+                value={archiveUrl}
+                onChange={(e) => setArchiveUrl(e.target.value)}
+                placeholder="https://journal.50sea.com/index.php/IJIST/issue/archive"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <button
+              className="btn-primary"
+              type="button"
+              disabled={busy || isCrawlActive(crawl?.status) || !archiveUrl}
+              onClick={() => void startCrawl()}
+            >
+              {isCrawlActive(crawl?.status) ? 'Crawling…' : 'Start crawling'}
+            </button>
+            {isCrawlActive(crawl?.status) && crawl?.id ? (
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => void citationApi.authorArticles.cancelCrawl(Number(crawl.id))}
+              >
+                Cancel
+              </button>
+            ) : null}
+          </div>
+          {crawl && (
+            <div className="space-y-2 text-sm">
+              <p className="text-earth-400">{crawl.message || crawl.status}</p>
+              <div className="h-2 rounded bg-gray-800 overflow-hidden">
+                <div
+                  className="h-full bg-earth-500 transition-all"
+                  style={{
+                    width: `${
+                      Number(crawl.articles_found || 0) > 0
+                        ? Math.min(
+                            100,
+                            Math.round(
+                              ((Number(crawl.articles_saved || 0) + Number(crawl.articles_skipped || 0)) /
+                                Number(crawl.articles_found || 0)) *
+                                100,
+                            ),
+                          )
+                        : isCrawlActive(crawl.status)
+                          ? 8
+                          : 0
+                    }%`,
+                  }}
+                />
+              </div>
+              <p className="text-xs text-gray-400">
+                {Number(crawl.articles_saved || 0)} added · {Number(crawl.articles_already || 0)} already
+                stored · {Number(crawl.articles_failed || 0)} failed
+                {crawl.pages_crawled ? ` · ${crawl.pages_crawled} pages` : ''}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2 mb-4">
         {inProcess && !showForm && (
           <button className="btn-primary" type="button" onClick={() => setShowForm(true)}>
@@ -1017,6 +1209,9 @@ function AuthorList({ wing }: { wing: Wing }) {
         )}
         <button className="btn-secondary" type="button" disabled={busy} onClick={() => void downloadTemplate()}>
           Download Excel template
+        </button>
+        <button className="btn-secondary" type="button" disabled={busy} onClick={() => void exportExcel()}>
+          Export Excel
         </button>
         <label className="btn-secondary cursor-pointer">
           Import Excel

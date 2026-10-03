@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -299,3 +299,37 @@ class AuthorStoreFileOut(BaseModel):
 
 class AuthorStoreDownloadIn(BaseModel):
     password: str = ""
+
+
+class AuthorCrawlStart(BaseModel):
+    journal_title: str
+    archive_url: str
+
+
+class AuthorCrawlJobOut(BaseModel):
+    id: int
+    journal_title: str = ""
+    journal_abbreviation: str = ""
+    archive_url: str
+    status: str
+    issues_found: int = 0
+    articles_found: int = 0
+    articles_saved: int = 0
+    articles_skipped: int = 0
+    articles_already: int = 0
+    articles_failed: int = 0
+    articles_remaining: int = 0
+    pages_crawled: int = 0
+    phase: Optional[str] = None
+    message: Optional[str] = None
+    error_log: Any = []
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+    def model_post_init(self, _context) -> None:
+        found = int(self.articles_found or 0)
+        saved = int(self.articles_saved or 0)
+        skipped = int(self.articles_skipped or 0)
+        self.articles_remaining = max(0, found - saved - skipped)

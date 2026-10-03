@@ -11,7 +11,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging, get_logger
 from app.database.session import init_db, AsyncSessionLocal
 from app.middleware import RequestLoggingMiddleware
-from app.routers import admin, analytics, auth, author_db, author_store, billing, citations, galley, geo, imagery, raster, webcrawler
+from app.routers import admin, analytics, auth, author_db, author_store, billing, citations, galley, geo, imagery, raster
 from app.services.auth_service import AuthService
 
 setup_logging()
@@ -70,7 +70,6 @@ app.include_router(citations.router, prefix=API_PREFIX)
 app.include_router(author_store.router, prefix=API_PREFIX)
 app.include_router(author_db.router, prefix=API_PREFIX)
 app.include_router(galley.router, prefix=API_PREFIX)
-app.include_router(webcrawler.router, prefix=API_PREFIX)
 
 
 @app.get("/api/health")

@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import func, or_, select
@@ -18,7 +18,14 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.core.dependencies import require_service
 from app.core.security import verify_password
 from app.database.session import get_db
-from app.models.citation import AuthorArticle, AuthorArticleChange, AuthorDbJournal, AuthorIssueSet, Journal
+from app.models.citation import (
+    AuthorArticle,
+    AuthorArticleChange,
+    AuthorCrawlJob,
+    AuthorDbJournal,
+    AuthorIssueSet,
+    Journal,
+)
 from app.models.user import User
 from app.schemas.author_db import (
     AUTHOR_DB_JOURNALS,
@@ -32,6 +39,8 @@ from app.schemas.author_db import (
     AuthorArticleIn,
     AuthorArticleOut,
     AuthorArticlePatch,
+    AuthorCrawlJobOut,
+    AuthorCrawlStart,
     AuthorFieldChangeOut,
     AuthorImportResult,
     AuthorIssueSetIn,
@@ -48,6 +57,7 @@ from app.schemas.author_db import (
 )
 from app.services.journal_access import allowed_journal_ids, require_journal_access, is_removed_journal, purge_removed_journals
 from app.services.author_sanitization import find_author_overlaps, overlap_message, unique_author_names
+from app.services.author_crawler import run_author_crawl_job
 
 router = APIRouter(prefix="/author-articles", tags=["Author database"])
 
@@ -84,6 +94,7 @@ EXCEL_HEADERS = [
     "Current state passed",
     "Journal",
     "Wing",
+    "Article URL",
 ]
 
 
@@ -92,6 +103,54 @@ def _blank(value: Optional[str]) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _article_url_of(row: AuthorArticle) -> str:
+    comments = row.comments or ""
+    match = re.search(r"https?://\S+", comments)
+    return match.group(0).rstrip(").,;") if match else ""
+
+
+def _excel_row(row: AuthorArticle) -> list[Any]:
+    rounds = _normalize_rounds(row.review_rounds, fallback_received=row.review_date)
+
+    def round_value(number: int, key: str) -> str:
+        if number <= len(rounds):
+            return rounds[number - 1].get(key) or ""
+        return ""
+
+    return [
+        row.ojs_number or "",
+        row.title or "",
+        row.author_names or "",
+        row.author_emails or "",
+        row.email_sent_date or "",
+        row.plagiarism or "",
+        row.orcid_id or "",
+        row.received_date or "",
+        round_value(1, "sent_date"),
+        round_value(1, "received_date"),
+        round_value(2, "sent_date"),
+        round_value(2, "received_date"),
+        round_value(3, "sent_date"),
+        round_value(3, "received_date"),
+        row.accepted_date or "",
+        row.galley_sent_date or "",
+        row.galley_received_date or "",
+        row.publish_date or "",
+        row.editorial_status or "",
+        row.soft_reminder_sent or "",
+        row.second_reminder_sent or "",
+        row.last_reminder_sent or "",
+        row.comments or "",
+        _stage_label(row.current_stage) if row.current_stage else "",
+        row.current_stage_started or "",
+        row.current_stage_days if row.current_stage_days is not None else "",
+        "Yes" if row.current_stage_passed else "No",
+        row.journal_title or "",
+        row.wing or "",
+        _article_url_of(row),
+    ]
 
 
 def _editorial_status(value: Optional[str]) -> str:
@@ -935,6 +994,7 @@ async def download_import_template():
             "No",
             "IJIST",
             "in_process",
+            "",
         ]
     )
     buf = io.BytesIO()
@@ -944,6 +1004,124 @@ async def download_import_template():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="author-database-template.xlsx"'},
     )
+
+
+@router.get("/export")
+async def export_author_articles(
+    db: Db,
+    user: CurrentUser,
+    wing: str = Query(default="in_process"),
+):
+    wing = (wing or "in_process").strip().lower()
+    if wing not in WINGS:
+        raise HTTPException(status_code=400, detail="Wing must be in_process or published")
+    _require_wing(user, wing)
+    rows = list((await db.execute(await _visible_query(db, user, wing))).scalars().all())
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Author database"
+    sheet.append(EXCEL_HEADERS)
+    for row in rows:
+        sheet.append(_excel_row(row))
+    buf = io.BytesIO()
+    book.save(buf)
+    label = "under-process" if wing == "in_process" else "published"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="author-database-{label}.xlsx"'},
+    )
+
+
+def _crawl_out(job: AuthorCrawlJob) -> AuthorCrawlJobOut:
+    return AuthorCrawlJobOut.model_validate(job)
+
+
+@router.post("/crawl", response_model=AuthorCrawlJobOut)
+async def start_author_archive_crawl(
+    body: AuthorCrawlStart,
+    background: BackgroundTasks,
+    db: Db,
+    user: CurrentUser,
+):
+    _require_wing(user, "published")
+    archive = (body.archive_url or "").strip()
+    if not archive:
+        raise HTTPException(status_code=400, detail="Enter the journal archive URL.")
+    catalog = await _ensure_author_catalog(db)
+    title = _match_catalog_name(body.journal_title, catalog) or (body.journal_title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Select a journal.")
+    abbreviation = ""
+    for row in catalog:
+        if (row.name or "").strip().lower() == title.lower() or (row.abbreviation or "").strip().lower() == title.lower():
+            abbreviation = (row.abbreviation or "").strip()
+            title = row.name or title
+            break
+    if not abbreviation:
+        for abbr, name in AUTHOR_DB_JOURNALS:
+            if title.lower() in {abbr.lower(), name.lower()}:
+                abbreviation = abbr
+                title = name
+                break
+    job = AuthorCrawlJob(
+        owner_id=user.id,
+        journal_title=title,
+        journal_abbreviation=abbreviation,
+        archive_url=archive,
+        status="queued",
+        phase="queued",
+        message="Queued archive crawl…",
+        error_log=[],
+        inventory=[],
+    )
+    db.add(job)
+    await db.flush()
+    job_id = job.id
+    await db.commit()
+    background.add_task(run_author_crawl_job, job_id)
+    return _crawl_out(job)
+
+
+@router.get("/crawl/latest", response_model=AuthorCrawlJobOut)
+async def latest_author_archive_crawl(
+    db: Db,
+    user: CurrentUser,
+    journal_title: str = Query(default=""),
+):
+    _require_wing(user, "published")
+    stmt = select(AuthorCrawlJob).order_by(AuthorCrawlJob.id.desc())
+    needle = (journal_title or "").strip().lower()
+    if needle:
+        stmt = stmt.where(AuthorCrawlJob.journal_title.ilike(f"%{journal_title.strip()}%"))
+    job = (await db.execute(stmt.limit(1))).scalars().first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="No archive crawl has been started yet.")
+    return _crawl_out(job)
+
+
+@router.get("/crawl/{job_id}", response_model=AuthorCrawlJobOut)
+async def get_author_archive_crawl(job_id: int, db: Db, user: CurrentUser):
+    _require_wing(user, "published")
+    job = await db.get(AuthorCrawlJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Crawl job not found")
+    return _crawl_out(job)
+
+
+@router.post("/crawl/{job_id}/cancel", response_model=AuthorCrawlJobOut)
+async def cancel_author_archive_crawl(job_id: int, db: Db, user: CurrentUser):
+    _require_wing(user, "published")
+    job = await db.get(AuthorCrawlJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Crawl job not found")
+    job.cancel_requested = True
+    if job.status == "queued":
+        job.status = "cancelled"
+        job.phase = "cancelled"
+        job.message = "Archive crawl cancelled."
+    await db.flush()
+    return _crawl_out(job)
 
 
 @router.get("/sanitization", response_model=AuthorIssueSetOut)
@@ -1377,6 +1555,9 @@ HEADER_MAP = {
     "doi in pdf": "doi_in_pdf",
     "journal": "journal",
     "wing": "wing",
+    "article url": "article_url",
+    "source url": "article_url",
+    "published article url": "article_url",
 }
 
 
@@ -1532,6 +1713,10 @@ async def import_author_articles(
                 except HTTPException:
                     existing = None
         rounds = _rounds_from_import(item)
+        comments = item.get("comments") or ""
+        article_url = (item.get("article_url") or "").strip()
+        if article_url and article_url not in comments:
+            comments = f"{comments}\nArticle URL: {article_url}".strip() if comments else f"Article URL: {article_url}"
         payload = {
             "wing": wanted_wing,
             "journal_id": journal_id if journal_id is not None else (existing.journal_id if existing else None),
@@ -1555,7 +1740,7 @@ async def import_author_articles(
             "soft_reminder_sent": item.get("soft_reminder_sent") or None,
             "second_reminder_sent": item.get("second_reminder_sent") or None,
             "last_reminder_sent": item.get("last_reminder_sent") or None,
-            "comments": _comments(item.get("comments")),
+            "comments": _comments(comments),
             "current_stage": _current_stage(item.get("current_stage")),
             "current_stage_started": item.get("current_stage_started") or None,
             "current_stage_days": _stage_days(item.get("current_stage_days") or DEFAULT_STAGE_DAYS),

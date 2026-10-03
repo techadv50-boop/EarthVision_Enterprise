@@ -257,7 +257,7 @@ def _unique_pdfs_by_article(urls: list[str]) -> list[str]:
     return [chosen[aid] for aid in order] + no_id
 
 
-async def _commit_progress(db: AsyncSession, job: CrawlJob) -> None:
+async def _commit_progress(db: AsyncSession, job) -> None:
     await db.commit()
     await db.refresh(job)
 
@@ -599,7 +599,7 @@ async def run_state_update_job(job_id: int, fetch=default_fetch, delay: float = 
         await db.commit()
 
 
-async def _scan_issues(db: AsyncSession, job: CrawlJob, fetch, delay: float) -> None:
+async def _scan_issues(db: AsyncSession, job, fetch, delay: float) -> None:
     archive = job.archive_url
     queue: deque[str] = deque([_clean(archive)])
     seen_pages: set[str] = set()
