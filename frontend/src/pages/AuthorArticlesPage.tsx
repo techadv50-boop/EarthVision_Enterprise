@@ -103,6 +103,13 @@ const emptyForm = {
 
 type FormState = typeof emptyForm;
 
+function blankForm(wing: Wing = 'in_process'): FormState {
+  return {
+    ...emptyForm,
+    editorial_status: wing === 'published' ? 'Published' : 'Submission',
+  };
+}
+
 function roundsFrom(row: AuthorRow): ReviewRound[] {
   const rounds = (row.review_rounds || []).map((item, index) => ({
     round: item.round || index + 1,
@@ -395,7 +402,7 @@ type DisplayRow = {
   isOriginal: boolean;
 };
 
-function HistoryCard({ ver }: { ver: DisplayRow }) {
+function HistoryCard({ ver, forPublished }: { ver: DisplayRow; forPublished?: boolean }) {
   const data = ver.data;
   const journal = data.journal_name || data.journal_title || '';
   const rounds = data.review_rounds?.length ? data.review_rounds : [emptyRound(1)];
@@ -410,60 +417,68 @@ function HistoryCard({ ver }: { ver: DisplayRow }) {
       <div className="grid gap-4 md:grid-cols-2">
         <ReportField label="OJS number" value={data.ojs_number} />
         <ReportField label="Journal" value={journal} />
-        <ReportField label="Status" value={data.editorial_status || 'Submission'} />
+        <ReportField label="Status" value={forPublished ? 'Published' : data.editorial_status || 'Submission'} />
         <ReportField label="Title" value={data.title} />
         <ReportField label="Authors" value={data.author_names} />
         <ReportField label="Email addresses of authors" value={data.author_emails} />
         <ReportField label="Plagiarism" value={data.plagiarism} />
         <ReportField label="ORCID ID" value={data.orcid_id} />
-        <ReportField label="Email sent date" value={data.email_sent_date} />
+        {!forPublished && <ReportField label="Email sent date" value={data.email_sent_date} />}
         <ReportField label="Receive date" value={data.received_date} />
         {rounds.map((round, index) => (
           <div key={`${ver.key}-r${index}`} className="md:col-span-2 grid gap-4 md:grid-cols-2">
             <ReportField
               label={`Round ${index + 1} review sent date`}
               value={round.sent_date}
-              tone={currentStageTone(stageKey(index + 1, 'sent'), data)}
+              tone={forPublished ? undefined : currentStageTone(stageKey(index + 1, 'sent'), data)}
             />
             <ReportField
               label={`Round ${index + 1} review receive date`}
               value={round.received_date}
-              tone={currentStageTone(stageKey(index + 1, 'received'), data)}
+              tone={forPublished ? undefined : currentStageTone(stageKey(index + 1, 'received'), data)}
             />
           </div>
         ))}
         <ReportField
           label="Acceptance date"
           value={data.accepted_date}
-          tone={currentStageTone('accepted_date', data)}
+          tone={forPublished ? undefined : currentStageTone('accepted_date', data)}
         />
-        <ReportField
-          label="Galley sent date"
-          value={data.galley_sent_date}
-          tone={currentStageTone('galley_sent_date', data)}
-        />
-        <ReportField
-          label="Galley received date"
-          value={data.galley_received_date}
-          tone={currentStageTone('galley_received_date', data)}
-        />
+        {!forPublished && (
+          <>
+            <ReportField
+              label="Galley sent date"
+              value={data.galley_sent_date}
+              tone={currentStageTone('galley_sent_date', data)}
+            />
+            <ReportField
+              label="Galley received date"
+              value={data.galley_received_date}
+              tone={currentStageTone('galley_received_date', data)}
+            />
+          </>
+        )}
         <ReportField
           label="Publish date"
           value={data.publish_date}
-          tone={currentStageTone('publish_date', data)}
+          tone={forPublished ? undefined : currentStageTone('publish_date', data)}
         />
-        <ReportField label="Current state" value={stageLabel(data.current_stage)} />
-        <ReportField label="Current-state date" value={data.current_stage_started} />
-        <ReportField
-          label="Days allowed"
-          value={data.current_stage ? String(data.current_stage_days || DEFAULT_STAGE_DAYS) : ''}
-        />
-        <ReportField
-          label="Current state passed"
-          value={data.current_stage ? (data.current_stage_passed ? 'Yes' : 'No') : ''}
-        />
+        {!forPublished && (
+          <>
+            <ReportField label="Current state" value={stageLabel(data.current_stage)} />
+            <ReportField label="Current-state date" value={data.current_stage_started} />
+            <ReportField
+              label="Days allowed"
+              value={data.current_stage ? String(data.current_stage_days || DEFAULT_STAGE_DAYS) : ''}
+            />
+            <ReportField
+              label="Current state passed"
+              value={data.current_stage ? (data.current_stage_passed ? 'Yes' : 'No') : ''}
+            />
+          </>
+        )}
         <ReportField label="Soft reminder sent" value={data.soft_reminder_sent} />
-        <ReportField label="Second reminder sent" value={data.second_reminder_sent} />
+        {!forPublished && <ReportField label="Second reminder sent" value={data.second_reminder_sent} />}
         <ReportField label="Last reminder sent" value={data.last_reminder_sent} />
         <div className="md:col-span-2">
           <ReportField label="Comments" value={data.comments} />
@@ -523,7 +538,7 @@ function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) 
     galley_sent_date: form.galley_sent_date || null,
     galley_received_date: form.galley_received_date || null,
     publish_date: form.publish_date || null,
-    editorial_status: form.editorial_status,
+    editorial_status: wing === 'published' ? 'Published' : form.editorial_status,
     soft_reminder_sent: form.soft_reminder_sent || null,
     second_reminder_sent: form.second_reminder_sent || null,
     last_reminder_sent: form.last_reminder_sent || null,
@@ -540,12 +555,14 @@ function ArticleFormFields({
   journals,
   heading,
   extraRoundButton,
+  forPublished,
   onChange,
 }: {
   form: FormState;
   journals: JournalOption[];
   heading: string;
   extraRoundButton?: boolean;
+  forPublished?: boolean;
   onChange: (next: FormState | ((prev: FormState) => FormState)) => void;
 }) {
   const field = (key: keyof FormState, value: string | number | boolean) => {
@@ -657,15 +674,17 @@ function ArticleFormFields({
         ORCID ID
         <input className="input-field mt-1" value={form.orcid_id} onChange={(e) => field('orcid_id', e.target.value)} />
       </label>
-      <label className="text-sm text-gray-400">
-        Email sent date
-        <input
-          className="input-field mt-1"
-          type="date"
-          value={form.email_sent_date}
-          onChange={(e) => field('email_sent_date', e.target.value)}
-        />
-      </label>
+      {!forPublished && (
+        <label className="text-sm text-gray-400">
+          Email sent date
+          <input
+            className="input-field mt-1"
+            type="date"
+            value={form.email_sent_date}
+            onChange={(e) => field('email_sent_date', e.target.value)}
+          />
+        </label>
+      )}
       <label className="text-sm text-gray-400">
         Receive date
         <input
@@ -675,6 +694,7 @@ function ArticleFormFields({
           onChange={(e) => field('received_date', e.target.value)}
         />
       </label>
+      {!forPublished && (
       <div className="md:col-span-2 border border-gray-800 rounded-md p-3 space-y-3">
         <p className="text-sm font-medium text-gray-200">Current state</p>
         <p className="text-xs text-gray-500">
@@ -729,11 +749,13 @@ function ArticleFormFields({
           </label>
         </div>
       </div>
+      )}
       <div className="md:col-span-2 space-y-3">
         {form.review_rounds.map((round, index) => (
           <div key={round.round} className="border border-gray-800 rounded-md p-3 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-gray-200">Round {index + 1}</p>
+              {!forPublished && (
               <div className="flex items-center gap-1">
                 {index === form.review_rounds.length - 1 && (
                   <button
@@ -756,6 +778,7 @@ function ArticleFormFields({
                   </button>
                 )}
               </div>
+              )}
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <DateSlaField
@@ -773,7 +796,7 @@ function ArticleFormFields({
             </div>
           </div>
         ))}
-        {extraRoundButton ? (
+        {extraRoundButton && !forPublished ? (
           <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={addRound}>
             <Plus className="w-4 h-4" />
             Add round {form.review_rounds.length + 1}
@@ -784,25 +807,29 @@ function ArticleFormFields({
         label="Acceptance date"
         value={form.accepted_date}
         onChange={(value) => field('accepted_date', value)}
-        tone={currentStageTone('accepted_date', form)}
+        tone={forPublished ? undefined : currentStageTone('accepted_date', form)}
       />
-      <DateSlaField
-        label="Galley sent date"
-        value={form.galley_sent_date}
-        onChange={(value) => field('galley_sent_date', value)}
-        tone={currentStageTone('galley_sent_date', form)}
-      />
-      <DateSlaField
-        label="Galley received date"
-        value={form.galley_received_date}
-        onChange={(value) => field('galley_received_date', value)}
-        tone={currentStageTone('galley_received_date', form)}
-      />
+      {!forPublished && (
+        <>
+          <DateSlaField
+            label="Galley sent date"
+            value={form.galley_sent_date}
+            onChange={(value) => field('galley_sent_date', value)}
+            tone={currentStageTone('galley_sent_date', form)}
+          />
+          <DateSlaField
+            label="Galley received date"
+            value={form.galley_received_date}
+            onChange={(value) => field('galley_received_date', value)}
+            tone={currentStageTone('galley_received_date', form)}
+          />
+        </>
+      )}
       <DateSlaField
         label="Publish date"
         value={form.publish_date}
         onChange={(value) => field('publish_date', value)}
-        tone={currentStageTone('publish_date', form)}
+        tone={forPublished ? undefined : currentStageTone('publish_date', form)}
       />
       <label className="text-sm text-gray-400">
         Soft reminder sent
@@ -813,6 +840,7 @@ function ArticleFormFields({
           onChange={(e) => field('soft_reminder_sent', e.target.value)}
         />
       </label>
+      {!forPublished && (
       <label className="text-sm text-gray-400">
         Second reminder sent
         <input
@@ -822,6 +850,7 @@ function ArticleFormFields({
           onChange={(e) => field('second_reminder_sent', e.target.value)}
         />
       </label>
+      )}
       <label className="text-sm text-gray-400">
         Last reminder sent
         <input
@@ -848,10 +877,10 @@ function ArticleFormFields({
         Status
         <select
           className="input-field mt-1"
-          value={form.editorial_status}
+          value={forPublished ? 'Published' : form.editorial_status}
           onChange={(e) => field('editorial_status', e.target.value)}
         >
-          {EDITORIAL_STATUSES.map((status) => (
+          {(forPublished ? (['Published'] as const) : EDITORIAL_STATUSES).map((status) => (
             <option key={status} value={status}>
               {status}
             </option>
@@ -874,7 +903,7 @@ function AuthorList({ wing }: { wing: Wing }) {
   const inProcess = wing === 'in_process';
   const [journals, setJournals] = useState<JournalOption[]>([]);
   const [rows, setRows] = useState<AuthorRow[]>([]);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState(() => blankForm(wing));
   const [editingId, setEditingId] = useState<number | null>(null);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
@@ -892,7 +921,7 @@ function AuthorList({ wing }: { wing: Wing }) {
   };
 
   useEffect(() => {
-    setForm(emptyForm);
+    setForm(blankForm(wing));
     setEditingId(null);
     setShowForm(inProcess);
     setMsg('');
@@ -916,7 +945,7 @@ function AuthorList({ wing }: { wing: Wing }) {
         await citationApi.authorArticles.create(payload());
         setMsg('Article saved.');
       }
-      setForm(emptyForm);
+      setForm(blankForm(wing));
       setEditingId(null);
       if (!inProcess) setShowForm(false);
       await load();
@@ -1011,7 +1040,8 @@ function AuthorList({ wing }: { wing: Wing }) {
             form={form}
             journals={journals}
             heading={editingId ? 'Add details' : inProcess ? 'Save under process article' : 'Save published article'}
-            extraRoundButton
+            extraRoundButton={inProcess}
+            forPublished={!inProcess}
             onChange={setForm}
           />
           <div className="md:col-span-2 flex flex-wrap gap-2">
@@ -1024,7 +1054,7 @@ function AuthorList({ wing }: { wing: Wing }) {
                 type="button"
                 onClick={() => {
                   setEditingId(null);
-                  setForm(emptyForm);
+                  setForm(blankForm(wing));
                 }}
               >
                 Cancel
@@ -1068,7 +1098,7 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
   const inProcess = wing === 'in_process';
   const [journals, setJournals] = useState<JournalOption[]>([]);
   const [row, setRow] = useState<AuthorRow | null>(null);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState(() => blankForm(wing));
   const [editing, setEditing] = useState(false);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
@@ -1089,7 +1119,7 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
 
   useEffect(() => {
     setEditing(false);
-    setForm(emptyForm);
+    setForm(blankForm(wing));
     setMsg('');
     setError('');
     setAskPassword(false);
@@ -1110,7 +1140,7 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
       await citationApi.authorArticles.update(row.id, payload());
       setMsg('Details saved as a new modification row, with the date of this change.');
       setEditing(false);
-      setForm(emptyForm);
+      setForm(blankForm(wing));
       await load();
     } catch (err: unknown) {
       const detail =
@@ -1280,6 +1310,7 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
             form={form}
             journals={journals}
             heading="Add details"
+            extraRoundButton
             onChange={setForm}
           />
           <div className="md:col-span-2 flex flex-wrap gap-2">
@@ -1291,7 +1322,7 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
               type="button"
               onClick={() => {
                 setEditing(false);
-                setForm(emptyForm);
+                setForm(blankForm(wing));
               }}
             >
               Cancel
@@ -1301,7 +1332,7 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
       )}
 
       {displayRows(row).map((ver) => (
-        <HistoryCard key={ver.key} ver={ver} />
+        <HistoryCard key={ver.key} ver={ver} forPublished={!inProcess} />
       ))}
     </div>
   );

@@ -110,6 +110,7 @@ def _editorial_status(value: Optional[str]) -> str:
         "revisions have been submitted": "Revisions have been submitted",
         "sent for copy editing": "Sent for copy editing",
         "copy editing": "Sent for copy editing",
+        "published": "Published",
     }
     return aliases.get(lowered, "Submission")
 
