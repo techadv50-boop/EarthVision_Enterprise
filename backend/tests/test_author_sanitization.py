@@ -22,6 +22,13 @@ def test_authors_match_order_and_initials():
     assert not authors_match("Ali Khan", "Ali Ahmed")
 
 
+def test_unique_author_names_keeps_first_spelling():
+    from app.services.author_sanitization import unique_author_names
+
+    names = unique_author_names("Ali Khan; Noor Ali", "Khan, Ali\nSara Ahmed")
+    assert names == ["Ali Khan", "Noor Ali", "Sara Ahmed"]
+
+
 def test_find_overlaps_by_name_and_email():
     issue = [
         {

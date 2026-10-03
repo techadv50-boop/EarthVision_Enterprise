@@ -247,6 +247,7 @@ class AuthorSanitizeCheckIn(BaseModel):
     author_emails: str = ""
     ojs_number: str = ""
     title: str = ""
+    article_ids: Optional[list[int]] = None
 
 
 class AuthorOverlapOut(BaseModel):
@@ -273,3 +274,4 @@ class AuthorIssueSetOut(BaseModel):
     current_issue: list[AuthorIssueArticleOut] = Field(default_factory=list)
     published: list[AuthorIssueArticleOut] = Field(default_factory=list)
     scheduled: list[AuthorIssueArticleOut] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)

@@ -47,7 +47,7 @@ from app.schemas.author_db import (
     WINGS,
 )
 from app.services.journal_access import allowed_journal_ids, require_journal_access, is_removed_journal, purge_removed_journals
-from app.services.author_sanitization import find_author_overlaps, overlap_message
+from app.services.author_sanitization import find_author_overlaps, overlap_message, unique_author_names
 
 router = APIRouter(prefix="/author-articles", tags=["Author database"])
 
@@ -433,6 +433,18 @@ def _same_journal(row: AuthorArticle, canon: str) -> bool:
     return bool(wanted & have)
 
 
+def _unique_ids(values: Optional[list[Any]]) -> list[int]:
+    ids: list[int] = []
+    for item in values or []:
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if number not in ids:
+            ids.append(number)
+    return ids
+
+
 async def _issue_set_row(db: AsyncSession, journal_title: str) -> Optional[AuthorIssueSet]:
     canon = await _canon_journal(db, journal_title)
     row = (
@@ -446,17 +458,18 @@ async def _issue_set_row(db: AsyncSession, journal_title: str) -> Optional[Autho
 
 
 async def _current_issue_articles(
-    db: AsyncSession, user: User, journal_title: str
+    db: AsyncSession,
+    user: User,
+    journal_title: str,
+    article_ids: Optional[list[int]] = None,
 ) -> list[AuthorArticle]:
-    stored = await _issue_set_row(db, journal_title)
-    if stored is None:
-        return []
-    ids: list[int] = []
-    for item in stored.article_ids or []:
-        try:
-            ids.append(int(item))
-        except (TypeError, ValueError):
-            continue
+    if article_ids is None:
+        stored = await _issue_set_row(db, journal_title)
+        if stored is None:
+            return []
+        ids = _unique_ids(stored.article_ids)
+    else:
+        ids = _unique_ids(article_ids)
     if not ids:
         return []
     rows = list(
@@ -468,8 +481,12 @@ async def _current_issue_articles(
             )
         ).scalars().all()
     )
+    by_id = {row.id: row for row in rows}
     visible: list[AuthorArticle] = []
-    for row in rows:
+    for article_id in ids:
+        row = by_id.get(article_id)
+        if row is None:
+            continue
         try:
             visible.append(await _load_row(db, row.id, user))
         except HTTPException:
@@ -485,8 +502,9 @@ async def _author_overlaps(
     author_emails: Optional[str],
     journal_title: Optional[str],
     skip_id: Optional[int] = None,
+    article_ids: Optional[list[int]] = None,
 ) -> list:
-    rows = await _current_issue_articles(db, user, journal_title or "")
+    rows = await _current_issue_articles(db, user, journal_title or "", article_ids=article_ids)
     payload = [
         {
             "id": row.id,
@@ -950,13 +968,12 @@ async def get_issue_sanitization(
             except (TypeError, ValueError):
                 continue
     published_rows = list((await db.execute(await _visible_query(db, user, "published"))).scalars().all())
-    scheduled_rows: list[AuthorArticle] = []
-    if user.has_author_wing("in_process"):
-        scheduled_rows = list((await db.execute(await _visible_query(db, user, "in_process"))).scalars().all())
+    scheduled_rows = list((await db.execute(await _visible_query(db, user, "in_process"))).scalars().all())
     if canon:
         published_rows = [row for row in published_rows if _same_journal(row, canon)]
         scheduled_rows = [row for row in scheduled_rows if _same_journal(row, canon)]
-    current = [_issue_brief(row) for row in published_rows if row.id in selected_ids]
+    selected = {item for item in selected_ids}
+    current = [_issue_brief(row) for row in published_rows if row.id in selected]
     return AuthorIssueSetOut(
         journal_title=canon or journal_title,
         label=(stored.label if stored else "Current issue"),
@@ -964,6 +981,7 @@ async def get_issue_sanitization(
         current_issue=current,
         published=[_issue_brief(row) for row in published_rows],
         scheduled=[_issue_brief(row) for row in scheduled_rows],
+        authors=unique_author_names(*(row.author_names for row in current)),
     )
 
 
@@ -1028,6 +1046,11 @@ async def check_issue_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: Cu
     skip_id = None
     if body.article_id is not None:
         row = await _load_row(db, body.article_id, user)
+        if row.wing != "in_process":
+            raise HTTPException(
+                status_code=400,
+                detail="The scheduled article must be selected from under-process articles.",
+            )
         scheduled = _issue_brief(row)
         authors = row.author_names
         emails = row.author_emails
@@ -1038,8 +1061,16 @@ async def check_issue_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: Cu
     elif not authors.strip() and not emails.strip():
         raise HTTPException(
             status_code=400,
-            detail="Select a scheduled article or enter the author names to check.",
+            detail="Select a scheduled under-process article or enter the author names to check.",
         )
+    if body.article_ids is not None:
+        folder = await _current_issue_articles(db, user, journal or "", article_ids=body.article_ids)
+        missing = [item for item in _unique_ids(body.article_ids) if item not in {row.id for row in folder}]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail="Current issue can only hold published articles.",
+            )
     hits = await _author_overlaps(
         db,
         user,
@@ -1047,6 +1078,7 @@ async def check_issue_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: Cu
         author_emails=emails,
         journal_title=journal,
         skip_id=skip_id,
+        article_ids=body.article_ids,
     )
     if scheduled is None:
         scheduled = AuthorIssueArticleOut(
@@ -1086,8 +1118,11 @@ async def publish_after_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: 
         raise HTTPException(status_code=400, detail="Select the scheduled article to publish.")
     _require_wing(user, "published")
     row = await _load_row(db, body.article_id, user)
-    if row.wing == "published":
-        raise HTTPException(status_code=400, detail="That article is already published.")
+    if row.wing != "in_process":
+        raise HTTPException(
+            status_code=400,
+            detail="The scheduled article must be selected from under-process articles.",
+        )
     hits = await _author_overlaps(
         db,
         user,
@@ -1095,6 +1130,7 @@ async def publish_after_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: 
         author_emails=row.author_emails,
         journal_title=row.journal_title,
         skip_id=row.id,
+        article_ids=body.article_ids,
     )
     if hits:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=overlap_message(hits))
