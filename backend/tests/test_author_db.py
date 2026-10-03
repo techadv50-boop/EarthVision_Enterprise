@@ -72,6 +72,31 @@ async def test_admin_adds_under_process_article(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_published_article_keeps_published_status(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-PUB-STATUS",
+            "title": "Issued paper",
+            "author_names": "Hassan Raza",
+            "editorial_status": "Published",
+            "comments": "Keep this comment box as it is.",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["editorial_status"] == "Published"
+    assert created.json()["comments"] == "Keep this comment box as it is."
+
+
+@pytest.mark.asyncio
 async def test_assigned_user_only_sees_own_journal_author_records(client: AsyncClient):
     operator = await client.post(
         "/api/v1/auth/login",

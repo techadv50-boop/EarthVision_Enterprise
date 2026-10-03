@@ -68,6 +68,7 @@ EDITORIAL_STATUSES = [
     "Request for revisions",
     "Revisions have been submitted",
     "Sent for copy editing",
+    "Published",
 ]
 
 
