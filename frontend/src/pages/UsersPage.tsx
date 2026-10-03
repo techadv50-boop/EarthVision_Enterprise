@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Plus } from 'lucide-react';
 import { adminApi, citationApi } from '@/services/api';
 import {
   AUTHOR_WINGS,
@@ -208,12 +209,16 @@ export default function UsersPage() {
   const [journals, setJournals] = useState<JournalOption[]>([]);
   const [journalDraft, setJournalDraft] = useState<Record<number, number[]>>({});
   const [createJournalIds, setCreateJournalIds] = useState<number[]>([]);
+  const [authorJournals, setAuthorJournals] = useState<{ id?: number | null; name: string; abbreviation?: string }[]>([]);
+  const [newJournalName, setNewJournalName] = useState('');
+  const [showNewJournal, setShowNewJournal] = useState(false);
 
   const load = async () => {
     try {
-      const [{ data }, journalsRes] = await Promise.all([
+      const [{ data }, journalsRes, authorJournalsRes] = await Promise.all([
         adminApi.users(),
         citationApi.journals.list().catch(() => ({ data: [] as JournalOption[] })),
+        citationApi.authorArticles.journals().catch(() => ({ data: [] as { name: string }[] })),
       ]);
       const rows = data as AdminUser[];
       setUsers(rows);
@@ -222,6 +227,11 @@ export default function UsersPage() {
         Object.fromEntries(rows.map((row) => [row.id, row.assigned_journal_ids || []])),
       );
       setJournals((journalsRes.data || []) as JournalOption[]);
+      setAuthorJournals(
+        ((authorJournalsRes.data || []) as { id?: number | null; name: string; abbreviation?: string }[]).filter(
+          (journal) => !journal.id,
+        ),
+      );
     } catch {
       setError('Could not load the user list. You can still add a user below.');
     }
@@ -336,6 +346,29 @@ export default function UsersPage() {
     }
   };
 
+  const addAuthorJournal = async () => {
+    const name = newJournalName.trim();
+    if (!name) return;
+    setBusy('journal');
+    setMsg('');
+    setError('');
+    try {
+      await citationApi.authorArticles.addJournal({ name });
+      setNewJournalName('');
+      setShowNewJournal(false);
+      await load();
+      setMsg(`Added journal “${name}” to the author-database list.`);
+    } catch (err: unknown) {
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      setError(typeof detail === 'string' ? detail : 'Could not add that journal name.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const pending = users.filter((user) => statusOf(user) === 'pending');
   const others = users.filter((user) => statusOf(user) !== 'pending');
 
@@ -355,6 +388,48 @@ export default function UsersPage() {
         <button className="btn-primary" type="button" onClick={() => setShowAdd((open) => !open)}>
           {showAdd ? 'Close add user' : 'Add user'}
         </button>
+      </div>
+
+      <div className="panel p-4 mb-6 max-w-3xl">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 className="text-sm font-medium">Author-database journals</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              These names appear in Select journal on Under process. Only admin can add a name.
+            </p>
+          </div>
+          <button
+            className="btn-secondary inline-flex items-center justify-center p-2"
+            type="button"
+            title="Add journal"
+            onClick={() => setShowNewJournal((open) => !open)}
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        </div>
+        <ul className="text-sm text-gray-300 space-y-1">
+          {authorJournals.map((journal) => (
+            <li key={journal.name}>{journal.name}</li>
+          ))}
+        </ul>
+        {showNewJournal && (
+          <div className="flex flex-wrap gap-2 mt-3">
+            <input
+              className="input-field flex-1 min-w-[16rem]"
+              placeholder="New journal name"
+              value={newJournalName}
+              onChange={(e) => setNewJournalName(e.target.value)}
+            />
+            <button
+              className="btn-primary"
+              type="button"
+              disabled={busy === 'journal'}
+              onClick={() => void addAuthorJournal()}
+            >
+              {busy === 'journal' ? 'Saving…' : 'Save journal'}
+            </button>
+          </div>
+        )}
       </div>
 
       {showAdd && (

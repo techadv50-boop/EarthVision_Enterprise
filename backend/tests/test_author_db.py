@@ -171,6 +171,9 @@ async def test_user_modifications_record_previous_and_new_values(client: AsyncCl
     assert labels["Receive date"]["new"] == "2024-02-15"
     assert labels["Plagiarism"]["previous"] == "(empty)"
     assert labels["Plagiarism"]["new"] == "12%"
+    assert first.json()["original_snapshot"]["received_date"] == "2024-01-01"
+    assert first.json()["modifications"][0]["snapshot"]["received_date"] == "2024-02-15"
+    assert first.json()["modifications"][0]["snapshot"]["plagiarism"] == "12%"
 
     second = await client.patch(
         f"/api/v1/author-articles/{article_id}",
@@ -193,8 +196,13 @@ async def test_under_process_review_rounds_and_journal_catalog(client: AsyncClie
     headers = _bearer(operator)
     journals = await client.get("/api/v1/author-articles/journals", headers=headers)
     assert journals.status_code == 200, journals.text
-    abbrs = {row["abbreviation"] for row in journals.json()}
-    assert {"IJIST", "IJASD", "FCSI"} <= abbrs
+    names = {row["name"] for row in journals.json()}
+    assert "International Journal of Innovations in Science & Technology" in names
+    assert "Magna Carta: Contemporary Social Science" in names
+    assert "International Journal of Agriculture and Sustainable Development" in names
+    assert "Frontiers in Computational Spatial Intelligence" in names
+    assert "Journal of International Relations and Social Dynamics" in names
+    assert "International Journal of NT Diseases" in names
     cite_journals = await client.get("/api/v1/journals", headers=headers)
     assert cite_journals.status_code == 200
     assert "FCSI" not in {row.get("abbreviation") for row in cite_journals.json()}
@@ -217,7 +225,7 @@ async def test_under_process_review_rounds_and_journal_catalog(client: AsyncClie
     )
     assert created.status_code == 201, created.text
     assert created.json()["journal_id"] is None
-    assert created.json()["journal_name"] == "IJIST"
+    assert created.json()["journal_name"] == "International Journal of Innovations in Science & Technology"
     rounds = created.json()["review_rounds"]
     assert len(rounds) == 2
     assert rounds[1]["round"] == 2
@@ -332,3 +340,51 @@ async def test_excel_import_creates_and_updates_author_articles(client: AsyncCli
     assert row["plagiarism"] == "10%"
     assert row["modifications"]
     assert row["modifications"][-1]["account"]
+    assert row["original_snapshot"]["received_date"] == "2024-04-01"
+    assert row["modifications"][-1]["snapshot"]["received_date"] == "2024-05-09"
+
+
+@pytest.mark.asyncio
+async def test_admin_adds_author_journal_name_users_cannot(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    admin = _bearer(operator)
+    added = await client.post(
+        "/api/v1/author-articles/journals",
+        headers=admin,
+        json={"name": "New Author Journal of Testing"},
+    )
+    assert added.status_code == 201, added.text
+    listed = await client.get("/api/v1/author-articles/journals", headers=admin)
+    names = {row["name"] for row in listed.json()}
+    assert "New Author Journal of Testing" in names
+    created_user = await client.post(
+        "/api/v1/admin/users",
+        headers=admin,
+        json={
+            "email": "adbplus@example.com",
+            "username": "adbplus",
+            "password": "EditorPass@123456",
+            "role": "user",
+            "privileges": {
+                "services": ["authors"],
+                "review_branches": [],
+                "author_wings": ["in_process"],
+                "all_journals": True,
+            },
+        },
+    )
+    assert created_user.status_code == 201, created_user.text
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "adbplus", "password": "EditorPass@123456"},
+    )
+    user = _bearer(login)
+    blocked = await client.post(
+        "/api/v1/author-articles/journals",
+        headers=user,
+        json={"name": "Secret Journal"},
+    )
+    assert blocked.status_code == 403

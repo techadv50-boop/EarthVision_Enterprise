@@ -246,6 +246,7 @@ class AuthorArticle(Base):
     repeat_done: Mapped[bool] = mapped_column(Boolean, default=False)
     doi_in_pdf: Mapped[str] = mapped_column(String(500), default="")
     review_rounds: Mapped[Any] = mapped_column(JSON, default=list)
+    original_snapshot: Mapped[Any] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -283,5 +284,22 @@ class AuthorArticleChange(Base):
     account_email: Mapped[str] = mapped_column(String(255), default="")
     account_name: Mapped[str] = mapped_column(String(255), default="")
     changes: Mapped[Any] = mapped_column(JSON, default=list)
+    snapshot: Mapped[Any] = mapped_column(JSON, default=dict)
 
     article: Mapped["AuthorArticle"] = relationship(back_populates="changes")
+
+
+class AuthorDbJournal(Base):
+    """Author-database journal catalog. Separate from citation archive journals."""
+
+    __tablename__ = "author_db_journals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
+    abbreviation: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )

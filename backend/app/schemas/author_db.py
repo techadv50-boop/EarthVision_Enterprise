@@ -12,8 +12,11 @@ WINGS = ("in_process", "published")
 
 AUTHOR_DB_JOURNALS = [
     ("IJIST", "International Journal of Innovations in Science & Technology"),
+    ("MCCSS", "Magna Carta: Contemporary Social Science"),
     ("IJASD", "International Journal of Agriculture and Sustainable Development"),
     ("FCSI", "Frontiers in Computational Spatial Intelligence"),
+    ("JIRSD", "Journal of International Relations and Social Dynamics"),
+    ("IJNTD", "International Journal of NT Diseases"),
 ]
 
 FIELD_LABELS = {
@@ -107,6 +110,7 @@ class AuthorModificationOut(BaseModel):
     account_email: str = ""
     account_name: str = ""
     changes: list[AuthorFieldChangeOut] = Field(default_factory=list)
+    snapshot: dict = Field(default_factory=dict)
 
 
 class AuthorArticleOut(BaseModel):
@@ -135,9 +139,15 @@ class AuthorArticleOut(BaseModel):
     doi_in_pdf: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    original_snapshot: dict = Field(default_factory=dict)
     modifications: list[AuthorModificationOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+
+class AuthorJournalIn(BaseModel):
+    name: str
+    abbreviation: str = ""
 
 
 class AuthorJournalOut(BaseModel):

@@ -32,6 +32,7 @@ interface Modification {
   account_email?: string;
   account_name?: string;
   changes: FieldChange[];
+  snapshot?: Partial<AuthorRow> & { review_rounds?: ReviewRound[] };
 }
 
 interface AuthorRow {
@@ -53,7 +54,9 @@ interface AuthorRow {
   galley_sent_date?: string | null;
   galley_received_date?: string | null;
   publish_date?: string | null;
+  created_at?: string | null;
   updated_at?: string | null;
+  original_snapshot?: Partial<AuthorRow> & { review_rounds?: ReviewRound[] };
   modifications?: Modification[];
 }
 
@@ -86,10 +89,7 @@ function roundsFrom(row: AuthorRow): ReviewRound[] {
 }
 
 function journalLabel(journal: JournalOption) {
-  if (journal.abbreviation && journal.name && journal.abbreviation !== journal.name) {
-    return `${journal.abbreviation} — ${journal.name}`;
-  }
-  return journal.abbreviation || journal.name;
+  return journal.name || journal.abbreviation || '';
 }
 
 function rowJournalKey(row: AuthorRow, journals: JournalOption[]) {
@@ -104,7 +104,7 @@ function rowJournalKey(row: AuthorRow, journals: JournalOption[]) {
     (journal) =>
       (journal.abbreviation || '').toLowerCase() === lower || journal.name.toLowerCase() === lower,
   );
-  return match ? journalKey(match) : `abbr:${title}`;
+  return match ? journalKey(match) : `name:${title}`;
 }
 
 function rowToForm(row: AuthorRow, journals: JournalOption[]) {
@@ -126,16 +126,16 @@ function rowToForm(row: AuthorRow, journals: JournalOption[]) {
   };
 }
 
-function formatWhen(value?: string) {
+function formatDay(value?: string | null) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function journalKey(journal: JournalOption) {
   if (journal.id) return `id:${journal.id}`;
-  return `abbr:${journal.abbreviation || journal.name}`;
+  return `name:${journal.name || journal.abbreviation || ''}`;
 }
 
 function parseJournalKey(key: string): { journal_id: number | null; journal_title: string } {
@@ -143,8 +143,67 @@ function parseJournalKey(key: string): { journal_id: number | null; journal_titl
     const id = Number(key.slice(3));
     return { journal_id: Number.isFinite(id) ? id : null, journal_title: '' };
   }
+  if (key.startsWith('name:')) return { journal_id: null, journal_title: key.slice(5) };
   if (key.startsWith('abbr:')) return { journal_id: null, journal_title: key.slice(5) };
   return { journal_id: null, journal_title: key };
+}
+
+function applySnapshot(row: AuthorRow, snap?: Partial<AuthorRow> | null): AuthorRow {
+  if (!snap || Object.keys(snap).length === 0) return row;
+  return {
+    ...row,
+    journal_id: (snap.journal_id as number | null | undefined) ?? row.journal_id,
+    journal_name: snap.journal_name ?? snap.journal_title ?? row.journal_name,
+    journal_title: snap.journal_title ?? row.journal_title,
+    ojs_number: snap.ojs_number ?? row.ojs_number,
+    title: snap.title ?? row.title,
+    author_names: snap.author_names ?? row.author_names,
+    author_emails: snap.author_emails ?? row.author_emails,
+    email_sent_date: snap.email_sent_date ?? row.email_sent_date,
+    plagiarism: snap.plagiarism ?? row.plagiarism,
+    orcid_id: snap.orcid_id ?? row.orcid_id,
+    received_date: snap.received_date ?? row.received_date,
+    review_rounds: snap.review_rounds ?? row.review_rounds,
+    accepted_date: snap.accepted_date ?? row.accepted_date,
+    galley_sent_date: snap.galley_sent_date ?? row.galley_sent_date,
+    galley_received_date: snap.galley_received_date ?? row.galley_received_date,
+    publish_date: snap.publish_date ?? row.publish_date,
+  };
+}
+
+type DisplayRow = {
+  key: string;
+  article: AuthorRow;
+  data: AuthorRow;
+  label: string;
+  dated: string | null;
+  isOriginal: boolean;
+};
+
+function displayRows(row: AuthorRow): DisplayRow[] {
+  const original = applySnapshot(row, row.original_snapshot);
+  const out: DisplayRow[] = [
+    {
+      key: `${row.id}-original`,
+      article: row,
+      data: original,
+      label: 'Original',
+      dated: row.created_at || null,
+      isOriginal: true,
+    },
+  ];
+  for (const mod of row.modifications || []) {
+    if (!mod.snapshot || Object.keys(mod.snapshot).length === 0) continue;
+    out.push({
+      key: `${row.id}-mod-${mod.mod_number}`,
+      article: row,
+      data: applySnapshot(row, mod.snapshot),
+      label: `Modification ${mod.mod_number}`,
+      dated: mod.changed_at,
+      isOriginal: false,
+    });
+  }
+  return out;
 }
 
 export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
@@ -158,7 +217,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(inProcess);
-  const [openMod, setOpenMod] = useState<{ row: AuthorRow; mod: Modification } | null>(null);
+
 
   const load = async () => {
     const [{ data }, journalsRes] = await Promise.all([
@@ -175,7 +234,6 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     setShowForm(inProcess);
     setMsg('');
     setError('');
-    setOpenMod(null);
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wing]);
@@ -186,7 +244,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     return {
       wing,
       journal_id: parsed.journal_id,
-      journal_title: parsed.journal_title || selected?.abbreviation || selected?.name || '',
+      journal_title: parsed.journal_title || selected?.name || selected?.abbreviation || '',
       ojs_number: form.ojs_number,
       title: form.title,
       author_names: form.author_names,
@@ -215,10 +273,10 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     try {
       if (editingId) {
         await citationApi.authorArticles.update(editingId, payload());
-        setMsg('Modification saved. A MOD button records who changed what, and when.');
+        setMsg('Details saved as a new modification row, with the date of this change.');
       } else {
         await citationApi.authorArticles.create(payload());
-        setMsg('Added to under process.');
+        setMsg('Article saved.');
       }
       setForm(emptyForm);
       setEditingId(null);
@@ -234,12 +292,24 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     }
   };
 
-  const edit = (row: AuthorRow) => {
-    setForm(rowToForm(row, journals));
+  const addDetails = async (row: AuthorRow) => {
+    const [{ data }, journalsRes] = await Promise.all([
+      citationApi.authorArticles.list(wing),
+      citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
+    ]);
+    const latestList = (data || []) as AuthorRow[];
+    const catalog = (journalsRes.data || []) as JournalOption[];
+    setRows(latestList);
+    setJournals(catalog);
+    const latest = latestList.find((item) => item.id === row.id) || row;
+    setForm(rowToForm(latest, catalog));
     setEditingId(row.id);
     setShowForm(true);
     setMsg('');
     setError('');
+    window.setTimeout(() => {
+      document.getElementById('author-article-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
   };
 
   const remove = async (row: AuthorRow) => {
@@ -382,8 +452,8 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
 
       {showForm && (
         <form className="panel p-4 mb-6 grid gap-3 md:grid-cols-2" onSubmit={(e) => void save(e)}>
-          <h3 className="md:col-span-2 text-sm font-medium">
-            {editingId ? 'Modify article' : inProcess ? 'Add under process article' : 'Add published article'}
+          <h3 className="md:col-span-2 text-sm font-medium" id="author-article-form">
+            {editingId ? 'Add details' : inProcess ? 'Save under process article' : 'Save published article'}
           </h3>
           <label className="text-sm text-gray-400">
             Select journal
@@ -560,7 +630,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
           </label>
           <div className="md:col-span-2 flex flex-wrap gap-2">
             <button className="btn-primary" type="submit" disabled={busy}>
-              {busy ? 'Saving…' : editingId ? 'Save modification' : 'Add article'}
+              {busy ? 'Saving…' : 'Save article'}
             </button>
             {editingId && (
               <button
@@ -582,6 +652,8 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-gray-500 border-b border-gray-800">
+              <th className="py-2 pr-3">Record</th>
+              <th className="py-2 pr-3">Date</th>
               <th className="py-2 pr-3">OJS</th>
               <th className="py-2 pr-3">Title</th>
               <th className="py-2 pr-3">Authors</th>
@@ -590,71 +662,65 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
               <th className="py-2 pr-3">ORCID</th>
               <th className="py-2 pr-3">Review rounds</th>
               <th className="py-2 pr-3">Dates</th>
-              <th className="py-2 pr-3">Modifications</th>
               <th className="py-2 pr-3" />
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="py-4 text-gray-500" colSpan={10}>
+                <td className="py-4 text-gray-500" colSpan={11}>
                   {inProcess
                     ? 'No under process articles yet. Add one or import an Excel file.'
                     : 'No published articles yet. Move a finished record from Under process or import Excel.'}
                 </td>
               </tr>
             )}
-            {rows.map((row) => (
-              <tr key={row.id} className="border-b border-gray-800/80 align-top">
+            {rows.flatMap((row) =>
+              displayRows(row).map((ver) => (
+              <tr key={ver.key} className="border-b border-gray-800/80 align-top">
                 <td className="py-3 pr-3 whitespace-nowrap">
-                  {row.ojs_number || '—'}
-                  {row.journal_name ? <p className="text-xs text-gray-500">{row.journal_name}</p> : null}
+                  <p className={ver.isOriginal ? 'text-gray-200' : 'text-earth-400'}>{ver.label}</p>
                 </td>
-                <td className="py-3 pr-3 min-w-[12rem]">{row.title || '—'}</td>
+                <td className="py-3 pr-3 whitespace-nowrap text-xs text-gray-400">{formatDay(ver.dated)}</td>
+                <td className="py-3 pr-3 whitespace-nowrap">
+                  {ver.data.ojs_number || '—'}
+                  {ver.data.journal_name ? (
+                    <p className="text-xs text-gray-500 max-w-[14rem] whitespace-normal">{ver.data.journal_name}</p>
+                  ) : null}
+                </td>
+                <td className="py-3 pr-3 min-w-[12rem]">{ver.data.title || '—'}</td>
                 <td className="py-3 pr-3 min-w-[10rem]">
-                  <p>{row.author_names || '—'}</p>
-                  <p className="text-xs text-gray-500">{row.author_emails}</p>
+                  <p>{ver.data.author_names || '—'}</p>
+                  <p className="text-xs text-gray-500">{ver.data.author_emails}</p>
                 </td>
-                <td className="py-3 pr-3">{row.email_sent_date || '—'}</td>
-                <td className="py-3 pr-3">{row.plagiarism || '—'}</td>
-                <td className="py-3 pr-3">{row.orcid_id || '—'}</td>
+                <td className="py-3 pr-3">{ver.data.email_sent_date || '—'}</td>
+                <td className="py-3 pr-3">{ver.data.plagiarism || '—'}</td>
+                <td className="py-3 pr-3">{ver.data.orcid_id || '—'}</td>
                 <td className="py-3 pr-3 text-xs text-gray-400 whitespace-nowrap">
-                  {(row.review_rounds || []).map((round) => (
+                  {(ver.data.review_rounds || []).map((round) => (
                     <p key={round.round}>
                       R{round.round}: sent {round.sent_date || '—'} / rec {round.received_date || '—'}
                     </p>
                   ))}
-                  {(row.review_rounds || []).length === 0 ? '—' : null}
+                  {(ver.data.review_rounds || []).length === 0 ? '—' : null}
                 </td>
                 <td className="py-3 pr-3 text-xs text-gray-400 whitespace-nowrap">
-                  <p>Acc {row.accepted_date || '—'}</p>
-                  <p>Gal sent {row.galley_sent_date || '—'}</p>
-                  <p>Gal rec {row.galley_received_date || '—'}</p>
-                  <p>Pub {row.publish_date || '—'}</p>
-                </td>
-                <td className="py-3 pr-3">
-                  <div className="flex flex-wrap gap-1">
-                    {(row.modifications || []).length === 0 && <span className="text-xs text-gray-500">None</span>}
-                    {(row.modifications || []).map((mod) => (
-                      <button
-                        key={mod.mod_number}
-                        className="btn-secondary text-xs px-2 py-1"
-                        type="button"
-                        onClick={() => setOpenMod({ row, mod })}
-                      >
-                        MOD {mod.mod_number}
-                      </button>
-                    ))}
-                  </div>
+                  <p>Acc {ver.data.accepted_date || '—'}</p>
+                  <p>Gal sent {ver.data.galley_sent_date || '—'}</p>
+                  <p>Gal rec {ver.data.galley_received_date || '—'}</p>
+                  <p>Pub {ver.data.publish_date || '—'}</p>
                 </td>
                 <td className="py-3">
+                  {ver.isOriginal ? (
                   <div className="flex flex-wrap gap-2">
-                    <button className="btn-secondary" type="button" disabled={busy} onClick={() => edit(row)}>
-                      Modify
-                    </button>
+                    {inProcess && (
+                      <button className="btn-primary" type="button" disabled={busy} onClick={() => addDetails(row)}>
+                        Add details
+                      </button>
+                    )}
                     {inProcess ? (
                       <button
-                        className="btn-primary"
+                        className="btn-secondary"
                         type="button"
                         disabled={busy}
                         onClick={() => void move(row, 'published')}
@@ -677,36 +743,14 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                       </button>
                     )}
                   </div>
+                  ) : null}
                 </td>
               </tr>
-            ))}
+              )),
+            )}
           </tbody>
         </table>
       </div>
-
-      {openMod && (
-        <div className="fixed inset-0 z-40 bg-black/70 flex items-center justify-center p-4" onClick={() => setOpenMod(null)}>
-          <div className="panel max-w-lg w-full p-5" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold mb-1">
-              MOD {openMod.mod.mod_number} · {openMod.row.ojs_number || openMod.row.title || 'Article'}
-            </h3>
-            <p className="text-sm text-gray-400 mb-1">Date and time: {formatWhen(openMod.mod.changed_at)}</p>
-            <p className="text-sm text-gray-300 mb-4">Account: {openMod.mod.account}</p>
-            <div className="space-y-3 max-h-[50vh] overflow-y-auto">
-              {openMod.mod.changes.map((change, idx) => (
-                <div key={`${change.field}-${idx}`} className="border border-gray-800 rounded-md p-3">
-                  <p className="text-sm font-medium text-earth-400">{change.label}</p>
-                  <p className="text-sm text-gray-400 mt-1">Previous: {change.previous}</p>
-                  <p className="text-sm text-gray-200">New: {change.new}</p>
-                </div>
-              ))}
-            </div>
-            <button className="btn-primary mt-4" type="button" onClick={() => setOpenMod(null)}>
-              Close
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

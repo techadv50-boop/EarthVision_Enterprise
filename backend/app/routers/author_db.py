@@ -17,7 +17,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.dependencies import require_service
 from app.database.session import get_db
-from app.models.citation import AuthorArticle, AuthorArticleChange, Journal
+from app.models.citation import AuthorArticle, AuthorArticleChange, AuthorDbJournal, Journal
 from app.models.user import User
 from app.schemas.author_db import (
     AUTHOR_DB_JOURNALS,
@@ -27,6 +27,7 @@ from app.schemas.author_db import (
     AuthorArticlePatch,
     AuthorFieldChangeOut,
     AuthorImportResult,
+    AuthorJournalIn,
     AuthorJournalOut,
     AuthorModificationOut,
     ReviewRound,
@@ -104,6 +105,57 @@ def _format_rounds(rounds: list[dict[str, Any]]) -> str:
     return "; ".join(parts) if parts else "(empty)"
 
 
+def _match_catalog_name(needle: str, catalog: list[AuthorDbJournal]) -> Optional[str]:
+    text = (needle or "").strip().lower()
+    if not text:
+        return None
+    for row in catalog:
+        abbr = (row.abbreviation or "").strip().lower()
+        name = (row.name or "").strip().lower()
+        if text in {abbr, name}:
+            return row.name
+    for abbr, name in AUTHOR_DB_JOURNALS:
+        if text in {abbr.lower(), name.lower()}:
+            return name
+    return None
+
+
+def _row_snapshot(row: AuthorArticle) -> dict[str, Any]:
+    return {
+        "journal_id": row.journal_id,
+        "journal_title": row.journal_title or "",
+        "journal_name": row.journal_title or None,
+        "ojs_number": row.ojs_number or "",
+        "title": row.title or "",
+        "author_names": row.author_names or "",
+        "author_emails": row.author_emails or "",
+        "email_sent_date": row.email_sent_date,
+        "plagiarism": row.plagiarism or "",
+        "orcid_id": row.orcid_id or "",
+        "received_date": row.received_date,
+        "review_rounds": _normalize_rounds(row.review_rounds, fallback_received=row.review_date),
+        "accepted_date": row.accepted_date,
+        "galley_sent_date": row.galley_sent_date,
+        "galley_received_date": row.galley_received_date,
+        "publish_date": row.publish_date,
+    }
+
+
+async def _ensure_author_catalog(db: AsyncSession) -> list[AuthorDbJournal]:
+    rows = list((await db.execute(select(AuthorDbJournal).order_by(AuthorDbJournal.id))).scalars().all())
+    have = {(row.name or "").strip().lower() for row in rows}
+    added = False
+    for abbr, name in AUTHOR_DB_JOURNALS:
+        if name.strip().lower() not in have:
+            db.add(AuthorDbJournal(name=name, abbreviation=abbr))
+            have.add(name.strip().lower())
+            added = True
+    if added:
+        await db.flush()
+        rows = list((await db.execute(select(AuthorDbJournal).order_by(AuthorDbJournal.id))).scalars().all())
+    return rows
+
+
 def _display(value: Any) -> str:
     if value is None:
         return "(empty)"
@@ -144,6 +196,7 @@ def _modification_out(change: AuthorArticleChange) -> AuthorModificationOut:
         account_email=change.account_email or "",
         account_name=change.account_name or "",
         changes=fields,
+        snapshot=change.snapshot if isinstance(change.snapshot, dict) else {},
     )
 
 
@@ -155,9 +208,9 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
         wing=row.wing,
         journal_id=row.journal_id,
         journal_name=(
-            (journal.abbreviation or journal.name)
-            if journal
-            else (row.journal_title or None)
+            row.journal_title
+            or ((journal.name or journal.abbreviation) if journal else None)
+            or None
         ),
         journal_title=row.journal_title or "",
         owner_id=row.owner_id,
@@ -180,6 +233,7 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
         doi_in_pdf=row.doi_in_pdf or "",
         created_at=row.created_at,
         updated_at=row.updated_at,
+        original_snapshot=row.original_snapshot if isinstance(row.original_snapshot, dict) else {},
         modifications=mods,
     )
 
@@ -193,7 +247,11 @@ async def _require_author_journal(db: AsyncSession, user: User, journal_id: int)
     if journal is None:
         raise HTTPException(status_code=404, detail="Journal not found")
     abbr = (journal.abbreviation or "").strip().lower()
-    if abbr in {item[0].lower() for item in AUTHOR_DB_JOURNALS}:
+    name = (journal.name or "").strip().lower()
+    catalog_keys = {item[0].lower() for item in AUTHOR_DB_JOURNALS} | {
+        item[1].lower() for item in AUTHOR_DB_JOURNALS
+    }
+    if abbr in catalog_keys or name in catalog_keys:
         return journal
     return await require_journal_access(db, user, journal_id, desk="authors")
 
@@ -253,6 +311,7 @@ async def _record_modifications(
     row: AuthorArticle,
     user: User,
     diffs: list[dict[str, str]],
+    snapshot: Optional[dict[str, Any]] = None,
 ) -> None:
     if not diffs:
         return
@@ -276,6 +335,7 @@ async def _record_modifications(
             account_email=user.email or "",
             account_name=_account_label(user),
             changes=diffs,
+            snapshot=snapshot or {},
         )
     )
 
@@ -287,6 +347,9 @@ async def _apply_update(
     data: dict[str, Any],
 ) -> list[dict[str, str]]:
     diffs: list[dict[str, str]] = []
+    if not row.original_snapshot:
+        row.original_snapshot = _row_snapshot(row)
+        flag_modified(row, "original_snapshot")
     if "wing" in data and data["wing"] is not None:
         wing = str(data["wing"]).strip().lower()
         if wing not in WINGS:
@@ -319,6 +382,8 @@ async def _apply_update(
             row.journal_id = journal_id
     if "journal_title" in data and data["journal_title"] is not None:
         nxt = str(data["journal_title"]).strip()
+        catalog = await _ensure_author_catalog(db)
+        nxt = _match_catalog_name(nxt, catalog) or nxt
         prev = row.journal_title or ""
         if prev != nxt:
             diffs.append(
@@ -406,7 +471,14 @@ async def _apply_update(
                 setattr(row, field, nxt)
     if diffs:
         row.updated_at = datetime.now(timezone.utc)
-        await _record_modifications(db, row, user, diffs)
+        content_changed = any(item.get("field") != "wing" for item in diffs)
+        await _record_modifications(
+            db,
+            row,
+            user,
+            diffs,
+            snapshot=_row_snapshot(row) if content_changed else None,
+        )
     return diffs
 
 
@@ -436,30 +508,52 @@ async def list_author_articles(
 
 @router.get("/journals", response_model=list[AuthorJournalOut])
 async def list_author_journals(db: Db, user: CurrentUser):
-    rows = list((await db.execute(select(Journal).order_by(Journal.name))).scalars().all())
+    catalog = await _ensure_author_catalog(db)
+    out: list[AuthorJournalOut] = [
+        AuthorJournalOut(id=None, name=row.name, abbreviation=row.abbreviation or None)
+        for row in catalog
+    ]
+    seen = {(row.name or "").strip().lower() for row in catalog}
+    seen.update((row.abbreviation or "").strip().lower() for row in catalog if row.abbreviation)
+    cite_rows = list((await db.execute(select(Journal).order_by(Journal.name))).scalars().all())
     allowed = await allowed_journal_ids(db, user, desk="authors")
-    by_abbr = {(row.abbreviation or "").strip().lower(): row for row in rows if row.abbreviation}
-    out: list[AuthorJournalOut] = []
-    seen: set[str] = set()
-    for abbr, name in AUTHOR_DB_JOURNALS:
-        match = by_abbr.get(abbr.lower())
-        out.append(
-            AuthorJournalOut(
-                id=match.id if match is not None else None,
-                name=name,
-                abbreviation=abbr,
-            )
-        )
-        seen.add(abbr.lower())
-    others = rows
+    others = cite_rows
     if allowed is not None:
-        others = [row for row in rows if row.id in allowed]
+        others = [row for row in cite_rows if row.id in allowed]
     for row in others:
-        key = (row.abbreviation or "").strip().lower()
-        if key in seen:
+        name = (row.name or "").strip()
+        abbr = (row.abbreviation or "").strip()
+        if name.lower() in seen or abbr.lower() in seen:
             continue
         out.append(AuthorJournalOut(id=row.id, name=row.name, abbreviation=row.abbreviation))
+        if name:
+            seen.add(name.lower())
+        if abbr:
+            seen.add(abbr.lower())
     return out
+
+
+@router.post("/journals", response_model=AuthorJournalOut, status_code=status.HTTP_201_CREATED)
+async def add_author_journal(body: AuthorJournalIn, db: Db, user: CurrentUser):
+    if not user.is_full_admin():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin can add a journal name to the author database.",
+        )
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Enter the journal name.")
+    await _ensure_author_catalog(db)
+    existing = list((await db.execute(select(AuthorDbJournal))).scalars().all())
+    needle = name.lower()
+    for row in existing:
+        if (row.name or "").strip().lower() == needle:
+            raise HTTPException(status_code=409, detail="That journal name is already in the list.")
+    abbr = (body.abbreviation or "").strip()
+    row = AuthorDbJournal(name=name, abbreviation=abbr, created_by=user.id)
+    db.add(row)
+    await db.flush()
+    return AuthorJournalOut(id=None, name=row.name, abbreviation=row.abbreviation or None)
 
 
 @router.get("/template")
@@ -509,11 +603,13 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
     _require_wing(user, wing)
     if body.journal_id is not None:
         await _require_author_journal(db, user, body.journal_id)
+    catalog = await _ensure_author_catalog(db)
     title = (body.journal_title or "").strip()
     if not title and body.journal_id is not None:
         journal = await db.get(Journal, body.journal_id)
         if journal is not None:
-            title = journal.abbreviation or journal.name or ""
+            title = journal.name or journal.abbreviation or ""
+    title = _match_catalog_name(title, catalog) or title
     rounds = _normalize_rounds(body.review_rounds, fallback_received=body.review_date)
     row = AuthorArticle(
         wing=wing,
@@ -541,6 +637,9 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
     if not row.title and not row.ojs_number:
         raise HTTPException(status_code=400, detail="Enter an OJS number or a title.")
     db.add(row)
+    await db.flush()
+    row.original_snapshot = _row_snapshot(row)
+    flag_modified(row, "original_snapshot")
     await db.flush()
     return _payload(await _reload(db, row.id))
 
@@ -598,23 +697,14 @@ def _is_date_key(key: str) -> bool:
     } or bool(re.fullmatch(r"r\d+_(sent|received)", key))
 
 
-def _catalog_abbr(name: str) -> Optional[str]:
-    needle = name.strip().lower()
-    if not needle:
-        return None
-    for abbr, full in AUTHOR_DB_JOURNALS:
-        if needle in {abbr.lower(), full.lower()}:
-            return abbr
-    return None
-
-
 async def _resolve_author_journal(db: AsyncSession, user: User, name: str) -> tuple[Optional[int], str]:
-    catalog = _catalog_abbr(name)
+    catalog_rows = await _ensure_author_catalog(db)
+    canonical = _match_catalog_name(name, catalog_rows)
     journal_id = await _journal_by_name(db, user, name)
     if journal_id is not None:
-        return journal_id, catalog or name.strip()
-    if catalog:
-        return None, catalog
+        return journal_id, canonical or name.strip()
+    if canonical:
+        return None, canonical
     return None, ""
 
 
