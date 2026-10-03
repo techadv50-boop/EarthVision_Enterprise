@@ -38,9 +38,18 @@ FIELD_LABELS = {
     "galley_sent_date": "Galley sent date",
     "galley_received_date": "Galley received date",
     "publish_date": "Publish date",
+    "editorial_status": "Status",
     "repeat_done": "Repeat done",
     "doi_in_pdf": "DOI in PDF",
 }
+
+EDITORIAL_STATUSES = [
+    "Submission",
+    "Waiting for reviewer to be assigned",
+    "Request for revisions",
+    "Revisions have been submitted",
+    "Sent for copy editing",
+]
 
 
 class ReviewRound(BaseModel):
@@ -68,6 +77,7 @@ class AuthorArticleIn(BaseModel):
     galley_sent_date: Optional[str] = None
     galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
+    editorial_status: str = "Submission"
     repeat_done: bool = False
     doi_in_pdf: str = ""
 
@@ -91,6 +101,7 @@ class AuthorArticlePatch(BaseModel):
     galley_sent_date: Optional[str] = None
     galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
+    editorial_status: Optional[str] = None
     repeat_done: Optional[bool] = None
     doi_in_pdf: Optional[str] = None
 
@@ -135,6 +146,7 @@ class AuthorArticleOut(BaseModel):
     galley_sent_date: Optional[str] = None
     galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
+    editorial_status: str = "Submission"
     repeat_done: bool = False
     doi_in_pdf: str = ""
     created_at: Optional[datetime] = None

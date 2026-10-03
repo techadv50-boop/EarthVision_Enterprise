@@ -21,6 +21,7 @@ from app.models.citation import AuthorArticle, AuthorArticleChange, AuthorDbJour
 from app.models.user import User
 from app.schemas.author_db import (
     AUTHOR_DB_JOURNALS,
+    EDITORIAL_STATUSES,
     FIELD_LABELS,
     AuthorArticleIn,
     AuthorArticleOut,
@@ -59,6 +60,7 @@ EXCEL_HEADERS = [
     "Galley sent date",
     "Galley received date",
     "Publish date",
+    "Status",
     "Journal",
     "Wing",
 ]
@@ -69,6 +71,26 @@ def _blank(value: Optional[str]) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _editorial_status(value: Optional[str]) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "Submission"
+    for label in EDITORIAL_STATUSES:
+        if text.lower() == label.lower():
+            return label
+    lowered = text.lower()
+    aliases = {
+        "submission": "Submission",
+        "waiting for reviewer to be assigned": "Waiting for reviewer to be assigned",
+        "waiting for reviewer": "Waiting for reviewer to be assigned",
+        "request for revisions": "Request for revisions",
+        "revisions have been submitted": "Revisions have been submitted",
+        "sent for copy editing": "Sent for copy editing",
+        "copy editing": "Sent for copy editing",
+    }
+    return aliases.get(lowered, "Submission")
 
 
 def _normalize_rounds(raw: Any, *, fallback_received: Optional[str] = None) -> list[dict[str, Any]]:
@@ -138,11 +160,20 @@ def _row_snapshot(row: AuthorArticle) -> dict[str, Any]:
         "galley_sent_date": row.galley_sent_date,
         "galley_received_date": row.galley_received_date,
         "publish_date": row.publish_date,
+        "editorial_status": row.editorial_status or "Submission",
     }
 
 
 async def _ensure_author_catalog(db: AsyncSession) -> list[AuthorDbJournal]:
     rows = list((await db.execute(select(AuthorDbJournal).order_by(AuthorDbJournal.id))).scalars().all())
+    removed = False
+    for row in rows:
+        if (row.name or "").strip().lower() == "demo extra journal":
+            await db.delete(row)
+            removed = True
+    if removed:
+        await db.flush()
+        rows = list((await db.execute(select(AuthorDbJournal).order_by(AuthorDbJournal.id))).scalars().all())
     have = {(row.name or "").strip().lower() for row in rows}
     added = False
     for abbr, name in AUTHOR_DB_JOURNALS:
@@ -229,6 +260,7 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
         galley_sent_date=row.galley_sent_date,
         galley_received_date=row.galley_received_date,
         publish_date=row.publish_date,
+        editorial_status=row.editorial_status or "Submission",
         repeat_done=bool(row.repeat_done),
         doi_in_pdf=row.doi_in_pdf or "",
         created_at=row.created_at,
@@ -403,9 +435,12 @@ async def _apply_update(
         "plagiarism",
         "orcid_id",
         "doi_in_pdf",
+        "editorial_status",
     ):
         if field in data and data[field] is not None:
             nxt = str(data[field]).strip()
+            if field == "editorial_status":
+                nxt = _editorial_status(nxt)
             prev = getattr(row, field) or ""
             if prev != nxt:
                 diffs.append(
@@ -543,6 +578,8 @@ async def add_author_journal(body: AuthorJournalIn, db: Db, user: CurrentUser):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Enter the journal name.")
+    if name.lower() == "demo extra journal":
+        raise HTTPException(status_code=400, detail="That journal name was removed.")
     await _ensure_author_catalog(db)
     existing = list((await db.execute(select(AuthorDbJournal))).scalars().all())
     needle = name.lower()
@@ -582,6 +619,7 @@ async def download_import_template():
             "2024-03-12",
             "2024-03-18",
             "",
+            "Submission",
             "IJIST",
             "in_process",
         ]
@@ -631,6 +669,7 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
         galley_sent_date=_blank(body.galley_sent_date),
         galley_received_date=_blank(body.galley_received_date),
         publish_date=_blank(body.publish_date),
+        editorial_status=_editorial_status(body.editorial_status),
         repeat_done=bool(body.repeat_done),
         doi_in_pdf=(body.doi_in_pdf or "").strip(),
     )
@@ -763,6 +802,8 @@ HEADER_MAP = {
     "gally received date": "galley_received_date",
     "publish date": "publish_date",
     "published date": "publish_date",
+    "status": "editorial_status",
+    "editorial status": "editorial_status",
     "repeat done": "repeat_done",
     "repeat": "repeat_done",
     "doi": "doi_in_pdf",
@@ -943,6 +984,7 @@ async def import_author_articles(
             "galley_sent_date": item.get("galley_sent_date") or None,
             "galley_received_date": item.get("galley_received_date") or None,
             "publish_date": item.get("publish_date") or None,
+            "editorial_status": _editorial_status(item.get("editorial_status")),
             "repeat_done": _parse_bool(item.get("repeat_done")),
             "doi_in_pdf": item.get("doi_in_pdf") or "",
         }

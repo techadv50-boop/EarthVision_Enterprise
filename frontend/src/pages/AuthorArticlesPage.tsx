@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { citationApi } from '@/services/api';
-import { isFullAdmin, useAuthStore } from '@/store/authStore';
 
 type Wing = 'in_process' | 'published';
 
@@ -54,6 +53,7 @@ interface AuthorRow {
   galley_sent_date?: string | null;
   galley_received_date?: string | null;
   publish_date?: string | null;
+  editorial_status?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   original_snapshot?: Partial<AuthorRow> & { review_rounds?: ReviewRound[] };
@@ -77,6 +77,7 @@ const emptyForm = {
   galley_sent_date: '',
   galley_received_date: '',
   publish_date: '',
+  editorial_status: 'Submission',
 };
 
 function roundsFrom(row: AuthorRow): ReviewRound[] {
@@ -123,6 +124,7 @@ function rowToForm(row: AuthorRow, journals: JournalOption[]) {
     galley_sent_date: row.galley_sent_date || '',
     galley_received_date: row.galley_received_date || '',
     publish_date: row.publish_date || '',
+    editorial_status: row.editorial_status || 'Submission',
   };
 }
 
@@ -168,6 +170,114 @@ function applySnapshot(row: AuthorRow, snap?: Partial<AuthorRow> | null): Author
     galley_sent_date: snap.galley_sent_date ?? row.galley_sent_date,
     galley_received_date: snap.galley_received_date ?? row.galley_received_date,
     publish_date: snap.publish_date ?? row.publish_date,
+    editorial_status: snap.editorial_status ?? row.editorial_status,
+  };
+}
+
+const EDITORIAL_STATUSES = [
+  'Submission',
+  'Waiting for reviewer to be assigned',
+  'Request for revisions',
+  'Revisions have been submitted',
+  'Sent for copy editing',
+] as const;
+
+const SLA_DAYS = 7;
+
+type SlaTone = 'red' | 'green' | 'white';
+
+function parseDay(value?: string | null): Date | null {
+  if (!value) return null;
+  const text = value.length >= 10 ? value.slice(0, 10) : value;
+  const date = new Date(`${text}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function slaTone(previous?: string | null, current?: string | null, now = new Date()): SlaTone {
+  const prev = parseDay(previous);
+  const cur = parseDay(current);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (cur) {
+    if (!prev) return 'green';
+    return Math.floor((cur.getTime() - prev.getTime()) / 86400000) > SLA_DAYS ? 'red' : 'green';
+  }
+  if (!prev) return 'white';
+  return Math.floor((today.getTime() - prev.getTime()) / 86400000) > SLA_DAYS ? 'red' : 'white';
+}
+
+function slaInputClass(tone: SlaTone) {
+  if (tone === 'red') return 'ring-2 ring-red-500';
+  if (tone === 'green') return 'ring-2 ring-emerald-400';
+  return 'ring-1 ring-white/50';
+}
+
+function SlaDot({ tone, label }: { tone: SlaTone; label: string }) {
+  const color = tone === 'red' ? 'bg-red-500' : tone === 'green' ? 'bg-emerald-400' : 'bg-white';
+  const title =
+    tone === 'red'
+      ? `${label}: no change in 7 days`
+      : tone === 'green'
+        ? `${label}: updated within 7 days`
+        : `${label}: on time / waiting`;
+  return <button type="button" tabIndex={-1} className={`w-3.5 h-3.5 rounded-full shrink-0 ${color}`} title={title} />;
+}
+
+function DateSlaField({
+  label,
+  value,
+  onChange,
+  tone,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  tone: SlaTone;
+}) {
+  return (
+    <label className="text-sm text-gray-400">
+      <span className="inline-flex items-center gap-2">
+        {label}
+        <SlaDot tone={tone} label={label} />
+      </span>
+      <input
+        className={`input-field mt-1 ${slaInputClass(tone)}`}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
+function dateTones(data: {
+  received_date?: string | null;
+  created_at?: string | null;
+  review_rounds?: ReviewRound[];
+  accepted_date?: string | null;
+  galley_sent_date?: string | null;
+  galley_received_date?: string | null;
+  publish_date?: string | null;
+}) {
+  const rounds = data.review_rounds?.length ? data.review_rounds : [emptyRound(1)];
+  let previous = data.received_date || (data.created_at ? data.created_at.slice(0, 10) : '') || '';
+  const roundTones = rounds.map((round) => {
+    const sent = slaTone(previous, round.sent_date);
+    const received = slaTone(round.sent_date || previous, round.received_date);
+    previous = round.received_date || round.sent_date || previous;
+    return { sent, received };
+  });
+  const accepted = slaTone(previous, data.accepted_date);
+  previous = data.accepted_date || previous;
+  const galleySent = slaTone(previous, data.galley_sent_date);
+  previous = data.galley_sent_date || previous;
+  const galleyReceived = slaTone(previous, data.galley_received_date);
+  previous = data.galley_received_date || previous;
+  return {
+    rounds: roundTones,
+    accepted,
+    galleySent,
+    galleyReceived,
+    publish: slaTone(previous, data.publish_date),
   };
 }
 
@@ -207,7 +317,6 @@ function displayRows(row: AuthorRow): DisplayRow[] {
 }
 
 export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
-  const admin = isFullAdmin(useAuthStore((s) => s.user));
   const inProcess = wing === 'in_process';
   const [journals, setJournals] = useState<JournalOption[]>([]);
   const [rows, setRows] = useState<AuthorRow[]>([]);
@@ -262,6 +371,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
       galley_sent_date: form.galley_sent_date || null,
       galley_received_date: form.galley_received_date || null,
       publish_date: form.publish_date || null,
+      editorial_status: form.editorial_status,
     };
   };
 
@@ -310,25 +420,6 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     window.setTimeout(() => {
       document.getElementById('author-article-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
-  };
-
-  const remove = async (row: AuthorRow) => {
-    if (!admin) return;
-    setBusy(true);
-    setError('');
-    try {
-      await citationApi.authorArticles.remove(row.id);
-      if (editingId === row.id) {
-        setEditingId(null);
-        setForm(emptyForm);
-      }
-      await load();
-      setMsg('Removed by admin.');
-    } catch {
-      setError('Could not remove that article.');
-    } finally {
-      setBusy(false);
-    }
   };
 
   const move = async (row: AuthorRow, next: Wing) => {
@@ -406,6 +497,12 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
           : prev.review_rounds.filter((_, idx) => idx !== index).map((round, idx) => ({ ...round, round: idx + 1 })),
     }));
   };
+
+  const editingRow = editingId ? rows.find((row) => row.id === editingId) : undefined;
+  const tones = dateTones({
+    ...form,
+    created_at: editingRow?.created_at,
+  });
 
   return (
     <div>
@@ -562,24 +659,18 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                   </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
-                  <label className="text-sm text-gray-400">
-                    Review sent date
-                    <input
-                      className="input-field mt-1"
-                      type="date"
-                      value={round.sent_date || ''}
-                      onChange={(e) => setRound(index, 'sent_date', e.target.value)}
-                    />
-                  </label>
-                  <label className="text-sm text-gray-400">
-                    Review receive date
-                    <input
-                      className="input-field mt-1"
-                      type="date"
-                      value={round.received_date || ''}
-                      onChange={(e) => setRound(index, 'received_date', e.target.value)}
-                    />
-                  </label>
+                  <DateSlaField
+                    label="Review sent date"
+                    value={round.sent_date || ''}
+                    onChange={(value) => setRound(index, 'sent_date', value)}
+                    tone={tones.rounds[index]?.sent || 'white'}
+                  />
+                  <DateSlaField
+                    label="Review receive date"
+                    value={round.received_date || ''}
+                    onChange={(value) => setRound(index, 'received_date', value)}
+                    tone={tones.rounds[index]?.received || 'white'}
+                  />
                 </div>
               </div>
             ))}
@@ -592,41 +683,43 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
               Add round {form.review_rounds.length + 1}
             </button>
           </div>
-          <label className="text-sm text-gray-400">
-            Acceptance date
-            <input
+          <DateSlaField
+            label="Acceptance date"
+            value={form.accepted_date}
+            onChange={(value) => field('accepted_date', value)}
+            tone={tones.accepted}
+          />
+          <DateSlaField
+            label="Galley sent date"
+            value={form.galley_sent_date}
+            onChange={(value) => field('galley_sent_date', value)}
+            tone={tones.galleySent}
+          />
+          <DateSlaField
+            label="Galley received date"
+            value={form.galley_received_date}
+            onChange={(value) => field('galley_received_date', value)}
+            tone={tones.galleyReceived}
+          />
+          <DateSlaField
+            label="Publish date"
+            value={form.publish_date}
+            onChange={(value) => field('publish_date', value)}
+            tone={tones.publish}
+          />
+          <label className="text-sm text-gray-400 md:col-span-2">
+            Status
+            <select
               className="input-field mt-1"
-              type="date"
-              value={form.accepted_date}
-              onChange={(e) => field('accepted_date', e.target.value)}
-            />
-          </label>
-          <label className="text-sm text-gray-400">
-            Galley sent date
-            <input
-              className="input-field mt-1"
-              type="date"
-              value={form.galley_sent_date}
-              onChange={(e) => field('galley_sent_date', e.target.value)}
-            />
-          </label>
-          <label className="text-sm text-gray-400">
-            Galley received date
-            <input
-              className="input-field mt-1"
-              type="date"
-              value={form.galley_received_date}
-              onChange={(e) => field('galley_received_date', e.target.value)}
-            />
-          </label>
-          <label className="text-sm text-gray-400">
-            Publish date
-            <input
-              className="input-field mt-1"
-              type="date"
-              value={form.publish_date}
-              onChange={(e) => field('publish_date', e.target.value)}
-            />
+              value={form.editorial_status}
+              onChange={(e) => field('editorial_status', e.target.value)}
+            >
+              {EDITORIAL_STATUSES.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
           </label>
           <div className="md:col-span-2 flex flex-wrap gap-2">
             <button className="btn-primary" type="submit" disabled={busy}>
@@ -653,6 +746,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
           <thead>
             <tr className="text-left text-gray-500 border-b border-gray-800">
               <th className="py-2 pr-3">Article</th>
+              <th className="py-2 pr-3">Status</th>
               <th className="py-2 pr-3">Title</th>
               <th className="py-2 pr-3">Authors</th>
               <th className="py-2 pr-3">Email sent date</th>
@@ -666,7 +760,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="py-4 text-gray-500" colSpan={9}>
+                <td className="py-4 text-gray-500" colSpan={10}>
                   {inProcess
                     ? 'No under process articles yet. Add one or import an Excel file.'
                     : 'No published articles yet. Move a finished record from Under process or import Excel.'}
@@ -674,7 +768,9 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
               </tr>
             )}
             {rows.flatMap((row) =>
-              displayRows(row).map((ver) => (
+              displayRows(row).map((ver) => {
+              const rowTones = dateTones(ver.data);
+              return (
               <tr key={ver.key} className="border-b border-gray-800/80 align-top">
                 <td className="py-3 pr-3 whitespace-nowrap min-w-[12rem]">
                   <p className={ver.isOriginal ? 'text-gray-200 font-medium' : 'text-earth-400 font-medium'}>{ver.label}</p>
@@ -684,6 +780,9 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                     <p className="text-xs text-gray-500 max-w-[14rem] whitespace-normal">{ver.data.journal_name}</p>
                   ) : null}
                 </td>
+                <td className="py-3 pr-3 min-w-[10rem] text-sm text-gray-300">
+                  {ver.data.editorial_status || 'Submission'}
+                </td>
                 <td className="py-3 pr-3 min-w-[12rem]">{ver.data.title || '—'}</td>
                 <td className="py-3 pr-3 min-w-[10rem]">
                   <p>{ver.data.author_names || '—'}</p>
@@ -692,19 +791,50 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                 <td className="py-3 pr-3">{ver.data.email_sent_date || '—'}</td>
                 <td className="py-3 pr-3">{ver.data.plagiarism || '—'}</td>
                 <td className="py-3 pr-3">{ver.data.orcid_id || '—'}</td>
-                <td className="py-3 pr-3 text-xs text-gray-400 whitespace-nowrap">
-                  {(ver.data.review_rounds || []).map((round) => (
-                    <p key={round.round}>
-                      R{round.round}: sent {round.sent_date || '—'} / rec {round.received_date || '—'}
+                <td className="py-3 pr-3 text-xs whitespace-nowrap">
+                  {(ver.data.review_rounds || []).map((round, index) => (
+                    <p key={round.round} className="flex flex-col gap-0.5">
+                      <span className="inline-flex items-center gap-1">
+                        <SlaDot tone={rowTones.rounds[index]?.sent || 'white'} label={`Round ${index + 1} review sent date`} />
+                        <span className={rowTones.rounds[index]?.sent === 'red' ? 'text-red-400' : rowTones.rounds[index]?.sent === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
+                          R{round.round} sent {round.sent_date || '—'}
+                        </span>
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <SlaDot tone={rowTones.rounds[index]?.received || 'white'} label={`Round ${index + 1} review receive date`} />
+                        <span className={rowTones.rounds[index]?.received === 'red' ? 'text-red-400' : rowTones.rounds[index]?.received === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
+                          rec {round.received_date || '—'}
+                        </span>
+                      </span>
                     </p>
                   ))}
                   {(ver.data.review_rounds || []).length === 0 ? '—' : null}
                 </td>
-                <td className="py-3 pr-3 text-xs text-gray-400 whitespace-nowrap">
-                  <p>Acc {ver.data.accepted_date || '—'}</p>
-                  <p>Gal sent {ver.data.galley_sent_date || '—'}</p>
-                  <p>Gal rec {ver.data.galley_received_date || '—'}</p>
-                  <p>Pub {ver.data.publish_date || '—'}</p>
+                <td className="py-3 pr-3 text-xs whitespace-nowrap">
+                  <p className="inline-flex items-center gap-1">
+                    <SlaDot tone={rowTones.accepted} label="Acceptance date" />
+                    <span className={rowTones.accepted === 'red' ? 'text-red-400' : rowTones.accepted === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
+                      Acc {ver.data.accepted_date || '—'}
+                    </span>
+                  </p>
+                  <p className="inline-flex items-center gap-1">
+                    <SlaDot tone={rowTones.galleySent} label="Galley sent date" />
+                    <span className={rowTones.galleySent === 'red' ? 'text-red-400' : rowTones.galleySent === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
+                      Gal sent {ver.data.galley_sent_date || '—'}
+                    </span>
+                  </p>
+                  <p className="inline-flex items-center gap-1">
+                    <SlaDot tone={rowTones.galleyReceived} label="Galley received date" />
+                    <span className={rowTones.galleyReceived === 'red' ? 'text-red-400' : rowTones.galleyReceived === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
+                      Gal rec {ver.data.galley_received_date || '—'}
+                    </span>
+                  </p>
+                  <p className="inline-flex items-center gap-1">
+                    <SlaDot tone={rowTones.publish} label="Publish date" />
+                    <span className={rowTones.publish === 'red' ? 'text-red-400' : rowTones.publish === 'green' ? 'text-emerald-400' : 'text-gray-200'}>
+                      Pub {ver.data.publish_date || '—'}
+                    </span>
+                  </p>
                 </td>
                 <td className="py-3">
                   {ver.isOriginal ? (
@@ -733,16 +863,12 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                         Back to under process
                       </button>
                     )}
-                    {admin && (
-                      <button className="btn-secondary" type="button" disabled={busy} onClick={() => void remove(row)}>
-                        Remove
-                      </button>
-                    )}
                   </div>
                   ) : null}
                 </td>
               </tr>
-              )),
+              );
+              }),
             )}
           </tbody>
         </table>

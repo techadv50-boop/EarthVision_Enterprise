@@ -243,6 +243,7 @@ class AuthorArticle(Base):
     galley_sent_date: Mapped[Optional[str]] = mapped_column(String(32))
     galley_received_date: Mapped[Optional[str]] = mapped_column(String(32))
     publish_date: Mapped[Optional[str]] = mapped_column(String(32))
+    editorial_status: Mapped[str] = mapped_column(String(120), default="Submission")
     repeat_done: Mapped[bool] = mapped_column(Boolean, default=False)
     doi_in_pdf: Mapped[str] = mapped_column(String(500), default="")
     review_rounds: Mapped[Any] = mapped_column(JSON, default=list)

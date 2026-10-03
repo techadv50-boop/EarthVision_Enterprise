@@ -90,6 +90,7 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("author_articles", "journal_title", "VARCHAR(500) DEFAULT ''")
     _add_if_missing("author_articles", "original_snapshot", "JSON")
     _add_if_missing("author_article_changes", "snapshot", "JSON")
+    _add_if_missing("author_articles", "editorial_status", "VARCHAR(120) DEFAULT 'Submission'")
 
 
 def _ensure_postgres_columns(sync_conn) -> None:
@@ -146,5 +147,8 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "ALTER TABLE author_article_changes ADD COLUMN IF NOT EXISTS snapshot JSON"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS editorial_status VARCHAR(120) DEFAULT 'Submission'"
     )
 

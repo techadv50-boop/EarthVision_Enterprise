@@ -36,6 +36,7 @@ async def test_admin_adds_under_process_article(client: AsyncClient):
             "galley_sent_date": "2024-03-12",
             "galley_received_date": "2024-03-18",
             "publish_date": "",
+            "editorial_status": "Waiting for reviewer to be assigned",
         },
     )
     assert created.status_code == 201, created.text
@@ -46,6 +47,7 @@ async def test_admin_adds_under_process_article(client: AsyncClient):
     assert body["plagiarism"] == "9%"
     assert body["review_rounds"][0]["sent_date"] == "2024-01-20"
     assert body["galley_sent_date"] == "2024-03-12"
+    assert body["editorial_status"] == "Waiting for reviewer to be assigned"
 
     listed = await client.get("/api/v1/author-articles", headers=headers, params={"wing": "in_process"})
     assert listed.status_code == 200
@@ -203,6 +205,7 @@ async def test_under_process_review_rounds_and_journal_catalog(client: AsyncClie
     assert "Frontiers in Computational Spatial Intelligence" in names
     assert "Journal of International Relations and Social Dynamics" in names
     assert "International Journal of NT Diseases" in names
+    assert "Demo Extra Journal" not in names
     cite_journals = await client.get("/api/v1/journals", headers=headers)
     assert cite_journals.status_code == 200
     assert "FCSI" not in {row.get("abbreviation") for row in cite_journals.json()}
