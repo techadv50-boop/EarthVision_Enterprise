@@ -39,8 +39,27 @@ FIELD_LABELS = {
     "galley_received_date": "Galley received date",
     "publish_date": "Publish date",
     "editorial_status": "Status",
+    "soft_reminder_sent": "Soft reminder sent",
+    "second_reminder_sent": "Second reminder sent",
+    "last_reminder_sent": "Last reminder sent",
+    "comments": "Comments",
+    "current_stage": "Current state",
+    "current_stage_started": "Current-state date",
+    "current_stage_days": "Days allowed",
+    "current_stage_passed": "Current state passed",
     "repeat_done": "Repeat done",
     "doi_in_pdf": "DOI in PDF",
+}
+
+COMMENT_MAX = 1000
+DEFAULT_STAGE_DAYS = 7
+STAGE_KEY_PATTERN = r"^(round_\d+_(sent|received)|accepted_date|galley_sent_date|galley_received_date|publish_date)$"
+
+FIXED_STAGE_LABELS = {
+    "accepted_date": "Acceptance date",
+    "galley_sent_date": "Galley sent date",
+    "galley_received_date": "Galley received date",
+    "publish_date": "Publish date",
 }
 
 EDITORIAL_STATUSES = [
@@ -78,6 +97,14 @@ class AuthorArticleIn(BaseModel):
     galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
     editorial_status: str = "Submission"
+    soft_reminder_sent: Optional[str] = None
+    second_reminder_sent: Optional[str] = None
+    last_reminder_sent: Optional[str] = None
+    comments: str = Field(default="", max_length=COMMENT_MAX)
+    current_stage: str = ""
+    current_stage_started: Optional[str] = None
+    current_stage_days: int = DEFAULT_STAGE_DAYS
+    current_stage_passed: bool = False
     repeat_done: bool = False
     doi_in_pdf: str = ""
 
@@ -102,6 +129,14 @@ class AuthorArticlePatch(BaseModel):
     galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
     editorial_status: Optional[str] = None
+    soft_reminder_sent: Optional[str] = None
+    second_reminder_sent: Optional[str] = None
+    last_reminder_sent: Optional[str] = None
+    comments: Optional[str] = Field(default=None, max_length=COMMENT_MAX)
+    current_stage: Optional[str] = None
+    current_stage_started: Optional[str] = None
+    current_stage_days: Optional[int] = None
+    current_stage_passed: Optional[bool] = None
     repeat_done: Optional[bool] = None
     doi_in_pdf: Optional[str] = None
 
@@ -147,6 +182,14 @@ class AuthorArticleOut(BaseModel):
     galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
     editorial_status: str = "Submission"
+    soft_reminder_sent: Optional[str] = None
+    second_reminder_sent: Optional[str] = None
+    last_reminder_sent: Optional[str] = None
+    comments: str = ""
+    current_stage: str = ""
+    current_stage_started: Optional[str] = None
+    current_stage_days: int = DEFAULT_STAGE_DAYS
+    current_stage_passed: bool = False
     repeat_done: bool = False
     doi_in_pdf: str = ""
     created_at: Optional[datetime] = None
