@@ -29,6 +29,7 @@ import LanguageReviewPage from '@/pages/LanguageReviewPage';
 import AuthorHubPage from '@/pages/AuthorHubPage';
 import AuthorArticlesPage from '@/pages/AuthorArticlesPage';
 import AuthorSanitizationPage from '@/pages/AuthorSanitizationPage';
+import AuthorStorePage from '@/pages/AuthorStorePage';
 import GalleyPage from '@/pages/GalleyPage';
 import WebCrawlerPage from '@/pages/WebCrawlerPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
@@ -209,6 +210,14 @@ export default function App() {
           element={
             <ServiceRoute service="authors">
               <AuthorHubPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors/store"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorStorePage />
             </ServiceRoute>
           }
         />

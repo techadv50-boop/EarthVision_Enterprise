@@ -34,5 +34,7 @@ from app.models.citation import (  # noqa: E402, F401
     AuthorArticle,
     AuthorArticleChange,
     AuthorDbJournal,
+    AuthorIssueSet,
+    AuthorStoreFile,
 )
 from app.models.galley import GalleyJournal, GalleyProof, GalleySetting  # noqa: E402, F401
