@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -446,6 +447,71 @@ def _reason(paragraph: str, article: Article, chunk_text: str, score: float) -> 
     )
 
 
+def _rank_paragraphs(
+    paragraph_rows: list[tuple[int, int, str]],
+    chunk_rows: list[tuple[int, list[float], str]],
+    focus_source: dict[int, str],
+    archive_blobs: dict[int, str],
+    per_paragraph: int,
+    min_score: float,
+    max_suggestions: int,
+) -> list[tuple[int, int, int, float, str]]:
+    """CPU ranking isolated from the DB session so other users keep working."""
+    focus_vecs = {article_id: embed_text(text) for article_id, text in focus_source.items()}
+    raw_matches: list[RankedCandidate] = []
+    window = citation_section_range([text for _pid, _index, text in paragraph_rows])
+    in_references = False
+    for para_id, para_index, para_text in paragraph_rows:
+        if is_references_heading(para_text or ""):
+            in_references = True
+            continue
+        if not in_citation_window(para_index, window):
+            continue
+        if not is_substantive_paragraph(para_text or "", index=para_index, in_references=in_references):
+            continue
+        query_vec = embed_text(para_text)
+        best: dict[int, tuple[float, str]] = {}
+        for article_id, emb, chunk_text in chunk_rows:
+            if not emb:
+                continue
+            chunk_score = cosine(query_vec, emb)
+            focus_score = cosine(query_vec, focus_vecs.get(article_id) or [])
+            if _is_noisy_chunk(chunk_text or "") and focus_score < min_score + 0.06:
+                continue
+            score = max(chunk_score, focus_score)
+            if focus_score >= 0.18:
+                score = min(1.0, score + 0.08)
+            elif focus_score < 0.10 and chunk_score < min_score + 0.10:
+                continue
+            prev = best.get(article_id)
+            if prev is None or score > prev[0]:
+                best[article_id] = (score, chunk_text)
+        ranked = sorted(best.items(), key=lambda item: item[1][0], reverse=True)
+        kept_for_para = 0
+        for article_id, (score, chunk_text) in ranked:
+            terms = overlap_terms(para_text, archive_blobs.get(article_id, "") + " " + (chunk_text or ""), limit=4)
+            if not passes_relevance_gate(score, terms, min_score=min_score):
+                continue
+            raw_matches.append(
+                RankedCandidate(
+                    paragraph_index=para_index,
+                    paragraph_id=para_id,
+                    article_id=article_id,
+                    score=round(float(score), 4),
+                    chunk_text=chunk_text or "",
+                    article=None,
+                    chunk=None,
+                )
+            )
+            kept_for_para += 1
+            if kept_for_para >= per_paragraph:
+                break
+    return [
+        (row.paragraph_id, row.paragraph_index, row.article_id, row.score, row.chunk_text)
+        for row in select_manuscript_matches(raw_matches, limit=max_suggestions)
+    ]
+
+
 async def suggest_for_manuscript(
     db: AsyncSession,
     manuscript: Manuscript,
@@ -528,75 +594,41 @@ async def suggest_for_manuscript(
         await db.flush()
         return created
 
-    focus_vecs: dict[int, list[float]] = {}
-    for article in seen_articles.values():
-        focus_vecs[article.id] = embed_text(_focus_text(article))
+    paragraph_rows = [(para.id, para.index, para.text or "") for para in paragraphs]
+    chunk_rows: list[tuple[int, list[float], str]] = []
+    focus_source: dict[int, str] = {}
+    archive_blobs: dict[int, str] = {}
+    for chunk in chunks:
+        article = chunk.article
+        if article is None:
+            continue
+        chunk_rows.append((article.id, list(chunk.embedding or []), chunk.text or ""))
+        if article.id not in focus_source:
+            focus_source[article.id] = _focus_text(article)
+            archive_blobs[article.id] = _archive_blob(article, "")
 
-    per_paragraph = max(1, int(per_paragraph or MAX_SUGGESTIONS_PER_PARAGRAPH))
-    raw_matches: list[RankedCandidate] = []
-    window = citation_section_range([para.text or "" for para in paragraphs])
-    in_references = False
-    for para in paragraphs:
-        if is_references_heading(para.text or ""):
-            in_references = True
-            continue
-        if not in_citation_window(para.index, window):
-            continue
-        if not is_substantive_paragraph(para.text or "", index=para.index, in_references=in_references):
-            continue
-        query_vec = embed_text(para.text)
-        best: dict[int, tuple[float, ArticleChunk]] = {}
-        for chunk in chunks:
-            emb = chunk.embedding or []
-            if not emb:
-                continue
-            article = chunk.article
-            if article is None:
-                continue
-            chunk_score = cosine(query_vec, emb)
-            focus_score = cosine(query_vec, focus_vecs.get(article.id) or [])
-            if _is_noisy_chunk(chunk.text or "") and focus_score < min_score + 0.06:
-                continue
-            score = max(chunk_score, focus_score)
-            if focus_score >= 0.18:
-                score = min(1.0, score + 0.08)
-            elif focus_score < 0.10 and chunk_score < min_score + 0.10:
-                continue
-            prev = best.get(chunk.article_id)
-            if prev is None or score > prev[0]:
-                best[chunk.article_id] = (score, chunk)
-        ranked = sorted(best.values(), key=lambda item: item[0], reverse=True)
-        kept_for_para = 0
-        for score, chunk in ranked:
-            article = chunk.article
-            terms = overlap_terms(para.text, _archive_blob(article, chunk.text), limit=4)
-            if not passes_relevance_gate(score, terms, min_score=min_score):
-                continue
-            raw_matches.append(
-                RankedCandidate(
-                    paragraph_index=para.index,
-                    paragraph_id=para.id,
-                    article_id=article.id,
-                    score=round(float(score), 4),
-                    chunk_text=chunk.text or "",
-                    article=article,
-                    chunk=chunk,
-                )
-            )
-            kept_for_para += 1
-            if kept_for_para >= per_paragraph:
-                break
-
+    ranked_rows = await asyncio.to_thread(
+        _rank_paragraphs,
+        paragraph_rows,
+        chunk_rows,
+        focus_source,
+        archive_blobs,
+        max(1, int(per_paragraph or MAX_SUGGESTIONS_PER_PARAGRAPH)),
+        min_score,
+        max_suggestions,
+    )
     para_by_id = {para.id: para for para in paragraphs}
-    for match in select_manuscript_matches(raw_matches, limit=max_suggestions):
-        article = match.article
-        para = para_by_id[match.paragraph_id]
+    for para_id, _para_index, article_id, score, chunk_text in ranked_rows:
+        article = seen_articles.get(article_id)
+        para = para_by_id.get(para_id)
+        if article is None or para is None:
+            continue
         sug = CitationSuggestion(
             manuscript_id=manuscript.id,
-            paragraph_id=match.paragraph_id,
-            article_id=match.article_id,
-            score=match.score,
-            reason=_reason(para.text, article, match.chunk_text, match.score),
+            paragraph_id=para_id,
+            article_id=article_id,
+            score=score,
+            reason=_reason(para.text, article, chunk_text, score),
             house_citation=house_citation_for(article),
             status="pending",
         )

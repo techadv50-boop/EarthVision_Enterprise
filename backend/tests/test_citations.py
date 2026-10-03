@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 
@@ -1175,4 +1176,145 @@ async def test_admin_adds_users_and_manuscripts_stay_private(client: AsyncClient
     assert report_a.status_code == 200, report_a.text
     assert report_a.json()["report"]["citations_found"] == report_a.json()["suggestion_count"]
     assert "citations found" in report_a.json()["report"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_assigned_users_work_their_journals_simultaneously(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    admin = {"Authorization": f"Bearer {operator.json()['access_token']}"}
+    papers = [
+        (
+            "Concurrent Alpha Journal",
+            "CAJ",
+            "EdDSA watermarking for document authentication and tamper detection",
+        ),
+        (
+            "Concurrent Beta Journal",
+            "CBJ",
+            "Soil moisture mapping with Sentinel radar backscatter for irrigation",
+        ),
+        (
+            "Concurrent Gamma Journal",
+            "CGJ",
+            "Safflower robot harvesting and drone swarm field scouting",
+        ),
+        (
+            "Concurrent Delta Journal",
+            "CDJ",
+            "Urban heat island reduction with cool roofs and street trees",
+        ),
+    ]
+    jobs = []
+    for index, (name, abbr, topic) in enumerate(papers, start=1):
+        journal = await client.post(
+            "/api/v1/journals",
+            headers=admin,
+            json={"name": name, "abbreviation": abbr},
+        )
+        assert journal.status_code == 201, journal.text
+        journal_id = journal.json()["id"]
+        text = (
+            f"Citation|, {name}, Vol {index}, Issue 1, pp {100 * index}-{100 * index + 8}, "
+            f"Authors, {topic.title()}, 2024\n"
+            f"DOI: 10.59999/concurrent-{abbr.lower()}-{index}\n"
+            f"Abstract {topic}. This archive paper belongs only to {name}.\n"
+            f"Introduction {topic} methods are described for {name} only.\n"
+            f"Materials and Methods Field plots and sensors were prepared for {topic}."
+        )
+        paper = await client.post(
+            f"/api/v1/journals/{journal_id}/papers-text",
+            headers=admin,
+            json={"filename": f"{abbr.lower()}.txt", "text": text},
+        )
+        assert paper.status_code == 200, paper.text
+        username = abbr.lower() + "_worker"
+        created = await client.post(
+            "/api/v1/admin/users",
+            headers=admin,
+            json={
+                "email": f"{username}@example.com",
+                "username": username,
+                "password": "WorkerPass@123456",
+                "role": "user",
+                "assigned_journal_ids": [journal_id],
+            },
+        )
+        assert created.status_code == 201, created.text
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "WorkerPass@123456"},
+        )
+        assert login.status_code == 200, login.text
+        jobs.append(
+            {
+                "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+                "journal_id": journal_id,
+                "name": name,
+                "abbr": abbr,
+                "topic": topic,
+            }
+        )
+
+    async def work(job: dict) -> dict:
+        headers = job["headers"]
+        listed, detail, volumes, upload = await asyncio.gather(
+            client.get("/api/v1/journals", headers=headers),
+            client.get(f"/api/v1/journals/{job['journal_id']}", headers=headers),
+            client.get(f"/api/v1/journals/{job['journal_id']}/volumes", headers=headers),
+            client.post(
+                "/api/v1/manuscripts",
+                headers=headers,
+                files={
+                    "file": (
+                        f"{job['abbr']}.pdf",
+                        _pdf_from_text(
+                            "Introduction\n"
+                            f"{job['topic']} is the subject of this manuscript for {job['name']}.\n"
+                            "Materials and Methods\n"
+                            f"The assigned {job['name']} archive is searched for house citations about {job['topic']}.\n"
+                            "Results\n"
+                            "Results are reported separately."
+                        ),
+                        "application/pdf",
+                    )
+                },
+            ),
+        )
+        assert listed.status_code == 200, listed.text
+        names = {row["name"] for row in listed.json()}
+        assert job["name"] in names
+        assert names == {job["name"]}
+        assert detail.status_code == 200, detail.text
+        assert volumes.status_code == 200, volumes.text
+        assert upload.status_code == 201, upload.text
+        mid = upload.json()["id"]
+        suggest = await client.post(f"/api/v1/manuscripts/{mid}/suggest", headers=headers)
+        assert suggest.status_code == 200, suggest.text
+        get_ms, others = await asyncio.gather(
+            client.get(f"/api/v1/manuscripts/{mid}", headers=headers),
+            client.get("/api/v1/manuscripts", headers=headers),
+        )
+        assert get_ms.status_code == 200
+        listed_ids = {row["id"] for row in others.json()}
+        assert mid in listed_ids
+        return {
+            "mid": mid,
+            "journal_id": job["journal_id"],
+            "headers": headers,
+            "suggestion_count": suggest.json()["suggestion_count"],
+            "report": suggest.json()["report"]["message"],
+        }
+
+    results = await asyncio.gather(*[work(job) for job in jobs])
+    assert len(results) == 4
+    for row in results:
+        assert "citations found" in row["report"].lower()
+        own = await client.get("/api/v1/manuscripts", headers=row["headers"])
+        own_ids = {item["id"] for item in own.json()}
+        foreign = [other["mid"] for other in results if other["mid"] != row["mid"]]
+        assert row["mid"] in own_ids
+        assert own_ids.isdisjoint(foreign)
 

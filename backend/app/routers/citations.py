@@ -225,6 +225,51 @@ async def create_journal(body: JournalCreate, db: Db, _admin: CitationAdmin):
     )
 
 
+async def _journal_out(db: AsyncSession, journal: Journal) -> JournalOut:
+    issues = list((await db.execute(select(Issue).where(Issue.journal_id == journal.id))).scalars().all())
+    vols = {issue.volume for issue in issues}
+    article_count = int(
+        (
+            await db.execute(
+                select(func.count(Article.id))
+                .join(Issue, Article.issue_id == Issue.id)
+                .where(Issue.journal_id == journal.id)
+            )
+        ).scalar()
+        or 0
+    )
+    has_gaps = bool(vols and (set(range(min(vols), max(vols) + 1)) - vols))
+    if issues and not has_gaps:
+        arts = list(
+            (
+                await db.execute(
+                    select(Article)
+                    .join(Issue, Article.issue_id == Issue.id)
+                    .where(Issue.journal_id == journal.id)
+                )
+            ).scalars().all()
+        )
+        by_issue: dict[int, list[Article]] = defaultdict(list)
+        for art in arts:
+            by_issue[art.issue_id].append(art)
+        for issue in issues:
+            if compute_issue_coverage(by_issue.get(issue.id, []), issue).get("gaps"):
+                has_gaps = True
+                break
+    return JournalOut(
+        id=journal.id,
+        name=journal.name,
+        abbreviation=journal.abbreviation,
+        publisher=journal.publisher,
+        issn=journal.issn,
+        archive_url=journal.archive_url,
+        article_count=article_count,
+        volume_count=len(vols),
+        has_gaps=has_gaps,
+        created_at=journal.created_at,
+    )
+
+
 @router.get("/journals", response_model=list[JournalOut])
 async def list_journals(db: Db, user: CurrentUser):
     result = await db.execute(select(Journal).order_by(Journal.name))
@@ -232,54 +277,13 @@ async def list_journals(db: Db, user: CurrentUser):
     allowed = await allowed_journal_ids(db, user)
     if allowed is not None:
         journals = [journal for journal in journals if journal.id in allowed]
-    out: list[JournalOut] = []
-    for journal in journals:
-        issues_res = await db.execute(select(Issue).where(Issue.journal_id == journal.id))
-        issues = list(issues_res.scalars().all())
-        vols = {i.volume for i in issues}
-        count_res = await db.execute(
-            select(func.count(Article.id))
-            .join(Issue, Article.issue_id == Issue.id)
-            .where(Issue.journal_id == journal.id)
-        )
-        article_count = int(count_res.scalar() or 0)
-        has_gaps = False
-        if vols:
-            expected = set(range(min(vols), max(vols) + 1))
-            if expected - vols:
-                has_gaps = True
-        for issue in issues:
-            arts = (
-                await db.execute(select(Article).where(Article.issue_id == issue.id))
-            ).scalars().all()
-            cov = compute_issue_coverage(list(arts), issue)
-            if cov["gaps"]:
-                has_gaps = True
-        out.append(
-            JournalOut(
-                id=journal.id,
-                name=journal.name,
-                abbreviation=journal.abbreviation,
-                publisher=journal.publisher,
-                issn=journal.issn,
-                archive_url=journal.archive_url,
-                article_count=article_count,
-                volume_count=len(vols),
-                has_gaps=has_gaps,
-                created_at=journal.created_at,
-            )
-        )
-    return out
+    return [await _journal_out(db, journal) for journal in journals]
 
 
 @router.get("/journals/{journal_id}", response_model=JournalOut)
 async def get_journal(journal_id: int, db: Db, user: CurrentUser):
-    await require_journal_access(db, user, journal_id)
-    rows = await list_journals(db, user)
-    for row in rows:
-        if row.id == journal_id:
-            return row
-    raise HTTPException(status_code=404, detail="Journal not found")
+    journal = await require_journal_access(db, user, journal_id)
+    return await _journal_out(db, journal)
 
 
 @router.patch("/journals/{journal_id}", response_model=JournalOut)

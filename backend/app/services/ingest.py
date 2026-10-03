@@ -85,12 +85,12 @@ async def ingest_article_text(
     existing = None
     if meta.get("doi"):
         found = await db.execute(select(Article).where(Article.doi == meta["doi"]))
-        existing = found.scalar_one_or_none()
+        existing = found.scalars().first()
     if existing is None:
         found = await db.execute(
             select(Article).where(Article.issue_id == issue.id, Article.page_start == page_start)
         )
-        existing = found.scalar_one_or_none()
+        existing = found.scalars().first()
 
     title = meta.get("title") or (original_filename or "Untitled article")
     authors = meta.get("authors") or []

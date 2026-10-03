@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy.exc import IntegrityError
+
 from app.core.config import get_settings
 from app.core.logging import setup_logging, get_logger
 from app.database.session import init_db, AsyncSessionLocal
@@ -23,8 +25,12 @@ async def lifespan(app: FastAPI):
 
     async with AsyncSessionLocal() as session:
         auth_service = AuthService(session)
-        await auth_service.seed_default_data()
-        await session.commit()
+        try:
+            await auth_service.seed_default_data()
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            logger.info("Database seed already applied by another worker")
 
     logger.info("Database initialized and seeded")
     yield

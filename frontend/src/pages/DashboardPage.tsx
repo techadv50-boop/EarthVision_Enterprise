@@ -71,7 +71,7 @@ export default function DashboardPage() {
           <p className="text-gray-400 text-sm mt-1">
             {admin
               ? 'Each card shows the journal name and how many articles are stored in the archive. '
-              : 'Only journals assigned to your account are shown. Suggestions use those journals only. '}
+              : 'Only journals assigned to your account are shown. Several people can work their assigned journals at the same time. Suggestions use those journals only. '}
             {admin && (
               <Link to="/archive" className="text-earth-400 hover:underline">
                 Search the archive

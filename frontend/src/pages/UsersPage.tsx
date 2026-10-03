@@ -198,8 +198,8 @@ export default function UsersPage() {
       <h2 className="text-2xl font-semibold mb-2">Users & access</h2>
       <p className="text-gray-400 text-sm mb-4 max-w-3xl">
         Add people from this page while you stay signed in as admin. Assign Admin or User, then
-        tick the journals a standard user may see and cite from. Restrict anyone to block portal
-        access.
+        tick the journals a standard user may see and cite from. Several assigned users can work
+        those journals at the same time. Restrict anyone to block portal access.
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
