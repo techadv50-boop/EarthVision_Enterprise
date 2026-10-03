@@ -6,6 +6,7 @@ export default defineConfig({
   server: {
     port: 5174,
     strictPort: true,
+    allowedHosts: [".trycloudflare.com", "localhost", "127.0.0.1"],
     proxy: { "/api": "http://127.0.0.1:8787" },
   },
   test: { environment: "node", include: ["src/**/*.test.ts"] },
