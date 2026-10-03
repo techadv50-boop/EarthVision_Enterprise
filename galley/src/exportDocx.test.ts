@@ -40,11 +40,13 @@ const galley: Galley = {
   revised: "2025-10-20",
   accepted: "2025-10-26",
   published: "2025-11-08",
+  doi: "10.33411/ijist/example",
   abstract: "Accurate and reliable heart disease prediction can support early risk assessment.",
   keywords: "Heart Disease; Machine Learning",
   topIcons: journal.topIcons,
   partnerIcons: journal.partnerIcons,
   references: [],
+  referenceSource: "",
   referenceStyle: "ieee",
   blocks: [
     { id: "h", type: "heading", text: "Introduction:" },

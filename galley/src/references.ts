@@ -25,9 +25,31 @@ export function emptyReference(): ReferenceItem {
     pages: "",
     year: "",
     doi: "",
+    month: "",
+    url: "",
     publisher: "",
     city: "",
   };
+}
+
+export function splitReferenceBlob(raw: string): string[] {
+  const trimmed = raw.replace(/\r\n/g, "\n").trim();
+  if (!trimmed) return [];
+  const blocks = trimmed
+    .split(/\n\s*\n/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  if (blocks.length > 1) return blocks;
+  const lines = trimmed
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length > 1 && lines.filter((line) => /^(\[\d+\]|\d+[\.)])\s*/.test(line)).length >= 2) return lines;
+  return blocks;
+}
+
+export function segregateReferences(raw: string): ReferenceItem[] {
+  return splitReferenceBlob(raw).map(parseReference);
 }
 
 function looksLikeInitials(token: string): boolean {
@@ -157,6 +179,18 @@ export function parseReference(raw: string): ReferenceItem {
     item.doi = doiMatch[0].replace(/[.)]+$/, "");
     text = text.replace(doiMatch[0], " ");
   }
+  const urlMatch = text.match(/https?:\/\/[^\s,;]+/i);
+  if (urlMatch && !/doi\.org/i.test(urlMatch[0])) {
+    item.url = urlMatch[0].replace(/[.)]+$/, "");
+    text = text.replace(urlMatch[0], " ");
+  }
+  const monthMatch = text.match(
+    /\b(January|February|March|April|May|June|July|August|September|October|November|December)\b/i,
+  );
+  if (monthMatch) {
+    item.month = monthMatch[1].charAt(0).toUpperCase() + monthMatch[1].slice(1).toLowerCase();
+    text = text.replace(monthMatch[0], " ");
+  }
   text = text.replace(/\bdoi:\s*/i, " ").replace(/\s+/g, " ").trim();
   const yearMatch = text.match(/\b(19|20)\d{2}\b/);
   if (yearMatch) item.year = yearMatch[0];
@@ -203,74 +237,83 @@ function authorsOf(item: ReferenceItem): ParsedAuthor[] {
   return parseAuthorList(item.authors);
 }
 
+function dated(item: ReferenceItem): string {
+  return [item.month, item.year].filter(Boolean).join(" ");
+}
+
+function withUrl(line: string, item: ReferenceItem): string {
+  if (!item.url || line.includes(item.url)) return line;
+  return `${line.replace(/[.\s]+$/, "")}. ${item.url}`;
+}
+
 export function formatReference(item: ReferenceItem, style: ReferenceStyleId, index: number): string {
   const authors = authorsOf(item);
   const doi = doiLink(item.doi);
   const pages = pagesDash(item.pages);
   const title = item.title.trim();
   const container = item.container.trim();
-  const year = item.year.trim();
+  const year = dated(item);
 
   if (style === "ieee") {
     const who = ieeeAuthors(authors);
     if (item.kind === "book") {
       const place = [item.city, item.publisher].filter(Boolean).join(": ");
-      return `[${index}] ${[who, title && `${title}.`, place, year].filter(Boolean).join(", ")}${doi ? `, doi: ${doi}` : ""}.`.replace(".,", ".");
+      return withUrl(`[${index}] ${[who, title && `${title}.`, place, year].filter(Boolean).join(", ")}${doi ? `, doi: ${doi}` : ""}.`.replace(".,", "."), item);
     }
     if (item.kind === "conference") {
-      return `[${index}] ${who}, “${title},” in ${container}${year ? `, ${year}` : ""}${pages ? `, pp. ${pages}` : ""}${doi ? `, doi: ${doi}` : ""}.`;
+      return withUrl(`[${index}] ${who}, “${title},” in ${container}${year ? `, ${year}` : ""}${pages ? `, pp. ${pages}` : ""}${doi ? `, doi: ${doi}` : ""}.`, item);
     }
     const vol = item.volume ? `vol. ${item.volume}` : "";
     const no = item.issue ? `no. ${item.issue}` : "";
     const tail = [vol, no, pages ? `pp. ${pages}` : "", year, doi ? `doi: ${doi}` : ""].filter(Boolean).join(", ");
-    return `[${index}] ${who}, “${title},” ${container}${tail ? `, ${tail}` : ""}.`;
+    return withUrl(`[${index}] ${who}, “${title},” ${container}${tail ? `, ${tail}` : ""}.`, item);
   }
 
   if (style === "apa") {
     const who = apaAuthors(authors);
     if (item.kind === "book") {
-      return `${who} (${year}). ${title}. ${[item.publisher, doi && `https://doi.org/${doi}`].filter(Boolean).join(". ")}`.trim();
+      return withUrl(`${who} (${year}). ${title}. ${[item.publisher, doi && `https://doi.org/${doi}`].filter(Boolean).join(". ")}`.trim(), item);
     }
     if (item.kind === "conference") {
-      return `${who} (${year}). ${title}. ${container}${pages ? ` (pp. ${pages})` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`;
+      return withUrl(`${who} (${year}). ${title}. ${container}${pages ? ` (pp. ${pages})` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`, item);
     }
     const loc = [item.volume && item.issue ? `${item.volume}(${item.issue})` : item.volume, pages].filter(Boolean).join(", ");
-    return `${who} (${year}). ${title}. ${container}${loc ? `, ${loc}` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`;
+    return withUrl(`${who} (${year}). ${title}. ${container}${loc ? `, ${loc}` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`, item);
   }
 
   if (style === "chicago") {
     const who = chicagoAuthors(authors);
     if (item.kind === "book") {
-      return `${who}. ${year}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`;
+      return withUrl(`${who}. ${year}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`, item);
     }
     const loc = [item.volume, item.issue ? `(${item.issue})` : "", pages ? `: ${pages}` : ""].join(" ").replace(/\s+/g, " ").trim();
-    return `${who}. ${year}. “${title}.” ${container}${loc ? ` ${loc}` : ""}.${doi ? ` https://doi.org/${doi}.` : ""}`;
+    return withUrl(`${who}. ${year}. “${title}.” ${container}${loc ? ` ${loc}` : ""}.${doi ? ` https://doi.org/${doi}.` : ""}`, item);
   }
 
   if (style === "vancouver") {
     const who = vancouverAuthors(authors);
     if (item.kind === "book") {
-      return `${index}. ${who}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}; ${year}.`;
+      return withUrl(`${index}. ${who}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}; ${year}.`, item);
     }
     const loc = `${year}${item.volume ? `;${item.volume}` : ""}${item.issue ? `(${item.issue})` : ""}${pages ? `:${pages}` : ""}`;
-    return `${index}. ${who}. ${title}. ${container}. ${loc}.${doi ? ` doi: ${doi}.` : ""}`;
+    return withUrl(`${index}. ${who}. ${title}. ${container}. ${loc}.${doi ? ` doi: ${doi}.` : ""}`, item);
   }
 
   if (style === "harvard") {
     const who = harvardAuthors(authors);
     if (item.kind === "book") {
-      return `${who} (${year}) ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`;
+      return withUrl(`${who} (${year}) ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`, item);
     }
     const loc = [item.volume && item.issue ? `${item.volume}(${item.issue})` : item.volume, pages ? `pp. ${pages}` : ""].filter(Boolean).join(", ");
-    return `${who} (${year}) '${title}', ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi: ${doi}.` : ""}`;
+    return withUrl(`${who} (${year}) '${title}', ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi: ${doi}.` : ""}`, item);
   }
 
   const who = mlaAuthors(authors);
   if (item.kind === "book") {
-    return `${who}. ${title}. ${[item.publisher, year].filter(Boolean).join(", ")}.`;
+    return withUrl(`${who}. ${title}. ${[item.publisher, year].filter(Boolean).join(", ")}.`, item);
   }
   const loc = [item.volume ? `vol. ${item.volume}` : "", item.issue ? `no. ${item.issue}` : "", year, pages ? `pp. ${pages}` : ""].filter(Boolean).join(", ");
-  return `${who}. “${title}.” ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi:${doi}.` : ""}`;
+  return withUrl(`${who}. “${title}.” ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi:${doi}.` : ""}`, item);
 }
 
 export function formattedReferences(galley: Pick<Galley, "references" | "referenceStyle">): string[] {

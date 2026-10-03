@@ -1,5 +1,4 @@
 import type { Galley, IconAsset, Journal } from "../types";
-import { REFERENCE_STYLES } from "../references";
 import {
   buildCitation,
   dateLine,
@@ -36,12 +35,13 @@ export function FirstPage({
   const citation = buildCitation({
     authors: galley.authors,
     title: galley.title,
-    abbreviation: journal.abbreviation,
+    journal: journal.name,
     volume: galley.volume,
     issue: galley.issue,
     startPage: start,
     endPage: end,
     published: galley.published,
+    doi: galley.doi,
   });
   const height = firstPageHeightInches({
     title: galley.title,
@@ -70,20 +70,6 @@ export function FirstPage({
       <div className="desk-grid">
         <form className="form-stack" onSubmit={(event) => event.preventDefault()}>
           <IconTray label="Top icons" icons={galley.topIcons} maxHeight={58} onChange={(topIcons) => patch({ topIcons })} />
-          <div className="style-box">
-            <span className="style-label">Reference styles</span>
-            <select
-              aria-label="Reference styles"
-              value={galley.referenceStyle}
-              onChange={(event) => patch({ referenceStyle: event.target.value as Galley["referenceStyle"] })}
-            >
-              {REFERENCE_STYLES.map((style) => (
-                <option key={style.id} value={style.id}>
-                  {style.label}
-                </option>
-              ))}
-            </select>
-          </div>
           <label>
             Title
             <textarea rows={3} value={galley.title} onChange={(event) => patch({ title: event.target.value })} />
@@ -177,6 +163,10 @@ export function FirstPage({
                 required
               />
             </label>
+            <label>
+              DOI
+              <input value={galley.doi} onChange={(event) => patch({ doi: event.target.value })} placeholder="10.xxxx/xxxxx" />
+            </label>
           </div>
           <div className="split">
             <label>
@@ -237,12 +227,13 @@ export function FrontSheet({
   const citation = buildCitation({
     authors: galley.authors,
     title: galley.title,
-    abbreviation: journal.abbreviation,
+    journal: journal.name,
     volume: galley.volume,
     issue: galley.issue,
     startPage: start,
     endPage: end,
     published: galley.published,
+    doi: galley.doi,
   });
   const height = firstPageHeightInches({
     title: galley.title,
@@ -337,7 +328,7 @@ export function SheetFooter({ galley, page }: { galley: Galley; page: number | s
       <span>
         {month} | Vol {galley.volume || "00"} | Issue {galley.issue || "00"}
       </span>
-      <span>Page | {page}</span>
+      <span className="footer-pages">Page | {page}</span>
     </footer>
   );
 }

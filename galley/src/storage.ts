@@ -39,12 +39,14 @@ export function newGalley(journal: Journal): Galley {
     revised: "",
     accepted: "",
     published: "",
+    doi: "",
     abstract: "",
     keywords: "",
     topIcons: cloneIcons(journal.topIcons),
     partnerIcons: cloneIcons(journal.partnerIcons),
     blocks: [{ id: newId(), type: "section", heading: "Introduction:", text: "" }],
     references: [],
+    referenceSource: "",
     referenceStyle: "ieee",
     updatedAt: Date.now(),
   };
@@ -95,10 +97,17 @@ export function normalizeGalley(galley: Galley): Galley {
     }
     blocks.push(block);
   }
+  const references = (galley.references?.length ? galley.references : recovered.map(parseReference)).map((item) => ({
+    ...item,
+    month: item.month || "",
+    url: item.url || "",
+  }));
   return {
     ...galley,
+    doi: galley.doi || "",
     blocks: blocks.length ? blocks : [{ id: newId(), type: "section", heading: "Introduction:", text: "" }],
-    references: galley.references?.length ? galley.references : recovered.map(parseReference),
+    references,
+    referenceSource: galley.referenceSource ?? references.map((item) => item.raw).filter(Boolean).join("\n\n"),
     referenceStyle: galley.referenceStyle || "ieee",
   };
 }

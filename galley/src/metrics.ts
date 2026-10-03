@@ -86,12 +86,13 @@ export function formatMonthYear(iso: string): string {
 export function buildCitation(input: {
   authors: Author[];
   title: string;
-  abbreviation: string;
+  journal: string;
   volume: string;
   issue: string;
   startPage: number | null;
   endPage: number | null;
   published: string;
+  doi: string;
 }): string {
   const names = numberAuthors(input.authors)
     .authors
@@ -99,15 +100,17 @@ export function buildCitation(input: {
     .filter(Boolean);
   const who = names.length ? names.join(", ") : "Author";
   const title = input.title.trim() || "Title";
-  const abbr = input.abbreviation.trim() || "Journal";
+  const journal = input.journal.trim() || "Journal";
   const volume = input.volume.trim() || "00";
   const issue = input.issue.trim() || "00";
   const start = input.startPage ?? 0;
   const end = input.endPage ?? start;
-  const pages = start > 0 ? `pp ${start}-${end || start}` : "pp 000-000";
+  const pages = start > 0 ? `pp ${start}-${end || start}` : "";
   const month = formatMonthYear(input.published);
-  const when = month ? `, ${month}` : "";
-  return `Citation | ${who}, “${title}”, ${abbr}, Vol. ${volume} Issue. ${issue} ${pages}${when}`;
+  const doi = input.doi.trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "");
+  return [who, `“${title}”`, journal, `Vol. ${volume}`, `Issue ${issue}`, pages, month, doi ? `https://doi.org/${doi}` : ""]
+    .filter(Boolean)
+    .join(", ");
 }
 
 export function dateLine(dates: {

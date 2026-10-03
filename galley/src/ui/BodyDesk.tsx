@@ -116,19 +116,43 @@ export function BodyDesk({
               )}
               {block.type === "figure" && (
                 <>
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/gif,image/webp"
-                    aria-label="Figure image"
-                    onChange={async (event) => {
-                      const file = event.target.files?.[0];
+                  <div
+                    className="drop-box"
+                    tabIndex={0}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={async (event) => {
+                      event.preventDefault();
+                      const file = [...event.dataTransfer.files].find((item) => item.type.startsWith("image/"));
                       if (!file) return;
                       const dataUrl = await fileToDataUrl(file);
                       const size = await measure(dataUrl);
                       update(block.id, { ...block, dataUrl, widthPx: size.width, heightPx: size.height });
                     }}
-                  />
-                  {block.dataUrl && <img className="figure-thumb" src={block.dataUrl} alt="" />}
+                    onPaste={async (event) => {
+                      const file = imageFromClipboard(event.clipboardData);
+                      if (!file) return;
+                      event.preventDefault();
+                      const dataUrl = await fileToDataUrl(file);
+                      const size = await measure(dataUrl);
+                      update(block.id, { ...block, dataUrl, widthPx: size.width, heightPx: size.height });
+                    }}
+                  >
+                    <p>Click this box and paste the figure. Uploading a saved file is optional.</p>
+                    <textarea rows={2} aria-label="Paste figure" placeholder="Paste the figure here" readOnly />
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/gif,image/webp"
+                      aria-label="Figure image"
+                      onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        const dataUrl = await fileToDataUrl(file);
+                        const size = await measure(dataUrl);
+                        update(block.id, { ...block, dataUrl, widthPx: size.width, heightPx: size.height });
+                      }}
+                    />
+                    {block.dataUrl && <img className="figure-thumb" src={block.dataUrl} alt="" />}
+                  </div>
                   <label>
                     Caption
                     <input
@@ -298,6 +322,7 @@ function EquationCard({ block, onChange }: { block: EquationBlock; onChange: (bl
     <>
       <div
         className="drop-box"
+        tabIndex={0}
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
           event.preventDefault();
@@ -306,12 +331,20 @@ function EquationCard({ block, onChange }: { block: EquationBlock; onChange: (bl
         }}
         onPaste={(event) => {
           const file = imageFromClipboard(event.clipboardData);
-          if (!file) return;
+          if (file) {
+            event.preventDefault();
+            void take(file);
+            return;
+          }
+          const text = event.clipboardData.getData("text/plain").trim();
+          if (!text) return;
           event.preventDefault();
-          void take(file);
+          onChange({ ...block, atoms: atomsFromOcr(text) });
+          setNote("Pasted as text. Edit the parts below.");
         }}
       >
-        <p>Paste a JPG or a snippet of the equation.</p>
+        <p>Click this box and paste the equation image or its text. Uploading a saved file is optional.</p>
+        <textarea rows={2} aria-label="Paste equation" placeholder="Paste the equation here" readOnly />
         <input
           type="file"
           accept="image/png,image/jpeg,image/webp"

@@ -184,6 +184,7 @@ textarea { resize: vertical; width: 100%; }
   border-top: 1px solid #222;
   padding-top: 0.06in;
 }
+.footer-pages { margin-left: auto; white-space: nowrap; }
 .body-copy { max-height: 8.2in; overflow: hidden; }
 .body-copy figure { margin: 0.1in 0; text-align: center; }
 .body-copy img, .figure-thumb { max-width: 100%; max-height: 2.2in; }
@@ -232,6 +233,12 @@ textarea { resize: vertical; width: 100%; }
 }
 .references h2 { margin: 0; }
 .references { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.5rem; }
+.notice {
+  background: #e7f0e4;
+  border-left: 3px solid #2f6b32;
+  padding: 0.55rem 0.75rem;
+  margin: 0;
+}
 .citation-line {
   background: #f7f3ea;
   border-left: 3px solid #1c1915;

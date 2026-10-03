@@ -34,15 +34,16 @@ describe("citation names", () => {
     const line = buildCitation({
       authors,
       title: "Group-Aware Framework",
-      abbreviation: "IJIST",
+      journal: "International Journal of Innovations in Science & Technology",
       volume: "7",
       issue: "4",
       startPage: 2705,
       endPage: 2717,
       published: "2025-11-08",
+      doi: "10.33411/ijist/example",
     });
     expect(line).toBe(
-      "Citation | Khan. R, Khan. T. A, Tahir. M, Nabi. H. U, “Group-Aware Framework”, IJIST, Vol. 7 Issue. 4 pp 2705-2717, November 2025",
+      "Khan. R, Khan. T. A, Tahir. M, Nabi. H. U, “Group-Aware Framework”, International Journal of Innovations in Science & Technology, Vol. 7, Issue 4, pp 2705-2717, November 2025, https://doi.org/10.33411/ijist/example",
     );
   });
 });

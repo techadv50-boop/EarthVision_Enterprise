@@ -74,6 +74,8 @@ export type ReferenceItem = {
   pages: string;
   year: string;
   doi: string;
+  month: string;
+  url: string;
   publisher: string;
   city: string;
 };
@@ -100,12 +102,14 @@ export type Galley = {
   revised: string;
   accepted: string;
   published: string;
+  doi: string;
   abstract: string;
   keywords: string;
   topIcons: IconAsset[];
   partnerIcons: IconAsset[];
   blocks: BodyBlock[];
   references: ReferenceItem[];
+  referenceSource: string;
   referenceStyle: ReferenceStyleId;
   updatedAt: number;
 };

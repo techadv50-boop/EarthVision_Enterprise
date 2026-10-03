@@ -104,18 +104,35 @@ function headerFor(journalName: string, openAccess: IconAsset | null, widthIn: n
   });
 }
 
-function footerFor(monthLine: string, widthIn: number): Footer {
+function footerFor(monthLine: string): Footer {
+  const rule = { style: BorderStyle.SINGLE, size: 6, color: "222222" };
   return new Footer({
     children: [
-      new Paragraph({
-        tabStops: [{ type: TabStopType.RIGHT, position: convertInchesToTwip(widthIn) }],
-        border: { top: { style: BorderStyle.SINGLE, size: 6, color: "222222", space: 1 } },
-        spacing: { before: 60, after: 0 },
-        children: [
-          run(monthLine, { size: 20 }),
-          run("\t"),
-          run("Page | ", { size: 20 }),
-          new TextRun({ children: [PageNumber.CURRENT], font: FONT, size: 20 }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        borders: NO_BORDERS,
+        rows: [
+          new TableRow({
+            cantSplit: true,
+            children: [
+              new TableCell({
+                borders: { ...NO_BORDERS, top: rule },
+                width: { size: 70, type: WidthType.PERCENTAGE },
+                children: [new Paragraph({ spacing: { before: 60, after: 0 }, children: [run(monthLine, { size: 20 })] })],
+              }),
+              new TableCell({
+                borders: { ...NO_BORDERS, top: rule },
+                width: { size: 30, type: WidthType.PERCENTAGE },
+                children: [
+                  new Paragraph({
+                    alignment: AlignmentType.RIGHT,
+                    spacing: { before: 60, after: 0 },
+                    children: [run("Page | ", { size: 20 }), new TextRun({ children: [PageNumber.CURRENT], font: FONT, size: 20 })],
+                  }),
+                ],
+              }),
+            ],
+          }),
         ],
       }),
     ],
@@ -209,7 +226,7 @@ function frontMatter(galley: Galley, journal: Journal, citation: string): FileCh
   if (emails.length) {
     children.push(bodyParagraph([run("*Correspondence: ", { bold: true }), run(emails.join("; "))], { after: 80 }));
   }
-  children.push(bodyParagraph([run("Citation", { bold: true }), run(` | ${citation.replace(/^Citation \| /, "")}`)], { after: 40 }));
+  children.push(bodyParagraph([run(citation)], { after: 40 }));
   const dates = dateLine(galley);
   children.push(
     bodyParagraph(
@@ -385,12 +402,13 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
   const citation = buildCitation({
     authors: galley.authors,
     title: galley.title,
-    abbreviation: journal.abbreviation,
+    journal: journal.name,
     volume: galley.volume,
     issue: galley.issue,
     startPage: start,
     endPage: end,
     published: galley.published,
+    doi: galley.doi,
   });
   const height = firstPageHeightInches({
     title: galley.title,
@@ -411,7 +429,7 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
     {
       properties: pageProperties(PAGE.widthIn, height, false, start),
       headers: { default: headerFor(journal.name, openAccess, portraitWidth) },
-      footers: { default: footerFor(monthLine, portraitWidth) },
+      footers: { default: footerFor(monthLine) },
       children: frontMatter(galley, journal, citation),
     },
   ];
@@ -422,7 +440,7 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
     sections.push({
       properties: pageProperties(PAGE.widthIn, PAGE.bodyHeightIn, false, null),
       headers: { default: headerFor(journal.name, openAccess, portraitWidth) },
-      footers: { default: footerFor(monthLine, portraitWidth) },
+      footers: { default: footerFor(monthLine) },
       children: bucket,
     });
     bucket = [];
@@ -438,7 +456,7 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
       sections.push({
         properties: pageProperties(PAGE.bodyHeightIn, PAGE.widthIn, true, null),
         headers: { default: headerFor(journal.name, openAccess, landscapeWidth) },
-        footers: { default: footerFor(monthLine, landscapeWidth) },
+        footers: { default: footerFor(monthLine) },
         children: blockChildren(block, galley),
       });
       continue;
@@ -450,7 +468,7 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
     sections.push({
       properties: pageProperties(PAGE.widthIn, PAGE.bodyHeightIn, false, null),
       headers: { default: headerFor(journal.name, openAccess, portraitWidth) },
-      footers: { default: footerFor(monthLine, portraitWidth) },
+      footers: { default: footerFor(monthLine) },
       children: [bodyParagraph([run("")])],
     });
   }
