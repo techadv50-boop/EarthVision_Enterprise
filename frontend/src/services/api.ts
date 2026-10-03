@@ -249,6 +249,7 @@ export const citationApi = {
     },
   },
   authorArticles: {
+    journals: () => api.get('/author-articles/journals'),
     list: (wing?: string) => api.get('/author-articles', { params: wing ? { wing } : {} }),
     create: (data: Record<string, unknown>) => api.post('/author-articles', data),
     update: (id: number, data: Record<string, unknown>) => api.patch(`/author-articles/${id}`, data),

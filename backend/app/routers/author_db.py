@@ -13,19 +13,23 @@ from openpyxl import Workbook, load_workbook
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.dependencies import require_service
 from app.database.session import get_db
 from app.models.citation import AuthorArticle, AuthorArticleChange, Journal
 from app.models.user import User
 from app.schemas.author_db import (
+    AUTHOR_DB_JOURNALS,
     FIELD_LABELS,
     AuthorArticleIn,
     AuthorArticleOut,
     AuthorArticlePatch,
     AuthorFieldChangeOut,
     AuthorImportResult,
+    AuthorJournalOut,
     AuthorModificationOut,
+    ReviewRound,
     WINGS,
 )
 from app.services.journal_access import allowed_journal_ids, require_journal_access
@@ -40,15 +44,20 @@ EXCEL_HEADERS = [
     "Title",
     "Author names",
     "Email addresses of authors",
-    "Email sent",
+    "Email sent date",
     "Plagiarism",
     "ORCID ID",
     "Receive date",
-    "Review date",
-    "Accepted date",
+    "Round 1 review sent date",
+    "Round 1 review receive date",
+    "Round 2 review sent date",
+    "Round 2 review receive date",
+    "Round 3 review sent date",
+    "Round 3 review receive date",
+    "Acceptance date",
+    "Galley sent date",
+    "Galley received date",
     "Publish date",
-    "Repeat done",
-    "DOI in PDF",
     "Journal",
     "Wing",
 ]
@@ -59,6 +68,40 @@ def _blank(value: Optional[str]) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_rounds(raw: Any, *, fallback_received: Optional[str] = None) -> list[dict[str, Any]]:
+    rounds: list[dict[str, Any]] = []
+    items = raw if isinstance(raw, list) else []
+    for item in items:
+        if isinstance(item, ReviewRound):
+            item = item.model_dump()
+        if not isinstance(item, dict):
+            continue
+        sent = _blank(item.get("sent_date") or item.get("review_sent_date"))
+        received = _blank(item.get("received_date") or item.get("review_received_date"))
+        if not sent and not received and rounds:
+            continue
+        rounds.append({"round": len(rounds) + 1, "sent_date": sent, "received_date": received})
+    if not rounds:
+        rounds = [
+            {
+                "round": 1,
+                "sent_date": None,
+                "received_date": _blank(fallback_received),
+            }
+        ]
+    return rounds
+
+
+def _format_rounds(rounds: list[dict[str, Any]]) -> str:
+    parts = []
+    for item in rounds:
+        number = item.get("round") or len(parts) + 1
+        sent = item.get("sent_date") or "(empty)"
+        received = item.get("received_date") or "(empty)"
+        parts.append(f"Round {number}: sent {sent}, received {received}")
+    return "; ".join(parts) if parts else "(empty)"
 
 
 def _display(value: Any) -> str:
@@ -111,18 +154,27 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
         id=row.id,
         wing=row.wing,
         journal_id=row.journal_id,
-        journal_name=(journal.abbreviation or journal.name) if journal else None,
+        journal_name=(
+            (journal.abbreviation or journal.name)
+            if journal
+            else (row.journal_title or None)
+        ),
+        journal_title=row.journal_title or "",
         owner_id=row.owner_id,
         ojs_number=row.ojs_number or "",
         title=row.title or "",
         author_names=row.author_names or "",
         author_emails=row.author_emails or "",
         email_sent=bool(row.email_sent),
+        email_sent_date=row.email_sent_date,
         plagiarism=row.plagiarism or "",
         orcid_id=row.orcid_id or "",
         received_date=row.received_date,
         review_date=row.review_date,
+        review_rounds=[ReviewRound.model_validate(item) for item in _normalize_rounds(row.review_rounds, fallback_received=row.review_date)],
         accepted_date=row.accepted_date,
+        galley_sent_date=row.galley_sent_date,
+        galley_received_date=row.galley_received_date,
         publish_date=row.publish_date,
         repeat_done=bool(row.repeat_done),
         doi_in_pdf=row.doi_in_pdf or "",
@@ -134,6 +186,16 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
 
 def _load_options():
     return (selectinload(AuthorArticle.journal), selectinload(AuthorArticle.changes))
+
+
+async def _require_author_journal(db: AsyncSession, user: User, journal_id: int) -> Journal:
+    journal = await db.get(Journal, journal_id)
+    if journal is None:
+        raise HTTPException(status_code=404, detail="Journal not found")
+    abbr = (journal.abbreviation or "").strip().lower()
+    if abbr in {item[0].lower() for item in AUTHOR_DB_JOURNALS}:
+        return journal
+    return await require_journal_access(db, user, journal_id, desk="authors")
 
 
 def _require_wing(user: User, wing: str) -> None:
@@ -243,7 +305,7 @@ async def _apply_update(
     if "journal_id" in data:
         journal_id = data["journal_id"]
         if journal_id is not None:
-            await require_journal_access(db, user, int(journal_id), desk="authors")
+            await _require_author_journal(db, user, int(journal_id))
             journal_id = int(journal_id)
         if row.journal_id != journal_id:
             diffs.append(
@@ -255,6 +317,19 @@ async def _apply_update(
                 }
             )
             row.journal_id = journal_id
+    if "journal_title" in data and data["journal_title"] is not None:
+        nxt = str(data["journal_title"]).strip()
+        prev = row.journal_title or ""
+        if prev != nxt:
+            diffs.append(
+                {
+                    "field": "journal_title",
+                    "label": FIELD_LABELS["journal_title"],
+                    "previous": _display(prev),
+                    "new": _display(nxt),
+                }
+            )
+            row.journal_title = nxt
     for field in (
         "ojs_number",
         "title",
@@ -277,7 +352,15 @@ async def _apply_update(
                     }
                 )
                 setattr(row, field, nxt)
-    for field in ("received_date", "review_date", "accepted_date", "publish_date"):
+    for field in (
+        "received_date",
+        "review_date",
+        "accepted_date",
+        "publish_date",
+        "email_sent_date",
+        "galley_sent_date",
+        "galley_received_date",
+    ):
         if field in data:
             nxt = _blank(data[field] if data[field] is None else str(data[field]))
             prev = getattr(row, field)
@@ -291,6 +374,22 @@ async def _apply_update(
                     }
                 )
                 setattr(row, field, nxt)
+    if "review_rounds" in data and data["review_rounds"] is not None:
+        nxt = _normalize_rounds(data["review_rounds"])
+        prev = _normalize_rounds(row.review_rounds, fallback_received=row.review_date)
+        if _format_rounds(prev) != _format_rounds(nxt):
+            diffs.append(
+                {
+                    "field": "review_rounds",
+                    "label": FIELD_LABELS["review_rounds"],
+                    "previous": _format_rounds(prev),
+                    "new": _format_rounds(nxt),
+                }
+            )
+            row.review_rounds = nxt
+            flag_modified(row, "review_rounds")
+            if nxt:
+                row.review_date = nxt[0].get("received_date")
     for field in ("email_sent", "repeat_done"):
         if field in data and data[field] is not None:
             nxt = bool(data[field])
@@ -335,6 +434,34 @@ async def list_author_articles(
     return [_payload(row) for row in rows]
 
 
+@router.get("/journals", response_model=list[AuthorJournalOut])
+async def list_author_journals(db: Db, user: CurrentUser):
+    rows = list((await db.execute(select(Journal).order_by(Journal.name))).scalars().all())
+    allowed = await allowed_journal_ids(db, user, desk="authors")
+    by_abbr = {(row.abbreviation or "").strip().lower(): row for row in rows if row.abbreviation}
+    out: list[AuthorJournalOut] = []
+    seen: set[str] = set()
+    for abbr, name in AUTHOR_DB_JOURNALS:
+        match = by_abbr.get(abbr.lower())
+        out.append(
+            AuthorJournalOut(
+                id=match.id if match is not None else None,
+                name=name,
+                abbreviation=abbr,
+            )
+        )
+        seen.add(abbr.lower())
+    others = rows
+    if allowed is not None:
+        others = [row for row in rows if row.id in allowed]
+    for row in others:
+        key = (row.abbreviation or "").strip().lower()
+        if key in seen:
+            continue
+        out.append(AuthorJournalOut(id=row.id, name=row.name, abbreviation=row.abbreviation))
+    return out
+
+
 @router.get("/template")
 async def download_import_template():
     book = Workbook()
@@ -347,15 +474,20 @@ async def download_import_template():
             "Sample title",
             "Ali Khan; Sara Ahmed",
             "ali@example.com; sara@example.com",
-            "Yes",
+            "2024-01-05",
             "9%",
             "0000-0002-1825-0097",
             "2024-01-12",
+            "2024-01-20",
             "2024-02-01",
-            "2024-03-10",
             "",
-            "No",
-            "10.33411/IJIST/20240101118",
+            "",
+            "",
+            "",
+            "2024-03-10",
+            "2024-03-12",
+            "2024-03-18",
+            "",
             "IJIST",
             "in_process",
         ]
@@ -376,21 +508,32 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
         raise HTTPException(status_code=400, detail="Wing must be in_process or published")
     _require_wing(user, wing)
     if body.journal_id is not None:
-        await require_journal_access(db, user, body.journal_id, desk="authors")
+        await _require_author_journal(db, user, body.journal_id)
+    title = (body.journal_title or "").strip()
+    if not title and body.journal_id is not None:
+        journal = await db.get(Journal, body.journal_id)
+        if journal is not None:
+            title = journal.abbreviation or journal.name or ""
+    rounds = _normalize_rounds(body.review_rounds, fallback_received=body.review_date)
     row = AuthorArticle(
         wing=wing,
         journal_id=body.journal_id,
+        journal_title=title,
         owner_id=user.id,
         ojs_number=(body.ojs_number or "").strip(),
         title=(body.title or "").strip(),
         author_names=(body.author_names or "").strip(),
         author_emails=(body.author_emails or "").strip(),
-        email_sent=bool(body.email_sent),
+        email_sent=bool(body.email_sent_date) or bool(body.email_sent),
+        email_sent_date=_blank(body.email_sent_date),
         plagiarism=(body.plagiarism or "").strip(),
         orcid_id=(body.orcid_id or "").strip(),
         received_date=_blank(body.received_date),
-        review_date=_blank(body.review_date),
+        review_date=rounds[0].get("received_date") if rounds else _blank(body.review_date),
+        review_rounds=rounds,
         accepted_date=_blank(body.accepted_date),
+        galley_sent_date=_blank(body.galley_sent_date),
+        galley_received_date=_blank(body.galley_received_date),
         publish_date=_blank(body.publish_date),
         repeat_done=bool(body.repeat_done),
         doi_in_pdf=(body.doi_in_pdf or "").strip(),
@@ -430,6 +573,71 @@ def _norm_header(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
 
 
+def _header_key(header: str) -> Optional[str]:
+    mapped = HEADER_MAP.get(header)
+    if mapped:
+        return mapped
+    sent = re.fullmatch(r"round (\d+) review sent date", header)
+    if sent:
+        return f"r{sent.group(1)}_sent"
+    received = re.fullmatch(r"round (\d+) review receive(?:d)? date", header)
+    if received:
+        return f"r{received.group(1)}_received"
+    return None
+
+
+def _is_date_key(key: str) -> bool:
+    return key in {
+        "received_date",
+        "review_date",
+        "accepted_date",
+        "publish_date",
+        "email_sent_date",
+        "galley_sent_date",
+        "galley_received_date",
+    } or bool(re.fullmatch(r"r\d+_(sent|received)", key))
+
+
+def _catalog_abbr(name: str) -> Optional[str]:
+    needle = name.strip().lower()
+    if not needle:
+        return None
+    for abbr, full in AUTHOR_DB_JOURNALS:
+        if needle in {abbr.lower(), full.lower()}:
+            return abbr
+    return None
+
+
+async def _resolve_author_journal(db: AsyncSession, user: User, name: str) -> tuple[Optional[int], str]:
+    catalog = _catalog_abbr(name)
+    journal_id = await _journal_by_name(db, user, name)
+    if journal_id is not None:
+        return journal_id, catalog or name.strip()
+    if catalog:
+        return None, catalog
+    return None, ""
+
+
+def _rounds_from_import(item: dict[str, str]) -> list[dict[str, Any]]:
+    by_n: dict[int, dict[str, Any]] = {}
+    for key, value in item.items():
+        match = re.fullmatch(r"r(\d+)_(sent|received)", key)
+        if not match:
+            continue
+        slot = by_n.setdefault(int(match.group(1)), {})
+        field = "sent_date" if match.group(2) == "sent" else "received_date"
+        slot[field] = value
+    ordered = [
+        {
+            "round": number,
+            "sent_date": by_n[number].get("sent_date"),
+            "received_date": by_n[number].get("received_date"),
+        }
+        for number in sorted(by_n)
+    ]
+    return _normalize_rounds(ordered, fallback_received=item.get("review_date"))
+
+
 HEADER_MAP = {
     "ojs": "ojs_number",
     "ojs number": "ojs_number",
@@ -445,14 +653,24 @@ HEADER_MAP = {
     "author emails": "author_emails",
     "email sent": "email_sent",
     "if the email sent": "email_sent",
+    "email sent date": "email_sent_date",
     "plagiarism": "plagiarism",
     "orcid": "orcid_id",
     "orcid id": "orcid_id",
     "receive date": "received_date",
     "received date": "received_date",
     "review date": "review_date",
+    "round 1 review sent date": "r1_sent",
+    "round 1 review receive date": "r1_received",
+    "round 2 review sent date": "r2_sent",
+    "round 2 review receive date": "r2_received",
     "accepted date": "accepted_date",
+    "acceptance date": "accepted_date",
     "accept date": "accepted_date",
+    "galley sent date": "galley_sent_date",
+    "gally sent date": "galley_sent_date",
+    "galley received date": "galley_received_date",
+    "gally received date": "galley_received_date",
     "publish date": "publish_date",
     "published date": "publish_date",
     "repeat done": "repeat_done",
@@ -512,7 +730,7 @@ def _read_table(data: bytes, filename: str) -> list[dict[str, str]]:
     if not rows:
         return []
     headers = [_norm_header(col) for col in rows[0]]
-    mapped = [HEADER_MAP.get(header) for header in headers]
+    mapped = [_header_key(header) for header in headers]
     if not any(mapped):
         raise HTTPException(
             status_code=400,
@@ -528,7 +746,7 @@ def _read_table(data: bytes, filename: str) -> list[dict[str, str]]:
             if not key or idx >= len(raw):
                 continue
             value = raw[idx]
-            if key in ("received_date", "review_date", "accepted_date", "publish_date"):
+            if _is_date_key(key):
                 parsed = _parse_date(value)
                 item[key] = parsed or ""
             elif key in ("email_sent", "repeat_done"):
@@ -588,9 +806,10 @@ async def import_author_articles(
             skipped += 1
             continue
         journal_id = None
+        journal_title = ""
         if item.get("journal"):
-            journal_id = await _journal_by_name(db, user, item["journal"])
-            if journal_id is None:
+            journal_id, journal_title = await _resolve_author_journal(db, user, item["journal"])
+            if journal_id is None and not journal_title:
                 errors.append(f"Row {index}: journal “{item['journal']}” was not found or is not assigned.")
                 skipped += 1
                 continue
@@ -614,19 +833,25 @@ async def import_author_articles(
                     await _load_row(db, existing.id, user)
                 except HTTPException:
                     existing = None
+        rounds = _rounds_from_import(item)
         payload = {
             "wing": wanted_wing,
             "journal_id": journal_id if journal_id is not None else (existing.journal_id if existing else None),
+            "journal_title": journal_title or (existing.journal_title if existing else ""),
             "ojs_number": ojs,
             "title": title,
             "author_names": item.get("author_names") or "",
             "author_emails": item.get("author_emails") or "",
-            "email_sent": _parse_bool(item.get("email_sent")),
+            "email_sent": _parse_bool(item.get("email_sent")) or bool(item.get("email_sent_date")),
+            "email_sent_date": item.get("email_sent_date") or None,
             "plagiarism": item.get("plagiarism") or "",
             "orcid_id": item.get("orcid_id") or "",
             "received_date": item.get("received_date") or None,
             "review_date": item.get("review_date") or None,
+            "review_rounds": rounds,
             "accepted_date": item.get("accepted_date") or None,
+            "galley_sent_date": item.get("galley_sent_date") or None,
+            "galley_received_date": item.get("galley_received_date") or None,
             "publish_date": item.get("publish_date") or None,
             "repeat_done": _parse_bool(item.get("repeat_done")),
             "doi_in_pdf": item.get("doi_in_pdf") or "",

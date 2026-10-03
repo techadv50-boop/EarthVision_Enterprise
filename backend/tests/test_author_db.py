@@ -25,25 +25,27 @@ async def test_admin_adds_under_process_article(client: AsyncClient):
             "title": "EdDSA watermarking for documents",
             "author_names": "Ali Khan; Sara Ahmed",
             "author_emails": "ali@example.com; sara@example.com",
-            "email_sent": True,
+            "email_sent_date": "2024-01-05",
             "plagiarism": "9%",
             "orcid_id": "0000-0002-1825-0097",
             "received_date": "2024-01-12",
-            "review_date": "2024-02-01",
+            "review_rounds": [
+                {"round": 1, "sent_date": "2024-01-20", "received_date": "2024-02-01"},
+            ],
             "accepted_date": "2024-03-10",
+            "galley_sent_date": "2024-03-12",
+            "galley_received_date": "2024-03-18",
             "publish_date": "",
-            "repeat_done": False,
-            "doi_in_pdf": "10.33411/IJIST/20240101118",
         },
     )
     assert created.status_code == 201, created.text
     body = created.json()
     assert body["wing"] == "in_process"
     assert body["ojs_number"] == "IJIST-2024-118"
-    assert body["email_sent"] is True
+    assert body["email_sent_date"] == "2024-01-05"
     assert body["plagiarism"] == "9%"
-    assert body["repeat_done"] is False
-    assert body["doi_in_pdf"].startswith("10.33411")
+    assert body["review_rounds"][0]["sent_date"] == "2024-01-20"
+    assert body["galley_sent_date"] == "2024-03-12"
 
     listed = await client.get("/api/v1/author-articles", headers=headers, params={"wing": "in_process"})
     assert listed.status_code == 200
@@ -56,11 +58,10 @@ async def test_admin_adds_under_process_article(client: AsyncClient):
     moved = await client.patch(
         f"/api/v1/author-articles/{body['id']}",
         headers=headers,
-        json={"wing": "published", "repeat_done": True},
+        json={"wing": "published"},
     )
     assert moved.status_code == 200, moved.text
     assert moved.json()["wing"] == "published"
-    assert moved.json()["repeat_done"] is True
 
     still_open = await client.get("/api/v1/author-articles", headers=headers, params={"wing": "in_process"})
     assert all(row["id"] != body["id"] for row in still_open.json())
@@ -181,6 +182,59 @@ async def test_user_modifications_record_previous_and_new_values(client: AsyncCl
     latest = second.json()["modifications"][1]
     assert latest["changes"][0]["previous"] == "2024-02-15"
     assert latest["changes"][0]["new"] == "2024-03-20"
+
+
+@pytest.mark.asyncio
+async def test_under_process_review_rounds_and_journal_catalog(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    journals = await client.get("/api/v1/author-articles/journals", headers=headers)
+    assert journals.status_code == 200, journals.text
+    abbrs = {row["abbreviation"] for row in journals.json()}
+    assert {"IJIST", "IJASD", "FCSI"} <= abbrs
+    cite_journals = await client.get("/api/v1/journals", headers=headers)
+    assert cite_journals.status_code == 200
+    assert "FCSI" not in {row.get("abbreviation") for row in cite_journals.json()}
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "journal_title": "IJIST",
+            "ojs_number": "RND-1",
+            "title": "Round paper",
+            "email_sent_date": "2024-06-01",
+            "review_rounds": [
+                {"sent_date": "2024-06-02", "received_date": "2024-06-10"},
+                {"sent_date": "2024-06-12", "received_date": "2024-06-20"},
+            ],
+            "accepted_date": "2024-07-01",
+            "galley_sent_date": "2024-07-02",
+            "galley_received_date": "2024-07-08",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["journal_id"] is None
+    assert created.json()["journal_name"] == "IJIST"
+    rounds = created.json()["review_rounds"]
+    assert len(rounds) == 2
+    assert rounds[1]["round"] == 2
+    assert rounds[1]["sent_date"] == "2024-06-12"
+    third = await client.patch(
+        f"/api/v1/author-articles/{created.json()['id']}",
+        headers=headers,
+        json={
+            "review_rounds": [
+                *rounds,
+                {"sent_date": "2024-06-22", "received_date": "2024-06-30"},
+            ]
+        },
+    )
+    assert third.status_code == 200, third.text
+    assert len(third.json()["review_rounds"]) == 3
+    assert "Round 3" in third.json()["modifications"][-1]["changes"][0]["new"]
 
 
 @pytest.mark.asyncio

@@ -225,6 +225,7 @@ class AuthorArticle(Base):
     journal_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("journals.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    journal_title: Mapped[str] = mapped_column(String(500), default="")
     owner_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -233,14 +234,18 @@ class AuthorArticle(Base):
     author_names: Mapped[str] = mapped_column(Text, default="")
     author_emails: Mapped[str] = mapped_column(Text, default="")
     email_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_sent_date: Mapped[Optional[str]] = mapped_column(String(32))
     plagiarism: Mapped[str] = mapped_column(String(255), default="")
     orcid_id: Mapped[str] = mapped_column(Text, default="")
     received_date: Mapped[Optional[str]] = mapped_column(String(32))
     review_date: Mapped[Optional[str]] = mapped_column(String(32))
     accepted_date: Mapped[Optional[str]] = mapped_column(String(32))
+    galley_sent_date: Mapped[Optional[str]] = mapped_column(String(32))
+    galley_received_date: Mapped[Optional[str]] = mapped_column(String(32))
     publish_date: Mapped[Optional[str]] = mapped_column(String(32))
     repeat_done: Mapped[bool] = mapped_column(Boolean, default=False)
     doi_in_pdf: Mapped[str] = mapped_column(String(500), default="")
+    review_rounds: Mapped[Any] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

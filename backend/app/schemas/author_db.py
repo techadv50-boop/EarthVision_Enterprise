@@ -10,38 +10,60 @@ from pydantic import BaseModel, Field
 
 WINGS = ("in_process", "published")
 
+AUTHOR_DB_JOURNALS = [
+    ("IJIST", "International Journal of Innovations in Science & Technology"),
+    ("IJASD", "International Journal of Agriculture and Sustainable Development"),
+    ("FCSI", "Frontiers in Computational Spatial Intelligence"),
+]
+
 FIELD_LABELS = {
     "wing": "Wing",
     "journal_id": "Journal",
+    "journal_title": "Journal",
     "ojs_number": "OJS number",
     "title": "Title",
     "author_names": "Author names",
     "author_emails": "Email addresses of authors",
     "email_sent": "Email sent",
+    "email_sent_date": "Email sent date",
     "plagiarism": "Plagiarism",
     "orcid_id": "ORCID ID",
     "received_date": "Receive date",
     "review_date": "Review date",
-    "accepted_date": "Accepted date",
+    "review_rounds": "Review rounds",
+    "accepted_date": "Acceptance date",
+    "galley_sent_date": "Galley sent date",
+    "galley_received_date": "Galley received date",
     "publish_date": "Publish date",
     "repeat_done": "Repeat done",
     "doi_in_pdf": "DOI in PDF",
 }
 
 
+class ReviewRound(BaseModel):
+    round: int = 1
+    sent_date: Optional[str] = None
+    received_date: Optional[str] = None
+
+
 class AuthorArticleIn(BaseModel):
     wing: str = Field(default="in_process")
     journal_id: Optional[int] = None
+    journal_title: str = ""
     ojs_number: str = ""
     title: str = ""
     author_names: str = ""
     author_emails: str = ""
     email_sent: bool = False
+    email_sent_date: Optional[str] = None
     plagiarism: str = ""
     orcid_id: str = ""
     received_date: Optional[str] = None
     review_date: Optional[str] = None
+    review_rounds: list[ReviewRound] = Field(default_factory=list)
     accepted_date: Optional[str] = None
+    galley_sent_date: Optional[str] = None
+    galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
     repeat_done: bool = False
     doi_in_pdf: str = ""
@@ -50,16 +72,21 @@ class AuthorArticleIn(BaseModel):
 class AuthorArticlePatch(BaseModel):
     wing: Optional[str] = None
     journal_id: Optional[int] = None
+    journal_title: Optional[str] = None
     ojs_number: Optional[str] = None
     title: Optional[str] = None
     author_names: Optional[str] = None
     author_emails: Optional[str] = None
     email_sent: Optional[bool] = None
+    email_sent_date: Optional[str] = None
     plagiarism: Optional[str] = None
     orcid_id: Optional[str] = None
     received_date: Optional[str] = None
     review_date: Optional[str] = None
+    review_rounds: Optional[list[ReviewRound]] = None
     accepted_date: Optional[str] = None
+    galley_sent_date: Optional[str] = None
+    galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
     repeat_done: Optional[bool] = None
     doi_in_pdf: Optional[str] = None
@@ -87,17 +114,22 @@ class AuthorArticleOut(BaseModel):
     wing: str
     journal_id: Optional[int] = None
     journal_name: Optional[str] = None
+    journal_title: str = ""
     owner_id: Optional[int] = None
     ojs_number: str = ""
     title: str = ""
     author_names: str = ""
     author_emails: str = ""
     email_sent: bool = False
+    email_sent_date: Optional[str] = None
     plagiarism: str = ""
     orcid_id: str = ""
     received_date: Optional[str] = None
     review_date: Optional[str] = None
+    review_rounds: list[ReviewRound] = Field(default_factory=list)
     accepted_date: Optional[str] = None
+    galley_sent_date: Optional[str] = None
+    galley_received_date: Optional[str] = None
     publish_date: Optional[str] = None
     repeat_done: bool = False
     doi_in_pdf: str = ""
@@ -106,6 +138,12 @@ class AuthorArticleOut(BaseModel):
     modifications: list[AuthorModificationOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+
+class AuthorJournalOut(BaseModel):
+    id: Optional[int] = None
+    name: str
+    abbreviation: Optional[str] = None
 
 
 class AuthorImportResult(BaseModel):

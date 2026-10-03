@@ -62,7 +62,7 @@ export default function HomePage() {
             <h3 className="text-2xl font-semibold">Author database</h3>
             <p className="text-gray-400 mt-3 leading-relaxed">
               Two wings: under process articles and published articles. Add OJS number, title,
-              authors, emails, plagiarism, ORCID, dates, and DOI in PDF.
+              authors, emails, plagiarism, ORCID, review rounds, and galley dates.
             </p>
             <p className="text-earth-400 text-sm mt-6">Open author database →</p>
           </Link>

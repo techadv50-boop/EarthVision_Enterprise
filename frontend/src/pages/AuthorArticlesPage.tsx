@@ -1,13 +1,20 @@
 import { useEffect, useState } from 'react';
+import { Minus, Plus } from 'lucide-react';
 import { citationApi } from '@/services/api';
 import { isFullAdmin, useAuthStore } from '@/store/authStore';
 
 type Wing = 'in_process' | 'published';
 
 interface JournalOption {
-  id: number;
+  id?: number | null;
   name: string;
   abbreviation?: string;
+}
+
+interface ReviewRound {
+  round: number;
+  sent_date?: string | null;
+  received_date?: string | null;
 }
 
 interface FieldChange {
@@ -32,56 +39,90 @@ interface AuthorRow {
   wing: Wing;
   journal_id?: number | null;
   journal_name?: string | null;
+  journal_title?: string | null;
   ojs_number: string;
   title: string;
   author_names: string;
   author_emails: string;
-  email_sent: boolean;
+  email_sent_date?: string | null;
   plagiarism: string;
   orcid_id: string;
   received_date?: string | null;
-  review_date?: string | null;
+  review_rounds?: ReviewRound[];
   accepted_date?: string | null;
+  galley_sent_date?: string | null;
+  galley_received_date?: string | null;
   publish_date?: string | null;
-  repeat_done: boolean;
-  doi_in_pdf: string;
   updated_at?: string | null;
   modifications?: Modification[];
 }
 
+const emptyRound = (round = 1): ReviewRound => ({ round, sent_date: '', received_date: '' });
+
 const emptyForm = {
-  journal_id: '' as number | '',
+  journal_key: '',
   ojs_number: '',
   title: '',
   author_names: '',
   author_emails: '',
-  email_sent: false,
+  email_sent_date: '',
   plagiarism: '',
   orcid_id: '',
   received_date: '',
-  review_date: '',
+  review_rounds: [emptyRound(1)],
   accepted_date: '',
+  galley_sent_date: '',
+  galley_received_date: '',
   publish_date: '',
-  repeat_done: false,
-  doi_in_pdf: '',
 };
 
-function rowToForm(row: AuthorRow) {
+function roundsFrom(row: AuthorRow): ReviewRound[] {
+  const rounds = (row.review_rounds || []).map((item, index) => ({
+    round: item.round || index + 1,
+    sent_date: item.sent_date || '',
+    received_date: item.received_date || '',
+  }));
+  return rounds.length ? rounds : [emptyRound(1)];
+}
+
+function journalLabel(journal: JournalOption) {
+  if (journal.abbreviation && journal.name && journal.abbreviation !== journal.name) {
+    return `${journal.abbreviation} — ${journal.name}`;
+  }
+  return journal.abbreviation || journal.name;
+}
+
+function rowJournalKey(row: AuthorRow, journals: JournalOption[]) {
+  if (row.journal_id) {
+    const match = journals.find((journal) => journal.id === row.journal_id);
+    return match ? journalKey(match) : `id:${row.journal_id}`;
+  }
+  const title = (row.journal_title || row.journal_name || '').trim();
+  if (!title) return '';
+  const lower = title.toLowerCase();
+  const match = journals.find(
+    (journal) =>
+      (journal.abbreviation || '').toLowerCase() === lower || journal.name.toLowerCase() === lower,
+  );
+  return match ? journalKey(match) : `abbr:${title}`;
+}
+
+function rowToForm(row: AuthorRow, journals: JournalOption[]) {
   return {
-    journal_id: row.journal_id || ('' as number | ''),
+    journal_key: rowJournalKey(row, journals),
     ojs_number: row.ojs_number || '',
     title: row.title || '',
     author_names: row.author_names || '',
     author_emails: row.author_emails || '',
-    email_sent: Boolean(row.email_sent),
+    email_sent_date: row.email_sent_date || '',
     plagiarism: row.plagiarism || '',
     orcid_id: row.orcid_id || '',
     received_date: row.received_date || '',
-    review_date: row.review_date || '',
+    review_rounds: roundsFrom(row),
     accepted_date: row.accepted_date || '',
+    galley_sent_date: row.galley_sent_date || '',
+    galley_received_date: row.galley_received_date || '',
     publish_date: row.publish_date || '',
-    repeat_done: Boolean(row.repeat_done),
-    doi_in_pdf: row.doi_in_pdf || '',
   };
 }
 
@@ -90,6 +131,20 @@ function formatWhen(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function journalKey(journal: JournalOption) {
+  if (journal.id) return `id:${journal.id}`;
+  return `abbr:${journal.abbreviation || journal.name}`;
+}
+
+function parseJournalKey(key: string): { journal_id: number | null; journal_title: string } {
+  if (key.startsWith('id:')) {
+    const id = Number(key.slice(3));
+    return { journal_id: Number.isFinite(id) ? id : null, journal_title: '' };
+  }
+  if (key.startsWith('abbr:')) return { journal_id: null, journal_title: key.slice(5) };
+  return { journal_id: null, journal_title: key };
 }
 
 export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
@@ -108,7 +163,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
   const load = async () => {
     const [{ data }, journalsRes] = await Promise.all([
       citationApi.authorArticles.list(wing),
-      citationApi.journals.list().catch(() => ({ data: [] as JournalOption[] })),
+      citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
     ]);
     setRows(data as AuthorRow[]);
     setJournals((journalsRes.data || []) as JournalOption[]);
@@ -125,23 +180,32 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wing]);
 
-  const payload = () => ({
-    wing,
-    journal_id: form.journal_id === '' ? null : form.journal_id,
-    ojs_number: form.ojs_number,
-    title: form.title,
-    author_names: form.author_names,
-    author_emails: form.author_emails,
-    email_sent: form.email_sent,
-    plagiarism: form.plagiarism,
-    orcid_id: form.orcid_id,
-    received_date: form.received_date || null,
-    review_date: form.review_date || null,
-    accepted_date: form.accepted_date || null,
-    publish_date: form.publish_date || null,
-    repeat_done: form.repeat_done,
-    doi_in_pdf: form.doi_in_pdf,
-  });
+  const payload = () => {
+    const selected = journals.find((journal) => journalKey(journal) === form.journal_key);
+    const parsed = parseJournalKey(form.journal_key);
+    return {
+      wing,
+      journal_id: parsed.journal_id,
+      journal_title: parsed.journal_title || selected?.abbreviation || selected?.name || '',
+      ojs_number: form.ojs_number,
+      title: form.title,
+      author_names: form.author_names,
+      author_emails: form.author_emails,
+      email_sent_date: form.email_sent_date || null,
+      plagiarism: form.plagiarism,
+      orcid_id: form.orcid_id,
+      received_date: form.received_date || null,
+      review_rounds: form.review_rounds.map((round, index) => ({
+        round: index + 1,
+        sent_date: round.sent_date || null,
+        received_date: round.received_date || null,
+      })),
+      accepted_date: form.accepted_date || null,
+      galley_sent_date: form.galley_sent_date || null,
+      galley_received_date: form.galley_received_date || null,
+      publish_date: form.publish_date || null,
+    };
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,7 +235,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
   };
 
   const edit = (row: AuthorRow) => {
-    setForm(rowToForm(row));
+    setForm(rowToForm(row, journals));
     setEditingId(row.id);
     setShowForm(true);
     setMsg('');
@@ -243,8 +307,34 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
     }
   };
 
-  const field = (key: keyof typeof emptyForm, value: string | boolean | number | '') => {
+  const field = (key: keyof typeof emptyForm, value: string | number | '') => {
     setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const setRound = (index: number, key: 'sent_date' | 'received_date', value: string) => {
+    setForm((prev) => ({
+      ...prev,
+      review_rounds: prev.review_rounds.map((round, idx) =>
+        idx === index ? { ...round, [key]: value } : round,
+      ),
+    }));
+  };
+
+  const addRound = () => {
+    setForm((prev) => ({
+      ...prev,
+      review_rounds: [...prev.review_rounds, emptyRound(prev.review_rounds.length + 1)],
+    }));
+  };
+
+  const removeRound = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      review_rounds:
+        prev.review_rounds.length === 1
+          ? prev.review_rounds
+          : prev.review_rounds.filter((_, idx) => idx !== index).map((round, idx) => ({ ...round, round: idx + 1 })),
+    }));
   };
 
   return (
@@ -295,23 +385,21 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
           <h3 className="md:col-span-2 text-sm font-medium">
             {editingId ? 'Modify article' : inProcess ? 'Add under process article' : 'Add published article'}
           </h3>
-          {journals.length > 0 && (
-            <label className="text-sm text-gray-400">
-              Journal
-              <select
-                className="input-field mt-1"
-                value={form.journal_id}
-                onChange={(e) => field('journal_id', e.target.value ? Number(e.target.value) : '')}
-              >
-                <option value="">Select journal</option>
-                {journals.map((journal) => (
-                  <option key={journal.id} value={journal.id}>
-                    {journal.abbreviation || journal.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          <label className="text-sm text-gray-400">
+            Select journal
+            <select
+              className="input-field mt-1"
+              value={form.journal_key}
+              onChange={(e) => field('journal_key', e.target.value)}
+            >
+              <option value="">Select journal</option>
+              {journals.map((journal) => (
+                <option key={journalKey(journal)} value={journalKey(journal)}>
+                  {journalLabel(journal)}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="text-sm text-gray-400">
             OJS number
             <input
@@ -333,23 +421,26 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
               placeholder="One name per line, or separated by semicolons"
             />
           </label>
-          <label className="text-sm text-gray-400">
-            Email addresses of authors
-            <textarea
-              className="input-field mt-1 min-h-[4.5rem]"
-              value={form.author_emails}
-              onChange={(e) => field('author_emails', e.target.value)}
-              placeholder="Matching order with author names"
-            />
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-gray-300 mt-6">
-            <input
-              type="checkbox"
-              checked={form.email_sent}
-              onChange={(e) => field('email_sent', e.target.checked)}
-            />
-            Email sent
-          </label>
+          <div className="space-y-3">
+            <label className="text-sm text-gray-400 block">
+              Email addresses of authors
+              <textarea
+                className="input-field mt-1 min-h-[4.5rem]"
+                value={form.author_emails}
+                onChange={(e) => field('author_emails', e.target.value)}
+                placeholder="Matching order with author names"
+              />
+            </label>
+            <label className="text-sm text-gray-400 block">
+              Email sent date
+              <input
+                className="input-field mt-1"
+                type="date"
+                value={form.email_sent_date}
+                onChange={(e) => field('email_sent_date', e.target.value)}
+              />
+            </label>
+          </div>
           <label className="text-sm text-gray-400">
             Plagiarism
             <input
@@ -372,22 +463,90 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
               onChange={(e) => field('received_date', e.target.value)}
             />
           </label>
+          <div className="md:col-span-2 space-y-3">
+            {form.review_rounds.map((round, index) => (
+              <div key={round.round} className="border border-gray-800 rounded-md p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-200">Round {index + 1}</p>
+                  <div className="flex items-center gap-1">
+                    {index === form.review_rounds.length - 1 && (
+                      <button
+                        type="button"
+                        className="text-gray-400 hover:text-white p-1"
+                        onClick={addRound}
+                        title={`Add round ${form.review_rounds.length + 1}`}
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                    )}
+                    {index > 0 && (
+                      <button
+                        type="button"
+                        className="text-gray-400 hover:text-white p-1"
+                        onClick={() => removeRound(index)}
+                        title="Remove this round"
+                      >
+                        <Minus className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="text-sm text-gray-400">
+                    Review sent date
+                    <input
+                      className="input-field mt-1"
+                      type="date"
+                      value={round.sent_date || ''}
+                      onChange={(e) => setRound(index, 'sent_date', e.target.value)}
+                    />
+                  </label>
+                  <label className="text-sm text-gray-400">
+                    Review receive date
+                    <input
+                      className="input-field mt-1"
+                      type="date"
+                      value={round.received_date || ''}
+                      onChange={(e) => setRound(index, 'received_date', e.target.value)}
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="btn-secondary inline-flex items-center gap-2"
+              onClick={addRound}
+            >
+              <Plus className="w-4 h-4" />
+              Add round {form.review_rounds.length + 1}
+            </button>
+          </div>
           <label className="text-sm text-gray-400">
-            Review date
-            <input
-              className="input-field mt-1"
-              type="date"
-              value={form.review_date}
-              onChange={(e) => field('review_date', e.target.value)}
-            />
-          </label>
-          <label className="text-sm text-gray-400">
-            Accepted date
+            Acceptance date
             <input
               className="input-field mt-1"
               type="date"
               value={form.accepted_date}
               onChange={(e) => field('accepted_date', e.target.value)}
+            />
+          </label>
+          <label className="text-sm text-gray-400">
+            Galley sent date
+            <input
+              className="input-field mt-1"
+              type="date"
+              value={form.galley_sent_date}
+              onChange={(e) => field('galley_sent_date', e.target.value)}
+            />
+          </label>
+          <label className="text-sm text-gray-400">
+            Galley received date
+            <input
+              className="input-field mt-1"
+              type="date"
+              value={form.galley_received_date}
+              onChange={(e) => field('galley_received_date', e.target.value)}
             />
           </label>
           <label className="text-sm text-gray-400">
@@ -398,18 +557,6 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
               value={form.publish_date}
               onChange={(e) => field('publish_date', e.target.value)}
             />
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-gray-300 mt-6">
-            <input
-              type="checkbox"
-              checked={form.repeat_done}
-              onChange={(e) => field('repeat_done', e.target.checked)}
-            />
-            Repeat done
-          </label>
-          <label className="text-sm text-gray-400">
-            DOI in PDF
-            <input className="input-field mt-1" value={form.doi_in_pdf} onChange={(e) => field('doi_in_pdf', e.target.value)} />
           </label>
           <div className="md:col-span-2 flex flex-wrap gap-2">
             <button className="btn-primary" type="submit" disabled={busy}>
@@ -438,12 +585,11 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
               <th className="py-2 pr-3">OJS</th>
               <th className="py-2 pr-3">Title</th>
               <th className="py-2 pr-3">Authors</th>
-              <th className="py-2 pr-3">Email sent</th>
+              <th className="py-2 pr-3">Email sent date</th>
               <th className="py-2 pr-3">Plagiarism</th>
               <th className="py-2 pr-3">ORCID</th>
+              <th className="py-2 pr-3">Review rounds</th>
               <th className="py-2 pr-3">Dates</th>
-              <th className="py-2 pr-3">Repeat</th>
-              <th className="py-2 pr-3">DOI in PDF</th>
               <th className="py-2 pr-3">Modifications</th>
               <th className="py-2 pr-3" />
             </tr>
@@ -451,7 +597,7 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="py-4 text-gray-500" colSpan={11}>
+                <td className="py-4 text-gray-500" colSpan={10}>
                   {inProcess
                     ? 'No under process articles yet. Add one or import an Excel file.'
                     : 'No published articles yet. Move a finished record from Under process or import Excel.'}
@@ -469,17 +615,23 @@ export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
                   <p>{row.author_names || '—'}</p>
                   <p className="text-xs text-gray-500">{row.author_emails}</p>
                 </td>
-                <td className="py-3 pr-3">{row.email_sent ? 'Yes' : 'No'}</td>
+                <td className="py-3 pr-3">{row.email_sent_date || '—'}</td>
                 <td className="py-3 pr-3">{row.plagiarism || '—'}</td>
                 <td className="py-3 pr-3">{row.orcid_id || '—'}</td>
                 <td className="py-3 pr-3 text-xs text-gray-400 whitespace-nowrap">
-                  <p>Rec {row.received_date || '—'}</p>
-                  <p>Rev {row.review_date || '—'}</p>
+                  {(row.review_rounds || []).map((round) => (
+                    <p key={round.round}>
+                      R{round.round}: sent {round.sent_date || '—'} / rec {round.received_date || '—'}
+                    </p>
+                  ))}
+                  {(row.review_rounds || []).length === 0 ? '—' : null}
+                </td>
+                <td className="py-3 pr-3 text-xs text-gray-400 whitespace-nowrap">
                   <p>Acc {row.accepted_date || '—'}</p>
+                  <p>Gal sent {row.galley_sent_date || '—'}</p>
+                  <p>Gal rec {row.galley_received_date || '—'}</p>
                   <p>Pub {row.publish_date || '—'}</p>
                 </td>
-                <td className="py-3 pr-3">{row.repeat_done ? 'Yes' : 'No'}</td>
-                <td className="py-3 pr-3">{row.doi_in_pdf || '—'}</td>
                 <td className="py-3 pr-3">
                   <div className="flex flex-wrap gap-1">
                     {(row.modifications || []).length === 0 && <span className="text-xs text-gray-500">None</span>}

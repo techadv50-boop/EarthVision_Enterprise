@@ -83,6 +83,11 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("users", "gpt_review_enabled", "BOOLEAN")
     _add_if_missing("users", "service_privileges", "JSON")
     _add_if_missing("manuscripts", "owner_id", "INTEGER")
+    _add_if_missing("author_articles", "email_sent_date", "VARCHAR(32)")
+    _add_if_missing("author_articles", "galley_sent_date", "VARCHAR(32)")
+    _add_if_missing("author_articles", "galley_received_date", "VARCHAR(32)")
+    _add_if_missing("author_articles", "review_rounds", "JSON")
+    _add_if_missing("author_articles", "journal_title", "VARCHAR(500) DEFAULT ''")
 
 
 def _ensure_postgres_columns(sync_conn) -> None:
@@ -118,5 +123,20 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS service_privileges JSON"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS email_sent_date VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS galley_sent_date VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS galley_received_date VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS review_rounds JSON"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS journal_title VARCHAR(500) DEFAULT ''"
     )
 

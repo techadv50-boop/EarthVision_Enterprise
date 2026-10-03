@@ -23,8 +23,8 @@ export default function AuthorHubPage() {
             <ClipboardList className="w-8 h-8 text-earth-400 mb-3" />
             <h3 className="text-xl font-semibold">Under process</h3>
             <p className="text-gray-400 text-sm mt-2 leading-relaxed">
-              Add and update articles that are still moving through email, plagiarism, ORCID, dates,
-              repeat, and DOI in PDF.
+              Add and update articles that are still moving through email, plagiarism, ORCID, review
+              rounds, acceptance, and galley dates.
             </p>
             <p className="text-earth-400 text-sm mt-6">Open under process →</p>
           </Link>
