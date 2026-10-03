@@ -275,8 +275,8 @@ export const citationApi = {
       api.put('/author-articles/sanitization', data),
     checkSanitization: (data: Record<string, unknown>) =>
       api.post('/author-articles/sanitization/check', data),
-    publishSanitization: (article_id: number) =>
-      api.post('/author-articles/sanitization/publish', { article_id }),
+    publishSanitization: (article_id: number, extra?: Record<string, unknown>) =>
+      api.post('/author-articles/sanitization/publish', { article_id, ...(extra || {}) }),
   },
 };
 

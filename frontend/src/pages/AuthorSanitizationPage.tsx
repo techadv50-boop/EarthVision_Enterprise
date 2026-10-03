@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ShieldAlert } from 'lucide-react';
+import { FolderOpen, ShieldAlert } from 'lucide-react';
 import { citationApi } from '@/services/api';
 import { hasAuthorWing, useAuthStore } from '@/store/authStore';
 
@@ -41,6 +41,35 @@ function journalLabel(journal: JournalOption) {
   return journal.name || journal.abbreviation || '';
 }
 
+function splitAuthors(raw?: string) {
+  return (raw || '')
+    .split(/[\n;|]+|(?:\s+and\s+)|(?:\s*&\s*)/i)
+    .map((item) => item.trim().replace(/^,+|,+$/g, ''))
+    .filter(Boolean);
+}
+
+function authorKey(name: string) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function uniqueAuthors(rows: IssueArticle[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    for (const name of splitAuthors(row.author_names)) {
+      const key = authorKey(name);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+function articleLabel(row: IssueArticle) {
+  return `${row.ojs_number || `No OJS #${row.id}`} — ${row.title || 'Untitled'}`;
+}
+
 export default function AuthorSanitizationPage() {
   const user = useAuthStore((s) => s.user);
   const canPublish = hasAuthorWing(user, 'published');
@@ -49,6 +78,7 @@ export default function AuthorSanitizationPage() {
   const [published, setPublished] = useState<IssueArticle[]>([]);
   const [scheduled, setScheduled] = useState<IssueArticle[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
+  const [dropId, setDropId] = useState<number | ''>('');
   const [candidateId, setCandidateId] = useState<number | ''>('');
   const [result, setResult] = useState<{
     allowed: boolean;
@@ -59,24 +89,27 @@ export default function AuthorSanitizationPage() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  const applyPayload = (data: {
+    article_ids?: number[];
+    published?: IssueArticle[];
+    scheduled?: IssueArticle[];
+  }) => {
+    setPublished(data.published || []);
+    setScheduled(data.scheduled || []);
+    setSelected(data.article_ids || []);
+  };
+
   const load = async (journalTitle = journal) => {
     const [journalsRes, dataRes] = await Promise.all([
       citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
       citationApi.authorArticles.sanitization(journalTitle || undefined),
     ]);
     setJournals((journalsRes.data || []) as JournalOption[]);
-    const data = dataRes.data as {
-      article_ids?: number[];
-      published?: IssueArticle[];
-      scheduled?: IssueArticle[];
-    };
-    setPublished(data.published || []);
-    setScheduled(data.scheduled || []);
-    setSelected(data.article_ids || []);
+    applyPayload(dataRes.data as { article_ids?: number[]; published?: IssueArticle[]; scheduled?: IssueArticle[] });
   };
 
   useEffect(() => {
-    void load('').catch(() => setError('Could not load published articles for sanitization.'));
+    void load('').catch(() => setError('Could not load published and under-process articles.'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -84,6 +117,7 @@ export default function AuthorSanitizationPage() {
     setJournal(next);
     setResult(null);
     setCandidateId('');
+    setDropId('');
     setMsg('');
     setError('');
     setBusy(true);
@@ -96,9 +130,77 @@ export default function AuthorSanitizationPage() {
     }
   };
 
-  const toggle = (id: number) => {
-    setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  const folderRows = useMemo(
+    () => selected.map((id) => published.find((row) => row.id === id)).filter((row): row is IssueArticle => Boolean(row)),
+    [published, selected],
+  );
+  const availablePublished = useMemo(
+    () => published.filter((row) => !selected.includes(row.id)),
+    [published, selected],
+  );
+  const authors = useMemo(() => uniqueAuthors(folderRows), [folderRows]);
+  const candidate = useMemo(
+    () => scheduled.find((row) => row.id === candidateId) || null,
+    [scheduled, candidateId],
+  );
+
+  const persistFolder = async (ids: number[], quiet = false) => {
+    const { data } = await citationApi.authorArticles.saveSanitization({
+      journal_title: journal,
+      label: 'Current issue',
+      article_ids: ids,
+    });
+    applyPayload(data);
+    if (!quiet) {
+      setMsg(
+        ids.length
+          ? `Current issue folder now has ${ids.length} published article${ids.length === 1 ? '' : 's'}.`
+          : 'Current issue folder cleared.',
+      );
+    }
+  };
+
+  const dropIntoFolder = async () => {
+    if (!dropId) {
+      setError('Select a published article to drop into the current issue.');
+      return;
+    }
+    const ids = selected.includes(dropId) ? selected : [...selected, dropId];
+    setSelected(ids);
+    setDropId('');
     setResult(null);
+    setError('');
+    if (!canPublish) return;
+    setBusy(true);
+    try {
+      await persistFolder(ids);
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not add that published article to the current issue.';
+      setError(String(detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeFromFolder = async (id: number) => {
+    const ids = selected.filter((item) => item !== id);
+    setSelected(ids);
+    setResult(null);
+    if (!canPublish) return;
+    setBusy(true);
+    setError('');
+    try {
+      await persistFolder(ids, true);
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not update the current issue folder.';
+      setError(String(detail));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const saveIssue = async () => {
@@ -106,19 +208,7 @@ export default function AuthorSanitizationPage() {
     setMsg('');
     setError('');
     try {
-      const { data } = await citationApi.authorArticles.saveSanitization({
-        journal_title: journal,
-        label: 'Current issue',
-        article_ids: selected,
-      });
-      setSelected(data.article_ids || []);
-      setPublished(data.published || []);
-      setScheduled(data.scheduled || []);
-      setMsg(
-        selected.length
-          ? `Current issue saved with ${selected.length} published article${selected.length === 1 ? '' : 's'}.`
-          : 'Current issue cleared.',
-      );
+      await persistFolder(selected);
     } catch (err: unknown) {
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
@@ -131,14 +221,18 @@ export default function AuthorSanitizationPage() {
 
   const check = async () => {
     if (!candidateId) {
-      setError('Select the scheduled article to check.');
+      setError('Select an under-process article as the scheduled article.');
       return;
     }
     setBusy(true);
     setMsg('');
     setError('');
     try {
-      const { data } = await citationApi.authorArticles.checkSanitization({ article_id: candidateId });
+      const { data } = await citationApi.authorArticles.checkSanitization({
+        article_id: candidateId,
+        journal_title: journal,
+        article_ids: selected,
+      });
       setResult({
         allowed: Boolean(data.allowed),
         message: data.message || '',
@@ -160,7 +254,10 @@ export default function AuthorSanitizationPage() {
     setMsg('');
     setError('');
     try {
-      const { data } = await citationApi.authorArticles.publishSanitization(Number(candidateId));
+      const { data } = await citationApi.authorArticles.publishSanitization(Number(candidateId), {
+        journal_title: journal,
+        article_ids: selected,
+      });
       setResult({
         allowed: true,
         message: data.message || 'Published into the current issue.',
@@ -180,11 +277,6 @@ export default function AuthorSanitizationPage() {
     }
   };
 
-  const candidate = useMemo(
-    () => scheduled.find((row) => row.id === candidateId) || null,
-    [scheduled, candidateId],
-  );
-
   return (
     <div>
       <p className="text-xs text-gray-500 mb-2">
@@ -198,9 +290,9 @@ export default function AuthorSanitizationPage() {
         Issue sanitization
       </h2>
       <p className="text-gray-400 text-sm mb-4 max-w-4xl">
-        Select the published articles that belong to the current issue. When the next article is
-        scheduled to publish, check it here. If any author already appears in the current issue, it
-        cannot be published.
+        Current issue is a folder of published articles. The authors already in that folder are the
+        checkpoint. The scheduled article is chosen from under-process articles. An author may appear
+        only once in the current issue.
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
@@ -220,9 +312,13 @@ export default function AuthorSanitizationPage() {
       <section className="panel p-4 mb-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div>
-            <h3 className="text-sm font-medium">Current issue</h3>
+            <h3 className="text-sm font-medium inline-flex items-center gap-2">
+              <FolderOpen className="w-4 h-4 text-earth-400" />
+              Current issue
+            </h3>
             <p className="text-xs text-gray-500">
-              Tick every published article that is already in this issue.
+              Drop published articles into this folder. The author list below is what sanitization
+              checks against.
             </p>
           </div>
           {canPublish && (
@@ -231,29 +327,59 @@ export default function AuthorSanitizationPage() {
             </button>
           )}
         </div>
+
+        <div className="rounded-md border border-gray-800 p-3 mb-4">
+          <p className="text-sm text-gray-200 mb-2">Authors in this issue</p>
+          {authors.length === 0 ? (
+            <p className="text-gray-500 text-sm">No authors yet. Drop published articles into the folder.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {authors.map((name) => (
+                <li key={authorKey(name)} className="rounded-full bg-gray-800 px-3 py-1 text-sm text-gray-100">
+                  {name}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-2 items-end mb-4">
+          <label className="text-sm text-gray-400 flex-1 min-w-[16rem]">
+            Drop a published article
+            <select
+              className="input-field mt-1"
+              value={dropId}
+              onChange={(e) => setDropId(e.target.value ? Number(e.target.value) : '')}
+            >
+              <option value="">Select from published articles</option>
+              {availablePublished.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {articleLabel(row)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="btn-secondary" type="button" disabled={busy || !dropId} onClick={() => void dropIntoFolder()}>
+            Drop into current issue
+          </button>
+        </div>
         {published.length === 0 ? (
-          <p className="text-gray-500 text-sm">No published articles to select for this issue.</p>
+          <p className="text-gray-500 text-sm">No published articles are available to drop into this issue.</p>
+        ) : folderRows.length === 0 ? (
+          <p className="text-gray-500 text-sm">The current issue folder is empty.</p>
         ) : (
           <div className="space-y-2">
-            {published.map((row) => (
-              <label
-                key={row.id}
-                className="flex items-start gap-3 rounded-md border border-gray-800 p-3 text-sm"
-              >
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={selected.includes(row.id)}
-                  onChange={() => toggle(row.id)}
-                />
+            {folderRows.map((row) => (
+              <div key={row.id} className="flex items-start justify-between gap-3 rounded-md border border-gray-800 p-3 text-sm">
                 <span className="min-w-0">
                   <span className="text-gray-100 font-medium">{row.ojs_number || `No OJS #${row.id}`}</span>
                   <span className="block text-gray-300">{row.title || 'Untitled'}</span>
-                  <span className="block text-gray-500 text-xs mt-1">
-                    Authors: {row.author_names || '—'}
-                  </span>
+                  <span className="block text-gray-500 text-xs mt-1">Authors: {row.author_names || '—'}</span>
                 </span>
-              </label>
+                <button className="btn-secondary shrink-0" type="button" disabled={busy} onClick={() => void removeFromFolder(row.id)}>
+                  Remove
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -262,8 +388,7 @@ export default function AuthorSanitizationPage() {
       <section className="panel p-4 mb-6">
         <h3 className="text-sm font-medium mb-1">Scheduled article</h3>
         <p className="text-xs text-gray-500 mb-3">
-          Upload the next article here by selecting it from Under process, then cross-match authors
-          against the current issue.
+          Choose from under-process articles. Check whether those authors may enter the current issue.
         </p>
         <label className="text-sm text-gray-400 block max-w-xl">
           Under-process article
@@ -279,11 +404,14 @@ export default function AuthorSanitizationPage() {
             <option value="">Select scheduled article</option>
             {scheduled.map((row) => (
               <option key={row.id} value={row.id}>
-                {row.ojs_number || `No OJS #${row.id}`} — {row.title || 'Untitled'}
+                {articleLabel(row)}
               </option>
             ))}
           </select>
         </label>
+        {scheduled.length === 0 && (
+          <p className="text-gray-500 text-sm mt-2">No under-process articles are available to schedule.</p>
+        )}
         {candidate && (
           <p className="text-sm text-gray-300 mt-3">
             Authors on this article: {candidate.author_names || '—'}

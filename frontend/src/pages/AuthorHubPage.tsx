@@ -50,8 +50,8 @@ export default function AuthorHubPage() {
           <ShieldAlert className="w-8 h-8 text-earth-400 mb-3" />
           <h3 className="text-xl font-semibold">Sanitization</h3>
           <p className="text-gray-400 text-sm mt-2 leading-relaxed">
-            Mark the published articles of the current issue, then check the next scheduled article.
-            The same authors may not appear twice in one issue.
+            Mark the published articles of the current issue as a folder of authors, then check the
+            next under-process article. An author may appear only once in that issue.
           </p>
           <p className="text-earth-400 text-sm mt-6">Open sanitization →</p>
         </Link>

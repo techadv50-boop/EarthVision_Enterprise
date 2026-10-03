@@ -560,6 +560,12 @@ async def test_current_issue_sanitization_blocks_same_authors(client: AsyncClien
     assert saved.status_code == 200, saved.text
     assert saved.json()["journal_title"] == journal
     assert set(saved.json()["article_ids"]) == {first.json()["id"], other.json()["id"]}
+    assert "Ali Khan" in saved.json()["authors"]
+    assert "Sara Ahmed" in saved.json()["authors"]
+    assert all(item["wing"] == "published" for item in saved.json()["published"])
+    assert {first.json()["id"], other.json()["id"]}.issubset(
+        {item["id"] for item in saved.json()["published"]}
+    )
 
     scheduled = await client.post(
         "/api/v1/author-articles",
@@ -572,10 +578,28 @@ async def test_current_issue_sanitization_blocks_same_authors(client: AsyncClien
         },
     )
     assert scheduled.status_code == 201, scheduled.text
+    listing = await client.get(
+        "/api/v1/author-articles/sanitization",
+        headers=headers,
+        params={"journal_title": "IJIST"},
+    )
+    assert listing.status_code == 200
+    assert scheduled.json()["id"] in {item["id"] for item in listing.json()["scheduled"]}
+    assert scheduled.json()["id"] not in {item["id"] for item in listing.json()["published"]}
+    assert all(item["wing"] == "in_process" for item in listing.json()["scheduled"])
+    rejected = await client.post(
+        "/api/v1/author-articles/sanitization/check",
+        headers=headers,
+        json={"article_id": first.json()["id"]},
+    )
+    assert rejected.status_code == 400
     checked = await client.post(
         "/api/v1/author-articles/sanitization/check",
         headers=headers,
-        json={"article_id": scheduled.json()["id"]},
+        json={
+            "article_id": scheduled.json()["id"],
+            "article_ids": [first.json()["id"], other.json()["id"]],
+        },
     )
     assert checked.status_code == 200, checked.text
     assert checked.json()["allowed"] is False

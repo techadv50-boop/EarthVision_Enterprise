@@ -147,6 +147,19 @@ def find_author_overlaps(
     return hits
 
 
+def unique_author_names(*raw_lists: str | None) -> list[str]:
+    """Stable unique author names from one or more author-name fields."""
+    out: list[str] = []
+    for raw in raw_lists:
+        for name in split_author_names(raw):
+            if not name_key(name):
+                continue
+            if any(authors_match(name, existing) for existing in out):
+                continue
+            out.append(name)
+    return out
+
+
 def overlap_message(hits: list[AuthorOverlap]) -> str:
     if not hits:
         return "No overlapping authors with the current issue."
