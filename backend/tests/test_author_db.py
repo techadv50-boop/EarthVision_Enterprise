@@ -95,6 +95,12 @@ async def test_assigned_user_only_sees_own_journal_author_records(client: AsyncC
             "username": "adbeditor",
             "password": "EditorPass@123456",
             "role": "user",
+            "privileges": {
+                "services": ["authors"],
+                "review_branches": [],
+                "author_wings": ["in_process", "published"],
+                "all_journals": False,
+            },
             "assigned_journal_ids": [id_a],
         },
     )

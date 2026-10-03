@@ -100,6 +100,12 @@ async def test_galley_user_owns_proofs_and_cannot_delete(client: AsyncClient):
             "username": "galleyeditor",
             "password": "EditorPass@123456",
             "role": "user",
+            "privileges": {
+                "services": ["galley"],
+                "review_branches": [],
+                "author_wings": [],
+                "all_journals": False,
+            },
         },
     )
     assert created_user.status_code == 201, created_user.text

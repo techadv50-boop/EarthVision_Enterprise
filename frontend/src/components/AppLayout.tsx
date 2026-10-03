@@ -1,6 +1,14 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { BookOpen, CheckSquare, ClipboardList, FilePlus, FilePenLine, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
-import { hasAnyDesk, hasDesk, isCitationAdmin, isFullAdmin, useAuthStore } from '@/store/authStore';
+import {
+  canManageUsers,
+  hasAuthorWing,
+  hasReviewBranch,
+  hasService,
+  isCitationAdmin,
+  isFullAdmin,
+  useAuthStore,
+} from '@/store/authStore';
 
 function navClass(isActive: boolean) {
   return isActive ? 'text-earth-400' : 'text-gray-400 hover:text-white';
@@ -11,8 +19,11 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const admin = isCitationAdmin(user);
-  const usersAdmin = hasDesk(user, 'users');
-  const anyDesk = hasAnyDesk(user);
+  const usersAdmin = canManageUsers(user);
+  const citation = hasService(user, 'citation');
+  const review = hasService(user, 'review');
+  const authors = hasService(user, 'authors');
+  const galley = hasService(user, 'galley');
   const inAdmin = location.pathname.startsWith('/admin') || location.pathname.startsWith('/users');
   const inReview = location.pathname.startsWith('/review');
   const inAuthors = location.pathname.startsWith('/authors');
@@ -36,13 +47,17 @@ export default function AppLayout() {
           <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
             Home
           </NavLink>
-          <NavLink to="/authors" className={({ isActive }) => navClass(isActive)}>
-            Author DB
-          </NavLink>
-          <NavLink to="/galley" className={({ isActive }) => navClass(isActive)}>
-            Galley composition
-          </NavLink>
-          {inCitation && (
+          {authors && (
+            <NavLink to="/authors" className={({ isActive }) => navClass(isActive)}>
+              Author DB
+            </NavLink>
+          )}
+          {galley && (
+            <NavLink to="/galley" className={({ isActive }) => navClass(isActive)}>
+              Galley composition
+            </NavLink>
+          )}
+          {inCitation && citation && (
             <>
               <NavLink to="/journals" className={({ isActive }) => navClass(isActive)}>
                 Journals
@@ -59,49 +74,52 @@ export default function AppLayout() {
               </NavLink>
             </>
           )}
-          {inReview && (
+          {inReview && review && (
             <>
               <NavLink to="/review" end className={({ isActive }) => navClass(isActive)}>
                 Review home
               </NavLink>
-              <NavLink to="/review/references" className={({ isActive }) => navClass(isActive)}>
-                <span className="inline-flex items-center gap-1">
-                  <GitCompare className="w-4 h-4" /> Reference check
-                </span>
-              </NavLink>
-              <NavLink to="/review/language" className={({ isActive }) => navClass(isActive)}>
-                <span className="inline-flex items-center gap-1">
-                  <Languages className="w-4 h-4" /> English review
-                </span>
-              </NavLink>
+              {hasReviewBranch(user, 'references') && (
+                <NavLink to="/review/references" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <GitCompare className="w-4 h-4" /> Reference check
+                  </span>
+                </NavLink>
+              )}
+              {hasReviewBranch(user, 'language') && (
+                <NavLink to="/review/language" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <Languages className="w-4 h-4" /> English review
+                  </span>
+                </NavLink>
+              )}
             </>
           )}
-          {inAuthors && (
+          {inAuthors && authors && (
             <>
-              <NavLink to="/authors/in-process" className={({ isActive }) => navClass(isActive)}>
-                <span className="inline-flex items-center gap-1">
-                  <ClipboardList className="w-4 h-4" /> Under process
-                </span>
-              </NavLink>
-              <NavLink to="/authors/published" className={({ isActive }) => navClass(isActive)}>
-                <span className="inline-flex items-center gap-1">
-                  <CheckSquare className="w-4 h-4" /> Published
-                </span>
-              </NavLink>
+              {hasAuthorWing(user, 'in_process') && (
+                <NavLink to="/authors/in-process" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <ClipboardList className="w-4 h-4" /> Under process
+                  </span>
+                </NavLink>
+              )}
+              {hasAuthorWing(user, 'published') && (
+                <NavLink to="/authors/published" className={({ isActive }) => navClass(isActive)}>
+                  <span className="inline-flex items-center gap-1">
+                    <CheckSquare className="w-4 h-4" /> Published
+                  </span>
+                </NavLink>
+              )}
             </>
           )}
-          {inGalley && (
+          {inGalley && galley && (
             <span className="inline-flex items-center gap-1 text-earth-400">
               <FilePenLine className="w-4 h-4" /> Desk
             </span>
           )}
-          {inAdmin && usersAdmin && (
-            <NavLink to="/users" className={({ isActive }) => navClass(isActive)}>
-              Adding users
-            </NavLink>
-          )}
-          {anyDesk && (
-            <NavLink to="/admin" className={({ isActive }) => navClass(isActive)}>
+          {usersAdmin && (
+            <NavLink to="/admin" className={({ isActive }) => navClass(isActive) + (inAdmin ? '' : '')}>
               <span className="inline-flex items-center gap-1">
                 <Shield className="w-4 h-4" /> Admin
               </span>
@@ -110,11 +128,7 @@ export default function AppLayout() {
           {user && (
             <span className="text-gray-500">
               {user.full_name || user.username}
-              {isFullAdmin(user)
-                ? ' · all desks'
-                : anyDesk
-                  ? ' · desk admin'
-                  : ' · user'}
+              {isFullAdmin(user) ? ' · operator' : usersAdmin ? ' · admin' : ' · user'}
             </span>
           )}
           <button

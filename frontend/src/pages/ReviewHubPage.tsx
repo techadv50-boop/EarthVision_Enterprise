@@ -1,38 +1,46 @@
 import { Link } from 'react-router-dom';
 import { GitCompare, Languages } from 'lucide-react';
-import { hasDesk, useAuthStore } from '@/store/authStore';
+import { hasReviewBranch, useAuthStore } from '@/store/authStore';
 
 export default function ReviewHubPage() {
-  const reviewAdmin = hasDesk(useAuthStore((s) => s.user), 'review');
+  const user = useAuthStore((s) => s.user);
+  const references = hasReviewBranch(user, 'references');
+  const language = hasReviewBranch(user, 'language');
   return (
     <div>
       <h2 className="text-2xl font-semibold mb-2">Article Review / Comparison</h2>
       <p className="text-gray-400 mb-6 max-w-3xl">
         Tools for the file you gave to staff and the manuscript that will be published. They do
-        not change the journal archive.
-        {reviewAdmin ? ' You are the admin for this desk.' : ''}
+        not change the journal archive. Only the branches granted to this account are shown.
       </p>
       <div className="grid md:grid-cols-2 gap-4">
-        <Link to="/review/references" className="panel p-6 hover:border-earth-500 transition-colors block">
-          <GitCompare className="w-8 h-8 text-earth-400 mb-3" />
-          <h3 className="text-xl font-semibold">Reference check</h3>
-          <p className="text-gray-400 text-sm mt-2 leading-relaxed">
-            Upload the original Word file and the returned Word file. The check reports references
-            that were removed, added, changed, or renumbered. A shuffled list is allowed if each
-            number still points to the same work.
-          </p>
-        </Link>
-        <Link to="/review/language" className="panel p-6 hover:border-earth-500 transition-colors block">
-          <Languages className="w-8 h-8 text-earth-400 mb-3" />
-          <h3 className="text-xl font-semibold">English review</h3>
-          <p className="text-gray-400 text-sm mt-2 leading-relaxed">
-            Upload the document going to publish. In-depth AI tools cover grammar, sentence
-            structure, run-ons, slang, formality, conciseness, ambiguity, word choice,
-            repetition, passive voice, and abusive language. GPT correction is used when
-            the server has an API key.
-          </p>
-        </Link>
+        {references && (
+          <Link to="/review/references" className="panel p-6 hover:border-earth-500 transition-colors block">
+            <GitCompare className="w-8 h-8 text-earth-400 mb-3" />
+            <h3 className="text-xl font-semibold">Reference check</h3>
+            <p className="text-gray-400 text-sm mt-2 leading-relaxed">
+              Upload the original Word file and the returned Word file. The check reports references
+              that were removed, added, changed, or renumbered. A shuffled list is allowed if each
+              number still points to the same work.
+            </p>
+          </Link>
+        )}
+        {language && (
+          <Link to="/review/language" className="panel p-6 hover:border-earth-500 transition-colors block">
+            <Languages className="w-8 h-8 text-earth-400 mb-3" />
+            <h3 className="text-xl font-semibold">English review</h3>
+            <p className="text-gray-400 text-sm mt-2 leading-relaxed">
+              Upload the document going to publish. In-depth AI tools cover grammar, sentence
+              structure, run-ons, slang, formality, conciseness, ambiguity, word choice,
+              repetition, passive voice, and abusive language. GPT correction is used when
+              the server has an API key.
+            </p>
+          </Link>
+        )}
       </div>
+      {!references && !language && (
+        <p className="text-gray-500 text-sm">No article-review branch has been granted to this account.</p>
+      )}
     </div>
   );
 }

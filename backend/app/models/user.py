@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import JSON
 
 from app.database.base import Base
 
@@ -77,6 +78,7 @@ class User(Base):
     openai_api_key: Mapped[str] = mapped_column(Text, default="")
     openai_model: Mapped[str] = mapped_column(String(100), default="gpt-4o-mini")
     gpt_review_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    service_privileges: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -118,21 +120,63 @@ class User(Base):
         """Operator account: every desk."""
         return bool(self.is_superuser or self.has_role("admin"))
 
+    def resolved_privileges(self) -> dict:
+        from app.core.privileges import (
+            full_privileges,
+            normalize_privileges,
+            privileges_from_desks,
+        )
+
+        if self.is_full_admin():
+            return full_privileges()
+        if self.service_privileges is not None:
+            return normalize_privileges(self.service_privileges)
+        desks = [
+            desk
+            for desk in ("citation", "authors", "review", "galley")
+            if self.has_role(f"admin_{desk}")
+        ]
+        return privileges_from_desks(desks)
+
+    def has_service(self, service: str) -> bool:
+        return service in self.resolved_privileges().get("services", [])
+
+    def has_review_branch(self, branch: str) -> bool:
+        return branch in self.resolved_privileges().get("review_branches", [])
+
+    def has_author_wing(self, wing: str) -> bool:
+        return wing in self.resolved_privileges().get("author_wings", [])
+
+    def sees_all_journals(self) -> bool:
+        return bool(self.resolved_privileges().get("all_journals"))
+
+    def can_manage_users(self) -> bool:
+        return self.is_full_admin() or self.has_role("admin_users")
+
     def has_desk(self, desk: str) -> bool:
         if self.is_full_admin():
             return True
-        return self.has_role(f"admin_{desk}")
+        if desk == "users":
+            return self.has_role("admin_users")
+        return self.has_service(desk)
 
     def admin_desks(self) -> list[str]:
         from app.core.desks import DESKS
 
         if self.is_full_admin():
             return list(DESKS)
-        return [desk for desk in DESKS if self.has_role(f"admin_{desk}")]
+        granted = []
+        for desk in DESKS:
+            if desk == "users":
+                if self.has_role("admin_users"):
+                    granted.append(desk)
+            elif self.has_service(desk):
+                granted.append(desk)
+        return granted
 
     def is_citation_admin(self) -> bool:
-        """Admin of the citation archive (journals, crawl, manuscripts)."""
-        return self.has_desk("citation")
+        """Archive crawl, add-journal, and search — operator only."""
+        return self.is_full_admin()
 
     def portal_status(self) -> str:
         status = (self.access_status or "approved").strip().lower()

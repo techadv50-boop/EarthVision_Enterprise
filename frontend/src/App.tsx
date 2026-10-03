@@ -1,7 +1,16 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { hasAnyDesk, hasDesk, isCitationAdmin, useAuthStore, type AdminDeskId } from '@/store/authStore';
-import AdminHubPage from '@/pages/AdminHubPage';
+import {
+  canManageUsers,
+  hasAuthorWing,
+  hasReviewBranch,
+  hasService,
+  isCitationAdmin,
+  useAuthStore,
+  type AuthorWingId,
+  type ReviewBranchId,
+  type ServiceId,
+} from '@/store/authStore';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import AppLayout from '@/components/AppLayout';
@@ -54,18 +63,40 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function DeskRoute({ desk, children }: { desk: AdminDeskId; children: React.ReactNode }) {
+function UsersAdminRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
-  if (!hasDesk(user, desk)) {
+  if (!canManageUsers(user)) {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;
 }
 
-function AnyDeskRoute({ children }: { children: React.ReactNode }) {
+function ServiceRoute({ service, children }: { service: ServiceId; children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
-  if (!hasAnyDesk(user)) {
+  if (!hasService(user, service)) {
     return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
+function ReviewBranchRoute({
+  branch,
+  children,
+}: {
+  branch: ReviewBranchId;
+  children: React.ReactNode;
+}) {
+  const user = useAuthStore((s) => s.user);
+  if (!hasReviewBranch(user, branch)) {
+    return <Navigate to="/review" replace />;
+  }
+  return <>{children}</>;
+}
+
+function AuthorWingRoute({ wing, children }: { wing: AuthorWingId; children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!hasAuthorWing(user, wing)) {
+    return <Navigate to="/authors" replace />;
   }
   return <>{children}</>;
 }
@@ -89,44 +120,130 @@ export default function App() {
         <Route
           path="/admin"
           element={
-            <AnyDeskRoute>
-              <AdminHubPage />
-            </AnyDeskRoute>
+            <UsersAdminRoute>
+              <UsersPage />
+            </UsersAdminRoute>
           }
         />
-        <Route path="/journals" element={<DashboardPage />} />
-        <Route path="/journals/:journalId" element={<JournalVolumesPage />} />
+        <Route path="/users" element={<Navigate to="/admin" replace />} />
+        <Route
+          path="/journals"
+          element={
+            <ServiceRoute service="citation">
+              <DashboardPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/journals/:journalId"
+          element={
+            <ServiceRoute service="citation">
+              <JournalVolumesPage />
+            </ServiceRoute>
+          }
+        />
         <Route
           path="/journals/:journalId/volumes/:volume"
-          element={<VolumeIssuesPage />}
+          element={
+            <ServiceRoute service="citation">
+              <VolumeIssuesPage />
+            </ServiceRoute>
+          }
         />
         <Route
           path="/journals/:journalId/volumes/:volume/issues/:issueNumber"
-          element={<IssueArticlesPage />}
+          element={
+            <ServiceRoute service="citation">
+              <IssueArticlesPage />
+            </ServiceRoute>
+          }
         />
-        <Route path="/manuscripts" element={<ManuscriptsPage />} />
-        <Route path="/manuscripts/:manuscriptId" element={<ManuscriptReviewPage />} />
-        <Route path="/review" element={<ReviewHubPage />} />
-        <Route path="/review/references" element={<ReferenceCheckPage />} />
-        <Route path="/review/language" element={<LanguageReviewPage />} />
-        <Route path="/authors" element={<AuthorHubPage />} />
-        <Route path="/authors/in-process" element={<AuthorArticlesPage wing="in_process" />} />
-        <Route path="/authors/published" element={<AuthorArticlesPage wing="published" />} />
-        <Route path="/galley" element={<GalleyPage />} />
+        <Route
+          path="/manuscripts"
+          element={
+            <ServiceRoute service="citation">
+              <ManuscriptsPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/manuscripts/:manuscriptId"
+          element={
+            <ServiceRoute service="citation">
+              <ManuscriptReviewPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/review"
+          element={
+            <ServiceRoute service="review">
+              <ReviewHubPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/review/references"
+          element={
+            <ServiceRoute service="review">
+              <ReviewBranchRoute branch="references">
+                <ReferenceCheckPage />
+              </ReviewBranchRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/review/language"
+          element={
+            <ServiceRoute service="review">
+              <ReviewBranchRoute branch="language">
+                <LanguageReviewPage />
+              </ReviewBranchRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorHubPage />
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors/in-process"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorWingRoute wing="in_process">
+                <AuthorArticlesPage wing="in_process" />
+              </AuthorWingRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/authors/published"
+          element={
+            <ServiceRoute service="authors">
+              <AuthorWingRoute wing="published">
+                <AuthorArticlesPage wing="published" />
+              </AuthorWingRoute>
+            </ServiceRoute>
+          }
+        />
+        <Route
+          path="/galley"
+          element={
+            <ServiceRoute service="galley">
+              <GalleyPage />
+            </ServiceRoute>
+          }
+        />
         <Route
           path="/archive"
           element={
             <AdminRoute>
               <ArchiveSearchPage />
             </AdminRoute>
-          }
-        />
-        <Route
-          path="/users"
-          element={
-            <DeskRoute desk="users">
-              <UsersPage />
-            </DeskRoute>
           }
         />
       </Route>

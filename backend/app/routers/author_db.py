@@ -14,7 +14,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import require_service
 from app.database.session import get_db
 from app.models.citation import AuthorArticle, AuthorArticleChange, Journal
 from app.models.user import User
@@ -33,7 +33,7 @@ from app.services.journal_access import allowed_journal_ids, require_journal_acc
 router = APIRouter(prefix="/author-articles", tags=["Author database"])
 
 Db = Annotated[AsyncSession, Depends(get_db)]
-CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentUser = Annotated[User, Depends(require_service("authors"))]
 
 EXCEL_HEADERS = [
     "OJS number",
@@ -136,6 +136,14 @@ def _load_options():
     return (selectinload(AuthorArticle.journal), selectinload(AuthorArticle.changes))
 
 
+def _require_wing(user: User, wing: str) -> None:
+    if not user.has_author_wing(wing):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not granted that author-database wing",
+        )
+
+
 async def _visible_query(db: AsyncSession, user: User, wing: Optional[str]):
     stmt = select(AuthorArticle).options(*_load_options()).order_by(AuthorArticle.id.desc())
     if wing:
@@ -221,6 +229,7 @@ async def _apply_update(
         wing = str(data["wing"]).strip().lower()
         if wing not in WINGS:
             raise HTTPException(status_code=400, detail="Wing must be in_process or published")
+        _require_wing(user, wing)
         if row.wing != wing:
             diffs.append(
                 {
@@ -318,7 +327,11 @@ async def list_author_articles(
 ):
     if wing and wing not in WINGS:
         raise HTTPException(status_code=400, detail="Wing must be in_process or published")
+    if wing:
+        _require_wing(user, wing)
     rows = list((await db.execute(await _visible_query(db, user, wing))).scalars().all())
+    if not wing:
+        rows = [row for row in rows if user.has_author_wing(row.wing)]
     return [_payload(row) for row in rows]
 
 
@@ -361,6 +374,7 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
     wing = (body.wing or "in_process").strip().lower()
     if wing not in WINGS:
         raise HTTPException(status_code=400, detail="Wing must be in_process or published")
+    _require_wing(user, wing)
     if body.journal_id is not None:
         await require_journal_access(db, user, body.journal_id, desk="authors")
     row = AuthorArticle(
@@ -401,7 +415,7 @@ async def update_author_article(
 
 @router.delete("/{article_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_author_article(article_id: int, db: Db, user: CurrentUser):
-    if not user.has_desk("authors"):
+    if not user.is_full_admin():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Users cannot delete author-database records. Save a modification instead.",

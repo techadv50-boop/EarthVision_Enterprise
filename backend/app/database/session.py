@@ -81,6 +81,7 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("users", "openai_api_key", "TEXT DEFAULT ''")
     _add_if_missing("users", "openai_model", "VARCHAR(100) DEFAULT 'gpt-4o-mini'")
     _add_if_missing("users", "gpt_review_enabled", "BOOLEAN")
+    _add_if_missing("users", "service_privileges", "JSON")
     _add_if_missing("manuscripts", "owner_id", "INTEGER")
 
 
@@ -114,5 +115,8 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "ALTER TABLE manuscripts ADD COLUMN IF NOT EXISTS owner_id INTEGER"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS service_privileges JSON"
     )
 

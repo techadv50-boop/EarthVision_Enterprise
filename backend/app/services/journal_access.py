@@ -12,19 +12,38 @@ from app.models.citation import Journal
 from app.models.user import User, user_journals
 
 
+async def _assigned_ids(db: AsyncSession, user: User) -> set[int]:
+    result = await db.execute(
+        select(user_journals.c.journal_id).where(user_journals.c.user_id == user.id)
+    )
+    return set(result.scalars().all())
+
+
 async def allowed_journal_ids(
     db: AsyncSession, user: User, *, desk: str = "citation"
 ) -> Optional[set[int]]:
     """Journal IDs this user may see and cite from.
 
-    ``None`` means every journal (that desk's admin). An empty set means none.
+    ``None`` means every journal. An empty set means none.
     """
-    if user.has_desk(desk):
+    if user.is_full_admin():
         return None
-    result = await db.execute(
-        select(user_journals.c.journal_id).where(user_journals.c.user_id == user.id)
-    )
-    return set(result.scalars().all())
+    assigned = await _assigned_ids(db, user)
+    if desk == "authors":
+        if not user.has_service("authors"):
+            if user.service_privileges is None:
+                return assigned
+            return set()
+        if user.sees_all_journals():
+            return None
+        return assigned if assigned else None
+    if user.sees_all_journals() and user.has_service("citation"):
+        return None
+    if user.has_service("citation"):
+        return assigned
+    if user.service_privileges is None:
+        return assigned
+    return set()
 
 
 async def user_can_access_journal(

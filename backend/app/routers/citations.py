@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.dependencies import get_current_user, require_citation_admin
+from app.core.dependencies import get_current_user, require_citation_admin, require_review_branch
 from app.database.session import get_db
 from app.models.citation import (
     Article,
@@ -274,7 +274,11 @@ async def _journal_out(db: AsyncSession, journal: Journal) -> JournalOut:
 async def list_journals(db: Db, user: CurrentUser):
     result = await db.execute(select(Journal).order_by(Journal.name))
     journals = list(result.scalars().all())
-    allowed = await allowed_journal_ids(db, user)
+    if user.can_manage_users():
+        allowed = None
+    else:
+        desk = "authors" if user.has_service("authors") and not user.has_service("citation") else "citation"
+        allowed = await allowed_journal_ids(db, user, desk=desk)
     if allowed is not None:
         journals = [journal for journal in journals if journal.id in allowed]
     return [await _journal_out(db, journal) for journal in journals]
@@ -1004,7 +1008,7 @@ async def _read_review_upload(file: UploadFile, *, require_docx: bool = False) -
 
 @router.post("/review/reference-integrity")
 async def reference_integrity_check(
-    _user: CurrentUser,
+    _user: Annotated[User, Depends(require_review_branch("references"))],
     original: UploadFile = File(...),
     returned: UploadFile = File(...),
 ):
@@ -1022,7 +1026,7 @@ async def reference_integrity_check(
 
 
 @router.get("/review/language/tools")
-async def language_review_tools(user: CurrentUser):
+async def language_review_tools(user: Annotated[User, Depends(require_review_branch("language"))]):
     """Catalog of English-review tools and whether GPT correction is configured."""
     from app.services.language_review import tool_catalog
 
@@ -1032,7 +1036,7 @@ async def language_review_tools(user: CurrentUser):
 @router.put("/review/language/gpt")
 async def language_review_gpt_settings(
     body: GptSettingsIn,
-    user: CurrentUser,
+    user: Annotated[User, Depends(require_review_branch("language"))],
     db: Db,
 ):
     """Turn GPT correction on or off for this user from the English review page."""
@@ -1053,7 +1057,7 @@ async def language_review_gpt_settings(
 
 @router.post("/review/language")
 async def language_review_check(
-    user: CurrentUser,
+    user: Annotated[User, Depends(require_review_branch("language"))],
     file: UploadFile = File(...),
 ):
     """Review a manuscript for grammar, structure, slang, abusive wording, and related issues."""

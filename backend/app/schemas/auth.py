@@ -6,6 +6,13 @@ from typing import Optional
 from pydantic import BaseModel, EmailStr, Field
 
 
+class ServicePrivileges(BaseModel):
+    services: list[str] = Field(default_factory=list)
+    review_branches: list[str] = Field(default_factory=list)
+    author_wings: list[str] = Field(default_factory=list)
+    all_journals: bool = False
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     username: str = Field(min_length=3, max_length=100)
@@ -29,6 +36,8 @@ class UserResponse(BaseModel):
     is_superuser: bool
     roles: list[str] = []
     desks: list[str] = []
+    privileges: ServicePrivileges = Field(default_factory=ServicePrivileges)
+    can_manage_users: bool = False
     access_status: str = "approved"
     assigned_journal_ids: list[int] = []
     created_at: datetime
