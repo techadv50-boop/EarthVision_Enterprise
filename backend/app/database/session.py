@@ -91,6 +91,14 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("author_articles", "original_snapshot", "JSON")
     _add_if_missing("author_article_changes", "snapshot", "JSON")
     _add_if_missing("author_articles", "editorial_status", "VARCHAR(120) DEFAULT 'Submission'")
+    _add_if_missing("author_articles", "soft_reminder_sent", "VARCHAR(32)")
+    _add_if_missing("author_articles", "second_reminder_sent", "VARCHAR(32)")
+    _add_if_missing("author_articles", "last_reminder_sent", "VARCHAR(32)")
+    _add_if_missing("author_articles", "comments", "TEXT DEFAULT ''")
+    _add_if_missing("author_articles", "current_stage", "VARCHAR(80) DEFAULT ''")
+    _add_if_missing("author_articles", "current_stage_started", "VARCHAR(32)")
+    _add_if_missing("author_articles", "current_stage_days", "INTEGER DEFAULT 7")
+    _add_if_missing("author_articles", "current_stage_passed", "BOOLEAN DEFAULT 0")
 
 
 def _ensure_postgres_columns(sync_conn) -> None:
@@ -150,5 +158,29 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS editorial_status VARCHAR(120) DEFAULT 'Submission'"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS soft_reminder_sent VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS second_reminder_sent VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS last_reminder_sent VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS comments TEXT DEFAULT ''"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS current_stage VARCHAR(80) DEFAULT ''"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS current_stage_started VARCHAR(32)"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS current_stage_days INTEGER DEFAULT 7"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS current_stage_passed BOOLEAN DEFAULT FALSE"
     )
 

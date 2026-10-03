@@ -56,6 +56,14 @@ interface AuthorRow {
   galley_received_date?: string | null;
   publish_date?: string | null;
   editorial_status?: string | null;
+  soft_reminder_sent?: string | null;
+  second_reminder_sent?: string | null;
+  last_reminder_sent?: string | null;
+  comments?: string | null;
+  current_stage?: string | null;
+  current_stage_started?: string | null;
+  current_stage_days?: number | null;
+  current_stage_passed?: boolean | null;
   created_at?: string | null;
   updated_at?: string | null;
   original_snapshot?: Partial<AuthorRow> & { review_rounds?: ReviewRound[] };
@@ -63,6 +71,9 @@ interface AuthorRow {
 }
 
 const emptyRound = (round = 1): ReviewRound => ({ round, sent_date: '', received_date: '' });
+
+const COMMENT_MAX = 1000;
+const DEFAULT_STAGE_DAYS = 7;
 
 const emptyForm = {
   journal_key: '',
@@ -80,7 +91,17 @@ const emptyForm = {
   galley_received_date: '',
   publish_date: '',
   editorial_status: 'Submission',
+  soft_reminder_sent: '',
+  second_reminder_sent: '',
+  last_reminder_sent: '',
+  comments: '',
+  current_stage: '',
+  current_stage_started: '',
+  current_stage_days: DEFAULT_STAGE_DAYS,
+  current_stage_passed: false,
 };
+
+type FormState = typeof emptyForm;
 
 function roundsFrom(row: AuthorRow): ReviewRound[] {
   const rounds = (row.review_rounds || []).map((item, index) => ({
@@ -127,6 +148,14 @@ function rowToForm(row: AuthorRow, journals: JournalOption[]) {
     galley_received_date: row.galley_received_date || '',
     publish_date: row.publish_date || '',
     editorial_status: row.editorial_status || 'Submission',
+    soft_reminder_sent: row.soft_reminder_sent || '',
+    second_reminder_sent: row.second_reminder_sent || '',
+    last_reminder_sent: row.last_reminder_sent || '',
+    comments: row.comments || '',
+    current_stage: row.current_stage || '',
+    current_stage_started: row.current_stage_started || '',
+    current_stage_days: row.current_stage_days || DEFAULT_STAGE_DAYS,
+    current_stage_passed: Boolean(row.current_stage_passed),
   };
 }
 
@@ -173,6 +202,14 @@ function applySnapshot(row: AuthorRow, snap?: Partial<AuthorRow> | null): Author
     galley_received_date: snap.galley_received_date ?? row.galley_received_date,
     publish_date: snap.publish_date ?? row.publish_date,
     editorial_status: snap.editorial_status ?? row.editorial_status,
+    soft_reminder_sent: snap.soft_reminder_sent ?? row.soft_reminder_sent,
+    second_reminder_sent: snap.second_reminder_sent ?? row.second_reminder_sent,
+    last_reminder_sent: snap.last_reminder_sent ?? row.last_reminder_sent,
+    comments: snap.comments ?? row.comments,
+    current_stage: snap.current_stage ?? row.current_stage,
+    current_stage_started: snap.current_stage_started ?? row.current_stage_started,
+    current_stage_days: snap.current_stage_days ?? row.current_stage_days,
+    current_stage_passed: snap.current_stage_passed ?? row.current_stage_passed,
   };
 }
 
@@ -184,8 +221,6 @@ const EDITORIAL_STATUSES = [
   'Sent for copy editing',
 ] as const;
 
-const SLA_DAYS = 7;
-
 type SlaTone = 'red' | 'green' | 'white';
 
 function parseDay(value?: string | null): Date | null {
@@ -195,32 +230,100 @@ function parseDay(value?: string | null): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function slaTone(previous?: string | null, current?: string | null, now = new Date()): SlaTone {
-  const prev = parseDay(previous);
-  const cur = parseDay(current);
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (cur) {
-    if (!prev) return 'green';
-    return Math.floor((cur.getTime() - prev.getTime()) / 86400000) > SLA_DAYS ? 'red' : 'green';
-  }
-  if (!prev) return 'white';
-  return Math.floor((today.getTime() - prev.getTime()) / 86400000) > SLA_DAYS ? 'red' : 'white';
+function stageKey(round: number, kind: 'sent' | 'received') {
+  return `round_${round}_${kind}`;
 }
 
-function slaInputClass(tone: SlaTone) {
+function stageLabel(key?: string | null) {
+  const text = (key || '').trim();
+  if (!text) return 'None';
+  const match = text.match(/^round_(\d+)_(sent|received)$/);
+  if (match) {
+    return match[2] === 'sent'
+      ? `Round ${match[1]} review sent date`
+      : `Round ${match[1]} review receive date`;
+  }
+  if (text === 'accepted_date') return 'Acceptance date';
+  if (text === 'galley_sent_date') return 'Galley sent date';
+  if (text === 'galley_received_date') return 'Galley received date';
+  if (text === 'publish_date') return 'Publish date';
+  return text;
+}
+
+function stageOptions(rounds: ReviewRound[]) {
+  const items = [{ value: '', label: 'None' }];
+  const count = Math.max(rounds.length, 1);
+  for (let index = 0; index < count; index += 1) {
+    items.push({ value: stageKey(index + 1, 'sent'), label: `Round ${index + 1} review sent date` });
+    items.push({
+      value: stageKey(index + 1, 'received'),
+      label: `Round ${index + 1} review receive date`,
+    });
+  }
+  items.push({ value: 'accepted_date', label: 'Acceptance date' });
+  items.push({ value: 'galley_sent_date', label: 'Galley sent date' });
+  items.push({ value: 'galley_received_date', label: 'Galley received date' });
+  items.push({ value: 'publish_date', label: 'Publish date' });
+  return items;
+}
+
+function dateForStage(data: {
+  review_rounds?: ReviewRound[];
+  accepted_date?: string | null;
+  galley_sent_date?: string | null;
+  galley_received_date?: string | null;
+  publish_date?: string | null;
+}, key: string) {
+  const match = key.match(/^round_(\d+)_(sent|received)$/);
+  if (match) {
+    const round = data.review_rounds?.[Number(match[1]) - 1];
+    return (match[2] === 'sent' ? round?.sent_date : round?.received_date) || '';
+  }
+  if (key === 'accepted_date') return data.accepted_date || '';
+  if (key === 'galley_sent_date') return data.galley_sent_date || '';
+  if (key === 'galley_received_date') return data.galley_received_date || '';
+  if (key === 'publish_date') return data.publish_date || '';
+  return '';
+}
+
+function currentStageTone(
+  stageKeyValue: string,
+  data: {
+    current_stage?: string | null;
+    current_stage_started?: string | null;
+    current_stage_days?: number | null;
+    current_stage_passed?: boolean | null;
+  },
+  now = new Date(),
+): SlaTone | undefined {
+  if (!data.current_stage || data.current_stage !== stageKeyValue) return undefined;
+  if (data.current_stage_passed) return 'green';
+  const start = parseDay(data.current_stage_started);
+  if (!start) return 'white';
+  const allowed =
+    Number.isFinite(Number(data.current_stage_days)) && Number(data.current_stage_days) > 0
+      ? Number(data.current_stage_days)
+      : DEFAULT_STAGE_DAYS;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const elapsed = Math.floor((today.getTime() - start.getTime()) / 86400000);
+  return elapsed > allowed ? 'red' : 'white';
+}
+
+function slaInputClass(tone?: SlaTone) {
   if (tone === 'red') return 'ring-2 ring-red-500';
   if (tone === 'green') return 'ring-2 ring-emerald-400';
-  return 'ring-1 ring-white/50';
+  if (tone === 'white') return 'ring-1 ring-white/50';
+  return '';
 }
 
 function SlaDot({ tone, label }: { tone: SlaTone; label: string }) {
   const color = tone === 'red' ? 'bg-red-500' : tone === 'green' ? 'bg-emerald-400' : 'bg-white';
   const title =
     tone === 'red'
-      ? `${label}: no change in 7 days`
+      ? `${label}: current state is overdue and not marked passed`
       : tone === 'green'
-        ? `${label}: updated within 7 days`
-        : `${label}: on time / waiting`;
+        ? `${label}: current state marked passed`
+        : `${label}: current state, waiting`;
   return <button type="button" tabIndex={-1} className={`w-3.5 h-3.5 rounded-full shrink-0 ${color}`} title={title} />;
 }
 
@@ -233,13 +336,13 @@ function DateSlaField({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  tone: SlaTone;
+  tone?: SlaTone;
 }) {
   return (
     <label className="text-sm text-gray-400">
       <span className="inline-flex items-center gap-2">
         {label}
-        <SlaDot tone={tone} label={label} />
+        {tone ? <SlaDot tone={tone} label={label} /> : null}
       </span>
       <input
         className={`input-field mt-1 ${slaInputClass(tone)}`}
@@ -249,41 +352,6 @@ function DateSlaField({
       />
     </label>
   );
-}
-
-function dateTones(data: {
-  received_date?: string | null;
-  created_at?: string | null;
-  review_rounds?: ReviewRound[];
-  accepted_date?: string | null;
-  galley_sent_date?: string | null;
-  galley_received_date?: string | null;
-  publish_date?: string | null;
-}) {
-  const rounds = data.review_rounds?.length ? data.review_rounds : [emptyRound(1)];
-  let previous = data.received_date || (data.created_at ? data.created_at.slice(0, 10) : '') || '';
-  let waitingSeen = false;
-  const step = (current?: string | null): SlaTone => {
-    if (current) {
-      const tone = slaTone(previous, current);
-      previous = current;
-      return tone;
-    }
-    if (waitingSeen) return 'white';
-    waitingSeen = true;
-    return slaTone(previous, current);
-  };
-  const roundTones = rounds.map((round) => ({
-    sent: step(round.sent_date),
-    received: step(round.received_date),
-  }));
-  return {
-    rounds: roundTones,
-    accepted: step(data.accepted_date),
-    galleySent: step(data.galley_sent_date),
-    galleyReceived: step(data.galley_received_date),
-    publish: step(data.publish_date),
-  };
 }
 
 function recordPath(wing: Wing, id: number) {
@@ -329,8 +397,8 @@ type DisplayRow = {
 
 function HistoryCard({ ver }: { ver: DisplayRow }) {
   const data = ver.data;
-  const tones = dateTones(data);
   const journal = data.journal_name || data.journal_title || '';
+  const rounds = data.review_rounds?.length ? data.review_rounds : [emptyRound(1)];
   return (
     <section className="panel p-4 mb-4">
       <div className="mb-4">
@@ -350,24 +418,56 @@ function HistoryCard({ ver }: { ver: DisplayRow }) {
         <ReportField label="Plagiarism" value={data.plagiarism} />
         <ReportField label="ORCID ID" value={data.orcid_id} />
         <ReportField label="Receive date" value={data.received_date} />
-        {(data.review_rounds || [emptyRound(1)]).map((round, index) => (
+        {rounds.map((round, index) => (
           <div key={`${ver.key}-r${index}`} className="md:col-span-2 grid gap-4 md:grid-cols-2">
             <ReportField
               label={`Round ${index + 1} review sent date`}
               value={round.sent_date}
-              tone={tones.rounds[index]?.sent}
+              tone={currentStageTone(stageKey(index + 1, 'sent'), data)}
             />
             <ReportField
               label={`Round ${index + 1} review receive date`}
               value={round.received_date}
-              tone={tones.rounds[index]?.received}
+              tone={currentStageTone(stageKey(index + 1, 'received'), data)}
             />
           </div>
         ))}
-        <ReportField label="Acceptance date" value={data.accepted_date} tone={tones.accepted} />
-        <ReportField label="Galley sent date" value={data.galley_sent_date} tone={tones.galleySent} />
-        <ReportField label="Galley received date" value={data.galley_received_date} tone={tones.galleyReceived} />
-        <ReportField label="Publish date" value={data.publish_date} tone={tones.publish} />
+        <ReportField
+          label="Acceptance date"
+          value={data.accepted_date}
+          tone={currentStageTone('accepted_date', data)}
+        />
+        <ReportField
+          label="Galley sent date"
+          value={data.galley_sent_date}
+          tone={currentStageTone('galley_sent_date', data)}
+        />
+        <ReportField
+          label="Galley received date"
+          value={data.galley_received_date}
+          tone={currentStageTone('galley_received_date', data)}
+        />
+        <ReportField
+          label="Publish date"
+          value={data.publish_date}
+          tone={currentStageTone('publish_date', data)}
+        />
+        <ReportField label="Current state" value={stageLabel(data.current_stage)} />
+        <ReportField label="Current-state date" value={data.current_stage_started} />
+        <ReportField
+          label="Days allowed"
+          value={data.current_stage ? String(data.current_stage_days || DEFAULT_STAGE_DAYS) : ''}
+        />
+        <ReportField
+          label="Current state passed"
+          value={data.current_stage ? (data.current_stage_passed ? 'Yes' : 'No') : ''}
+        />
+        <ReportField label="Soft reminder sent" value={data.soft_reminder_sent} />
+        <ReportField label="Second reminder sent" value={data.second_reminder_sent} />
+        <ReportField label="Last reminder sent" value={data.last_reminder_sent} />
+        <div className="md:col-span-2">
+          <ReportField label="Comments" value={data.comments} />
+        </div>
       </div>
     </section>
   );
@@ -397,6 +497,371 @@ function displayRows(row: AuthorRow): DisplayRow[] {
     });
   }
   return out;
+}
+
+function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) {
+  const selected = journals.find((journal) => journalKey(journal) === form.journal_key);
+  const parsed = parseJournalKey(form.journal_key);
+  return {
+    wing,
+    journal_id: parsed.journal_id,
+    journal_title: parsed.journal_title || selected?.name || selected?.abbreviation || '',
+    ojs_number: form.ojs_number,
+    title: form.title,
+    author_names: form.author_names,
+    author_emails: form.author_emails,
+    email_sent_date: form.email_sent_date || null,
+    plagiarism: form.plagiarism,
+    orcid_id: form.orcid_id,
+    received_date: form.received_date || null,
+    review_rounds: form.review_rounds.map((round, index) => ({
+      round: index + 1,
+      sent_date: round.sent_date || null,
+      received_date: round.received_date || null,
+    })),
+    accepted_date: form.accepted_date || null,
+    galley_sent_date: form.galley_sent_date || null,
+    galley_received_date: form.galley_received_date || null,
+    publish_date: form.publish_date || null,
+    editorial_status: form.editorial_status,
+    soft_reminder_sent: form.soft_reminder_sent || null,
+    second_reminder_sent: form.second_reminder_sent || null,
+    last_reminder_sent: form.last_reminder_sent || null,
+    comments: form.comments.slice(0, COMMENT_MAX),
+    current_stage: form.current_stage,
+    current_stage_started: form.current_stage ? form.current_stage_started || null : null,
+    current_stage_days: form.current_stage_days || DEFAULT_STAGE_DAYS,
+    current_stage_passed: Boolean(form.current_stage && form.current_stage_passed),
+  };
+}
+
+function ArticleFormFields({
+  form,
+  journals,
+  heading,
+  extraRoundButton,
+  onChange,
+}: {
+  form: FormState;
+  journals: JournalOption[];
+  heading: string;
+  extraRoundButton?: boolean;
+  onChange: (next: FormState | ((prev: FormState) => FormState)) => void;
+}) {
+  const field = (key: keyof FormState, value: string | number | boolean) => {
+    onChange((prev) => ({ ...prev, [key]: value }));
+  };
+  const setRound = (index: number, key: 'sent_date' | 'received_date', value: string) => {
+    onChange((prev) => ({
+      ...prev,
+      review_rounds: prev.review_rounds.map((round, idx) =>
+        idx === index ? { ...round, [key]: value } : round,
+      ),
+    }));
+  };
+  const addRound = () => {
+    onChange((prev) => ({
+      ...prev,
+      review_rounds: [...prev.review_rounds, emptyRound(prev.review_rounds.length + 1)],
+    }));
+  };
+  const removeRound = (index: number) => {
+    onChange((prev) => {
+      const nextRounds =
+        prev.review_rounds.length === 1
+          ? prev.review_rounds
+          : prev.review_rounds
+              .filter((_, idx) => idx !== index)
+              .map((round, idx) => ({ ...round, round: idx + 1 }));
+      let current = prev.current_stage;
+      if (current.startsWith('round_')) {
+        const match = current.match(/^round_(\d+)_(sent|received)$/);
+        if (match && Number(match[1]) > nextRounds.length) current = '';
+      }
+      return { ...prev, review_rounds: nextRounds, current_stage: current };
+    });
+  };
+  const setCurrentStage = (value: string) => {
+    onChange((prev) => {
+      const started = value ? prev.current_stage_started || dateForStage(prev, value) : '';
+      return {
+        ...prev,
+        current_stage: value,
+        current_stage_started: started,
+        current_stage_passed: value ? prev.current_stage_passed : false,
+        current_stage_days: prev.current_stage_days || DEFAULT_STAGE_DAYS,
+      };
+    });
+  };
+  const commentLen = form.comments.length;
+  return (
+    <>
+      <h3 className="md:col-span-2 text-sm font-medium" id="author-article-form">
+        {heading}
+      </h3>
+      <label className="text-sm text-gray-400">
+        Select journal
+        <select
+          className="input-field mt-1"
+          value={form.journal_key}
+          onChange={(e) => field('journal_key', e.target.value)}
+        >
+          <option value="">Select journal</option>
+          {journals.map((journal) => (
+            <option key={journalKey(journal)} value={journalKey(journal)}>
+              {journalLabel(journal)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="text-sm text-gray-400">
+        OJS number
+        <input
+          className="input-field mt-1"
+          value={form.ojs_number}
+          onChange={(e) => field('ojs_number', e.target.value)}
+        />
+      </label>
+      <label className="text-sm text-gray-400 md:col-span-2">
+        Title
+        <input className="input-field mt-1" value={form.title} onChange={(e) => field('title', e.target.value)} />
+      </label>
+      <label className="text-sm text-gray-400">
+        Author names
+        <textarea
+          className="input-field mt-1 min-h-[4.5rem]"
+          value={form.author_names}
+          onChange={(e) => field('author_names', e.target.value)}
+          placeholder="One name per line, or separated by semicolons"
+        />
+      </label>
+      <div className="space-y-3">
+        <label className="text-sm text-gray-400 block">
+          Email addresses of authors
+          <textarea
+            className="input-field mt-1 min-h-[4.5rem]"
+            value={form.author_emails}
+            onChange={(e) => field('author_emails', e.target.value)}
+            placeholder="Matching order with author names"
+          />
+        </label>
+        <label className="text-sm text-gray-400 block">
+          Email sent date
+          <input
+            className="input-field mt-1"
+            type="date"
+            value={form.email_sent_date}
+            onChange={(e) => field('email_sent_date', e.target.value)}
+          />
+        </label>
+      </div>
+      <label className="text-sm text-gray-400">
+        Plagiarism
+        <input
+          className="input-field mt-1"
+          value={form.plagiarism}
+          onChange={(e) => field('plagiarism', e.target.value)}
+          placeholder="e.g. 11%"
+        />
+      </label>
+      <label className="text-sm text-gray-400">
+        ORCID ID
+        <input className="input-field mt-1" value={form.orcid_id} onChange={(e) => field('orcid_id', e.target.value)} />
+      </label>
+      <label className="text-sm text-gray-400">
+        Receive date
+        <input
+          className="input-field mt-1"
+          type="date"
+          value={form.received_date}
+          onChange={(e) => field('received_date', e.target.value)}
+        />
+      </label>
+      <div className="md:col-span-2 border border-gray-800 rounded-md p-3 space-y-3">
+        <p className="text-sm font-medium text-gray-200">Current state</p>
+        <p className="text-xs text-gray-500">
+          Mark the sequential stage that is waiting now. Add a date and the days allowed. The white
+          dot on that stage turns red after those days if it is not marked passed.
+        </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="text-sm text-gray-400 md:col-span-2">
+            Sequential stage
+            <select
+              className="input-field mt-1"
+              value={form.current_stage}
+              onChange={(e) => setCurrentStage(e.target.value)}
+            >
+              {stageOptions(form.review_rounds).map((option) => (
+                <option key={option.value || 'none'} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm text-gray-400">
+            Current-state date
+            <input
+              className="input-field mt-1"
+              type="date"
+              value={form.current_stage_started}
+              onChange={(e) => field('current_stage_started', e.target.value)}
+              disabled={!form.current_stage}
+            />
+          </label>
+          <label className="text-sm text-gray-400">
+            Days allowed
+            <input
+              className="input-field mt-1"
+              type="number"
+              min={1}
+              max={365}
+              value={form.current_stage_days}
+              onChange={(e) => field('current_stage_days', Number(e.target.value) || DEFAULT_STAGE_DAYS)}
+              disabled={!form.current_stage}
+            />
+          </label>
+          <label className="text-sm text-gray-300 inline-flex items-center gap-2 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={Boolean(form.current_stage && form.current_stage_passed)}
+              disabled={!form.current_stage}
+              onChange={(e) => field('current_stage_passed', e.target.checked)}
+            />
+            Marked as passed
+          </label>
+        </div>
+      </div>
+      <div className="md:col-span-2 space-y-3">
+        {form.review_rounds.map((round, index) => (
+          <div key={round.round} className="border border-gray-800 rounded-md p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-gray-200">Round {index + 1}</p>
+              <div className="flex items-center gap-1">
+                {index === form.review_rounds.length - 1 && (
+                  <button
+                    type="button"
+                    className="text-gray-400 hover:text-white p-1"
+                    onClick={addRound}
+                    title={`Add round ${form.review_rounds.length + 1}`}
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                )}
+                {index > 0 && (
+                  <button
+                    type="button"
+                    className="text-gray-400 hover:text-white p-1"
+                    onClick={() => removeRound(index)}
+                    title="Remove this round"
+                  >
+                    <Minus className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <DateSlaField
+                label="Review sent date"
+                value={round.sent_date || ''}
+                onChange={(value) => setRound(index, 'sent_date', value)}
+                tone={currentStageTone(stageKey(index + 1, 'sent'), form)}
+              />
+              <DateSlaField
+                label="Review receive date"
+                value={round.received_date || ''}
+                onChange={(value) => setRound(index, 'received_date', value)}
+                tone={currentStageTone(stageKey(index + 1, 'received'), form)}
+              />
+            </div>
+          </div>
+        ))}
+        {extraRoundButton ? (
+          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={addRound}>
+            <Plus className="w-4 h-4" />
+            Add round {form.review_rounds.length + 1}
+          </button>
+        ) : null}
+      </div>
+      <DateSlaField
+        label="Acceptance date"
+        value={form.accepted_date}
+        onChange={(value) => field('accepted_date', value)}
+        tone={currentStageTone('accepted_date', form)}
+      />
+      <DateSlaField
+        label="Galley sent date"
+        value={form.galley_sent_date}
+        onChange={(value) => field('galley_sent_date', value)}
+        tone={currentStageTone('galley_sent_date', form)}
+      />
+      <DateSlaField
+        label="Galley received date"
+        value={form.galley_received_date}
+        onChange={(value) => field('galley_received_date', value)}
+        tone={currentStageTone('galley_received_date', form)}
+      />
+      <DateSlaField
+        label="Publish date"
+        value={form.publish_date}
+        onChange={(value) => field('publish_date', value)}
+        tone={currentStageTone('publish_date', form)}
+      />
+      <label className="text-sm text-gray-400">
+        Soft reminder sent
+        <input
+          className="input-field mt-1"
+          type="date"
+          value={form.soft_reminder_sent}
+          onChange={(e) => field('soft_reminder_sent', e.target.value)}
+        />
+      </label>
+      <label className="text-sm text-gray-400">
+        Second reminder sent
+        <input
+          className="input-field mt-1"
+          type="date"
+          value={form.second_reminder_sent}
+          onChange={(e) => field('second_reminder_sent', e.target.value)}
+        />
+      </label>
+      <label className="text-sm text-gray-400">
+        Last reminder sent
+        <input
+          className="input-field mt-1"
+          type="date"
+          value={form.last_reminder_sent}
+          onChange={(e) => field('last_reminder_sent', e.target.value)}
+        />
+      </label>
+      <label className="text-sm text-gray-400 md:col-span-2">
+        Comments
+        <textarea
+          className="input-field mt-1 min-h-[6rem]"
+          maxLength={COMMENT_MAX}
+          value={form.comments}
+          onChange={(e) => field('comments', e.target.value.slice(0, COMMENT_MAX))}
+          placeholder="About 100 words, up to 1,000 characters"
+        />
+        <span className={`block text-xs mt-1 ${commentLen >= COMMENT_MAX ? 'text-red-400' : 'text-gray-500'}`}>
+          {commentLen} / {COMMENT_MAX} characters
+        </span>
+      </label>
+      <label className="text-sm text-gray-400 md:col-span-2">
+        Status
+        <select
+          className="input-field mt-1"
+          value={form.editorial_status}
+          onChange={(e) => field('editorial_status', e.target.value)}
+        >
+          {EDITORIAL_STATUSES.map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
 }
 
 export default function AuthorArticlesPage({ wing }: { wing: Wing }) {
@@ -438,33 +903,7 @@ function AuthorList({ wing }: { wing: Wing }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wing]);
 
-  const payload = () => {
-    const selected = journals.find((journal) => journalKey(journal) === form.journal_key);
-    const parsed = parseJournalKey(form.journal_key);
-    return {
-      wing,
-      journal_id: parsed.journal_id,
-      journal_title: parsed.journal_title || selected?.name || selected?.abbreviation || '',
-      ojs_number: form.ojs_number,
-      title: form.title,
-      author_names: form.author_names,
-      author_emails: form.author_emails,
-      email_sent_date: form.email_sent_date || null,
-      plagiarism: form.plagiarism,
-      orcid_id: form.orcid_id,
-      received_date: form.received_date || null,
-      review_rounds: form.review_rounds.map((round, index) => ({
-        round: index + 1,
-        sent_date: round.sent_date || null,
-        received_date: round.received_date || null,
-      })),
-      accepted_date: form.accepted_date || null,
-      galley_sent_date: form.galley_sent_date || null,
-      galley_received_date: form.galley_received_date || null,
-      publish_date: form.publish_date || null,
-      editorial_status: form.editorial_status,
-    };
-  };
+  const payload = () => articlePayload(wing, form, journals);
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -525,42 +964,6 @@ function AuthorList({ wing }: { wing: Wing }) {
     }
   };
 
-  const field = (key: keyof typeof emptyForm, value: string | number | '') => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const setRound = (index: number, key: 'sent_date' | 'received_date', value: string) => {
-    setForm((prev) => ({
-      ...prev,
-      review_rounds: prev.review_rounds.map((round, idx) =>
-        idx === index ? { ...round, [key]: value } : round,
-      ),
-    }));
-  };
-
-  const addRound = () => {
-    setForm((prev) => ({
-      ...prev,
-      review_rounds: [...prev.review_rounds, emptyRound(prev.review_rounds.length + 1)],
-    }));
-  };
-
-  const removeRound = (index: number) => {
-    setForm((prev) => ({
-      ...prev,
-      review_rounds:
-        prev.review_rounds.length === 1
-          ? prev.review_rounds
-          : prev.review_rounds.filter((_, idx) => idx !== index).map((round, idx) => ({ ...round, round: idx + 1 })),
-    }));
-  };
-
-  const editingRow = editingId ? rows.find((row) => row.id === editingId) : undefined;
-  const tones = dateTones({
-    ...form,
-    created_at: editingRow?.created_at,
-  });
-
   return (
     <div>
       <h2 className="text-2xl font-semibold mb-2">
@@ -606,178 +1009,13 @@ function AuthorList({ wing }: { wing: Wing }) {
 
       {showForm && (
         <form className="panel p-4 mb-6 grid gap-3 md:grid-cols-2" onSubmit={(e) => void save(e)}>
-          <h3 className="md:col-span-2 text-sm font-medium" id="author-article-form">
-            {editingId ? 'Add details' : inProcess ? 'Save under process article' : 'Save published article'}
-          </h3>
-          <label className="text-sm text-gray-400">
-            Select journal
-            <select
-              className="input-field mt-1"
-              value={form.journal_key}
-              onChange={(e) => field('journal_key', e.target.value)}
-            >
-              <option value="">Select journal</option>
-              {journals.map((journal) => (
-                <option key={journalKey(journal)} value={journalKey(journal)}>
-                  {journalLabel(journal)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm text-gray-400">
-            OJS number
-            <input
-              className="input-field mt-1"
-              value={form.ojs_number}
-              onChange={(e) => field('ojs_number', e.target.value)}
-            />
-          </label>
-          <label className="text-sm text-gray-400 md:col-span-2">
-            Title
-            <input className="input-field mt-1" value={form.title} onChange={(e) => field('title', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            Author names
-            <textarea
-              className="input-field mt-1 min-h-[4.5rem]"
-              value={form.author_names}
-              onChange={(e) => field('author_names', e.target.value)}
-              placeholder="One name per line, or separated by semicolons"
-            />
-          </label>
-          <div className="space-y-3">
-            <label className="text-sm text-gray-400 block">
-              Email addresses of authors
-              <textarea
-                className="input-field mt-1 min-h-[4.5rem]"
-                value={form.author_emails}
-                onChange={(e) => field('author_emails', e.target.value)}
-                placeholder="Matching order with author names"
-              />
-            </label>
-            <label className="text-sm text-gray-400 block">
-              Email sent date
-              <input
-                className="input-field mt-1"
-                type="date"
-                value={form.email_sent_date}
-                onChange={(e) => field('email_sent_date', e.target.value)}
-              />
-            </label>
-          </div>
-          <label className="text-sm text-gray-400">
-            Plagiarism
-            <input
-              className="input-field mt-1"
-              value={form.plagiarism}
-              onChange={(e) => field('plagiarism', e.target.value)}
-              placeholder="e.g. 11%"
-            />
-          </label>
-          <label className="text-sm text-gray-400">
-            ORCID ID
-            <input className="input-field mt-1" value={form.orcid_id} onChange={(e) => field('orcid_id', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            Receive date
-            <input
-              className="input-field mt-1"
-              type="date"
-              value={form.received_date}
-              onChange={(e) => field('received_date', e.target.value)}
-            />
-          </label>
-          <div className="md:col-span-2 space-y-3">
-            {form.review_rounds.map((round, index) => (
-              <div key={round.round} className="border border-gray-800 rounded-md p-3 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium text-gray-200">Round {index + 1}</p>
-                  <div className="flex items-center gap-1">
-                    {index === form.review_rounds.length - 1 && (
-                      <button
-                        type="button"
-                        className="text-gray-400 hover:text-white p-1"
-                        onClick={addRound}
-                        title={`Add round ${form.review_rounds.length + 1}`}
-                      >
-                        <Plus className="w-4 h-4" />
-                      </button>
-                    )}
-                    {index > 0 && (
-                      <button
-                        type="button"
-                        className="text-gray-400 hover:text-white p-1"
-                        onClick={() => removeRound(index)}
-                        title="Remove this round"
-                      >
-                        <Minus className="w-4 h-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <DateSlaField
-                    label="Review sent date"
-                    value={round.sent_date || ''}
-                    onChange={(value) => setRound(index, 'sent_date', value)}
-                    tone={tones.rounds[index]?.sent || 'white'}
-                  />
-                  <DateSlaField
-                    label="Review receive date"
-                    value={round.received_date || ''}
-                    onChange={(value) => setRound(index, 'received_date', value)}
-                    tone={tones.rounds[index]?.received || 'white'}
-                  />
-                </div>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="btn-secondary inline-flex items-center gap-2"
-              onClick={addRound}
-            >
-              <Plus className="w-4 h-4" />
-              Add round {form.review_rounds.length + 1}
-            </button>
-          </div>
-          <DateSlaField
-            label="Acceptance date"
-            value={form.accepted_date}
-            onChange={(value) => field('accepted_date', value)}
-            tone={tones.accepted}
+          <ArticleFormFields
+            form={form}
+            journals={journals}
+            heading={editingId ? 'Add details' : inProcess ? 'Save under process article' : 'Save published article'}
+            extraRoundButton
+            onChange={setForm}
           />
-          <DateSlaField
-            label="Galley sent date"
-            value={form.galley_sent_date}
-            onChange={(value) => field('galley_sent_date', value)}
-            tone={tones.galleySent}
-          />
-          <DateSlaField
-            label="Galley received date"
-            value={form.galley_received_date}
-            onChange={(value) => field('galley_received_date', value)}
-            tone={tones.galleyReceived}
-          />
-          <DateSlaField
-            label="Publish date"
-            value={form.publish_date}
-            onChange={(value) => field('publish_date', value)}
-            tone={tones.publish}
-          />
-          <label className="text-sm text-gray-400 md:col-span-2">
-            Status
-            <select
-              className="input-field mt-1"
-              value={form.editorial_status}
-              onChange={(e) => field('editorial_status', e.target.value)}
-            >
-              {EDITORIAL_STATUSES.map((status) => (
-                <option key={status} value={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
-          </label>
           <div className="md:col-span-2 flex flex-wrap gap-2">
             <button className="btn-primary" type="submit" disabled={busy}>
               {busy ? 'Saving…' : 'Save article'}
@@ -862,33 +1100,7 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [articleId, wing]);
 
-  const payload = () => {
-    const selected = journals.find((journal) => journalKey(journal) === form.journal_key);
-    const parsed = parseJournalKey(form.journal_key);
-    return {
-      wing,
-      journal_id: parsed.journal_id,
-      journal_title: parsed.journal_title || selected?.name || selected?.abbreviation || '',
-      ojs_number: form.ojs_number,
-      title: form.title,
-      author_names: form.author_names,
-      author_emails: form.author_emails,
-      email_sent_date: form.email_sent_date || null,
-      plagiarism: form.plagiarism,
-      orcid_id: form.orcid_id,
-      received_date: form.received_date || null,
-      review_rounds: form.review_rounds.map((round, index) => ({
-        round: index + 1,
-        sent_date: round.sent_date || null,
-        received_date: round.received_date || null,
-      })),
-      accepted_date: form.accepted_date || null,
-      galley_sent_date: form.galley_sent_date || null,
-      galley_received_date: form.galley_received_date || null,
-      publish_date: form.publish_date || null,
-      editorial_status: form.editorial_status,
-    };
-  };
+  const payload = () => articlePayload(wing, form, journals);
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -964,35 +1176,6 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
       setBusy(false);
     }
   };
-
-  const field = (key: keyof typeof emptyForm, value: string | number | '') => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-  };
-  const setRound = (index: number, key: 'sent_date' | 'received_date', value: string) => {
-    setForm((prev) => ({
-      ...prev,
-      review_rounds: prev.review_rounds.map((round, idx) =>
-        idx === index ? { ...round, [key]: value } : round,
-      ),
-    }));
-  };
-  const addRound = () => {
-    setForm((prev) => ({
-      ...prev,
-      review_rounds: [...prev.review_rounds, emptyRound(prev.review_rounds.length + 1)],
-    }));
-  };
-  const removeRound = (index: number) => {
-    setForm((prev) => ({
-      ...prev,
-      review_rounds:
-        prev.review_rounds.length === 1
-          ? prev.review_rounds
-          : prev.review_rounds.filter((_, idx) => idx !== index).map((round, idx) => ({ ...round, round: idx + 1 })),
-    }));
-  };
-
-  const tones = dateTones({ ...form, created_at: row?.created_at });
 
   if (!row) {
     return (
@@ -1087,105 +1270,12 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
 
       {editing && (
         <form className="panel p-4 mb-6 grid gap-3 md:grid-cols-2" onSubmit={(e) => void save(e)}>
-          <h3 className="md:col-span-2 text-sm font-medium" id="author-article-form">
-            Add details
-          </h3>
-          <label className="text-sm text-gray-400">
-            Select journal
-            <select
-              className="input-field mt-1"
-              value={form.journal_key}
-              onChange={(e) => field('journal_key', e.target.value)}
-            >
-              <option value="">Select journal</option>
-              {journals.map((journal) => (
-                <option key={journalKey(journal)} value={journalKey(journal)}>
-                  {journalLabel(journal)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm text-gray-400">
-            OJS number
-            <input className="input-field mt-1" value={form.ojs_number} onChange={(e) => field('ojs_number', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400 md:col-span-2">
-            Title
-            <input className="input-field mt-1" value={form.title} onChange={(e) => field('title', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            Author names
-            <textarea className="input-field mt-1 min-h-[5rem]" value={form.author_names} onChange={(e) => field('author_names', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            Email addresses of authors
-            <textarea className="input-field mt-1 min-h-[5rem]" value={form.author_emails} onChange={(e) => field('author_emails', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            Email sent date
-            <input className="input-field mt-1" type="date" value={form.email_sent_date} onChange={(e) => field('email_sent_date', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            Plagiarism
-            <input className="input-field mt-1" value={form.plagiarism} onChange={(e) => field('plagiarism', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            ORCID ID
-            <input className="input-field mt-1" value={form.orcid_id} onChange={(e) => field('orcid_id', e.target.value)} />
-          </label>
-          <label className="text-sm text-gray-400">
-            Receive date
-            <input className="input-field mt-1" type="date" value={form.received_date} onChange={(e) => field('received_date', e.target.value)} />
-          </label>
-          <div className="md:col-span-2 space-y-3">
-            {form.review_rounds.map((round, index) => (
-              <div key={round.round} className="border border-gray-800 rounded-md p-3 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium text-gray-200">Round {index + 1}</p>
-                  <div className="flex items-center gap-1">
-                    {index === form.review_rounds.length - 1 && (
-                      <button type="button" className="text-gray-400 hover:text-white p-1" onClick={addRound}>
-                        <Plus className="w-4 h-4" />
-                      </button>
-                    )}
-                    {index > 0 && (
-                      <button type="button" className="text-gray-400 hover:text-white p-1" onClick={() => removeRound(index)}>
-                        <Minus className="w-4 h-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <DateSlaField
-                    label="Review sent date"
-                    value={round.sent_date || ''}
-                    onChange={(value) => setRound(index, 'sent_date', value)}
-                    tone={tones.rounds[index]?.sent || 'white'}
-                  />
-                  <DateSlaField
-                    label="Review receive date"
-                    value={round.received_date || ''}
-                    onChange={(value) => setRound(index, 'received_date', value)}
-                    tone={tones.rounds[index]?.received || 'white'}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-          <DateSlaField label="Acceptance date" value={form.accepted_date} onChange={(value) => field('accepted_date', value)} tone={tones.accepted} />
-          <DateSlaField label="Galley sent date" value={form.galley_sent_date} onChange={(value) => field('galley_sent_date', value)} tone={tones.galleySent} />
-          <DateSlaField label="Galley received date" value={form.galley_received_date} onChange={(value) => field('galley_received_date', value)} tone={tones.galleyReceived} />
-          <DateSlaField label="Publish date" value={form.publish_date} onChange={(value) => field('publish_date', value)} tone={tones.publish} />
-          <label className="text-sm text-gray-400 md:col-span-2">
-            Status
-            <select className="input-field mt-1" value={form.editorial_status} onChange={(e) => field('editorial_status', e.target.value)}>
-              {EDITORIAL_STATUSES.map((status) => (
-                <option key={status} value={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
-          </label>
+          <ArticleFormFields
+            form={form}
+            journals={journals}
+            heading="Add details"
+            onChange={setForm}
+          />
           <div className="md:col-span-2 flex flex-wrap gap-2">
             <button className="btn-primary" type="submit" disabled={busy}>
               {busy ? 'Saving…' : 'Save article'}

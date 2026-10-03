@@ -441,3 +441,68 @@ async def test_admin_deletes_ojs_record_only_with_password(client: AsyncClient):
     listed = await client.get("/api/v1/author-articles", headers=headers, params={"wing": "in_process"})
     assert all(row["id"] != article_id for row in listed.json())
 
+
+@pytest.mark.asyncio
+async def test_under_process_reminders_comments_and_current_stage(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    comment = "Reviewer has not replied. " * 20
+    assert len(comment) < 1000
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "ojs_number": "SLA-7",
+            "title": "Current-state paper",
+            "review_rounds": [{"round": 1, "sent_date": "2026-09-01", "received_date": ""}],
+            "soft_reminder_sent": "2026-09-05",
+            "second_reminder_sent": "2026-09-12",
+            "last_reminder_sent": "2026-09-19",
+            "comments": comment,
+            "current_stage": "round_1_sent",
+            "current_stage_started": "2026-09-01",
+            "current_stage_days": 7,
+            "current_stage_passed": False,
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["soft_reminder_sent"] == "2026-09-05"
+    assert body["second_reminder_sent"] == "2026-09-12"
+    assert body["last_reminder_sent"] == "2026-09-19"
+    assert body["comments"] == comment
+    assert body["current_stage"] == "round_1_sent"
+    assert body["current_stage_started"] == "2026-09-01"
+    assert body["current_stage_days"] == 7
+    assert body["current_stage_passed"] is False
+    assert body["original_snapshot"]["current_stage"] == "round_1_sent"
+
+    too_long = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={"ojs_number": "SLA-LONG", "title": "Too long", "comments": "x" * 1001},
+    )
+    assert too_long.status_code == 422
+
+    patched = await client.patch(
+        f"/api/v1/author-articles/{body['id']}",
+        headers=headers,
+        json={
+            "current_stage_passed": True,
+            "comments": "Review returned.",
+            "current_stage": "Round 1 review receive date",
+            "current_stage_started": "2026-09-20",
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["current_stage_passed"] is True
+    assert patched.json()["current_stage"] == "round_1_received"
+    assert patched.json()["comments"] == "Review returned."
+    labels = {item["label"]: item for item in patched.json()["modifications"][-1]["changes"]}
+    assert labels["Current state"]["previous"] == "Round 1 review sent date"
+    assert labels["Current state"]["new"] == "Round 1 review receive date"
+    assert labels["Current state passed"]["new"] == "Yes"
+

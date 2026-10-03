@@ -22,8 +22,12 @@ from app.models.citation import AuthorArticle, AuthorArticleChange, AuthorDbJour
 from app.models.user import User
 from app.schemas.author_db import (
     AUTHOR_DB_JOURNALS,
+    COMMENT_MAX,
+    DEFAULT_STAGE_DAYS,
     EDITORIAL_STATUSES,
     FIELD_LABELS,
+    FIXED_STAGE_LABELS,
+    STAGE_KEY_PATTERN,
     AuthorArticleDeleteIn,
     AuthorArticleIn,
     AuthorArticleOut,
@@ -63,6 +67,14 @@ EXCEL_HEADERS = [
     "Galley received date",
     "Publish date",
     "Status",
+    "Soft reminder sent",
+    "Second reminder sent",
+    "Last reminder sent",
+    "Comments",
+    "Current state",
+    "Current-state date",
+    "Days allowed",
+    "Current state passed",
     "Journal",
     "Wing",
 ]
@@ -93,6 +105,57 @@ def _editorial_status(value: Optional[str]) -> str:
         "copy editing": "Sent for copy editing",
     }
     return aliases.get(lowered, "Submission")
+
+
+def _stage_label(key: Optional[str]) -> str:
+    text = (key or "").strip()
+    if not text:
+        return "(none)"
+    match = re.fullmatch(r"round_(\d+)_(sent|received)", text)
+    if match:
+        kind = "review sent date" if match.group(2) == "sent" else "review receive date"
+        return f"Round {match.group(1)} {kind}"
+    return FIXED_STAGE_LABELS.get(text, text)
+
+
+def _current_stage(value: Optional[str]) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(STAGE_KEY_PATTERN, text):
+        return text
+    lowered = text.lower().strip()
+    aliases = {
+        "none": "",
+        "(none)": "",
+        "acceptance date": "accepted_date",
+        "accepted date": "accepted_date",
+        "galley sent date": "galley_sent_date",
+        "galley received date": "galley_received_date",
+        "publish date": "publish_date",
+    }
+    if lowered in aliases:
+        return aliases[lowered]
+    round_match = re.fullmatch(r"round (\d+) review (sent|receive(?:d)?) date", lowered)
+    if round_match:
+        kind = "sent" if round_match.group(2).startswith("sent") else "received"
+        return f"round_{int(round_match.group(1))}_{kind}"
+    return ""
+
+
+def _stage_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_STAGE_DAYS
+    return max(1, min(days, 365))
+
+
+def _comments(value: Optional[str]) -> str:
+    text = str(value or "")
+    if len(text) > COMMENT_MAX:
+        return text[:COMMENT_MAX]
+    return text
 
 
 def _normalize_rounds(raw: Any, *, fallback_received: Optional[str] = None) -> list[dict[str, Any]]:
@@ -163,6 +226,14 @@ def _row_snapshot(row: AuthorArticle) -> dict[str, Any]:
         "galley_received_date": row.galley_received_date,
         "publish_date": row.publish_date,
         "editorial_status": row.editorial_status or "Submission",
+        "soft_reminder_sent": row.soft_reminder_sent,
+        "second_reminder_sent": row.second_reminder_sent,
+        "last_reminder_sent": row.last_reminder_sent,
+        "comments": row.comments or "",
+        "current_stage": row.current_stage or "",
+        "current_stage_started": row.current_stage_started,
+        "current_stage_days": int(row.current_stage_days or DEFAULT_STAGE_DAYS),
+        "current_stage_passed": bool(row.current_stage_passed),
     }
 
 
@@ -263,6 +334,14 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
         galley_received_date=row.galley_received_date,
         publish_date=row.publish_date,
         editorial_status=row.editorial_status or "Submission",
+        soft_reminder_sent=row.soft_reminder_sent,
+        second_reminder_sent=row.second_reminder_sent,
+        last_reminder_sent=row.last_reminder_sent,
+        comments=row.comments or "",
+        current_stage=row.current_stage or "",
+        current_stage_started=row.current_stage_started,
+        current_stage_days=int(row.current_stage_days or DEFAULT_STAGE_DAYS),
+        current_stage_passed=bool(row.current_stage_passed),
         repeat_done=bool(row.repeat_done),
         doi_in_pdf=row.doi_in_pdf or "",
         created_at=row.created_at,
@@ -438,19 +517,27 @@ async def _apply_update(
         "orcid_id",
         "doi_in_pdf",
         "editorial_status",
+        "comments",
+        "current_stage",
     ):
         if field in data and data[field] is not None:
-            nxt = str(data[field]).strip()
+            nxt = str(data[field])
             if field == "editorial_status":
                 nxt = _editorial_status(nxt)
+            elif field == "comments":
+                nxt = _comments(nxt)
+            elif field == "current_stage":
+                nxt = _current_stage(nxt)
+            else:
+                nxt = nxt.strip()
             prev = getattr(row, field) or ""
             if prev != nxt:
                 diffs.append(
                     {
                         "field": field,
                         "label": FIELD_LABELS[field],
-                        "previous": _display(prev),
-                        "new": _display(nxt),
+                        "previous": _stage_label(prev) if field == "current_stage" else _display(prev),
+                        "new": _stage_label(nxt) if field == "current_stage" else _display(nxt),
                     }
                 )
                 setattr(row, field, nxt)
@@ -462,6 +549,10 @@ async def _apply_update(
         "email_sent_date",
         "galley_sent_date",
         "galley_received_date",
+        "soft_reminder_sent",
+        "second_reminder_sent",
+        "last_reminder_sent",
+        "current_stage_started",
     ):
         if field in data:
             nxt = _blank(data[field] if data[field] is None else str(data[field]))
@@ -492,7 +583,7 @@ async def _apply_update(
             flag_modified(row, "review_rounds")
             if nxt:
                 row.review_date = nxt[0].get("received_date")
-    for field in ("email_sent", "repeat_done"):
+    for field in ("email_sent", "repeat_done", "current_stage_passed"):
         if field in data and data[field] is not None:
             nxt = bool(data[field])
             prev = bool(getattr(row, field))
@@ -506,6 +597,19 @@ async def _apply_update(
                     }
                 )
                 setattr(row, field, nxt)
+    if "current_stage_days" in data and data["current_stage_days"] is not None:
+        nxt = _stage_days(data["current_stage_days"])
+        prev = int(row.current_stage_days or DEFAULT_STAGE_DAYS)
+        if prev != nxt:
+            diffs.append(
+                {
+                    "field": "current_stage_days",
+                    "label": FIELD_LABELS["current_stage_days"],
+                    "previous": _display(prev),
+                    "new": _display(nxt),
+                }
+            )
+            row.current_stage_days = nxt
     if diffs:
         row.updated_at = datetime.now(timezone.utc)
         content_changed = any(item.get("field") != "wing" for item in diffs)
@@ -622,6 +726,14 @@ async def download_import_template():
             "2024-03-18",
             "",
             "Submission",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "7",
+            "No",
             "IJIST",
             "in_process",
         ]
@@ -672,6 +784,14 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
         galley_received_date=_blank(body.galley_received_date),
         publish_date=_blank(body.publish_date),
         editorial_status=_editorial_status(body.editorial_status),
+        soft_reminder_sent=_blank(body.soft_reminder_sent),
+        second_reminder_sent=_blank(body.second_reminder_sent),
+        last_reminder_sent=_blank(body.last_reminder_sent),
+        comments=_comments(body.comments),
+        current_stage=_current_stage(body.current_stage),
+        current_stage_started=_blank(body.current_stage_started),
+        current_stage_days=_stage_days(body.current_stage_days),
+        current_stage_passed=bool(body.current_stage_passed),
         repeat_done=bool(body.repeat_done),
         doi_in_pdf=(body.doi_in_pdf or "").strip(),
     )
@@ -757,6 +877,10 @@ def _is_date_key(key: str) -> bool:
         "email_sent_date",
         "galley_sent_date",
         "galley_received_date",
+        "soft_reminder_sent",
+        "second_reminder_sent",
+        "last_reminder_sent",
+        "current_stage_started",
     } or bool(re.fullmatch(r"r\d+_(sent|received)", key))
 
 
@@ -828,6 +952,17 @@ HEADER_MAP = {
     "published date": "publish_date",
     "status": "editorial_status",
     "editorial status": "editorial_status",
+    "soft reminder sent": "soft_reminder_sent",
+    "second reminder sent": "second_reminder_sent",
+    "last reminder sent": "last_reminder_sent",
+    "comments": "comments",
+    "comment": "comments",
+    "current state": "current_stage",
+    "current stage": "current_stage",
+    "current-state date": "current_stage_started",
+    "current state date": "current_stage_started",
+    "days allowed": "current_stage_days",
+    "current state passed": "current_stage_passed",
     "repeat done": "repeat_done",
     "repeat": "repeat_done",
     "doi": "doi_in_pdf",
@@ -904,7 +1039,7 @@ def _read_table(data: bytes, filename: str) -> list[dict[str, str]]:
             if _is_date_key(key):
                 parsed = _parse_date(value)
                 item[key] = parsed or ""
-            elif key in ("email_sent", "repeat_done"):
+            elif key in ("email_sent", "repeat_done", "current_stage_passed"):
                 item[key] = "yes" if _parse_bool(value) else "no"
             else:
                 item[key] = _cell(value)
@@ -1009,6 +1144,14 @@ async def import_author_articles(
             "galley_received_date": item.get("galley_received_date") or None,
             "publish_date": item.get("publish_date") or None,
             "editorial_status": _editorial_status(item.get("editorial_status")),
+            "soft_reminder_sent": item.get("soft_reminder_sent") or None,
+            "second_reminder_sent": item.get("second_reminder_sent") or None,
+            "last_reminder_sent": item.get("last_reminder_sent") or None,
+            "comments": _comments(item.get("comments")),
+            "current_stage": _current_stage(item.get("current_stage")),
+            "current_stage_started": item.get("current_stage_started") or None,
+            "current_stage_days": _stage_days(item.get("current_stage_days") or DEFAULT_STAGE_DAYS),
+            "current_stage_passed": _parse_bool(item.get("current_stage_passed")),
             "repeat_done": _parse_bool(item.get("repeat_done")),
             "doi_in_pdf": item.get("doi_in_pdf") or "",
         }
