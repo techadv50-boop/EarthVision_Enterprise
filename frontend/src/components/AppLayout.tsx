@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { BookOpen, CheckSquare, ClipboardList, FilePlus, FilePenLine, GitCompare, Globe, Languages, LogOut, Shield, ShieldAlert } from 'lucide-react';
+import { Archive, BookOpen, CheckSquare, ClipboardList, FilePlus, FilePenLine, GitCompare, Globe, Languages, LogOut, Shield, ShieldAlert } from 'lucide-react';
 import {
   canManageUsers,
   hasAuthorWing,
@@ -116,6 +116,11 @@ export default function AppLayout() {
                   </span>
                 </NavLink>
               )}
+              <NavLink to="/authors/store" className={({ isActive }) => navClass(isActive)}>
+                <span className="inline-flex items-center gap-1">
+                  <Archive className="w-4 h-4" /> Article store
+                </span>
+              </NavLink>
               <NavLink to="/authors/sanitization" className={({ isActive }) => navClass(isActive)}>
                 <span className="inline-flex items-center gap-1">
                   <ShieldAlert className="w-4 h-4" /> Sanitization

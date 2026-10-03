@@ -276,3 +276,26 @@ class AuthorIssueSetOut(BaseModel):
     published: list[AuthorIssueArticleOut] = Field(default_factory=list)
     scheduled: list[AuthorIssueArticleOut] = Field(default_factory=list)
     authors: list[str] = Field(default_factory=list)
+
+
+class AuthorStoreJournalOut(BaseModel):
+    key: str
+    name: str
+    abbreviation: str = ""
+    file_count: int = 0
+
+
+class AuthorStoreFileOut(BaseModel):
+    id: int
+    journal_key: str
+    journal_name: str = ""
+    original_name: str
+    content_type: str = ""
+    size_bytes: int = 0
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class AuthorStoreDownloadIn(BaseModel):
+    password: str = ""

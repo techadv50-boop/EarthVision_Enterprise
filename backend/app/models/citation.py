@@ -334,3 +334,23 @@ class AuthorIssueSet(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class AuthorStoreFile(Base):
+    """Article file stored under an author-database journal for later download."""
+
+    __tablename__ = "author_store_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    journal_key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    journal_name: Mapped[str] = mapped_column(String(500), default="")
+    original_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    stored_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(120), default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
