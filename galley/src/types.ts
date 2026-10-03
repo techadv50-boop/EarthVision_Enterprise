@@ -53,6 +53,7 @@ export type EquationBlock = {
   id: string;
   type: "equation";
   imageUrl: string;
+  source: string;
   atoms: EquationAtom[];
   number: string;
 };

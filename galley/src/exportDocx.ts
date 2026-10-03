@@ -34,6 +34,7 @@ import {
   tableNumber,
 } from "./metrics";
 import { composedBlocks } from "./references";
+import { parseMath } from "./equations";
 
 const FONT = "Garamond";
 const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
@@ -330,7 +331,7 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
         children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 40, after: 40 }, children: runs }));
         runs = [];
       };
-      for (const atom of block.atoms || []) {
+      for (const atom of (block.source ? parseMath(block.source) : block.atoms) || []) {
         if (atom.kind === "frac") {
           flush();
           children.push(

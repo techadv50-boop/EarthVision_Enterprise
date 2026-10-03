@@ -233,6 +233,21 @@ textarea { resize: vertical; width: 100%; }
 }
 .references h2 { margin: 0; }
 .references { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.5rem; }
+.math-type {
+  background: white;
+  border: 1px solid #c9bfb1;
+  border-radius: 6px;
+  padding: 0.6rem;
+}
+.math-source {
+  font-family: "Cambria Math", "STIX Two Math", "DejaVu Sans", serif;
+  font-size: 1.2rem;
+  margin-top: 0.4rem;
+}
+.math-symbols button { min-width: 2.2rem; padding-left: 0.4rem; padding-right: 0.4rem; }
+.report { border-top: 1px solid #ddd4c6; padding-top: 0.5rem; }
+.report h3 { margin: 0.8rem 0 0.3rem; font-size: 0.95rem; }
+.report ul { margin: 0; padding-left: 1.2rem; }
 .notice {
   background: #e7f0e4;
   border-left: 3px solid #2f6b32;

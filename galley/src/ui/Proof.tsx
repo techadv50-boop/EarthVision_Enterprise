@@ -4,6 +4,7 @@ import { flowBody, parseStartPage } from "../metrics";
 import { composedBlocks } from "../references";
 import { FrontSheet, SheetFooter, SheetHeader } from "./FirstPage";
 import { EquationView } from "./EquationView";
+import { parseMath } from "../equations";
 import { figureNumber, tableNumber } from "../metrics";
 import type { BodyBlock } from "../types";
 
@@ -177,6 +178,8 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
       </div>
     );
   }
-  if (block.type === "equation") return <EquationView atoms={block.atoms} number={block.number} />;
+  if (block.type === "equation") {
+    return <EquationView atoms={block.source ? parseMath(block.source) : block.atoms} number={block.number} />;
+  }
   return null;
 }

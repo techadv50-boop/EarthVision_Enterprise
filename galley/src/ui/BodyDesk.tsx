@@ -1,9 +1,9 @@
-import { useState } from "react";
-import type { BodyBlock, EquationAtom, EquationBlock, Galley, IconAsset, Journal, TableBlock } from "../types";
+import { useRef, useState } from "react";
+import type { BodyBlock, EquationBlock, Galley, IconAsset, Journal, TableBlock } from "../types";
 import { figureNumber, flowBody, newId, parseStartPage, tableNumber } from "../metrics";
 import { composedBlocks } from "../references";
 import { fileToDataUrl } from "../storage";
-import { atomsFromOcr } from "../equations";
+import { parseMath, sourceFromAtoms } from "../equations";
 import { parseTable } from "../tables";
 import { readEquation } from "../api";
 import { SheetFooter, SheetHeader } from "./FirstPage";
@@ -69,7 +69,7 @@ export function BodyDesk({
             >
               Table
             </button>
-            <button type="button" onClick={() => insert({ id: newId(), type: "equation", imageUrl: "", atoms: [], number: "" })}>
+            <button type="button" onClick={() => insert({ id: newId(), type: "equation", imageUrl: "", source: "", atoms: [], number: "" })}>
               Equation
             </button>
           </div>
@@ -236,7 +236,9 @@ function BlockPreview({ block, galley }: { block: BodyBlock; galley: Galley }) {
       </div>
     );
   }
-  if (block.type === "equation") return <EquationView atoms={block.atoms} number={block.number} />;
+  if (block.type === "equation") {
+    return <EquationView atoms={block.source ? parseMath(block.source) : block.atoms} number={block.number} />;
+  }
   return null;
 }
 
@@ -297,54 +299,51 @@ function TablePaste({ block, onChange }: { block: TableBlock; onChange: (block: 
   );
 }
 
+const MATH_SYMBOLS = ["α", "β", "γ", "θ", "λ", "π", "Σ", "∑", "∫", "√", "∞", "≤", "≥", "≠", "±", "×", "÷", "∂"];
+
 function EquationCard({ block, onChange }: { block: EquationBlock; onChange: (block: EquationBlock) => void }) {
   const [note, setNote] = useState("");
+  const field = useRef<HTMLTextAreaElement>(null);
+  const source = block.source || sourceFromAtoms(block.atoms);
+
+  const write = (next: string) => onChange({ ...block, source: next, atoms: parseMath(next) });
+
+  const insert = (snippet: string) => {
+    const box = field.current;
+    const start = box?.selectionStart ?? source.length;
+    const end = box?.selectionEnd ?? source.length;
+    write(source.slice(0, start) + snippet + source.slice(end));
+    requestAnimationFrame(() => {
+      box?.focus();
+      const cursor = start + snippet.length;
+      box?.setSelectionRange(cursor, cursor);
+    });
+  };
 
   const take = async (file: File) => {
     const imageUrl = await fileToDataUrl(file);
-    onChange({ ...block, imageUrl });
     try {
       const { text } = await readEquation(imageUrl);
-      onChange({ ...block, imageUrl, atoms: atomsFromOcr(text) });
-      setNote(text ? `Read as: ${text}` : "No text was read. Type the parts below.");
+      onChange({ ...block, imageUrl, source: text, atoms: parseMath(text) });
+      setNote(text ? "The equation was read into the math field. You can still edit it." : "No text was read. Paste or type the equation below.");
     } catch (error) {
-      setNote(error instanceof Error ? `${error.message} You can still type the parts.` : "You can still type the parts.");
+      onChange({ ...block, imageUrl });
+      setNote(error instanceof Error ? `${error.message} You can still paste the equation below.` : "You can still paste the equation below.");
     }
-  };
-
-  const setAtom = (index: number, atom: EquationAtom) => {
-    const atoms = block.atoms.slice();
-    atoms[index] = atom;
-    onChange({ ...block, atoms });
   };
 
   return (
     <>
       <div
         className="drop-box"
-        tabIndex={0}
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
           event.preventDefault();
           const file = [...event.dataTransfer.files].find((item) => item.type.startsWith("image/"));
           if (file) void take(file);
         }}
-        onPaste={(event) => {
-          const file = imageFromClipboard(event.clipboardData);
-          if (file) {
-            event.preventDefault();
-            void take(file);
-            return;
-          }
-          const text = event.clipboardData.getData("text/plain").trim();
-          if (!text) return;
-          event.preventDefault();
-          onChange({ ...block, atoms: atomsFromOcr(text) });
-          setNote("Pasted as text. Edit the parts below.");
-        }}
       >
-        <p>Click this box and paste the equation image or its text. Uploading a saved file is optional.</p>
-        <textarea rows={2} aria-label="Paste equation" placeholder="Paste the equation here" readOnly />
+        <p>Paste an equation image here, or paste the equation itself into the math field. Uploading a saved file is optional.</p>
         <input
           type="file"
           accept="image/png,image/jpeg,image/webp"
@@ -357,55 +356,37 @@ function EquationCard({ block, onChange }: { block: EquationBlock; onChange: (bl
         {block.imageUrl && <img className="figure-thumb" src={block.imageUrl} alt="Equation snapshot" />}
       </div>
       {note && <p className="muted">{note}</p>}
-      <EquationView atoms={block.atoms} number={block.number} />
-      {block.atoms.map((atom, index) => (
-        <div key={index} className="atom-row">
-          {atom.kind === "frac" ? (
-            <>
-              <label>
-                Numerator
-                <input value={atom.num} onChange={(event) => setAtom(index, { ...atom, num: event.target.value })} />
-              </label>
-              <label>
-                Denominator
-                <input value={atom.den} onChange={(event) => setAtom(index, { ...atom, den: event.target.value })} />
-              </label>
-            </>
-          ) : (
-            <label>
-              {atom.kind === "sup" ? "Superscript" : atom.kind === "sub" ? "Subscript" : "Text"}
-              <input
-                aria-label={atom.kind === "sup" ? "Superscript" : atom.kind === "sub" ? "Subscript" : "Equation text"}
-                placeholder={atom.kind === "text" && atom.value.trim() === "" ? "space" : undefined}
-                value={atom.value}
-                onChange={(event) => setAtom(index, { ...atom, value: event.target.value })}
-              />
-            </label>
-          )}
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => onChange({ ...block, atoms: block.atoms.filter((_, atomIndex) => atomIndex !== index) })}
-          >
-            Remove part
+      <div className="math-type">
+        <EquationView atoms={parseMath(source)} number={block.number} />
+        <textarea
+          ref={field}
+          rows={3}
+          className="math-source"
+          aria-label="Math field"
+          placeholder="Paste the equation, including symbols such as α, ∑, x^2, or \frac{a}{b}"
+          value={source}
+          onChange={(event) => write(event.target.value)}
+          onPaste={(event) => {
+            const file = imageFromClipboard(event.clipboardData);
+            if (!file) return;
+            event.preventDefault();
+            void take(file);
+          }}
+        />
+      </div>
+      <div className="tool-row math-symbols">
+        {MATH_SYMBOLS.map((symbol) => (
+          <button key={symbol} type="button" className="ghost" onClick={() => insert(symbol)}>
+            {symbol}
           </button>
-        </div>
-      ))}
-      <div className="tool-row">
-        <button type="button" className="ghost" onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "text", value: "" }] })}>
-          Text
-        </button>
-        <button type="button" className="ghost" onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "sup", value: "" }] })}>
+        ))}
+        <button type="button" className="ghost" onClick={() => insert("^{}")}>
           Superscript
         </button>
-        <button type="button" className="ghost" onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "sub", value: "" }] })}>
+        <button type="button" className="ghost" onClick={() => insert("_{}")}>
           Subscript
         </button>
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "frac", num: "", den: "" }] })}
-        >
+        <button type="button" className="ghost" onClick={() => insert("\\frac{}{}")}>
           Ratio line
         </button>
       </div>

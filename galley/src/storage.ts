@@ -84,13 +84,16 @@ export function normalizeGalley(galley: Galley): Galley {
       blocks.push({ ...block, source: block.rows.map((row) => row.join("\t")).join("\n") });
       continue;
     }
-    if (block.type === "equation" && !block.atoms) {
+    if (block.type === "equation") {
       const legacy = block as EquationBlock & { text?: string };
+      const source = block.source || (legacy.text ? legacy.text : "");
+      const atoms = block.atoms?.length ? block.atoms : source ? [{ kind: "text" as const, value: source }] : [];
       blocks.push({
         id: block.id,
         type: "equation",
         imageUrl: block.imageUrl || "",
-        atoms: legacy.text ? [{ kind: "text", value: legacy.text }] : [],
+        source: block.source || source,
+        atoms,
         number: block.number || "",
       });
       continue;
