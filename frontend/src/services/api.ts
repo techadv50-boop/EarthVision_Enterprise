@@ -267,6 +267,16 @@ export const citationApi = {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
     },
+    sanitization: (journal_title?: string) =>
+      api.get('/author-articles/sanitization', {
+        params: journal_title ? { journal_title } : {},
+      }),
+    saveSanitization: (data: { journal_title?: string; label?: string; article_ids: number[] }) =>
+      api.put('/author-articles/sanitization', data),
+    checkSanitization: (data: Record<string, unknown>) =>
+      api.post('/author-articles/sanitization/check', data),
+    publishSanitization: (article_id: number) =>
+      api.post('/author-articles/sanitization/publish', { article_id }),
   },
 };
 

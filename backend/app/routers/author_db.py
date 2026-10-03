@@ -18,7 +18,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.core.dependencies import require_service
 from app.core.security import verify_password
 from app.database.session import get_db
-from app.models.citation import AuthorArticle, AuthorArticleChange, AuthorDbJournal, Journal
+from app.models.citation import AuthorArticle, AuthorArticleChange, AuthorDbJournal, AuthorIssueSet, Journal
 from app.models.user import User
 from app.schemas.author_db import (
     AUTHOR_DB_JOURNALS,
@@ -34,13 +34,20 @@ from app.schemas.author_db import (
     AuthorArticlePatch,
     AuthorFieldChangeOut,
     AuthorImportResult,
+    AuthorIssueSetIn,
+    AuthorIssueSetOut,
+    AuthorIssueArticleOut,
     AuthorJournalIn,
     AuthorJournalOut,
     AuthorModificationOut,
+    AuthorOverlapOut,
+    AuthorSanitizeCheckIn,
+    AuthorSanitizeCheckOut,
     ReviewRound,
     WINGS,
 )
 from app.services.journal_access import allowed_journal_ids, require_journal_access
+from app.services.author_sanitization import find_author_overlaps, overlap_message
 
 router = APIRouter(prefix="/author-articles", tags=["Author database"])
 
@@ -377,6 +384,162 @@ def _require_wing(user: User, wing: str) -> None:
         )
 
 
+async def _canon_journal(db: AsyncSession, title: Optional[str]) -> str:
+    text = (title or "").strip()
+    if not text:
+        return ""
+    catalog = await _ensure_author_catalog(db)
+    return _match_catalog_name(text, catalog) or text
+
+
+def _issue_brief(row: AuthorArticle) -> AuthorIssueArticleOut:
+    journal = row.journal_title or (
+        ((row.journal.name or row.journal.abbreviation) if row.journal else "") or ""
+    )
+    return AuthorIssueArticleOut(
+        id=row.id,
+        wing=row.wing or "",
+        journal_title=row.journal_title or "",
+        journal_name=journal or None,
+        ojs_number=row.ojs_number or "",
+        title=row.title or "",
+        author_names=row.author_names or "",
+        author_emails=row.author_emails or "",
+    )
+
+
+def _journal_aliases(text: Optional[str]) -> set[str]:
+    needle = (text or "").strip().lower()
+    if not needle:
+        return set()
+    out = {needle}
+    for abbr, name in AUTHOR_DB_JOURNALS:
+        if needle in {abbr.lower(), name.lower()}:
+            out.add(abbr.lower())
+            out.add(name.lower())
+    return out
+
+
+def _same_journal(row: AuthorArticle, canon: str) -> bool:
+    if not canon:
+        return True
+    wanted = _journal_aliases(canon)
+    have = _journal_aliases(row.journal_title)
+    if row.journal is not None:
+        have |= _journal_aliases(row.journal.name)
+        have |= _journal_aliases(row.journal.abbreviation)
+    return bool(wanted & have)
+
+
+async def _issue_set_row(db: AsyncSession, journal_title: str) -> Optional[AuthorIssueSet]:
+    canon = await _canon_journal(db, journal_title)
+    row = (
+        await db.execute(select(AuthorIssueSet).where(AuthorIssueSet.journal_title == canon))
+    ).scalar_one_or_none()
+    if row is None and canon:
+        row = (
+            await db.execute(select(AuthorIssueSet).where(AuthorIssueSet.journal_title == ""))
+        ).scalar_one_or_none()
+    return row
+
+
+async def _current_issue_articles(
+    db: AsyncSession, user: User, journal_title: str
+) -> list[AuthorArticle]:
+    stored = await _issue_set_row(db, journal_title)
+    if stored is None:
+        return []
+    ids: list[int] = []
+    for item in stored.article_ids or []:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return []
+    rows = list(
+        (
+            await db.execute(
+                select(AuthorArticle)
+                .options(*_load_options())
+                .where(AuthorArticle.id.in_(ids), AuthorArticle.wing == "published")
+            )
+        ).scalars().all()
+    )
+    visible: list[AuthorArticle] = []
+    for row in rows:
+        try:
+            visible.append(await _load_row(db, row.id, user))
+        except HTTPException:
+            continue
+    return visible
+
+
+async def _author_overlaps(
+    db: AsyncSession,
+    user: User,
+    *,
+    author_names: Optional[str],
+    author_emails: Optional[str],
+    journal_title: Optional[str],
+    skip_id: Optional[int] = None,
+) -> list:
+    rows = await _current_issue_articles(db, user, journal_title or "")
+    payload = [
+        {
+            "id": row.id,
+            "ojs_number": row.ojs_number,
+            "title": row.title,
+            "author_names": row.author_names,
+            "author_emails": row.author_emails,
+        }
+        for row in rows
+    ]
+    return find_author_overlaps(author_names, author_emails, payload, skip_id=skip_id)
+
+
+async def _forbid_same_issue_authors(
+    db: AsyncSession,
+    user: User,
+    *,
+    author_names: Optional[str],
+    author_emails: Optional[str],
+    journal_title: Optional[str],
+    skip_id: Optional[int] = None,
+) -> None:
+    hits = await _author_overlaps(
+        db,
+        user,
+        author_names=author_names,
+        author_emails=author_emails,
+        journal_title=journal_title,
+        skip_id=skip_id,
+    )
+    if hits:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=overlap_message(hits))
+
+
+async def _add_to_current_issue(db: AsyncSession, row: AuthorArticle) -> None:
+    canon = await _canon_journal(db, row.journal_title)
+    stored = (
+        await db.execute(select(AuthorIssueSet).where(AuthorIssueSet.journal_title == canon))
+    ).scalar_one_or_none()
+    if stored is None:
+        return
+    ids: list[int] = []
+    for item in stored.article_ids or []:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    if row.id in ids:
+        return
+    ids.append(row.id)
+    stored.article_ids = ids
+    stored.updated_at = datetime.now(timezone.utc)
+    flag_modified(stored, "article_ids")
+
+
 async def _visible_query(db: AsyncSession, user: User, wing: Optional[str]):
     stmt = select(AuthorArticle).options(*_load_options()).order_by(AuthorArticle.id.desc())
     if wing:
@@ -469,6 +632,18 @@ async def _apply_update(
             raise HTTPException(status_code=400, detail="Wing must be in_process or published")
         _require_wing(user, wing)
         if row.wing != wing:
+            if wing == "published":
+                names = data["author_names"] if data.get("author_names") is not None else row.author_names
+                emails = data["author_emails"] if data.get("author_emails") is not None else row.author_emails
+                journal = data["journal_title"] if data.get("journal_title") is not None else row.journal_title
+                await _forbid_same_issue_authors(
+                    db,
+                    user,
+                    author_names=str(names or ""),
+                    author_emails=str(emails or ""),
+                    journal_title=str(journal or ""),
+                    skip_id=row.id,
+                )
             diffs.append(
                 {
                     "field": "wing",
@@ -747,6 +922,189 @@ async def download_import_template():
     )
 
 
+@router.get("/sanitization", response_model=AuthorIssueSetOut)
+async def get_issue_sanitization(
+    db: Db,
+    user: CurrentUser,
+    journal_title: str = Query(default=""),
+):
+    if not (user.has_author_wing("published") or user.has_author_wing("in_process")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not granted that author-database wing",
+        )
+    canon = await _canon_journal(db, journal_title)
+    stored = (
+        await db.execute(select(AuthorIssueSet).where(AuthorIssueSet.journal_title == canon))
+    ).scalar_one_or_none()
+    selected_ids = []
+    if stored is not None:
+        for item in stored.article_ids or []:
+            try:
+                selected_ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+    published_rows = list((await db.execute(await _visible_query(db, user, "published"))).scalars().all())
+    scheduled_rows: list[AuthorArticle] = []
+    if user.has_author_wing("in_process"):
+        scheduled_rows = list((await db.execute(await _visible_query(db, user, "in_process"))).scalars().all())
+    if canon:
+        published_rows = [row for row in published_rows if _same_journal(row, canon)]
+        scheduled_rows = [row for row in scheduled_rows if _same_journal(row, canon)]
+    current = [_issue_brief(row) for row in published_rows if row.id in selected_ids]
+    return AuthorIssueSetOut(
+        journal_title=canon or journal_title,
+        label=(stored.label if stored else "Current issue"),
+        article_ids=[row.id for row in current],
+        current_issue=current,
+        published=[_issue_brief(row) for row in published_rows],
+        scheduled=[_issue_brief(row) for row in scheduled_rows],
+    )
+
+
+@router.put("/sanitization", response_model=AuthorIssueSetOut)
+async def save_issue_sanitization(body: AuthorIssueSetIn, db: Db, user: CurrentUser):
+    _require_wing(user, "published")
+    canon = await _canon_journal(db, body.journal_title)
+    wanted: list[int] = []
+    for item in body.article_ids or []:
+        try:
+            wanted.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    unique: list[int] = []
+    for article_id in wanted:
+        if article_id not in unique:
+            unique.append(article_id)
+    saved_ids: list[int] = []
+    for article_id in unique:
+        row = await _load_row(db, article_id, user)
+        if row.wing != "published":
+            raise HTTPException(
+                status_code=400,
+                detail=f"OJS {row.ojs_number or article_id} is not in published articles.",
+            )
+        if canon and not _same_journal(row, canon):
+            raise HTTPException(
+                status_code=400,
+                detail=f"OJS {row.ojs_number or article_id} is not in {canon}.",
+            )
+        saved_ids.append(row.id)
+    stored = (
+        await db.execute(select(AuthorIssueSet).where(AuthorIssueSet.journal_title == canon))
+    ).scalar_one_or_none()
+    label = (body.label or "").strip() or "Current issue"
+    if stored is None:
+        stored = AuthorIssueSet(
+            journal_title=canon,
+            label=label,
+            article_ids=saved_ids,
+            owner_id=user.id,
+        )
+        db.add(stored)
+    else:
+        stored.label = label
+        stored.article_ids = saved_ids
+        stored.owner_id = user.id
+        stored.updated_at = datetime.now(timezone.utc)
+        flag_modified(stored, "article_ids")
+    await db.flush()
+    return await get_issue_sanitization(db, user, journal_title=canon)
+
+
+@router.post("/sanitization/check", response_model=AuthorSanitizeCheckOut)
+async def check_issue_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: CurrentUser):
+    scheduled = None
+    authors = body.author_names
+    emails = body.author_emails
+    journal = body.journal_title
+    ojs = body.ojs_number
+    title = body.title
+    skip_id = None
+    if body.article_id is not None:
+        row = await _load_row(db, body.article_id, user)
+        scheduled = _issue_brief(row)
+        authors = row.author_names
+        emails = row.author_emails
+        journal = row.journal_title or journal
+        ojs = row.ojs_number
+        title = row.title
+        skip_id = row.id
+    elif not authors.strip() and not emails.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Select a scheduled article or enter the author names to check.",
+        )
+    hits = await _author_overlaps(
+        db,
+        user,
+        author_names=authors,
+        author_emails=emails,
+        journal_title=journal,
+        skip_id=skip_id,
+    )
+    if scheduled is None:
+        scheduled = AuthorIssueArticleOut(
+            id=0,
+            wing="in_process",
+            journal_title=journal,
+            journal_name=journal or None,
+            ojs_number=ojs,
+            title=title,
+            author_names=authors,
+            author_emails=emails,
+        )
+    allowed = not hits
+    message = overlap_message(hits) if hits else "No overlapping authors with the current issue. This article may be published."
+    return AuthorSanitizeCheckOut(
+        allowed=allowed,
+        message=message,
+        journal_title=await _canon_journal(db, journal),
+        scheduled=scheduled,
+        overlaps=[
+            AuthorOverlapOut(
+                author=hit.author,
+                matched_as=hit.matched_as,
+                issue_article_id=hit.issue_article_id,
+                issue_ojs=hit.issue_ojs,
+                issue_title=hit.issue_title,
+                reason=hit.reason,
+            )
+            for hit in hits
+        ],
+    )
+
+
+@router.post("/sanitization/publish", response_model=AuthorSanitizeCheckOut)
+async def publish_after_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: CurrentUser):
+    if body.article_id is None:
+        raise HTTPException(status_code=400, detail="Select the scheduled article to publish.")
+    _require_wing(user, "published")
+    row = await _load_row(db, body.article_id, user)
+    if row.wing == "published":
+        raise HTTPException(status_code=400, detail="That article is already published.")
+    hits = await _author_overlaps(
+        db,
+        user,
+        author_names=row.author_names,
+        author_emails=row.author_emails,
+        journal_title=row.journal_title,
+        skip_id=row.id,
+    )
+    if hits:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=overlap_message(hits))
+    await _apply_update(db, row, user, {"wing": "published"})
+    await _add_to_current_issue(db, row)
+    await db.flush()
+    return AuthorSanitizeCheckOut(
+        allowed=True,
+        message="Article moved to published articles and added to the current issue.",
+        journal_title=await _canon_journal(db, row.journal_title),
+        scheduled=_issue_brief(await _reload(db, row.id)),
+        overlaps=[],
+    )
+
+
 @router.post("", response_model=AuthorArticleOut, status_code=status.HTTP_201_CREATED)
 async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser):
     wing = (body.wing or "in_process").strip().lower()
@@ -762,6 +1120,14 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
         if journal is not None:
             title = journal.name or journal.abbreviation or ""
     title = _match_catalog_name(title, catalog) or title
+    if wing == "published":
+        await _forbid_same_issue_authors(
+            db,
+            user,
+            author_names=body.author_names,
+            author_emails=body.author_emails,
+            journal_title=title,
+        )
     rounds = _normalize_rounds(body.review_rounds, fallback_received=body.review_date)
     row = AuthorArticle(
         wing=wing,

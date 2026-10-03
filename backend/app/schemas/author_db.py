@@ -221,3 +221,55 @@ class AuthorImportResult(BaseModel):
     skipped: int = 0
     errors: list[str] = Field(default_factory=list)
     articles: list[AuthorArticleOut] = Field(default_factory=list)
+
+
+class AuthorIssueArticleOut(BaseModel):
+    id: int
+    wing: str = ""
+    journal_title: str = ""
+    journal_name: Optional[str] = None
+    ojs_number: str = ""
+    title: str = ""
+    author_names: str = ""
+    author_emails: str = ""
+
+
+class AuthorIssueSetIn(BaseModel):
+    journal_title: str = ""
+    label: str = "Current issue"
+    article_ids: list[int] = Field(default_factory=list)
+
+
+class AuthorSanitizeCheckIn(BaseModel):
+    article_id: Optional[int] = None
+    journal_title: str = ""
+    author_names: str = ""
+    author_emails: str = ""
+    ojs_number: str = ""
+    title: str = ""
+
+
+class AuthorOverlapOut(BaseModel):
+    author: str
+    matched_as: str
+    issue_article_id: int
+    issue_ojs: str
+    issue_title: str
+    reason: str
+
+
+class AuthorSanitizeCheckOut(BaseModel):
+    allowed: bool
+    message: str
+    journal_title: str = ""
+    scheduled: Optional[AuthorIssueArticleOut] = None
+    overlaps: list[AuthorOverlapOut] = Field(default_factory=list)
+
+
+class AuthorIssueSetOut(BaseModel):
+    journal_title: str = ""
+    label: str = "Current issue"
+    article_ids: list[int] = Field(default_factory=list)
+    current_issue: list[AuthorIssueArticleOut] = Field(default_factory=list)
+    published: list[AuthorIssueArticleOut] = Field(default_factory=list)
+    scheduled: list[AuthorIssueArticleOut] = Field(default_factory=list)
