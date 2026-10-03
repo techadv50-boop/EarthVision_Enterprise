@@ -414,9 +414,9 @@ function HistoryCard({ ver }: { ver: DisplayRow }) {
         <ReportField label="Title" value={data.title} />
         <ReportField label="Authors" value={data.author_names} />
         <ReportField label="Email addresses of authors" value={data.author_emails} />
-        <ReportField label="Email sent date" value={data.email_sent_date} />
         <ReportField label="Plagiarism" value={data.plagiarism} />
         <ReportField label="ORCID ID" value={data.orcid_id} />
+        <ReportField label="Email sent date" value={data.email_sent_date} />
         <ReportField label="Receive date" value={data.received_date} />
         {rounds.map((round, index) => (
           <div key={`${ver.key}-r${index}`} className="md:col-span-2 grid gap-4 md:grid-cols-2">
@@ -635,26 +635,15 @@ function ArticleFormFields({
           placeholder="One name per line, or separated by semicolons"
         />
       </label>
-      <div className="space-y-3">
-        <label className="text-sm text-gray-400 block">
-          Email addresses of authors
-          <textarea
-            className="input-field mt-1 min-h-[4.5rem]"
-            value={form.author_emails}
-            onChange={(e) => field('author_emails', e.target.value)}
-            placeholder="Matching order with author names"
-          />
-        </label>
-        <label className="text-sm text-gray-400 block">
-          Email sent date
-          <input
-            className="input-field mt-1"
-            type="date"
-            value={form.email_sent_date}
-            onChange={(e) => field('email_sent_date', e.target.value)}
-          />
-        </label>
-      </div>
+      <label className="text-sm text-gray-400">
+        Email addresses of authors
+        <textarea
+          className="input-field mt-1 min-h-[4.5rem]"
+          value={form.author_emails}
+          onChange={(e) => field('author_emails', e.target.value)}
+          placeholder="Matching order with author names"
+        />
+      </label>
       <label className="text-sm text-gray-400">
         Plagiarism
         <input
@@ -667,6 +656,15 @@ function ArticleFormFields({
       <label className="text-sm text-gray-400">
         ORCID ID
         <input className="input-field mt-1" value={form.orcid_id} onChange={(e) => field('orcid_id', e.target.value)} />
+      </label>
+      <label className="text-sm text-gray-400">
+        Email sent date
+        <input
+          className="input-field mt-1"
+          type="date"
+          value={form.email_sent_date}
+          onChange={(e) => field('email_sent_date', e.target.value)}
+        />
       </label>
       <label className="text-sm text-gray-400">
         Receive date

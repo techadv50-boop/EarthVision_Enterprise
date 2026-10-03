@@ -186,6 +186,9 @@ class AuthService:
 
         await self.ensure_citation_roles()
         await self.ensure_operator_user()
+        from app.services.journal_access import purge_removed_journals
+
+        await purge_removed_journals(self.db)
 
     async def ensure_citation_roles(self) -> None:
         """Keep admin, user, and per-desk admin roles available after the first seed."""

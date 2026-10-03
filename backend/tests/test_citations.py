@@ -21,6 +21,18 @@ def test_normalize_doi():
     assert normalize_doi("doi:10.33411/IJIST/20190101011") == "10.33411/IJIST/20190101011"
 
 
+def test_removed_demo_journal_names_match_operator_wording():
+    from app.services.journal_access import is_removed_journal
+
+    assert is_removed_journal("Journal A, Innovation in Science and Technology", "IJIST-A")
+    assert is_removed_journal("Journal B, Applied Earth Sciences", "JAES-B")
+    assert is_removed_journal("Journal C, Hidden from Standard Users", "JHC-C")
+    assert is_removed_journal("Journal State Audition Demo Journal")
+    assert is_removed_journal("State Update Demo Journal")
+    assert not is_removed_journal("Frontiers in Computational Spatial Intelligence", "FCSI")
+    assert not is_removed_journal("Journal of International Relations and Social Dynamics", "JIRSD")
+
+
 def test_unique_pdfs_by_article_keeps_one_galley():
     from app.services.crawler import _unique_pdfs_by_article as unique_pdfs
 
@@ -965,6 +977,43 @@ async def test_journal_duplicate_and_delete(client: AsyncClient):
     listing = await client.get("/api/v1/journals", headers=headers)
     names = [row["name"] for row in listing.json()]
     assert "Once Only Journal" not in names
+
+
+@pytest.mark.asyncio
+async def test_removed_demo_journals_are_purged_from_the_shelf(client: AsyncClient):
+    headers = await _auth(client)
+    from app.database.session import AsyncSessionLocal
+    from app.models.citation import Journal
+
+    async with AsyncSessionLocal() as session:
+        session.add(
+            Journal(
+                name="Journal A — Innovations in Science & Technology",
+                abbreviation="IJIST-A",
+            )
+        )
+        session.add(Journal(name="Journal B — Applied Earth Studies", abbreviation="JAES-B"))
+        session.add(Journal(name="Journal C — Hidden from standard users", abbreviation="JHC-C"))
+        session.add(Journal(name="State Update Demo Journal", abbreviation="SUDJ"))
+        await session.commit()
+
+    blocked = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Journal A — Innovations in Science & Technology", "abbreviation": "IJIST-A"},
+    )
+    assert blocked.status_code == 400
+    listing = await client.get("/api/v1/journals", headers=headers)
+    assert listing.status_code == 200
+    names = {row["name"] for row in listing.json()}
+    assert "Journal A — Innovations in Science & Technology" not in names
+    assert "Journal B — Applied Earth Studies" not in names
+    assert "Journal C — Hidden from standard users" not in names
+    assert "State Update Demo Journal" not in names
+    authors = await client.get("/api/v1/author-articles/journals", headers=headers)
+    author_names = {row["name"] for row in authors.json()}
+    assert "Journal A — Innovations in Science & Technology" not in author_names
+    assert "State Update Demo Journal" not in author_names
 
 
 @pytest.mark.asyncio

@@ -46,7 +46,7 @@ from app.schemas.author_db import (
     ReviewRound,
     WINGS,
 )
-from app.services.journal_access import allowed_journal_ids, require_journal_access
+from app.services.journal_access import allowed_journal_ids, require_journal_access, is_removed_journal, purge_removed_journals
 from app.services.author_sanitization import find_author_overlaps, overlap_message
 
 router = APIRouter(prefix="/author-articles", tags=["Author database"])
@@ -248,7 +248,9 @@ async def _ensure_author_catalog(db: AsyncSession) -> list[AuthorDbJournal]:
     rows = list((await db.execute(select(AuthorDbJournal).order_by(AuthorDbJournal.id))).scalars().all())
     removed = False
     for row in rows:
-        if (row.name or "").strip().lower() == "demo extra journal":
+        if (row.name or "").strip().lower() == "demo extra journal" or is_removed_journal(
+            row.name, row.abbreviation
+        ):
             await db.delete(row)
             removed = True
     if removed:
@@ -824,6 +826,7 @@ async def list_author_articles(
 
 @router.get("/journals", response_model=list[AuthorJournalOut])
 async def list_author_journals(db: Db, user: CurrentUser):
+    await purge_removed_journals(db)
     catalog = await _ensure_author_catalog(db)
     out: list[AuthorJournalOut] = [
         AuthorJournalOut(id=None, name=row.name, abbreviation=row.abbreviation or None)
@@ -839,6 +842,8 @@ async def list_author_journals(db: Db, user: CurrentUser):
     for row in others:
         name = (row.name or "").strip()
         abbr = (row.abbreviation or "").strip()
+        if is_removed_journal(name, abbr):
+            continue
         if name.lower() in seen or abbr.lower() in seen:
             continue
         out.append(AuthorJournalOut(id=row.id, name=row.name, abbreviation=row.abbreviation))
@@ -859,7 +864,8 @@ async def add_author_journal(body: AuthorJournalIn, db: Db, user: CurrentUser):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Enter the journal name.")
-    if name.lower() == "demo extra journal":
+    abbr = (body.abbreviation or "").strip()
+    if name.lower() == "demo extra journal" or is_removed_journal(name, abbr):
         raise HTTPException(status_code=400, detail="That journal name was removed.")
     await _ensure_author_catalog(db)
     existing = list((await db.execute(select(AuthorDbJournal))).scalars().all())
@@ -867,7 +873,6 @@ async def add_author_journal(body: AuthorJournalIn, db: Db, user: CurrentUser):
     for row in existing:
         if (row.name or "").strip().lower() == needle:
             raise HTTPException(status_code=409, detail="That journal name is already in the list.")
-    abbr = (body.abbreviation or "").strip()
     row = AuthorDbJournal(name=name, abbreviation=abbr, created_by=user.id)
     db.add(row)
     await db.flush()
