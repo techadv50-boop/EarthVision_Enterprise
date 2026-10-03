@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { BookOpen, ClipboardList, FilePenLine, GitCompare, Globe, Shield } from 'lucide-react';
+import { BookOpen, ClipboardList, FilePenLine, GitCompare, Shield } from 'lucide-react';
 import { canManageUsers, hasService, useAuthStore } from '@/store/authStore';
 
 export default function HomePage() {
@@ -25,19 +25,6 @@ export default function HomePage() {
         </p>
       )}
       <div className="grid gap-6 md:grid-cols-2">
-        <Link
-          to="/crawler"
-          className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
-        >
-          <Globe className="w-10 h-10 text-earth-400 mb-4" />
-          <h3 className="text-2xl font-semibold">Web Crawler</h3>
-          <p className="text-gray-400 mt-3 leading-relaxed">
-            Crawl websites for emails and phone numbers using the same v1.4.2 engine as the offline
-            package. Open the browser pane to see which sites were visited and what was downloaded.
-            Available to admin and user accounts.
-          </p>
-          <p className="text-earth-400 text-sm mt-6">Open Web Crawler →</p>
-        </Link>
         {citation && (
           <Link
             to="/journals"

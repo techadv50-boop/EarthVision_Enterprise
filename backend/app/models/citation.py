@@ -354,3 +354,32 @@ class AuthorStoreFile(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+
+class AuthorCrawlJob(Base):
+    """Archive crawl that fills published author-database rows."""
+
+    __tablename__ = "author_crawl_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    journal_title: Mapped[str] = mapped_column(String(500), default="")
+    journal_abbreviation: Mapped[str] = mapped_column(String(50), default="")
+    archive_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    issues_found: Mapped[int] = mapped_column(Integer, default=0)
+    articles_found: Mapped[int] = mapped_column(Integer, default=0)
+    articles_saved: Mapped[int] = mapped_column(Integer, default=0)
+    articles_skipped: Mapped[int] = mapped_column(Integer, default=0)
+    articles_already: Mapped[int] = mapped_column(Integer, default=0)
+    articles_failed: Mapped[int] = mapped_column(Integer, default=0)
+    pages_crawled: Mapped[int] = mapped_column(Integer, default=0)
+    phase: Mapped[Optional[str]] = mapped_column(String(32), default="queued")
+    message: Mapped[Optional[str]] = mapped_column(String(500))
+    inventory: Mapped[Any] = mapped_column(JSON, default=list)
+    error_log: Mapped[Any] = mapped_column(JSON, default=list)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

@@ -675,3 +675,194 @@ async def test_current_issue_sanitization_blocks_same_authors(client: AsyncClien
     )
     assert clean.json()["id"] in basket.json()["article_ids"]
 
+
+@pytest.mark.asyncio
+async def test_excel_export_includes_published_and_under_process_rows(client: AsyncClient):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "in_process",
+            "journal_title": "IJIST",
+            "ojs_number": "EXP-IN-1",
+            "title": "Export under process paper",
+            "author_names": "Noor Ali",
+            "author_emails": "noor@example.com",
+            "received_date": "2024-04-01",
+        },
+    )
+    assert created.status_code == 201, created.text
+    published = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "EXP-PUB-1",
+            "title": "Export published paper",
+            "author_names": "Export Only Author",
+            "author_emails": "",
+            "comments": "Article URL: https://example.test/article/view/88",
+            "editorial_status": "Published",
+            "publish_date": "2024-08-01",
+        },
+    )
+    assert published.status_code == 201, published.text
+
+    under = await client.get(
+        "/api/v1/author-articles/export",
+        headers=headers,
+        params={"wing": "in_process"},
+    )
+    assert under.status_code == 200, under.text
+    assert "spreadsheet" in under.headers.get("content-type", "")
+    book = load_workbook(BytesIO(under.content))
+    sheet = book.active
+    headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+    assert "OJS number" in headers_row
+    assert "Article URL" in headers_row
+    ojs_idx = headers_row.index("OJS number")
+    values = [row[ojs_idx] for row in sheet.iter_rows(min_row=2, values_only=True)]
+    assert "EXP-IN-1" in values
+
+    pub = await client.get(
+        "/api/v1/author-articles/export",
+        headers=headers,
+        params={"wing": "published"},
+    )
+    assert pub.status_code == 200, pub.text
+    pub_book = load_workbook(BytesIO(pub.content))
+    pub_sheet = pub_book.active
+    pub_headers = [cell for cell in next(pub_sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+    url_idx = pub_headers.index("Article URL")
+    ojs_idx = pub_headers.index("OJS number")
+    email_idx = pub_headers.index("Email addresses of authors")
+    rows = list(pub_sheet.iter_rows(min_row=2, values_only=True))
+    found = next(row for row in rows if row[ojs_idx] == "EXP-PUB-1")
+    assert found[url_idx] == "https://example.test/article/view/88"
+    assert not (found[email_idx] or "").strip()
+
+
+@pytest.mark.asyncio
+async def test_published_archive_crawl_fills_article_fields(client: AsyncClient, monkeypatch):
+    import io
+    import re
+
+    from reportlab.pdfgen import canvas
+
+    from tests.test_citation_parser import GALLEY_WATER
+    from app.services import crawler as crawler_mod
+    from app.services.author_crawler import run_author_crawl_job, to_iso_date
+
+    assert to_iso_date("July 22, 2026") == "2026-07-22"
+    assert to_iso_date("2026-08-23") == "2026-08-23"
+
+    def _pdf_from_text(text: str) -> bytes:
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf)
+        y = 800
+        for line in text.strip().splitlines():
+            c.drawString(40, y, line[:110])
+            y -= 14
+            if y < 40:
+                c.showPage()
+                y = 800
+        c.save()
+        return buf.getvalue()
+
+    pdf_bytes = _pdf_from_text(GALLEY_WATER)
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+
+    async def fake_fetch(url: str):
+        pages = {
+            "https://example.test/issue/archive": (
+                b"<html><a href='https://example.test/issue/view/1'>Vol. 8 No. 5 (2026)</a></html>"
+            ),
+            "https://example.test/issue/view/1": (
+                b"<html>"
+                b'<a href="https://example.test/article/view/9">Water</a>'
+                b'<a href="https://example.test/article/view/9/11">PDF</a>'
+                b'<a href="https://example.test/article/view/10">Second</a>'
+                b"</html>"
+            ),
+            "https://example.test/article/view/9": (
+                b"<html>"
+                b'<meta name="citation_title" content="Integrated Source Tracking and Assessment of Drinking Water Contamination in Rural Sindh, Pakistan">'
+                b'<meta name="citation_author" content="Asim Ali">'
+                b'<meta name="citation_author" content="Jabir Ali Keerio">'
+                b'<meta name="citation_doi" content="10.33411/IJIST/202608052211">'
+                b'<meta name="citation_pdf_url" content="https://example.test/article/download/9/11">'
+                b"IJIST-2026-2211"
+                b"</html>"
+            ),
+            "https://example.test/article/view/10": (
+                b"<html>"
+                b'<meta name="citation_title" content="A second published paper from the archive">'
+                b'<meta name="citation_author" content="Hassan Raza">'
+                b'<meta name="citation_publication_date" content="2026-08-01">'
+                b"IJIST-2026-4010"
+                b"</html>"
+            ),
+        }
+        if url in pages:
+            return 200, pages[url], "text/html"
+        if url.endswith(".pdf") or "/download/" in url or re.search(r"/article/view/\d+/\d+", url):
+            return 200, pdf_bytes, "application/pdf"
+        return 404, b"", "text/plain"
+
+    monkeypatch.setattr(crawler_mod, "default_fetch", fake_fetch)
+
+    start = await client.post(
+        "/api/v1/author-articles/crawl",
+        headers=headers,
+        json={
+            "journal_title": "IJIST",
+            "archive_url": "https://example.test/issue/archive",
+        },
+    )
+    assert start.status_code == 200, start.text
+    job_id = start.json()["id"]
+    job = (await client.get(f"/api/v1/author-articles/crawl/{job_id}", headers=headers)).json()
+    if job["status"] in {"queued", "running", "failed"} or int(job.get("articles_saved") or 0) < 2:
+        await run_author_crawl_job(job_id, fetch=fake_fetch)
+        job = (await client.get(f"/api/v1/author-articles/crawl/{job_id}", headers=headers)).json()
+    assert job["status"] == "completed", job
+    listed = await client.get(
+        "/api/v1/author-articles",
+        headers=headers,
+        params={"wing": "published"},
+    )
+    assert listed.status_code == 200
+    rows = listed.json()
+    water = next(row for row in rows if "Drinking Water" in (row.get("title") or "") or row.get("ojs_number") == "IJIST-2026-2211")
+    assert water["wing"] == "published"
+    assert water["editorial_status"] == "Published"
+    assert "Asim" in (water["author_names"] or "") or "Ali" in (water["author_names"] or "")
+    assert water["publish_date"]
+    assert "example.test/article/view/9" in (water.get("comments") or "")
+    second = next(row for row in rows if row.get("ojs_number") == "IJIST-2026-4010" or "second published paper" in (row.get("title") or "").lower())
+    assert second["title"]
+    assert second["author_names"]
+
+    again = await run_author_crawl_job(job_id, fetch=fake_fetch)
+    del again
+    dup = (await client.get(f"/api/v1/author-articles/crawl/{job_id}", headers=headers)).json()
+    assert dup["articles_already"] >= 2 or dup["articles_saved"] == 0
+
+    missing = await client.get("/api/v1/webcrawler/status", headers=headers)
+    assert missing.status_code == 404
+
+
