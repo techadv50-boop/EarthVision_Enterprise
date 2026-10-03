@@ -269,3 +269,23 @@ export const citationApi = {
     },
   },
 };
+
+export const crawlerApi = {
+  status: () => api.get('/webcrawler/status'),
+  start: (urls: string, light_mode: boolean) => api.post('/webcrawler/start', { urls, light_mode }),
+  pause: () => api.post('/webcrawler/pause'),
+  resume: () => api.post('/webcrawler/resume'),
+  stop: () => api.post('/webcrawler/stop'),
+  nextSite: () => api.post('/webcrawler/next-site'),
+  clearSession: () => api.post('/webcrawler/clear-session'),
+  saveSettings: (data: Record<string, unknown>) => api.patch('/webcrawler/settings', data),
+  sites: () => api.get('/webcrawler/sites'),
+  site: (id: number) => api.get(`/webcrawler/sites/${id}`),
+  scanFolder: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post('/webcrawler/scan-folder', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+};
