@@ -136,7 +136,15 @@ class User(Base):
             for desk in ("citation", "authors", "review", "galley")
             if self.has_role(f"admin_{desk}")
         ]
-        return privileges_from_desks(desks)
+        priv = privileges_from_desks(desks)
+        if "citation" not in priv["services"]:
+            try:
+                assigned = list(self.allowed_journals or [])
+            except Exception:
+                assigned = []
+            if assigned:
+                priv["services"] = [*priv["services"], "citation"]
+        return priv
 
     def has_service(self, service: str) -> bool:
         return service in self.resolved_privileges().get("services", [])

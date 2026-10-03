@@ -78,6 +78,9 @@ function privilegesOf(user: User | null | undefined): ServicePrivileges {
   const desks = user.desks || [];
   const fromRoles = SERVICES.map((s) => s.id).filter((id) => (user.roles || []).includes(`admin_${id}`));
   const services = SERVICES.map((s) => s.id).filter((id) => desks.includes(id) || fromRoles.includes(id));
+  if (!services.includes('citation') && (user.assigned_journal_ids || []).length) {
+    services.push('citation');
+  }
   return {
     services,
     review_branches: services.includes('review') ? REVIEW_BRANCHES.map((b) => b.id) : [],
