@@ -248,4 +248,10 @@ export const citationApi = {
       });
     },
   },
+  authorArticles: {
+    list: (wing?: string) => api.get('/author-articles', { params: wing ? { wing } : {} }),
+    create: (data: Record<string, unknown>) => api.post('/author-articles', data),
+    update: (id: number, data: Record<string, unknown>) => api.patch(`/author-articles/${id}`, data),
+    remove: (id: number) => api.delete(`/author-articles/${id}`),
+  },
 };

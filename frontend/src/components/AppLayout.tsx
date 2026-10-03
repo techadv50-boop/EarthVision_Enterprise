@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { BookOpen, FilePlus, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
+import { BookOpen, CheckSquare, ClipboardList, FilePlus, GitCompare, Languages, LogOut, Shield } from 'lucide-react';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 function navClass(isActive: boolean) {
@@ -12,6 +12,7 @@ export default function AppLayout() {
   const location = useLocation();
   const admin = isCitationAdmin(user);
   const inReview = location.pathname.startsWith('/review');
+  const inAuthors = location.pathname.startsWith('/authors');
   const inCitation =
     location.pathname.startsWith('/journals') ||
     location.pathname.startsWith('/manuscripts') ||
@@ -24,12 +25,15 @@ export default function AppLayout() {
           <BookOpen className="w-6 h-6 text-earth-400" />
           <div>
             <h1 className="text-sm font-bold tracking-wide">Citation Assistant</h1>
-            <p className="text-xs text-gray-500">Home · two workspaces</p>
+            <p className="text-xs text-gray-500">Home · workspaces</p>
           </div>
         </Link>
         <nav className="flex items-center gap-3 text-sm flex-wrap justify-end">
           <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
             Home
+          </NavLink>
+          <NavLink to="/authors" className={({ isActive }) => navClass(isActive)}>
+            Author DB
           </NavLink>
           {inCitation && (
             <>
@@ -61,6 +65,20 @@ export default function AppLayout() {
               <NavLink to="/review/language" className={({ isActive }) => navClass(isActive)}>
                 <span className="inline-flex items-center gap-1">
                   <Languages className="w-4 h-4" /> English review
+                </span>
+              </NavLink>
+            </>
+          )}
+          {inAuthors && (
+            <>
+              <NavLink to="/authors/in-process" className={({ isActive }) => navClass(isActive)}>
+                <span className="inline-flex items-center gap-1">
+                  <ClipboardList className="w-4 h-4" /> Under process
+                </span>
+              </NavLink>
+              <NavLink to="/authors/published" className={({ isActive }) => navClass(isActive)}>
+                <span className="inline-flex items-center gap-1">
+                  <CheckSquare className="w-4 h-4" /> Published
                 </span>
               </NavLink>
             </>

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { BookOpen, GitCompare, Shield } from 'lucide-react';
+import { BookOpen, ClipboardList, GitCompare, Shield } from 'lucide-react';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 export default function HomePage() {
@@ -11,12 +11,11 @@ export default function HomePage() {
     <div className="max-w-5xl mx-auto">
       <h2 className="text-3xl font-semibold mb-2">Choose a workspace</h2>
       <p className="text-gray-400 mb-8">
-        Two separate wings. Citation Assistant is the journal archive and house citations.
-        Article Review / Comparison checks files returned by staff and the English of a paper
-        before it is published.
+        Citation Assistant is the journal archive and house citations. Article Review / Comparison
+        checks files returned by staff. Author database tracks under-process and published articles.
         {admin ? ' Add users from Users while you stay signed in as admin.' : ''}
       </p>
-      <div className={`grid gap-6 ${admin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+      <div className={`grid gap-6 ${admin ? 'md:grid-cols-2 lg:grid-cols-2' : 'md:grid-cols-3'}`}>
         <Link
           to={citationTo}
           className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
@@ -41,6 +40,18 @@ export default function HomePage() {
             abusive language, and more) before publish.
           </p>
           <p className="text-earth-400 text-sm mt-6">Open Article Review / Comparison →</p>
+        </Link>
+        <Link
+          to="/authors"
+          className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
+        >
+          <ClipboardList className="w-10 h-10 text-earth-400 mb-4" />
+          <h3 className="text-2xl font-semibold">Author database</h3>
+          <p className="text-gray-400 mt-3 leading-relaxed">
+            Two wings: under process articles and published articles. Add OJS number, title,
+            authors, emails, plagiarism, ORCID, dates, and DOI in PDF.
+          </p>
+          <p className="text-earth-400 text-sm mt-6">Open author database →</p>
         </Link>
         {admin && (
           <Link

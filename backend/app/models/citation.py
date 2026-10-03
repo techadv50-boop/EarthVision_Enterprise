@@ -213,3 +213,41 @@ class CitationSuggestion(Base):
     manuscript: Mapped["Manuscript"] = relationship(back_populates="suggestions")
     paragraph: Mapped["ManuscriptParagraph"] = relationship(back_populates="suggestions")
     article: Mapped["Article"] = relationship()
+
+
+class AuthorArticle(Base):
+    """Editorial author-database row: under process or published."""
+
+    __tablename__ = "author_articles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wing: Mapped[str] = mapped_column(String(32), default="in_process", index=True)
+    journal_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("journals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    ojs_number: Mapped[str] = mapped_column(String(120), default="")
+    title: Mapped[str] = mapped_column(String(2000), default="")
+    author_names: Mapped[str] = mapped_column(Text, default="")
+    author_emails: Mapped[str] = mapped_column(Text, default="")
+    email_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    plagiarism: Mapped[str] = mapped_column(String(255), default="")
+    orcid_id: Mapped[str] = mapped_column(Text, default="")
+    received_date: Mapped[Optional[str]] = mapped_column(String(32))
+    review_date: Mapped[Optional[str]] = mapped_column(String(32))
+    accepted_date: Mapped[Optional[str]] = mapped_column(String(32))
+    publish_date: Mapped[Optional[str]] = mapped_column(String(32))
+    repeat_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    doi_in_pdf: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    journal: Mapped[Optional["Journal"]] = relationship()
