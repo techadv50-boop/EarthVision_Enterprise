@@ -54,17 +54,21 @@ export default function UsersPage() {
   const [createJournalIds, setCreateJournalIds] = useState<number[]>([]);
 
   const load = async () => {
-    const [{ data }, journalsRes] = await Promise.all([
-      adminApi.users(),
-      citationApi.journals.list().catch(() => ({ data: [] as JournalOption[] })),
-    ]);
-    const rows = data as AdminUser[];
-    setUsers(rows);
-    setDraft(Object.fromEntries(rows.map((row) => [row.id, citationRole(row)])));
-    setJournalDraft(
-      Object.fromEntries(rows.map((row) => [row.id, row.assigned_journal_ids || []])),
-    );
-    setJournals((journalsRes.data || []) as JournalOption[]);
+    try {
+      const [{ data }, journalsRes] = await Promise.all([
+        adminApi.users(),
+        citationApi.journals.list().catch(() => ({ data: [] as JournalOption[] })),
+      ]);
+      const rows = data as AdminUser[];
+      setUsers(rows);
+      setDraft(Object.fromEntries(rows.map((row) => [row.id, citationRole(row)])));
+      setJournalDraft(
+        Object.fromEntries(rows.map((row) => [row.id, row.assigned_journal_ids || []])),
+      );
+      setJournals((journalsRes.data || []) as JournalOption[]);
+    } catch {
+      setError('Could not load the user list. You can still add a user below.');
+    }
   };
 
   useEffect(() => {
@@ -166,7 +170,15 @@ export default function UsersPage() {
       setNewRole('user');
       setCreateJournalIds([]);
       await load();
-      setMsg(`Added ${createdName} as ${createdRole}. They can sign in now.`);
+      if (createdRole === 'user' && createJournalIds.length === 0) {
+        setMsg(
+          `Added ${createdName} as user with no journals yet. Assign journals below or they will get 0 citations. Stay signed in as admin.`,
+        );
+      } else {
+        setMsg(
+          `Added ${createdName} as ${createdRole}. Stay signed in as admin. Give them their email and password privately — they can sign in now.`,
+        );
+      }
     } catch (err: unknown) {
       const detail =
         err && typeof err === 'object' && 'response' in err
@@ -185,15 +197,20 @@ export default function UsersPage() {
     <div>
       <h2 className="text-2xl font-semibold mb-2">Users & access</h2>
       <p className="text-gray-400 text-sm mb-4 max-w-3xl">
-        Add people and assign Admin or User. For standard users, tick the journals they may see
-        and cite from. Self-registered accounts wait here until you approve them. Restrict anyone
-        to block portal access.
+        Add people from this page while you stay signed in as admin. Assign Admin or User, then
+        tick the journals a standard user may see and cite from. Restrict anyone to block portal
+        access.
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
 
       <form className="panel p-4 mb-6 grid gap-3 md:grid-cols-2 max-w-3xl" onSubmit={(e) => void addUser(e)}>
-        <h3 className="md:col-span-2 text-sm font-medium">Add new user</h3>
+        <h3 className="md:col-span-2 text-sm font-medium">Add a user while you stay signed in as admin</h3>
+        <p className="md:col-span-2 text-xs text-gray-500">
+          You do not need to log out. Create the account here, assign journals, and tell that
+          person their email and password privately. They can sign in immediately. Passwords are
+          never shown on the public sign-in page.
+        </p>
         <input
           className="input-field"
           placeholder="Email"

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import get_current_user, require_citation_admin, require_permission
 from app.database.session import get_db
 from app.models.analysis import AnalysisJob
 from app.models.project import Project
@@ -98,7 +98,7 @@ def _user_payload(user: User) -> AuthUserResponse:
 
 @router.get("/users", response_model=list[AuthUserResponse])
 async def list_users(
-    _admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    _admin: Annotated[User, Depends(require_citation_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     result = await db.execute(
@@ -112,7 +112,7 @@ async def list_users(
 @router.post("/users", response_model=AuthUserResponse, status_code=201)
 async def create_user(
     data: UserAdminCreate,
-    _admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    _admin: Annotated[User, Depends(require_citation_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     from app.services.auth_service import AuthService
@@ -148,7 +148,7 @@ async def create_user(
 async def update_user(
     user_id: int,
     data: UserAdminUpdate,
-    admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    admin: Annotated[User, Depends(require_citation_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     result = await db.execute(

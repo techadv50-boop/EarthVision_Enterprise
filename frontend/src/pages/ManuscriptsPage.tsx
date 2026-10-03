@@ -22,6 +22,7 @@ function downloadBlob(data: Blob, filename: string) {
 export default function ManuscriptsPage() {
   const [items, setItems] = useState<Ms[]>([]);
   const [msg, setMsg] = useState('');
+  const [report, setReport] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -41,19 +42,34 @@ export default function ManuscriptsPage() {
 
   const upload = async (file: File) => {
     setBusy(true);
+    setReport('');
     setMsg(`Reading ${file.name} paragraph by paragraph…`);
     try {
       const { data } = await citationApi.manuscripts.upload(file);
-        setMsg('Matching Introduction through Materials and Methods against the journal archive…');
-      await citationApi.manuscripts.suggest(data.id);
+      setMsg('Matching Introduction through Materials and Methods against the journal archive…');
+      const sug = await citationApi.manuscripts.suggest(data.id);
+      const payload = sug.data as {
+        suggestion_count?: number;
+        report?: { citations_found?: number; message?: string };
+      };
+      const found = payload.report?.citations_found ?? payload.suggestion_count ?? 0;
+      const summary =
+        payload.report?.message ||
+        (found === 1 ? '1 citation found.' : `${found} citations found.`);
+      setReport(summary);
       setMsg('Building a Word file with Accept / Reject suggestions…');
       await downloadReview(data.id, data.title || file.name);
       await load();
       setMsg(
-        'Downloaded. Open it in Word → Review. Accept keeps the citation and its reference; Reject removes both. Each comment explains why it was suggested.',
+        found === 0
+          ? `${summary} A Word file was still downloaded so you have a record of this run.`
+          : `${summary} Open the Word file in Word → Review. Accept keeps the citation and its reference; Reject removes both.`,
       );
-    } catch {
-      setMsg('Could not read that file. Upload a Word (.docx) manuscript.');
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not read that file. Upload a Word (.docx) manuscript.';
+      setMsg(String(detail));
     } finally {
       setBusy(false);
     }
@@ -102,6 +118,12 @@ export default function ManuscriptsPage() {
           Choose a .docx file. Suggestions come only from the Citation Assistant archive.
         </p>
       </form>
+      {report && (
+        <div className="panel p-4 mt-4 max-w-xl">
+          <h3 className="text-sm uppercase tracking-wide text-gray-500 mb-1">Citation report</h3>
+          <p className="text-lg font-medium text-earth-400">{report}</p>
+        </div>
+      )}
       {msg && <p className="text-earth-400 text-sm mt-2">{msg}</p>}
       <div className="mt-6 space-y-2">
         {items.map((m) => (

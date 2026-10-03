@@ -1078,6 +1078,8 @@ async def test_user_journal_assignment_hides_journals_and_filters_suggestions(cl
     blocked = await client.post(f"/api/v1/manuscripts/{mid}/suggest", headers=user)
     assert blocked.status_code == 200, blocked.text
     assert blocked.json()["suggestion_count"] == 0
+    assert blocked.json()["report"]["citations_found"] == 0
+    assert "0 citations found" in blocked.json()["report"]["message"].lower()
 
     assigned = await client.patch(
         f"/api/v1/admin/users/{uid}",
@@ -1098,3 +1100,79 @@ async def test_user_journal_assignment_hides_journals_and_filters_suggestions(cl
     )
     assert "Digital Signature" in reasons or "EDDSA" in reasons or "Watermark" in reasons
     assert all(not (s.get("article") or {}).get("pdf_path") for p in detail["paragraphs"] for s in p["suggestions"])
+
+
+@pytest.mark.asyncio
+async def test_admin_adds_users_and_manuscripts_stay_private(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    admin = {"Authorization": f"Bearer {operator.json()['access_token']}"}
+    first = await client.post(
+        "/api/v1/admin/users",
+        headers=admin,
+        json={
+            "email": "alpha@example.com",
+            "username": "alpha_user",
+            "password": "AlphaUser@123456",
+            "role": "user",
+        },
+    )
+    second = await client.post(
+        "/api/v1/admin/users",
+        headers=admin,
+        json={
+            "email": "beta@example.com",
+            "username": "beta_user",
+            "password": "BetaUser@123456",
+            "role": "user",
+        },
+    )
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["access_status"] == "approved"
+    assert second.json()["access_status"] == "approved"
+
+    login_a = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "alpha_user", "password": "AlphaUser@123456"},
+    )
+    login_b = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "beta_user", "password": "BetaUser@123456"},
+    )
+    assert login_a.status_code == 200
+    assert login_b.status_code == 200
+    user_a = {"Authorization": f"Bearer {login_a.json()['access_token']}"}
+    user_b = {"Authorization": f"Bearer {login_b.json()['access_token']}"}
+
+    pdf_a = _pdf_from_text("Introduction\nAlpha only manuscript about soil moisture.\nMaterials and Methods\nPlots were irrigated.")
+    pdf_b = _pdf_from_text("Introduction\nBeta only manuscript about urban heat.\nMaterials and Methods\nSensors were calibrated.")
+    up_a = await client.post(
+        "/api/v1/manuscripts",
+        headers=user_a,
+        files={"file": ("alpha.pdf", pdf_a, "application/pdf")},
+    )
+    up_b = await client.post(
+        "/api/v1/manuscripts",
+        headers=user_b,
+        files={"file": ("beta.pdf", pdf_b, "application/pdf")},
+    )
+    assert up_a.status_code == 201, up_a.text
+    assert up_b.status_code == 201, up_b.text
+    id_a = up_a.json()["id"]
+    id_b = up_b.json()["id"]
+
+    listed_a = {row["id"] for row in (await client.get("/api/v1/manuscripts", headers=user_a)).json()}
+    listed_b = {row["id"] for row in (await client.get("/api/v1/manuscripts", headers=user_b)).json()}
+    assert id_a in listed_a and id_b not in listed_a
+    assert id_b in listed_b and id_a not in listed_b
+    assert (await client.get(f"/api/v1/manuscripts/{id_b}", headers=user_a)).status_code == 404
+    assert (await client.get(f"/api/v1/manuscripts/{id_a}", headers=user_b)).status_code == 404
+
+    report_a = await client.post(f"/api/v1/manuscripts/{id_a}/suggest", headers=user_a)
+    assert report_a.status_code == 200, report_a.text
+    assert report_a.json()["report"]["citations_found"] == report_a.json()["suggestion_count"]
+    assert "citations found" in report_a.json()["report"]["message"].lower()
+

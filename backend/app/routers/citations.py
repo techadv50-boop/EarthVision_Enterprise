@@ -61,6 +61,53 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 CitationAdmin = Annotated[User, Depends(require_citation_admin)]
 
 
+def _manuscript_visible(manuscript: Manuscript, user: User) -> bool:
+    if manuscript.owner_id is None:
+        return user.is_citation_admin()
+    return manuscript.owner_id == user.id or user.is_citation_admin()
+
+
+async def _owned_manuscript(db: AsyncSession, manuscript_id: int, user: User) -> Manuscript:
+    manuscript = await db.get(Manuscript, manuscript_id)
+    if manuscript is None or not _manuscript_visible(manuscript, user):
+        raise HTTPException(status_code=404, detail="Manuscript not found")
+    return manuscript
+
+
+async def _citation_report(db: AsyncSession, user: User, created: list) -> dict:
+    allowed = await allowed_journal_ids(db, user)
+    names: list[str] = []
+    if allowed is None:
+        rows = list((await db.execute(select(Journal).order_by(Journal.id))).scalars().all())
+        names = [row.abbreviation or row.name for row in rows]
+        scope = "your journals"
+    elif not allowed:
+        scope = "your assigned journals"
+    else:
+        rows = list(
+            (await db.execute(select(Journal).where(Journal.id.in_(allowed)).order_by(Journal.id))).scalars().all()
+        )
+        names = [row.abbreviation or row.name for row in rows]
+        scope = ", ".join(names) if names else "your assigned journals"
+    count = len(created)
+    if allowed is not None and len(allowed) == 0:
+        message = (
+            "0 citations found. No journals are assigned to this account. "
+            "Ask an admin to assign journals, then run the manuscript again."
+        )
+    elif count == 0:
+        message = f"0 citations found. No relevant papers matched this manuscript in {scope}."
+    elif count == 1:
+        message = f"1 citation found from {scope}."
+    else:
+        message = f"{count} citations found from {scope}."
+    return {
+        "citations_found": count,
+        "message": message,
+        "journals": names,
+    }
+
+
 class GptSettingsIn(BaseModel):
     enabled: bool = True
     api_key: Optional[str] = None
@@ -743,6 +790,7 @@ async def upload_manuscript(
         pdf_path=str(dest),
         full_text=text,
         status="uploaded",
+        owner_id=_user.id,
     )
     db.add(manuscript)
     await db.flush()
@@ -758,7 +806,8 @@ async def upload_manuscript(
 
 
 @router.post("/manuscripts/{manuscript_id}/suggest")
-async def run_suggestions(manuscript_id: int, db: Db, _user: CurrentUser):
+async def run_suggestions(manuscript_id: int, db: Db, user: CurrentUser):
+    await _owned_manuscript(db, manuscript_id, user)
     manuscript = (
         await db.execute(
             select(Manuscript)
@@ -768,14 +817,24 @@ async def run_suggestions(manuscript_id: int, db: Db, _user: CurrentUser):
     ).scalar_one_or_none()
     if manuscript is None:
         raise HTTPException(status_code=404, detail="Manuscript not found")
-    allowed = await allowed_journal_ids(db, _user)
+    allowed = await allowed_journal_ids(db, user)
     created = await suggest_for_manuscript(db, manuscript, allowed_journal_ids=allowed)
-    return {"suggestion_count": len(created), "status": manuscript.status}
+    report = await _citation_report(db, user, created)
+    return {
+        "suggestion_count": len(created),
+        "status": manuscript.status,
+        "report": report,
+    }
 
 
 @router.get("/manuscripts", response_model=list[ManuscriptOut])
-async def list_manuscripts(db: Db, _user: CurrentUser):
-    rows = list((await db.execute(select(Manuscript).order_by(Manuscript.id.desc()))).scalars().all())
+async def list_manuscripts(db: Db, user: CurrentUser):
+    stmt = select(Manuscript).order_by(Manuscript.id.desc())
+    if user.is_citation_admin():
+        pass
+    else:
+        stmt = stmt.where(Manuscript.owner_id == user.id)
+    rows = list((await db.execute(stmt)).scalars().all())
     out = []
     for ms in rows:
         pc = int(
@@ -812,10 +871,8 @@ async def list_manuscripts(db: Db, _user: CurrentUser):
 
 
 @router.delete("/manuscripts/{manuscript_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
-    manuscript = await db.get(Manuscript, manuscript_id)
-    if manuscript is None:
-        raise HTTPException(status_code=404, detail="Manuscript not found")
+async def delete_manuscript(manuscript_id: int, db: Db, user: CurrentUser):
+    manuscript = await _owned_manuscript(db, manuscript_id, user)
     path = manuscript.pdf_path
     await db.delete(manuscript)
     await db.flush()
@@ -829,7 +886,8 @@ async def delete_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
 
 
 @router.get("/manuscripts/{manuscript_id}", response_model=ManuscriptDetail)
-async def get_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
+async def get_manuscript(manuscript_id: int, db: Db, user: CurrentUser):
+    await _owned_manuscript(db, manuscript_id, user)
     manuscript = (
         await db.execute(
             select(Manuscript)
@@ -885,10 +943,10 @@ async def patch_suggestion(suggestion_id: int, body: SuggestionPatch, db: Db, _u
 
 
 @router.get("/manuscripts/{manuscript_id}/export")
-async def export_manuscript(manuscript_id: int, db: Db, _user: CurrentUser):
+async def export_manuscript(manuscript_id: int, db: Db, user: CurrentUser):
     from pathlib import Path
 
-    detail = await get_manuscript(manuscript_id, db, _user)
+    detail = await get_manuscript(manuscript_id, db, user)
     original = None
     stored = await db.get(Manuscript, manuscript_id)
     if stored and stored.pdf_path:

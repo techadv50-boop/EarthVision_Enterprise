@@ -1,7 +1,10 @@
 import { Link } from 'react-router-dom';
-import { BookOpen, GitCompare } from 'lucide-react';
+import { BookOpen, GitCompare, Shield } from 'lucide-react';
+import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 export default function HomePage() {
+  const user = useAuthStore((s) => s.user);
+  const admin = isCitationAdmin(user);
   const citationTo = '/journals';
 
   return (
@@ -11,8 +14,9 @@ export default function HomePage() {
         Two separate wings. Citation Assistant is the journal archive and house citations.
         Article Review / Comparison checks files returned by staff and the English of a paper
         before it is published.
+        {admin ? ' Add users from Users while you stay signed in as admin.' : ''}
       </p>
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className={`grid gap-6 ${admin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
         <Link
           to={citationTo}
           className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
@@ -38,6 +42,20 @@ export default function HomePage() {
           </p>
           <p className="text-earth-400 text-sm mt-6">Open Article Review / Comparison →</p>
         </Link>
+        {admin && (
+          <Link
+            to="/users"
+            className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
+          >
+            <Shield className="w-10 h-10 text-earth-400 mb-4" />
+            <h3 className="text-2xl font-semibold">Users</h3>
+            <p className="text-gray-400 mt-3 leading-relaxed">
+              Add a user without logging out. Set their password, approve access, and assign
+              the journals they may cite from. Each person signs in with their own account.
+            </p>
+            <p className="text-earth-400 text-sm mt-6">Add users →</p>
+          </Link>
+        )}
       </div>
     </div>
   );
