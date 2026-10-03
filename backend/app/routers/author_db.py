@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.dependencies import require_service
+from app.core.security import verify_password
 from app.database.session import get_db
 from app.models.citation import AuthorArticle, AuthorArticleChange, AuthorDbJournal, Journal
 from app.models.user import User
@@ -23,6 +24,7 @@ from app.schemas.author_db import (
     AUTHOR_DB_JOURNALS,
     EDITORIAL_STATUSES,
     FIELD_LABELS,
+    AuthorArticleDeleteIn,
     AuthorArticleIn,
     AuthorArticleOut,
     AuthorArticlePatch,
@@ -683,6 +685,11 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
     return _payload(await _reload(db, row.id))
 
 
+@router.get("/{article_id}", response_model=AuthorArticleOut)
+async def get_author_article(article_id: int, db: Db, user: CurrentUser):
+    return _payload(await _load_row(db, article_id, user))
+
+
 @router.patch("/{article_id}", response_model=AuthorArticleOut)
 async def update_author_article(
     article_id: int, body: AuthorArticlePatch, db: Db, user: CurrentUser
@@ -695,11 +702,28 @@ async def update_author_article(
 
 
 @router.delete("/{article_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_author_article(article_id: int, db: Db, user: CurrentUser):
+async def delete_author_article(
+    article_id: int,
+    db: Db,
+    user: CurrentUser,
+    body: Optional[AuthorArticleDeleteIn] = None,
+):
     if not user.is_full_admin():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Users cannot delete author-database records. Save a modification instead.",
+        )
+    password = (body.password if body else "") or ""
+    password = password.strip()
+    if not password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Enter the admin password to delete this OJS record.",
+        )
+    if not verify_password(password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="That password is not correct.",
         )
     row = await _load_row(db, article_id, user)
     await db.delete(row)

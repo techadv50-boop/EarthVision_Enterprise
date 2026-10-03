@@ -157,6 +157,10 @@ class AuthorArticleOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AuthorArticleDeleteIn(BaseModel):
+    password: str = ""
+
+
 class AuthorJournalIn(BaseModel):
     name: str
     abbreviation: str = ""

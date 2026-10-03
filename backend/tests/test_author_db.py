@@ -391,3 +391,53 @@ async def test_admin_adds_author_journal_name_users_cannot(client: AsyncClient):
         json={"name": "Secret Journal"},
     )
     assert blocked.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_deletes_ojs_record_only_with_password(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={"ojs_number": "DEL-OJS-1", "title": "Delete me", "received_date": "2026-01-01"},
+    )
+    assert created.status_code == 201, created.text
+    article_id = created.json()["id"]
+    await client.patch(
+        f"/api/v1/author-articles/{article_id}",
+        headers=headers,
+        json={"plagiarism": "4%"},
+    )
+    fetched = await client.get(f"/api/v1/author-articles/{article_id}", headers=headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["ojs_number"] == "DEL-OJS-1"
+    assert len(fetched.json()["modifications"]) == 1
+
+    missing = await client.delete(f"/api/v1/author-articles/{article_id}", headers=headers)
+    assert missing.status_code == 403
+    wrong = await client.request(
+        "DELETE",
+        f"/api/v1/author-articles/{article_id}",
+        headers=headers,
+        json={"password": "not-the-password"},
+    )
+    assert wrong.status_code == 403
+    still = await client.get(f"/api/v1/author-articles/{article_id}", headers=headers)
+    assert still.status_code == 200
+
+    deleted = await client.request(
+        "DELETE",
+        f"/api/v1/author-articles/{article_id}",
+        headers=headers,
+        json={"password": "pak123"},
+    )
+    assert deleted.status_code == 204, deleted.text
+    gone = await client.get(f"/api/v1/author-articles/{article_id}", headers=headers)
+    assert gone.status_code == 404
+    listed = await client.get("/api/v1/author-articles", headers=headers, params={"wing": "in_process"})
+    assert all(row["id"] != article_id for row in listed.json())
+
