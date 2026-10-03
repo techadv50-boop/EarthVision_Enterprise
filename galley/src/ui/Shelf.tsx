@@ -4,19 +4,21 @@ import type { Galley, Journal } from "../types";
 export function Shelf({
   journals,
   galleys,
-  onAdd,
-  onEdit,
+  accountName,
+  isAdmin,
   onOpenJournal,
   onOpenGalley,
-  onDeleteGalley,
+  onAdmin,
+  onLogout,
 }: {
   journals: Journal[];
   galleys: Galley[];
-  onAdd: () => void;
-  onEdit: (journal: Journal) => void;
+  accountName: string;
+  isAdmin: boolean;
   onOpenJournal: (journal: Journal) => void;
   onOpenGalley: (galley: Galley) => void;
-  onDeleteGalley: (galley: Galley) => void;
+  onAdmin: () => void;
+  onLogout: () => void;
 }) {
   const [query, setQuery] = useState("");
   const shown = useMemo(() => {
@@ -39,9 +41,17 @@ export function Shelf({
           <h1>Galley</h1>
           <p className="muted">galley.drxdhr.com</p>
         </div>
-        <button type="button" onClick={onAdd}>
-          + Add journal
-        </button>
+        <div className="bar-actions">
+          <span className="muted">{accountName}</span>
+          {isAdmin && (
+            <button type="button" onClick={onAdmin}>
+              Admin
+            </button>
+          )}
+          <button type="button" className="ghost" onClick={onLogout}>
+            Sign out
+          </button>
+        </div>
       </header>
       <label className="search">
         Search journals
@@ -59,9 +69,6 @@ export function Shelf({
                 {journal.issnE ? ` · ISSN-E ${journal.issnE}` : ""}
               </small>
             </button>
-            <button type="button" className="ghost" onClick={() => onEdit(journal)}>
-              Edit
-            </button>
           </li>
         ))}
         {shown.length === 0 && <li className="muted">No journal matches that search.</li>}
@@ -78,9 +85,6 @@ export function Shelf({
                 <button type="button" className="journal-main" onClick={() => onOpenGalley(galley)}>
                   <strong>{journal?.abbreviation ?? "Journal"}</strong>
                   <span>{galley.title.trim() || "Untitled galley"}</span>
-                </button>
-                <button type="button" className="ghost" onClick={() => onDeleteGalley(galley)}>
-                  Remove
                 </button>
               </li>
             );

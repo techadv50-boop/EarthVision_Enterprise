@@ -1,5 +1,5 @@
 import type { Galley, ReferenceItem, ReferenceKind } from "../types";
-import { REFERENCE_STYLES, emptyReference, formatReference, parseReference } from "../references";
+import { emptyReference, formatReference, parseReference } from "../references";
 
 const KINDS: { id: ReferenceKind; label: string }[] = [
   { id: "journal", label: "Journal" },
@@ -20,20 +20,6 @@ export function ReferencesPanel({
 
   return (
     <section className="references">
-      <div className="style-box">
-        <span className="style-label">Reference styles</span>
-        <select
-          aria-label="Reference styles"
-          value={galley.referenceStyle}
-          onChange={(event) => patch({ referenceStyle: event.target.value as Galley["referenceStyle"] })}
-        >
-          {REFERENCE_STYLES.map((style) => (
-            <option key={style.id} value={style.id}>
-              {style.label}
-            </option>
-          ))}
-        </select>
-      </div>
       <div className="bar">
         <h2>References</h2>
         <button type="button" className="plus" aria-label="Add reference" onClick={() => patch({ references: [...galley.references, emptyReference()] })}>

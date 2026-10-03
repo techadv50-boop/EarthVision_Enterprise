@@ -59,6 +59,12 @@ services:
       context: ./galley
     ports:
       - '8090:80'
+    environment:
+      GALLEY_ADMIN_EMAIL: ${GALLEY_ADMIN_EMAIL:-admin@drxdhr.com}
+      GALLEY_ADMIN_PASSWORD: ${GALLEY_ADMIN_PASSWORD:-GalleyAdmin#2026}
+      GALLEY_DATA: /data
+    volumes:
+      - galley-data:/data
 
   nginx:
     image: nginx:alpine
@@ -83,3 +89,4 @@ services:
 
 volumes:
   pgdata:
+  galley-data:

@@ -86,7 +86,9 @@ The galley desk is a separate site from Citation Assistant. It is the `galley` s
    - **URL**: `nginx:80`
 3. Start the stack: `docker compose --profile tunnel up -d --build`
 
-Nginx sends `galley.drxdhr.com` to the galley desk and leaves `citation.xdgen.com` on the citation app. Journals and galleys are saved in the composer’s browser. The Word file is what you send to the authors.
+Nginx sends `galley.drxdhr.com` to the galley desk and leaves `citation.xdgen.com` on the citation app. Accounts, journals, and galleys are stored in the galley container (`galley-data` volume). The Word file is what you send to the authors.
+
+The first start creates an admin at `admin@drxdhr.com` with password `GalleyAdmin#2026`, unless `GALLEY_ADMIN_EMAIL` and `GALLEY_ADMIN_PASSWORD` are set. Change that password before the site is public. An admin adds journals, approves or restricts users, and deletes galleys from the archive. A composer signs in after approval and can only build a galley proof.
 
 On the VPS without the public name, the desk is also at `http://localhost:8090`.
 

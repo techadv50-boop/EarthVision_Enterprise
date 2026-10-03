@@ -1,9 +1,14 @@
-import type { BodyBlock, Galley, IconAsset, Journal } from "../types";
+import { useState } from "react";
+import type { BodyBlock, EquationAtom, EquationBlock, Galley, IconAsset, Journal, TableBlock } from "../types";
 import { figureNumber, flowBody, newId, parseStartPage, tableNumber } from "../metrics";
 import { composedBlocks } from "../references";
 import { fileToDataUrl } from "../storage";
+import { atomsFromOcr } from "../equations";
+import { parseTable } from "../tables";
+import { readEquation } from "../api";
 import { SheetFooter, SheetHeader } from "./FirstPage";
 import { ReferencesPanel } from "./ReferencesPanel";
+import { EquationView } from "./EquationView";
 
 export function BodyDesk({
   galley,
@@ -60,26 +65,12 @@ export function BodyDesk({
             </button>
             <button
               type="button"
-              onClick={() =>
-                insert({
-                  id: newId(),
-                  type: "table",
-                  caption: "",
-                  landscape: false,
-                  rows: [
-                    ["", ""],
-                    ["", ""],
-                  ],
-                })
-              }
+              onClick={() => insert({ id: newId(), type: "table", caption: "", source: "", rows: [], landscape: false })}
             >
               Table
             </button>
-            <button type="button" onClick={() => insert({ id: newId(), type: "equation", text: "", number: "" })}>
+            <button type="button" onClick={() => insert({ id: newId(), type: "equation", imageUrl: "", atoms: [], number: "" })}>
               Equation
-            </button>
-            <button type="button" onClick={() => insert({ id: newId(), type: "pageBreak" })}>
-              Page break
             </button>
           </div>
           {galley.blocks.map((block) => (
@@ -147,76 +138,8 @@ export function BodyDesk({
                   </label>
                 </>
               )}
-              {block.type === "table" && (
-                <>
-                  <label>
-                    Caption
-                    <input
-                      value={block.caption}
-                      onChange={(event) => update(block.id, { ...block, caption: event.target.value })}
-                    />
-                  </label>
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={block.landscape}
-                      onChange={(event) => update(block.id, { ...block, landscape: event.target.checked })}
-                    />
-                    This table needs a landscape page
-                  </label>
-                  <div className="table-edit">
-                    {block.rows.map((row, rowIndex) => (
-                      <div key={rowIndex} className="table-row">
-                        {row.map((cell, column) => (
-                          <input
-                            key={column}
-                            value={cell}
-                            aria-label={`Row ${rowIndex + 1} column ${column + 1}`}
-                            onChange={(event) => {
-                              const rows = block.rows.map((line) => line.slice());
-                              rows[rowIndex][column] = event.target.value;
-                              update(block.id, { ...block, rows });
-                            }}
-                          />
-                        ))}
-                      </div>
-                    ))}
-                    <div className="tool-row">
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => update(block.id, { ...block, rows: [...block.rows, block.rows[0].map(() => "")] })}
-                      >
-                        Add row
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() =>
-                          update(block.id, { ...block, rows: block.rows.map((row) => [...row, ""]) })
-                        }
-                      >
-                        Add column
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-              {block.type === "equation" && (
-                <div className="split">
-                  <label>
-                    Equation
-                    <input value={block.text} onChange={(event) => update(block.id, { ...block, text: event.target.value })} />
-                  </label>
-                  <label>
-                    Number
-                    <input
-                      value={block.number}
-                      onChange={(event) => update(block.id, { ...block, number: event.target.value })}
-                    />
-                  </label>
-                </div>
-              )}
+              {block.type === "table" && <TablePaste block={block} onChange={(next) => update(block.id, next)} />}
+              {block.type === "equation" && <EquationCard block={block} onChange={(next) => update(block.id, next)} />}
               {block.type === "pageBreak" && <p className="muted">The next block starts on a fresh 7.5 × 10 inch page.</p>}
             </article>
           ))}
@@ -224,6 +147,9 @@ export function BodyDesk({
         </div>
         <aside className="preview-column">
           <p className="muted">Page 2 onward · 7.5 × 10 in</p>
+          {pages.some((page) => page.kind === "landscape") && (
+            <p className="muted">A landscape page is inserted on its own, then the next page returns to portrait.</p>
+          )}
           <div className="sheet-frame" style={{ height: "5in" }}>
             <article className="sheet body-sheet">
               <SheetHeader journal={journal} openAccess={openAccess} />
@@ -286,12 +212,183 @@ function BlockPreview({ block, galley }: { block: BodyBlock; galley: Galley }) {
       </div>
     );
   }
-  if (block.type === "equation") {
-    return (
-      <p className="caption">
-        {block.text} {block.number && `(${block.number})`}
+  if (block.type === "equation") return <EquationView atoms={block.atoms} number={block.number} />;
+  return null;
+}
+
+function TablePaste({ block, onChange }: { block: TableBlock; onChange: (block: TableBlock) => void }) {
+  const apply = (raw: string) => {
+    const rows = parseTable(raw);
+    const source = rows.length ? rows.map((row) => row.join("\t")).join("\n") : raw;
+    onChange({ ...block, source, rows });
+  };
+  return (
+    <>
+      <label>
+        Caption
+        <input value={block.caption} onChange={(event) => onChange({ ...block, caption: event.target.value })} />
+      </label>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={block.landscape}
+          onChange={(event) => onChange({ ...block, landscape: event.target.checked })}
+        />
+        Landscape page
+      </label>
+      <p className="muted">
+        Pages stay portrait. Checking this places the table on its own landscape page and inserts the page break and section break around it.
       </p>
-    );
+      <label>
+        Paste the table
+        <textarea
+          rows={8}
+          value={block.source}
+          placeholder="Paste a table from Word, Excel, or a web page"
+          onPaste={(event) => {
+            const html = event.clipboardData.getData("text/html");
+            const text = event.clipboardData.getData("text/plain");
+            const raw = html && /<table[\s>]/i.test(html) ? html : text;
+            if (!raw.trim()) return;
+            event.preventDefault();
+            apply(raw);
+          }}
+          onChange={(event) => apply(event.target.value)}
+        />
+      </label>
+      {block.rows.length > 0 && (
+        <table className="pasted">
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {row.map((cell, column) => (
+                  <td key={column}>{cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
+function EquationCard({ block, onChange }: { block: EquationBlock; onChange: (block: EquationBlock) => void }) {
+  const [note, setNote] = useState("");
+
+  const take = async (file: File) => {
+    const imageUrl = await fileToDataUrl(file);
+    onChange({ ...block, imageUrl });
+    try {
+      const { text } = await readEquation(imageUrl);
+      onChange({ ...block, imageUrl, atoms: atomsFromOcr(text) });
+      setNote(text ? `Read as: ${text}` : "No text was read. Type the parts below.");
+    } catch (error) {
+      setNote(error instanceof Error ? `${error.message} You can still type the parts.` : "You can still type the parts.");
+    }
+  };
+
+  const setAtom = (index: number, atom: EquationAtom) => {
+    const atoms = block.atoms.slice();
+    atoms[index] = atom;
+    onChange({ ...block, atoms });
+  };
+
+  return (
+    <>
+      <div
+        className="drop-box"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          const file = [...event.dataTransfer.files].find((item) => item.type.startsWith("image/"));
+          if (file) void take(file);
+        }}
+        onPaste={(event) => {
+          const file = imageFromClipboard(event.clipboardData);
+          if (!file) return;
+          event.preventDefault();
+          void take(file);
+        }}
+      >
+        <p>Paste a JPG or a snippet of the equation.</p>
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          aria-label="Equation image"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void take(file);
+          }}
+        />
+        {block.imageUrl && <img className="figure-thumb" src={block.imageUrl} alt="Equation snapshot" />}
+      </div>
+      {note && <p className="muted">{note}</p>}
+      <EquationView atoms={block.atoms} number={block.number} />
+      {block.atoms.map((atom, index) => (
+        <div key={index} className="atom-row">
+          {atom.kind === "frac" ? (
+            <>
+              <label>
+                Numerator
+                <input value={atom.num} onChange={(event) => setAtom(index, { ...atom, num: event.target.value })} />
+              </label>
+              <label>
+                Denominator
+                <input value={atom.den} onChange={(event) => setAtom(index, { ...atom, den: event.target.value })} />
+              </label>
+            </>
+          ) : (
+            <label>
+              {atom.kind === "sup" ? "Superscript" : atom.kind === "sub" ? "Subscript" : "Text"}
+              <input
+                aria-label={atom.kind === "sup" ? "Superscript" : atom.kind === "sub" ? "Subscript" : "Equation text"}
+                placeholder={atom.kind === "text" && atom.value.trim() === "" ? "space" : undefined}
+                value={atom.value}
+                onChange={(event) => setAtom(index, { ...atom, value: event.target.value })}
+              />
+            </label>
+          )}
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => onChange({ ...block, atoms: block.atoms.filter((_, atomIndex) => atomIndex !== index) })}
+          >
+            Remove part
+          </button>
+        </div>
+      ))}
+      <div className="tool-row">
+        <button type="button" className="ghost" onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "text", value: "" }] })}>
+          Text
+        </button>
+        <button type="button" className="ghost" onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "sup", value: "" }] })}>
+          Superscript
+        </button>
+        <button type="button" className="ghost" onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "sub", value: "" }] })}>
+          Subscript
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => onChange({ ...block, atoms: [...block.atoms, { kind: "frac", num: "", den: "" }] })}
+        >
+          Ratio line
+        </button>
+      </div>
+      <label>
+        Number
+        <input value={block.number} onChange={(event) => onChange({ ...block, number: event.target.value })} />
+      </label>
+    </>
+  );
+}
+
+function imageFromClipboard(data: DataTransfer): File | null {
+  const direct = [...data.files].find((item) => item.type.startsWith("image/"));
+  if (direct) return direct;
+  for (const item of data.items) {
+    if (item.type.startsWith("image/")) return item.getAsFile();
   }
   return null;
 }

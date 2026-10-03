@@ -40,10 +40,22 @@ export type TableBlock = {
   id: string;
   type: "table";
   caption: string;
+  source: string;
   rows: string[][];
   landscape: boolean;
 };
-export type EquationBlock = { id: string; type: "equation"; text: string; number: string };
+export type EquationAtom =
+  | { kind: "text"; value: string }
+  | { kind: "sup"; value: string }
+  | { kind: "sub"; value: string }
+  | { kind: "frac"; num: string; den: string };
+export type EquationBlock = {
+  id: string;
+  type: "equation";
+  imageUrl: string;
+  atoms: EquationAtom[];
+  number: string;
+};
 export type PageBreakBlock = { id: string; type: "pageBreak" };
 
 export type ReferenceKind = "journal" | "book" | "conference";

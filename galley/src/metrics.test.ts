@@ -87,6 +87,7 @@ describe("page geometry", () => {
         id: "t",
         type: "table",
         caption: "Wide results",
+        source: "A\tB",
         landscape: true,
         rows: [
           ["A", "B"],

@@ -1,4 +1,4 @@
-import type { BodyBlock, Galley, IconAsset, Journal, Store } from "./types";
+import type { BodyBlock, EquationBlock, Galley, IconAsset, Journal, Store } from "./types";
 import { cloneIcons, newId } from "./metrics";
 import { parseReference } from "./references";
 
@@ -50,7 +50,7 @@ export function newGalley(journal: Journal): Galley {
   };
 }
 
-function normalizeGalley(galley: Galley): Galley {
+export function normalizeGalley(galley: Galley): Galley {
   const blocks: BodyBlock[] = [];
   const recovered: string[] = [];
   const source = galley.blocks || [];
@@ -76,6 +76,21 @@ function normalizeGalley(galley: Galley): Galley {
     }
     if (block.type === "paragraph") {
       blocks.push({ id: newId(), type: "section", heading: "", text: block.text });
+      continue;
+    }
+    if (block.type === "table" && block.source === undefined) {
+      blocks.push({ ...block, source: block.rows.map((row) => row.join("\t")).join("\n") });
+      continue;
+    }
+    if (block.type === "equation" && !block.atoms) {
+      const legacy = block as EquationBlock & { text?: string };
+      blocks.push({
+        id: block.id,
+        type: "equation",
+        imageUrl: block.imageUrl || "",
+        atoms: legacy.text ? [{ kind: "text", value: legacy.text }] : [],
+        number: block.number || "",
+      });
       continue;
     }
     blocks.push(block);

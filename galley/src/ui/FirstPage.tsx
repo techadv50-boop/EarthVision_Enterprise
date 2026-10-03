@@ -1,4 +1,5 @@
 import type { Galley, IconAsset, Journal } from "../types";
+import { REFERENCE_STYLES } from "../references";
 import {
   buildCitation,
   dateLine,
@@ -69,6 +70,20 @@ export function FirstPage({
       <div className="desk-grid">
         <form className="form-stack" onSubmit={(event) => event.preventDefault()}>
           <IconTray label="Top icons" icons={galley.topIcons} maxHeight={58} onChange={(topIcons) => patch({ topIcons })} />
+          <div className="style-box">
+            <span className="style-label">Reference styles</span>
+            <select
+              aria-label="Reference styles"
+              value={galley.referenceStyle}
+              onChange={(event) => patch({ referenceStyle: event.target.value as Galley["referenceStyle"] })}
+            >
+              {REFERENCE_STYLES.map((style) => (
+                <option key={style.id} value={style.id}>
+                  {style.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <label>
             Title
             <textarea rows={3} value={galley.title} onChange={(event) => patch({ title: event.target.value })} />

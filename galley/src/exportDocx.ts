@@ -64,7 +64,7 @@ function picture(icon: IconAsset, maxHeight: number): ImageRun | null {
   });
 }
 
-function run(text: string, options: { bold?: boolean; italics?: boolean; size?: number; super?: boolean } = {}): TextRun {
+function run(text: string, options: { bold?: boolean; italics?: boolean; size?: number; super?: boolean; sub?: boolean } = {}): TextRun {
   return new TextRun({
     text,
     font: FONT,
@@ -72,6 +72,7 @@ function run(text: string, options: { bold?: boolean; italics?: boolean; size?: 
     italics: options.italics,
     size: options.size ?? 24,
     superScript: options.super,
+    subScript: options.sub,
   });
 }
 
@@ -304,14 +305,52 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
         bodyParagraph([run("")], { after: 80 }),
       ];
     }
-    case "equation":
-      return [
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          spacing: { before: 60, after: 60 },
-          children: [run(block.text), run(block.number ? `    (${block.number})` : "")],
-        }),
-      ];
+    case "equation": {
+      const children: FileChild[] = [];
+      let runs: TextRun[] = [];
+      const flush = () => {
+        if (!runs.length) return;
+        children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 40, after: 40 }, children: runs }));
+        runs = [];
+      };
+      for (const atom of block.atoms || []) {
+        if (atom.kind === "frac") {
+          flush();
+          children.push(
+            new Table({
+              width: { size: convertInchesToTwip(1.1), type: WidthType.DXA },
+              alignment: AlignmentType.CENTER,
+              borders: NO_BORDERS,
+              rows: [
+                new TableRow({
+                  cantSplit: true,
+                  children: [
+                    new TableCell({
+                      borders: { ...NO_BORDERS, bottom: { style: BorderStyle.SINGLE, size: 8, color: "000000" } },
+                      children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [run(atom.num)] })],
+                    }),
+                  ],
+                }),
+                new TableRow({
+                  cantSplit: true,
+                  children: [
+                    new TableCell({
+                      borders: NO_BORDERS,
+                      children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [run(atom.den)] })],
+                    }),
+                  ],
+                }),
+              ],
+            }),
+          );
+        } else if (atom.kind === "sup") runs.push(run(atom.value, { super: true }));
+        else if (atom.kind === "sub") runs.push(run(atom.value, { sub: true }));
+        else runs.push(run(atom.value));
+      }
+      flush();
+      if (block.number) children.push(bodyParagraph([run(`(${block.number})`)], { center: true, after: 80 }));
+      return children.length ? children : [bodyParagraph([run("")])];
+    }
     case "pageBreak":
       return [];
   }

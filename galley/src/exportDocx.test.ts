@@ -53,6 +53,7 @@ const galley: Galley = {
       id: "t",
       type: "table",
       caption: "A wide comparison that does not fit portrait",
+      source: "Model\tAUC\nCatBoost\t0.91",
       landscape: true,
       rows: [
         ["Model", "AUC", "Notes"],

@@ -1,15 +1,20 @@
-import { useEffect, useState } from "react";
-import type { Galley, Journal, Store } from "./types";
-import { EMPTY_STORE, loadStore, newGalley, saveStore } from "./storage";
+import { useEffect, useRef, useState } from "react";
+import type { Galley, IconAsset, Journal } from "./types";
+import { newGalley, normalizeGalley } from "./storage";
 import { seedStore } from "./seed";
+import * as api from "./api";
+import type { Account, GalleyRecord } from "./api";
 import { Shelf } from "./ui/Shelf";
 import { JournalForm } from "./ui/JournalForm";
 import { FirstPage } from "./ui/FirstPage";
 import { BodyDesk } from "./ui/BodyDesk";
 import { Proof } from "./ui/Proof";
+import { Login } from "./ui/Login";
+import { Admin } from "./ui/Admin";
 
 type View =
   | { name: "shelf" }
+  | { name: "admin" }
   | { name: "add" }
   | { name: "edit"; journalId: string }
   | { name: "first"; galleyId: string }
@@ -17,118 +22,247 @@ type View =
   | { name: "proof"; galleyId: string };
 
 export function App() {
-  const [store, setStore] = useState<Store>(EMPTY_STORE);
-  const [ready, setReady] = useState(false);
+  const [user, setUser] = useState<Account | null>(null);
+  const [booting, setBooting] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [journals, setJournals] = useState<Journal[]>([]);
+  const [openAccess, setOpenAccess] = useState<IconAsset | null>(null);
+  const [archive, setArchive] = useState<GalleyRecord[]>([]);
   const [view, setView] = useState<View>({ name: "shelf" });
   const [error, setError] = useState("");
+  const saves = useRef(new Map<string, number>());
+  const pending = useRef(new Map<string, Galley>());
 
   useEffect(() => {
-    const existing = loadStore();
-    if (existing.journals.length > 0) {
-      setStore(existing);
-      setReady(true);
+    if (!api.getToken()) {
+      setBooting(false);
       return;
     }
-    seedStore()
-      .then((seeded) => {
-        saveStore(seeded);
-        setStore(seeded);
-        setReady(true);
-      })
-      .catch(() => {
-        setError("The journal icons could not be loaded. You can still add a journal and upload icons.");
-        setReady(true);
-      });
+    api
+      .me()
+      .then(setUser)
+      .catch(() => api.setToken(null))
+      .finally(() => setBooting(false));
   }, []);
 
-  const commit = (next: Store) => {
-    setStore(next);
-    saveStore(next);
+  useEffect(() => {
+    if (!user) return;
+    let cancel = false;
+    setLoading(true);
+    (async () => {
+      const [loaded, records, settings] = await Promise.all([api.journals(), api.galleys(), api.openAccess()]);
+      let nextJournals = loaded;
+      let icon = settings.icon;
+      if (user.role === "admin" && loaded.length === 0) {
+        try {
+          const seeded = await seedStore();
+          for (const journal of seeded.journals) await api.saveJournal(journal);
+          if (seeded.openAccessIcon) await api.saveOpenAccess(seeded.openAccessIcon);
+          nextJournals = seeded.journals;
+          icon = seeded.openAccessIcon;
+        } catch {
+          if (!cancel) setError("The starter journals could not be loaded. Add a journal from Admin.");
+        }
+      }
+      if (cancel) return;
+      setJournals(nextJournals);
+      setOpenAccess(icon);
+      setArchive(records.map((record) => ({ ...record, galley: normalizeGalley(record.galley) })));
+    })()
+      .catch((caught: unknown) => {
+        if (!cancel) setError(caught instanceof Error ? caught.message : "Could not open the desk.");
+      })
+      .finally(() => {
+        if (!cancel) setLoading(false);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [user]);
+
+  const saveGalley = (next: Galley) => {
+    setArchive((current) => current.map((record) => (record.galley.id === next.id ? { ...record, galley: next } : record)));
+    pending.current.set(next.id, next);
+    const waiting = saves.current.get(next.id);
+    if (waiting) window.clearTimeout(waiting);
+    saves.current.set(
+      next.id,
+      window.setTimeout(() => {
+        void flushGalley(next.id);
+      }, 400),
+    );
   };
 
-  const galley = view.name === "shelf" || view.name === "add" || view.name === "edit"
-    ? undefined
-    : store.galleys.find((item) => item.id === view.galleyId);
-  const journal = galley ? store.journals.find((item) => item.id === galley.journalId) : undefined;
-
-  const saveGalley = (nextGalley: Galley) => {
-    commit({
-      ...store,
-      galleys: store.galleys.some((item) => item.id === nextGalley.id)
-        ? store.galleys.map((item) => (item.id === nextGalley.id ? nextGalley : item))
-        : [...store.galleys, nextGalley],
+  const flushGalley = (id: string) => {
+    const waiting = saves.current.get(id);
+    if (waiting) window.clearTimeout(waiting);
+    saves.current.delete(id);
+    const latest = pending.current.get(id);
+    pending.current.delete(id);
+    if (!latest) return Promise.resolve();
+    return api.updateGalley(latest).catch((caught: unknown) => {
+      setError(caught instanceof Error ? caught.message : "Could not save the galley.");
     });
   };
 
-  if (!ready) return <p className="panel">Opening the journal shelf…</p>;
+  const signOut = () => {
+    for (const id of [...pending.current.keys()]) void flushGalley(id);
+    api.setToken(null);
+    setUser(null);
+    setJournals([]);
+    setArchive([]);
+    setView({ name: "shelf" });
+  };
+
+  if (booting) return <p className="panel">Opening the journal shelf…</p>;
+  if (!user) return <Login onSignedIn={setUser} />;
+  if (loading) return <p className="panel">Opening the journal shelf…</p>;
+
+  const record = "galleyId" in view ? archive.find((item) => item.galley.id === view.galleyId) : undefined;
+  const galley = record?.galley;
+  const journal = galley ? journals.find((item) => item.id === galley.journalId) : undefined;
 
   if (view.name === "add" || view.name === "edit") {
-    const initial = view.name === "edit" ? store.journals.find((item) => item.id === view.journalId) : undefined;
+    if (user.role !== "admin") return <p className="panel">Only an admin can change journals.</p>;
+    const initial = view.name === "edit" ? journals.find((item) => item.id === view.journalId) : undefined;
     return (
+      <>
+      {error && <p className="error panel">{error}</p>}
       <JournalForm
         initial={initial}
-        onCancel={() => setView({ name: "shelf" })}
+        onCancel={() => setView({ name: "admin" })}
         onSave={(saved) => {
-          const journals = store.journals.some((item) => item.id === saved.id)
-            ? store.journals.map((item) => (item.id === saved.id ? saved : item))
-            : [...store.journals, saved];
-          commit({ ...store, journals });
-          setView({ name: "shelf" });
+          api
+            .saveJournal(saved)
+            .then((stored) => {
+              setJournals((current) =>
+                current.some((item) => item.id === stored.id)
+                  ? current.map((item) => (item.id === stored.id ? stored : item))
+                  : [...current, stored],
+              );
+              setView({ name: "admin" });
+            })
+            .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not save the journal."));
         }}
       />
+      </>
+    );
+  }
+
+  if (view.name === "admin") {
+    if (user.role !== "admin") return <p className="panel">Only an admin can open that page.</p>;
+    return (
+      <>
+        {error && <p className="error panel">{error}</p>}
+        <Admin
+          journals={journals}
+          archive={archive}
+          onBack={() => setView({ name: "shelf" })}
+          onAddJournal={() => setView({ name: "add" })}
+          onEditJournal={(item) => setView({ name: "edit", journalId: item.id })}
+          onOpenGalley={(item) => setView({ name: "first", galleyId: item.galley.id })}
+          onDeleteJournal={(item) => {
+            if (!window.confirm(`Delete ${item.abbreviation}? Composers will no longer see this journal.`)) return;
+            api
+              .deleteJournal(item.id)
+              .then(() => setJournals((current) => current.filter((journalItem) => journalItem.id !== item.id)))
+              .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not delete the journal."));
+          }}
+          onDeleteGalley={(item) => {
+            if (!window.confirm("Delete this galley from the archive?")) return;
+            api
+              .deleteGalley(item.galley.id)
+              .then(() => {
+                setArchive((current) => current.filter((recordItem) => recordItem.galley.id !== item.galley.id));
+                setView({ name: "admin" });
+              })
+              .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not delete the galley."));
+          }}
+        />
+      </>
     );
   }
 
   if ((view.name === "first" || view.name === "body" || view.name === "proof") && galley && journal) {
     if (view.name === "first") {
       return (
+        <>
+        {error && <p className="error panel">{error}</p>}
         <FirstPage
           galley={galley}
           journal={journal}
-          openAccess={store.openAccessIcon}
+          openAccess={openAccess}
           onChange={saveGalley}
-          onBack={() => setView({ name: "shelf" })}
-          onNext={() => setView({ name: "body", galleyId: galley.id })}
+          onBack={() => {
+            void flushGalley(galley.id);
+            setView({ name: "shelf" });
+          }}
+          onNext={() => {
+            void flushGalley(galley.id);
+            setView({ name: "body", galleyId: galley.id });
+          }}
         />
+        </>
       );
     }
     if (view.name === "body") {
       return (
+        <>
+        {error && <p className="error panel">{error}</p>}
         <BodyDesk
           galley={galley}
           journal={journal}
-          openAccess={store.openAccessIcon}
+          openAccess={openAccess}
           onChange={saveGalley}
-          onBack={() => setView({ name: "first", galleyId: galley.id })}
-          onProof={() => setView({ name: "proof", galleyId: galley.id })}
+          onBack={() => {
+            void flushGalley(galley.id);
+            setView({ name: "first", galleyId: galley.id });
+          }}
+          onProof={() => {
+            void flushGalley(galley.id);
+            setView({ name: "proof", galleyId: galley.id });
+          }}
         />
+        </>
       );
     }
     return (
-      <Proof
-        galley={galley}
-        journal={journal}
-        openAccess={store.openAccessIcon}
-        onBack={() => setView({ name: "body", galleyId: galley.id })}
-      />
+      <>
+        {error && <p className="error panel">{error}</p>}
+        <Proof galley={galley} journal={journal} openAccess={openAccess} onBack={() => setView({ name: "body", galleyId: galley.id })} />
+      </>
     );
   }
+
+  const mine = archive.filter((item) => item.ownerId === user.id).map((item) => item.galley);
 
   return (
     <>
       {error && <p className="error panel">{error}</p>}
       <Shelf
-        journals={store.journals}
-        galleys={store.galleys}
-        onAdd={() => setView({ name: "add" })}
-        onEdit={(item: Journal) => setView({ name: "edit", journalId: item.id })}
+        journals={journals}
+        galleys={mine}
+        accountName={user.name}
+        isAdmin={user.role === "admin"}
+        onAdmin={() => setView({ name: "admin" })}
+        onLogout={signOut}
         onOpenJournal={(item) => {
           const created = newGalley(item);
-          commit({ ...store, galleys: [...store.galleys, created] });
-          setView({ name: "first", galleyId: created.id });
+          api
+            .createGalley(created)
+            .then((stored) => {
+              const galleyRecord: GalleyRecord = {
+                galley: normalizeGalley(stored),
+                ownerId: user.id,
+                ownerName: user.name,
+                ownerEmail: user.email,
+              };
+              setArchive((current) => [galleyRecord, ...current]);
+              setView({ name: "first", galleyId: stored.id });
+            })
+            .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not start that galley."));
         }}
         onOpenGalley={(item) => setView({ name: "first", galleyId: item.id })}
-        onDeleteGalley={(item) => commit({ ...store, galleys: store.galleys.filter((galley) => galley.id !== item.id) })}
       />
     </>
   );

@@ -3,6 +3,7 @@ import type { Galley, IconAsset, Journal } from "../types";
 import { flowBody, parseStartPage } from "../metrics";
 import { composedBlocks } from "../references";
 import { FrontSheet, SheetFooter, SheetHeader } from "./FirstPage";
+import { EquationView } from "./EquationView";
 import { figureNumber, tableNumber } from "../metrics";
 import type { BodyBlock } from "../types";
 
@@ -176,6 +177,6 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
       </div>
     );
   }
-  if (block.type === "equation") return <p className="caption">{block.text}</p>;
+  if (block.type === "equation") return <EquationView atoms={block.atoms} number={block.number} />;
   return null;
 }
