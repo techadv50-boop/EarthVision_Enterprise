@@ -152,7 +152,7 @@ function rowToForm(row: AuthorRow, journals: JournalOption[]) {
     ojs_number: row.ojs_number || '',
     title: row.title || '',
     author_names: row.author_names || '',
-    author_emails: row.author_emails || '',
+    author_emails: emailsForForm(row.author_emails),
     email_sent_date: row.email_sent_date || '',
     plagiarism: row.plagiarism || '',
     orcid_id: row.orcid_id || '',
@@ -653,14 +653,24 @@ function slaTextClass(tone: SlaTone) {
   return 'text-gray-200';
 }
 
+function emailsForForm(value?: string | null) {
+  return (value || '')
+    .split(/[;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 function ReportField({
   label,
   value,
   tone,
+  prewrap,
 }: {
   label: string;
   value?: string | null;
   tone?: SlaTone;
+  prewrap?: boolean;
 }) {
   return (
     <div className="min-w-0">
@@ -668,7 +678,11 @@ function ReportField({
         {tone ? <SlaDot tone={tone} label={label} /> : null}
         {label}
       </p>
-      <p className={`text-sm break-words ${tone ? slaTextClass(tone) : 'text-gray-200'}`}>
+      <p
+        className={`text-sm break-words ${prewrap ? 'whitespace-pre-wrap' : ''} ${
+          tone ? slaTextClass(tone) : 'text-gray-200'
+        }`}
+      >
         {value && String(value).trim() ? value : '—'}
       </p>
     </div>
@@ -704,11 +718,7 @@ function HistoryCard({ ver, forPublished }: { ver: DisplayRow; forPublished?: bo
         <ReportField label="Page" value={data.page} />
         <ReportField
           label="Status"
-          value={
-            forPublished && data.editorial_status !== 'Declined'
-              ? 'Published'
-              : data.editorial_status || 'Submission'
-          }
+          value={data.editorial_status || (forPublished ? 'Published' : 'Submission')}
         />
         {data.editorial_status === 'Declined' ? (
           <div className="md:col-span-2">
@@ -717,25 +727,30 @@ function HistoryCard({ ver, forPublished }: { ver: DisplayRow; forPublished?: bo
         ) : null}
         <ReportField label="Title" value={data.title} />
         <ReportField label="Authors" value={data.author_names} />
-        <ReportField label="Email addresses of authors" value={data.author_emails} />
+        <ReportField
+          label="Email addresses of authors"
+          value={emailsForForm(data.author_emails)}
+          prewrap
+        />
         <ReportField label="Plagiarism" value={data.plagiarism} />
         <ReportField label="ORCID ID" value={data.orcid_id} />
         {!forPublished && <ReportField label="Email sent date" value={data.email_sent_date} />}
         <ReportField label="Receive date" value={data.received_date} />
-        {rounds.map((round, index) => (
-          <div key={`${ver.key}-r${index}`} className="md:col-span-2 grid gap-4 md:grid-cols-2">
-            <ReportField
-              label={`Round ${index + 1} review sent date`}
-              value={round.sent_date}
-              tone={forPublished ? undefined : currentStageTone(stageKey(index + 1, 'sent'), data)}
-            />
-            <ReportField
-              label={`Round ${index + 1} review receive date`}
-              value={round.received_date}
-              tone={forPublished ? undefined : currentStageTone(stageKey(index + 1, 'received'), data)}
-            />
-          </div>
-        ))}
+        {!forPublished &&
+          rounds.map((round, index) => (
+            <div key={`${ver.key}-r${index}`} className="md:col-span-2 grid gap-4 md:grid-cols-2">
+              <ReportField
+                label={`Round ${index + 1} review sent date`}
+                value={round.sent_date}
+                tone={currentStageTone(stageKey(index + 1, 'sent'), data)}
+              />
+              <ReportField
+                label={`Round ${index + 1} review receive date`}
+                value={round.received_date}
+                tone={currentStageTone(stageKey(index + 1, 'received'), data)}
+              />
+            </div>
+          ))}
         <ReportField
           label="Acceptance date"
           value={data.accepted_date}
@@ -774,9 +789,13 @@ function HistoryCard({ ver, forPublished }: { ver: DisplayRow; forPublished?: bo
             />
           </>
         )}
-        <ReportField label="Soft reminder sent" value={data.soft_reminder_sent} />
-        {!forPublished && <ReportField label="Second reminder sent" value={data.second_reminder_sent} />}
-        <ReportField label="Last reminder sent" value={data.last_reminder_sent} />
+        {!forPublished && (
+          <>
+            <ReportField label="Soft reminder sent" value={data.soft_reminder_sent} />
+            <ReportField label="Second reminder sent" value={data.second_reminder_sent} />
+            <ReportField label="Last reminder sent" value={data.last_reminder_sent} />
+          </>
+        )}
         <div className="md:col-span-2">
           <ReportField label="Comments" value={data.comments} />
         </div>
@@ -821,7 +840,10 @@ function optionalFormInt(value: string) {
 function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) {
   const selected = journals.find((journal) => journalKey(journal) === form.journal_key);
   const parsed = parseJournalKey(form.journal_key);
-  const declined = !forPublishedStatus(wing) && form.editorial_status === 'Declined';
+  const publishedStatus =
+    form.editorial_status === 'Declined' ? 'Declined' : 'Published';
+  const editorialStatus = forPublishedStatus(wing) ? publishedStatus : form.editorial_status;
+  const declined = editorialStatus === 'Declined';
   return {
     wing,
     journal_id: parsed.journal_id,
@@ -829,7 +851,7 @@ function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) 
     ojs_number: form.ojs_number,
     title: form.title,
     author_names: form.author_names,
-    author_emails: form.author_emails,
+    author_emails: emailsForForm(form.author_emails),
     email_sent_date: form.email_sent_date || null,
     plagiarism: form.plagiarism,
     orcid_id: form.orcid_id,
@@ -843,7 +865,7 @@ function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) 
     galley_sent_date: form.galley_sent_date || null,
     galley_received_date: form.galley_received_date || null,
     publish_date: form.publish_date || null,
-    editorial_status: wing === 'published' ? 'Published' : form.editorial_status,
+    editorial_status: editorialStatus,
     volume: optionalFormInt(form.volume),
     issue: optionalFormInt(form.issue),
     page: form.page.trim(),
@@ -999,10 +1021,10 @@ function ArticleFormFields({
       <label className="text-sm text-gray-400">
         Email addresses of authors
         <textarea
-          className="input-field mt-1 min-h-[4.5rem]"
+          className="input-field mt-1 min-h-[7.5rem] whitespace-pre-wrap"
           value={form.author_emails}
           onChange={(e) => field('author_emails', e.target.value)}
-          placeholder="Matching order with author names"
+          placeholder={"author1@example.com\nauthor2@example.com\nauthor3@example.com"}
         />
       </label>
       <label className="text-sm text-gray-400">
@@ -1094,12 +1116,12 @@ function ArticleFormFields({
         </div>
       </div>
       )}
+      {!forPublished && (
       <div className="md:col-span-2 space-y-3">
         {form.review_rounds.map((round, index) => (
           <div key={round.round} className="border border-gray-800 rounded-md p-3 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-gray-200">Round {index + 1}</p>
-              {!forPublished && (
               <div className="flex items-center gap-1">
                 {index === form.review_rounds.length - 1 && (
                   <button
@@ -1122,7 +1144,6 @@ function ArticleFormFields({
                   </button>
                 )}
               </div>
-              )}
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <DateSlaField
@@ -1140,13 +1161,14 @@ function ArticleFormFields({
             </div>
           </div>
         ))}
-        {extraRoundButton && !forPublished ? (
+        {extraRoundButton ? (
           <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={addRound}>
             <Plus className="w-4 h-4" />
             Add round {form.review_rounds.length + 1}
           </button>
         ) : null}
       </div>
+      )}
       <DateSlaField
         label="Acceptance date"
         value={form.accepted_date}
@@ -1175,35 +1197,37 @@ function ArticleFormFields({
         onChange={(value) => field('publish_date', value)}
         tone={forPublished ? undefined : currentStageTone('publish_date', form)}
       />
-      <label className="text-sm text-gray-400">
-        Soft reminder sent
-        <input
-          className="input-field mt-1"
-          type="date"
-          value={form.soft_reminder_sent}
-          onChange={(e) => field('soft_reminder_sent', e.target.value)}
-        />
-      </label>
       {!forPublished && (
-      <label className="text-sm text-gray-400">
-        Second reminder sent
-        <input
-          className="input-field mt-1"
-          type="date"
-          value={form.second_reminder_sent}
-          onChange={(e) => field('second_reminder_sent', e.target.value)}
-        />
-      </label>
+        <>
+          <label className="text-sm text-gray-400">
+            Soft reminder sent
+            <input
+              className="input-field mt-1"
+              type="date"
+              value={form.soft_reminder_sent}
+              onChange={(e) => field('soft_reminder_sent', e.target.value)}
+            />
+          </label>
+          <label className="text-sm text-gray-400">
+            Second reminder sent
+            <input
+              className="input-field mt-1"
+              type="date"
+              value={form.second_reminder_sent}
+              onChange={(e) => field('second_reminder_sent', e.target.value)}
+            />
+          </label>
+          <label className="text-sm text-gray-400">
+            Last reminder sent
+            <input
+              className="input-field mt-1"
+              type="date"
+              value={form.last_reminder_sent}
+              onChange={(e) => field('last_reminder_sent', e.target.value)}
+            />
+          </label>
+        </>
       )}
-      <label className="text-sm text-gray-400">
-        Last reminder sent
-        <input
-          className="input-field mt-1"
-          type="date"
-          value={form.last_reminder_sent}
-          onChange={(e) => field('last_reminder_sent', e.target.value)}
-        />
-      </label>
       <label className="text-sm text-gray-400 md:col-span-2">
         Comments
         <textarea
@@ -1221,17 +1245,23 @@ function ArticleFormFields({
         Status
         <select
           className="input-field mt-1"
-          value={forPublished ? 'Published' : form.editorial_status}
+          value={
+            forPublished
+              ? form.editorial_status === 'Declined'
+                ? 'Declined'
+                : 'Published'
+              : form.editorial_status
+          }
           onChange={(e) => field('editorial_status', e.target.value)}
         >
-          {(forPublished ? (['Published'] as const) : EDITORIAL_STATUSES).map((status) => (
+          {(forPublished ? (['Published', 'Declined'] as const) : EDITORIAL_STATUSES).map((status) => (
             <option key={status} value={status}>
               {status}
             </option>
           ))}
         </select>
       </label>
-      {!forPublished && form.editorial_status === 'Declined' ? (
+      {form.editorial_status === 'Declined' ? (
         <label className="text-sm text-gray-400 md:col-span-2">
           Reason of decline
           <textarea

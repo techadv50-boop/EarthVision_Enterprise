@@ -112,14 +112,11 @@ PUBLISHED_EXCEL_HEADERS = [
     "Plagiarism",
     "ORCID ID",
     "Receive date",
-    "Round 1 review sent date",
-    "Round 1 review receive date",
     "Acceptance date",
     "Publish date",
-    "Soft reminder sent",
-    "Last reminder sent",
     "Comments",
     "Status",
+    "Reason of decline",
 ]
 
 EXCEL_HEADERS = IN_PROCESS_EXCEL_HEADERS
@@ -220,6 +217,9 @@ def _style_excel(sheet, headers: list[str]) -> None:
         for cell in sheet.iter_cols(min_col=email_idx, max_col=email_idx, min_row=2):
             for item in cell:
                 item.alignment = Alignment(wrap_text=True, vertical="top")
+                lines = str(item.value or "").count("\n") + 1 if item.value else 1
+                if lines > 1:
+                    sheet.row_dimensions[item.row].height = max(18.0, 15.0 * min(lines, 12))
 
 
 def _editorial_status(value: Optional[str]) -> str:
@@ -1093,7 +1093,13 @@ async def download_import_template(wing: str = Query(default="in_process")):
         "Page": "1788-1813",
         "Title": "Sample title",
         "Author names": "Ali Khan; Sara Ahmed",
-        "Email addresses of authors": "ali@example.com; sara@example.com",
+        "Email addresses of authors": (
+            "ali@example.com\n"
+            "sara@example.com\n"
+            "fatima@example.com\n"
+            "hassan@example.com\n"
+            "noor@example.com"
+        ),
         "Plagiarism": "9%",
         "ORCID ID": "0000-0002-1825-0097",
         "Email sent date": "2024-01-05",
