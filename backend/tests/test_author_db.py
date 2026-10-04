@@ -760,21 +760,16 @@ async def test_excel_export_includes_published_and_under_process_rows(client: As
         "Plagiarism",
         "ORCID ID",
         "Receive date",
-        "Round 1 review sent date",
-        "Round 1 review receive date",
         "Acceptance date",
         "Publish date",
-        "Soft reminder sent",
-        "Last reminder sent",
-        "Comments",
         "Status",
+        "Reason of decline",
     ]
     ojs_idx = pub_headers.index("OJS number")
     email_idx = pub_headers.index("Email addresses of authors")
-    comments_idx = pub_headers.index("Comments")
     rows = list(pub_sheet.iter_rows(min_row=2, values_only=True))
     found = next(row for row in rows if row[ojs_idx] == "EXP-PUB-1")
-    assert "example.test/article/view/88" in str(found[comments_idx] or "")
+    assert "Comments" not in pub_headers
     assert not (found[email_idx] or "").strip()
 
 
@@ -1095,22 +1090,31 @@ async def test_excel_template_matches_new_form_fields(client: AsyncClient):
         "Plagiarism",
         "ORCID ID",
         "Receive date",
-        "Round 1 review sent date",
-        "Round 1 review receive date",
         "Acceptance date",
         "Publish date",
-        "Soft reminder sent",
-        "Last reminder sent",
-        "Comments",
         "Status",
+        "Reason of decline",
     ]
     assert "Email sent date" not in pub_headers
     assert "Galley sent date" not in pub_headers
+    assert "Round 1 review sent date" not in pub_headers
+    assert "Round 1 review receive date" not in pub_headers
+    assert "Soft reminder sent" not in pub_headers
+    assert "Last reminder sent" not in pub_headers
     assert "Second reminder sent" not in pub_headers
-    assert "Reason of decline" not in pub_headers
+    assert "Comments" not in pub_headers
     pub_sample = next(pub_sheet.iter_rows(min_row=2, max_row=2, values_only=True))
     assert pub_sample[pub_headers.index("Status")] == "Published"
-    assert pub_sample[pub_headers.index("Email addresses of authors")] == "ali@example.com; sara@example.com"
+    emails = str(pub_sample[pub_headers.index("Email addresses of authors")] or "")
+    for address in (
+        "ali@example.com",
+        "sara@example.com",
+        "fatima@example.com",
+        "hassan@example.com",
+        "noor@example.com",
+    ):
+        assert address in emails
+    assert "\n" in emails
 
 
 @pytest.mark.asyncio
@@ -1156,6 +1160,100 @@ async def test_export_separates_glued_author_emails(client: AsyncClient):
     emails = str(found[email_idx] or "")
     assert "qaziejazali@uop.edu.pk" in emails
     assert "asimali@bbsutsd.edu.pk" in emails
-    assert "; " in emails.replace(";\n", "; ") or ";\n" in emails
+    assert "\n" in emails
+
+
+@pytest.mark.asyncio
+async def test_five_author_emails_keep_their_shape(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    five = "\n".join(
+        [
+            "ali.five@shape-test.example",
+            "sara.five@shape-test.example",
+            "fatima.five@shape-test.example",
+            "hassan.five@shape-test.example",
+            "noor.five@shape-test.example",
+        ]
+    )
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-EMAIL-FIVE",
+            "title": "Five emails paper",
+            "author_names": "Ali; Sara; Fatima; Hassan; Noor",
+            "author_emails": five,
+            "editorial_status": "Published",
+        },
+    )
+    assert created.status_code == 201, created.text
+    stored = created.json()["author_emails"]
+    for address in (
+        "ali.five@shape-test.example",
+        "sara.five@shape-test.example",
+        "fatima.five@shape-test.example",
+        "hassan.five@shape-test.example",
+        "noor.five@shape-test.example",
+    ):
+        assert address in stored
+    assert stored.count("@") == 5
+    assert "\n" in stored
+    exported = await client.get(
+        "/api/v1/author-articles/export",
+        headers=headers,
+        params={"wing": "published"},
+    )
+    assert exported.status_code == 200
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    book = load_workbook(BytesIO(exported.content))
+    sheet = book.active
+    headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+    ojs_idx = headers_row.index("OJS number")
+    email_idx = headers_row.index("Email addresses of authors")
+    found = next(row for row in sheet.iter_rows(min_row=2, values_only=True) if row[ojs_idx] == "IJIST-EMAIL-FIVE")
+    exported_emails = str(found[email_idx] or "")
+    assert exported_emails.splitlines() == [
+        "ali.five@shape-test.example",
+        "sara.five@shape-test.example",
+        "fatima.five@shape-test.example",
+        "hassan.five@shape-test.example",
+        "noor.five@shape-test.example",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_published_article_can_be_declined(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-PUB-DECLINED",
+            "title": "Published then declined",
+            "author_names": "Declined Author",
+            "editorial_status": "Declined",
+            "decline_reason": "Duplicate of an earlier issue.",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["wing"] == "published"
+    assert created.json()["editorial_status"] == "Declined"
+    assert created.json()["decline_reason"] == "Duplicate of an earlier issue."
+
 
 

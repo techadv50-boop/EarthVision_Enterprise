@@ -131,4 +131,20 @@ def test_broken_banner_title_is_detected():
 def test_extract_and_format_glued_emails():
     blob = "qaziejazali@uop.edu.pkasimali@bbsutsd.edu.pk, sara@example.com"
     assert format_emails(blob) == "qaziejazali@uop.edu.pk; asimali@bbsutsd.edu.pk; sara@example.com"
-    assert "\n" in format_emails(blob, excel=True)
+    assert format_emails(blob, excel=True) == (
+        "qaziejazali@uop.edu.pk\nasimali@bbsutsd.edu.pk\nsara@example.com"
+    )
+
+
+def test_five_newline_emails_keep_their_shape():
+    blob = "\n".join(
+        [
+            "ali@example.com",
+            "sara@example.com",
+            "fatima@example.com",
+            "hassan@example.com",
+            "noor@example.com",
+        ]
+    )
+    assert format_emails(blob) == blob
+    assert format_emails(blob, excel=True) == blob

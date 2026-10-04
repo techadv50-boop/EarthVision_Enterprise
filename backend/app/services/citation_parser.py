@@ -65,11 +65,15 @@ def extract_emails(text: str) -> list[str]:
 
 
 def format_emails(text: str, *, excel: bool = False) -> str:
-    emails = extract_emails(text)
+    raw = str(text or "")
+    emails = extract_emails(raw)
     if emails:
-        sep = ";\n" if excel else "; "
-        return sep.join(emails)
-    cleaned = re.sub(r"\s+", " ", str(text or "")).strip(" ;,")
+        # Excel and newline-entered lists keep one address per line so five
+        # (or more) IDs stay visually distinct. Semicolon lists stay "; ".
+        if excel or ("\n" in raw.strip() and len(emails) > 1):
+            return "\n".join(emails)
+        return "; ".join(emails)
+    cleaned = re.sub(r"\s+", " ", raw).strip(" ;,")
     return cleaned
 DATE_FIELD_RE = re.compile(
     rf"(Received|Revised|Accepted|Published)\s*\|\s*({MONTH_RE}\.?\s+\d{{1,2}},?\s+\d{{4}}|{MONTH_RE}\.?\s+\d{{1,2}}\s+\d{{4}})",
