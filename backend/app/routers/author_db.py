@@ -66,6 +66,9 @@ CurrentUser = Annotated[User, Depends(require_service("authors"))]
 
 EXCEL_HEADERS = [
     "OJS number",
+    "Volume",
+    "Issue",
+    "Page",
     "Title",
     "Author names",
     "Email addresses of authors",
@@ -84,6 +87,7 @@ EXCEL_HEADERS = [
     "Galley received date",
     "Publish date",
     "Status",
+    "Reason of decline",
     "Soft reminder sent",
     "Second reminder sent",
     "Last reminder sent",
@@ -105,6 +109,19 @@ def _blank(value: Optional[str]) -> Optional[str]:
     return text or None
 
 
+def _optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        number = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _article_url_of(row: AuthorArticle) -> str:
     comments = row.comments or ""
     match = re.search(r"https?://\S+", comments)
@@ -121,6 +138,9 @@ def _excel_row(row: AuthorArticle) -> list[Any]:
 
     return [
         row.ojs_number or "",
+        row.volume if row.volume is not None else "",
+        row.issue_number if row.issue_number is not None else "",
+        row.page or "",
         row.title or "",
         row.author_names or "",
         row.author_emails or "",
@@ -139,6 +159,7 @@ def _excel_row(row: AuthorArticle) -> list[Any]:
         row.galley_received_date or "",
         row.publish_date or "",
         row.editorial_status or "",
+        row.decline_reason or "",
         row.soft_reminder_sent or "",
         row.second_reminder_sent or "",
         row.last_reminder_sent or "",
@@ -170,6 +191,8 @@ def _editorial_status(value: Optional[str]) -> str:
         "sent for copy editing": "Sent for copy editing",
         "copy editing": "Sent for copy editing",
         "published": "Published",
+        "declined": "Declined",
+        "rejected": "Declined",
     }
     return aliases.get(lowered, "Submission")
 
@@ -297,6 +320,10 @@ def _row_snapshot(row: AuthorArticle) -> dict[str, Any]:
         "second_reminder_sent": row.second_reminder_sent,
         "last_reminder_sent": row.last_reminder_sent,
         "comments": row.comments or "",
+        "decline_reason": row.decline_reason or "",
+        "volume": row.volume,
+        "issue": row.issue_number,
+        "page": row.page or "",
         "current_stage": row.current_stage or "",
         "current_stage_started": row.current_stage_started,
         "current_stage_days": int(row.current_stage_days or DEFAULT_STAGE_DAYS),
@@ -407,6 +434,10 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
         second_reminder_sent=row.second_reminder_sent,
         last_reminder_sent=row.last_reminder_sent,
         comments=row.comments or "",
+        decline_reason=row.decline_reason or "",
+        volume=row.volume,
+        issue=row.issue_number,
+        page=row.page or "",
         current_stage=row.current_stage or "",
         current_stage_started=row.current_stage_started,
         current_stage_days=int(row.current_stage_days or DEFAULT_STAGE_DAYS),
@@ -701,6 +732,8 @@ async def _apply_update(
     row: AuthorArticle,
     user: User,
     data: dict[str, Any],
+    *,
+    allow_publish: bool = False,
 ) -> list[dict[str, str]]:
     diffs: list[dict[str, str]] = []
     if not row.original_snapshot:
@@ -712,6 +745,11 @@ async def _apply_update(
             raise HTTPException(status_code=400, detail="Wing must be in_process or published")
         _require_wing(user, wing)
         if row.wing != wing:
+            if wing == "published" and not user.is_full_admin() and not allow_publish:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Users cannot move articles to published. Ask an admin, or use sanitization.",
+                )
             if wing == "published":
                 names = data["author_names"] if data.get("author_names") is not None else row.author_names
                 emails = data["author_emails"] if data.get("author_emails") is not None else row.author_emails
@@ -771,6 +809,8 @@ async def _apply_update(
         "plagiarism",
         "orcid_id",
         "doi_in_pdf",
+        "page",
+        "decline_reason",
         "editorial_status",
         "comments",
         "current_stage",
@@ -780,6 +820,8 @@ async def _apply_update(
             if field == "editorial_status":
                 nxt = _editorial_status(nxt)
             elif field == "comments":
+                nxt = _comments(nxt)
+            elif field == "decline_reason":
                 nxt = _comments(nxt)
             elif field == "current_stage":
                 nxt = _current_stage(nxt)
@@ -796,6 +838,32 @@ async def _apply_update(
                     }
                 )
                 setattr(row, field, nxt)
+    if "volume" in data:
+        nxt = _optional_int(data["volume"])
+        prev = row.volume
+        if prev != nxt:
+            diffs.append(
+                {
+                    "field": "volume",
+                    "label": FIELD_LABELS["volume"],
+                    "previous": _display(prev),
+                    "new": _display(nxt),
+                }
+            )
+            row.volume = nxt
+    if "issue" in data:
+        nxt = _optional_int(data["issue"])
+        prev = row.issue_number
+        if prev != nxt:
+            diffs.append(
+                {
+                    "field": "issue",
+                    "label": FIELD_LABELS["issue"],
+                    "previous": _display(prev),
+                    "new": _display(nxt),
+                }
+            )
+            row.issue_number = nxt
     for field in (
         "received_date",
         "review_date",
@@ -966,6 +1034,9 @@ async def download_import_template():
     sheet.append(
         [
             "IJIST-2024-118",
+            "8",
+            "5",
+            "1788-1813",
             "Sample title",
             "Ali Khan; Sara Ahmed",
             "ali@example.com; sara@example.com",
@@ -984,6 +1055,7 @@ async def download_import_template():
             "2024-03-18",
             "",
             "Submission",
+            "",
             "",
             "",
             "",
@@ -1313,7 +1385,7 @@ async def publish_after_sanitization(body: AuthorSanitizeCheckIn, db: Db, user: 
     )
     if hits:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=overlap_message(hits))
-    await _apply_update(db, row, user, {"wing": "published"})
+    await _apply_update(db, row, user, {"wing": "published"}, allow_publish=True)
     await _add_to_current_issue(db, row)
     await db.flush()
     return AuthorSanitizeCheckOut(
@@ -1374,6 +1446,10 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
         second_reminder_sent=_blank(body.second_reminder_sent),
         last_reminder_sent=_blank(body.last_reminder_sent),
         comments=_comments(body.comments),
+        decline_reason=_comments(body.decline_reason),
+        volume=_optional_int(body.volume),
+        issue_number=_optional_int(body.issue),
+        page=(body.page or "").strip(),
         current_stage=_current_stage(body.current_stage),
         current_stage_started=_blank(body.current_stage_started),
         current_stage_days=_stage_days(body.current_stage_days),
@@ -1553,6 +1629,16 @@ HEADER_MAP = {
     "repeat": "repeat_done",
     "doi": "doi_in_pdf",
     "doi in pdf": "doi_in_pdf",
+    "volume": "volume",
+    "vol": "volume",
+    "issue": "issue",
+    "issue number": "issue",
+    "page": "page",
+    "pages": "page",
+    "page number": "page",
+    "reason of decline": "decline_reason",
+    "decline reason": "decline_reason",
+    "reason for decline": "decline_reason",
     "journal": "journal",
     "wing": "wing",
     "article url": "article_url",
@@ -1747,6 +1833,10 @@ async def import_author_articles(
             "current_stage_passed": _parse_bool(item.get("current_stage_passed")),
             "repeat_done": _parse_bool(item.get("repeat_done")),
             "doi_in_pdf": item.get("doi_in_pdf") or "",
+            "volume": _optional_int(item.get("volume")),
+            "issue": _optional_int(item.get("issue")),
+            "page": item.get("page") or "",
+            "decline_reason": _comments(item.get("decline_reason")),
         }
         try:
             if existing is None:

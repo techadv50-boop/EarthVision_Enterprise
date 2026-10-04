@@ -730,6 +730,10 @@ async def test_excel_export_includes_published_and_under_process_rows(client: As
     headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
     assert "OJS number" in headers_row
     assert "Article URL" in headers_row
+    assert "Volume" in headers_row
+    assert "Issue" in headers_row
+    assert "Page" in headers_row
+    assert "Reason of decline" in headers_row
     ojs_idx = headers_row.index("OJS number")
     values = [row[ojs_idx] for row in sheet.iter_rows(min_row=2, values_only=True)]
     assert "EXP-IN-1" in values
@@ -850,6 +854,9 @@ async def test_published_archive_crawl_fills_article_fields(client: AsyncClient,
     water = next(row for row in rows if "Drinking Water" in (row.get("title") or "") or row.get("ojs_number") == "IJIST-2026-2211")
     assert water["wing"] == "published"
     assert water["editorial_status"] == "Published"
+    assert water["volume"] == 8
+    assert water["issue"] == 5
+    assert str(water["page"]).startswith("2211")
     assert "Asim" in (water["author_names"] or "") or "Ali" in (water["author_names"] or "")
     assert water["publish_date"]
     assert "example.test/article/view/9" in (water.get("comments") or "")
@@ -864,5 +871,180 @@ async def test_published_archive_crawl_fills_article_fields(client: AsyncClient,
 
     missing = await client.get("/api/v1/webcrawler/status", headers=headers)
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_users_cannot_move_articles_to_published(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    admin = _bearer(operator)
+    created_user = await client.post(
+        "/api/v1/admin/users",
+        headers=admin,
+        json={
+            "email": "voluser@example.com",
+            "username": "voluser",
+            "password": "EditorPass@123456",
+            "role": "user",
+            "privileges": {
+                "services": ["authors"],
+                "review_branches": [],
+                "author_wings": ["in_process", "published"],
+                "all_journals": True,
+            },
+        },
+    )
+    assert created_user.status_code == 201, created_user.text
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "voluser", "password": "EditorPass@123456"},
+    )
+    user = _bearer(login)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=user,
+        json={
+            "ojs_number": "VOL-MOVE-1",
+            "title": "User cannot publish directly",
+            "author_names": "Unique Vol Author",
+            "journal_title": "IJIST",
+        },
+    )
+    assert created.status_code == 201, created.text
+    blocked = await client.patch(
+        f"/api/v1/author-articles/{created.json()['id']}",
+        headers=user,
+        json={"wing": "published"},
+    )
+    assert blocked.status_code == 403, blocked.text
+    assert created.json()["id"] == (await client.get(
+        f"/api/v1/author-articles/{created.json()['id']}", headers=user
+    )).json()["id"]
+    still = await client.get(
+        f"/api/v1/author-articles/{created.json()['id']}",
+        headers=user,
+    )
+    assert still.json()["wing"] == "in_process"
+
+    moved = await client.patch(
+        f"/api/v1/author-articles/{created.json()['id']}",
+        headers=admin,
+        json={"wing": "published"},
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["wing"] == "published"
+
+    scheduled = await client.post(
+        "/api/v1/author-articles",
+        headers=user,
+        json={
+            "ojs_number": "VOL-SAN-1",
+            "title": "Sanitization can still publish",
+            "author_names": "Sanitization Only Author",
+            "journal_title": "IJIST",
+        },
+    )
+    assert scheduled.status_code == 201, scheduled.text
+    published = await client.post(
+        "/api/v1/author-articles/sanitization/publish",
+        headers=user,
+        json={"article_id": scheduled.json()["id"]},
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["scheduled"]["wing"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_published_article_stores_volume_issue_page(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-VOL-8-5",
+            "title": "Volume grouped paper",
+            "author_names": "Volume Author",
+            "editorial_status": "Published",
+            "volume": 8,
+            "issue": 5,
+            "page": "1788-1813",
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["volume"] == 8
+    assert body["issue"] == 5
+    assert body["page"] == "1788-1813"
+    listed = await client.get("/api/v1/author-articles", headers=headers, params={"wing": "published"})
+    match = next(row for row in listed.json() if row["id"] == body["id"])
+    assert match["volume"] == 8
+    assert match["issue"] == 5
+    assert match["page"] == "1788-1813"
+
+
+@pytest.mark.asyncio
+async def test_declined_status_stores_reason(client: AsyncClient):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "ojs_number": "IJIST-DECLINED-1",
+            "title": "Declined paper",
+            "author_names": "Declined Author",
+            "editorial_status": "Declined",
+            "decline_reason": "Outside the journal scope.",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["editorial_status"] == "Declined"
+    assert created.json()["decline_reason"] == "Outside the journal scope."
+    patched = await client.patch(
+        f"/api/v1/author-articles/{created.json()['id']}",
+        headers=headers,
+        json={"editorial_status": "rejected", "decline_reason": "Methods are not reproducible."},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["editorial_status"] == "Declined"
+    assert patched.json()["decline_reason"] == "Methods are not reproducible."
+
+
+@pytest.mark.asyncio
+async def test_excel_template_matches_new_form_fields(client: AsyncClient):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    template = await client.get("/api/v1/author-articles/template", headers=headers)
+    assert template.status_code == 200
+    book = load_workbook(BytesIO(template.content))
+    sheet = book.active
+    headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+    assert headers_row.index("OJS number") == 0
+    assert headers_row[1:4] == ["Volume", "Issue", "Page"]
+    assert "Status" in headers_row
+    assert headers_row[headers_row.index("Status") + 1] == "Reason of decline"
+    sample = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
+    assert len(sample) >= len(headers_row) or len([cell for cell in sample if cell is not None]) > 0
+    assert sample[1] == "8" or sample[1] == 8
+    assert sample[2] == "5" or sample[2] == 5
+    assert str(sample[3]) == "1788-1813"
 
 

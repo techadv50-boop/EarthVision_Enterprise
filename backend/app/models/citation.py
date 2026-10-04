@@ -254,6 +254,10 @@ class AuthorArticle(Base):
     current_stage_passed: Mapped[bool] = mapped_column(Boolean, default=False)
     repeat_done: Mapped[bool] = mapped_column(Boolean, default=False)
     doi_in_pdf: Mapped[str] = mapped_column(String(500), default="")
+    volume: Mapped[Optional[int]] = mapped_column(Integer)
+    issue_number: Mapped[Optional[int]] = mapped_column(Integer)
+    page: Mapped[str] = mapped_column(String(64), default="")
+    decline_reason: Mapped[str] = mapped_column(Text, default="")
     review_rounds: Mapped[Any] = mapped_column(JSON, default=list)
     original_snapshot: Mapped[Any] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
