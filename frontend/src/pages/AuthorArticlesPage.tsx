@@ -64,6 +64,10 @@ interface AuthorRow {
   current_stage_started?: string | null;
   current_stage_days?: number | null;
   current_stage_passed?: boolean | null;
+  volume?: number | null;
+  issue?: number | null;
+  page?: string | null;
+  decline_reason?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   original_snapshot?: Partial<AuthorRow> & { review_rounds?: ReviewRound[] };
@@ -99,6 +103,10 @@ const emptyForm = {
   current_stage_started: '',
   current_stage_days: DEFAULT_STAGE_DAYS,
   current_stage_passed: false,
+  volume: '',
+  issue: '',
+  page: '',
+  decline_reason: '',
 };
 
 type FormState = typeof emptyForm;
@@ -163,6 +171,10 @@ function rowToForm(row: AuthorRow, journals: JournalOption[]) {
     current_stage_started: row.current_stage_started || '',
     current_stage_days: row.current_stage_days || DEFAULT_STAGE_DAYS,
     current_stage_passed: Boolean(row.current_stage_passed),
+    volume: row.volume != null ? String(row.volume) : '',
+    issue: row.issue != null ? String(row.issue) : '',
+    page: row.page || '',
+    decline_reason: row.decline_reason || '',
   };
 }
 
@@ -186,29 +198,6 @@ function parseJournalKey(key: string): { journal_id: number | null; journal_titl
   if (key.startsWith('name:')) return { journal_id: null, journal_title: key.slice(5) };
   if (key.startsWith('abbr:')) return { journal_id: null, journal_title: key.slice(5) };
   return { journal_id: null, journal_title: key };
-}
-
-type CrawlJob = {
-  id: number;
-  status: string;
-  phase?: string | null;
-  message?: string | null;
-  articles_found?: number;
-  articles_saved?: number;
-  articles_skipped?: number;
-  articles_already?: number;
-  articles_failed?: number;
-  pages_crawled?: number;
-};
-
-function isCrawlActive(status?: string) {
-  return status === 'running' || status === 'queued';
-}
-
-function guessArchiveUrl(journal?: JournalOption | null) {
-  const abbr = (journal?.abbreviation || '').trim();
-  if (!abbr) return '';
-  return `https://journal.50sea.com/index.php/${encodeURIComponent(abbr)}/issue/archive`;
 }
 
 function downloadBlob(data: Blob | ArrayBuffer, filename: string) {
@@ -250,6 +239,10 @@ function applySnapshot(row: AuthorRow, snap?: Partial<AuthorRow> | null): Author
     current_stage_started: snap.current_stage_started ?? row.current_stage_started,
     current_stage_days: snap.current_stage_days ?? row.current_stage_days,
     current_stage_passed: snap.current_stage_passed ?? row.current_stage_passed,
+    volume: snap.volume ?? row.volume,
+    issue: snap.issue ?? row.issue,
+    page: snap.page ?? row.page,
+    decline_reason: snap.decline_reason ?? row.decline_reason,
   };
 }
 
@@ -259,6 +252,7 @@ const EDITORIAL_STATUSES = [
   'Request for revisions',
   'Revisions have been submitted',
   'Sent for copy editing',
+  'Declined',
 ] as const;
 
 type SlaTone = 'red' | 'green' | 'white';
@@ -398,6 +392,73 @@ function recordPath(wing: Wing, id: number) {
   return wing === 'in_process' ? `/authors/in-process/${id}` : `/authors/published/${id}`;
 }
 
+type IssueGroup = {
+  volume: number | null;
+  issue: number | null;
+  rows: AuthorRow[];
+};
+
+type JournalGroup = {
+  journal: string;
+  issues: IssueGroup[];
+};
+
+function rowJournalName(row: AuthorRow) {
+  return (row.journal_name || row.journal_title || '').trim() || 'Unassigned journal';
+}
+
+function groupPublishedRows(rows: AuthorRow[]): JournalGroup[] {
+  const byJournal = new Map<string, AuthorRow[]>();
+  for (const row of rows) {
+    const name = rowJournalName(row);
+    const bucket = byJournal.get(name);
+    if (bucket) bucket.push(row);
+    else byJournal.set(name, [row]);
+  }
+  return [...byJournal.keys()]
+    .sort((left, right) => left.localeCompare(right))
+    .map((journal) => {
+      const items = byJournal.get(journal) || [];
+      const byIssue = new Map<string, IssueGroup>();
+      for (const row of items) {
+        const volume = row.volume ?? null;
+        const issue = row.issue ?? null;
+        const key = volume == null && issue == null ? 'unassigned' : `v${volume ?? 'x'}-i${issue ?? 'x'}`;
+        const bucket = byIssue.get(key);
+        if (bucket) bucket.rows.push(row);
+        else byIssue.set(key, { volume, issue, rows: [row] });
+      }
+      const issues = [...byIssue.values()].sort((left, right) => {
+        const leftUnassigned = left.volume == null && left.issue == null;
+        const rightUnassigned = right.volume == null && right.issue == null;
+        if (leftUnassigned !== rightUnassigned) return leftUnassigned ? 1 : -1;
+        if ((right.volume ?? -1) !== (left.volume ?? -1)) return (right.volume ?? -1) - (left.volume ?? -1);
+        return (right.issue ?? -1) - (left.issue ?? -1);
+      });
+      return { journal, issues };
+    });
+}
+
+function issueHeading(group: IssueGroup) {
+  if (group.volume == null && group.issue == null) return 'Unassigned volume / issue';
+  const volume = group.volume != null ? String(group.volume) : '—';
+  const issue = group.issue != null ? String(group.issue) : '—';
+  return `Volume ${volume} · Issue ${issue}`;
+}
+
+function OjsChip({ wing, row }: { wing: Wing; row: AuthorRow }) {
+  return (
+    <a
+      className="btn-secondary font-medium"
+      href={recordPath(wing, row.id)}
+      target="_blank"
+      rel="noreferrer"
+    >
+      {row.ojs_number || `No OJS #${row.id}`}
+    </a>
+  );
+}
+
 function slaTextClass(tone: SlaTone) {
   if (tone === 'red') return 'text-red-400';
   if (tone === 'green') return 'text-emerald-400';
@@ -450,7 +511,22 @@ function HistoryCard({ ver, forPublished }: { ver: DisplayRow; forPublished?: bo
       <div className="grid gap-4 md:grid-cols-2">
         <ReportField label="OJS number" value={data.ojs_number} />
         <ReportField label="Journal" value={journal} />
-        <ReportField label="Status" value={forPublished ? 'Published' : data.editorial_status || 'Submission'} />
+        <ReportField label="Volume" value={data.volume != null ? String(data.volume) : ''} />
+        <ReportField label="Issue" value={data.issue != null ? String(data.issue) : ''} />
+        <ReportField label="Page" value={data.page} />
+        <ReportField
+          label="Status"
+          value={
+            forPublished && data.editorial_status !== 'Declined'
+              ? 'Published'
+              : data.editorial_status || 'Submission'
+          }
+        />
+        {data.editorial_status === 'Declined' ? (
+          <div className="md:col-span-2">
+            <ReportField label="Reason of decline" value={data.decline_reason} />
+          </div>
+        ) : null}
         <ReportField label="Title" value={data.title} />
         <ReportField label="Authors" value={data.author_names} />
         <ReportField label="Email addresses of authors" value={data.author_emails} />
@@ -547,9 +623,17 @@ function displayRows(row: AuthorRow): DisplayRow[] {
   return out;
 }
 
+function optionalFormInt(value: string) {
+  const text = value.trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) && number > 0 ? Math.trunc(number) : null;
+}
+
 function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) {
   const selected = journals.find((journal) => journalKey(journal) === form.journal_key);
   const parsed = parseJournalKey(form.journal_key);
+  const declined = !forPublishedStatus(wing) && form.editorial_status === 'Declined';
   return {
     wing,
     journal_id: parsed.journal_id,
@@ -572,6 +656,10 @@ function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) 
     galley_received_date: form.galley_received_date || null,
     publish_date: form.publish_date || null,
     editorial_status: wing === 'published' ? 'Published' : form.editorial_status,
+    volume: optionalFormInt(form.volume),
+    issue: optionalFormInt(form.issue),
+    page: form.page.trim(),
+    decline_reason: declined ? form.decline_reason.slice(0, COMMENT_MAX) : '',
     soft_reminder_sent: form.soft_reminder_sent || null,
     second_reminder_sent: form.second_reminder_sent || null,
     last_reminder_sent: form.last_reminder_sent || null,
@@ -581,6 +669,10 @@ function articlePayload(wing: Wing, form: FormState, journals: JournalOption[]) 
     current_stage_days: form.current_stage_days || DEFAULT_STAGE_DAYS,
     current_stage_passed: Boolean(form.current_stage && form.current_stage_passed),
   };
+}
+
+function forPublishedStatus(wing: Wing) {
+  return wing === 'published';
 }
 
 function ArticleFormFields({
@@ -670,6 +762,37 @@ function ArticleFormFields({
           className="input-field mt-1"
           value={form.ojs_number}
           onChange={(e) => field('ojs_number', e.target.value)}
+        />
+      </label>
+      <label className="text-sm text-gray-400">
+        Volume
+        <input
+          className="input-field mt-1"
+          type="number"
+          min={1}
+          value={form.volume}
+          onChange={(e) => field('volume', e.target.value)}
+          placeholder="e.g. 8"
+        />
+      </label>
+      <label className="text-sm text-gray-400">
+        Issue
+        <input
+          className="input-field mt-1"
+          type="number"
+          min={1}
+          value={form.issue}
+          onChange={(e) => field('issue', e.target.value)}
+          placeholder="e.g. 5"
+        />
+      </label>
+      <label className="text-sm text-gray-400">
+        Page
+        <input
+          className="input-field mt-1"
+          value={form.page}
+          onChange={(e) => field('page', e.target.value)}
+          placeholder="e.g. 1788-1813"
         />
       </label>
       <label className="text-sm text-gray-400 md:col-span-2">
@@ -920,6 +1043,25 @@ function ArticleFormFields({
           ))}
         </select>
       </label>
+      {!forPublished && form.editorial_status === 'Declined' ? (
+        <label className="text-sm text-gray-400 md:col-span-2">
+          Reason of decline
+          <textarea
+            className="input-field mt-1 min-h-[6rem]"
+            maxLength={COMMENT_MAX}
+            value={form.decline_reason}
+            onChange={(e) => field('decline_reason', e.target.value.slice(0, COMMENT_MAX))}
+            placeholder="Why this paper was declined"
+          />
+          <span
+            className={`block text-xs mt-1 ${
+              form.decline_reason.length >= COMMENT_MAX ? 'text-red-400' : 'text-gray-500'
+            }`}
+          >
+            {form.decline_reason.length} / {COMMENT_MAX} characters
+          </span>
+        </label>
+      ) : null}
     </>
   );
 }
@@ -942,9 +1084,6 @@ function AuthorList({ wing }: { wing: Wing }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(inProcess);
-  const [crawlJournal, setCrawlJournal] = useState('');
-  const [archiveUrl, setArchiveUrl] = useState('');
-  const [crawl, setCrawl] = useState<CrawlJob | null>(null);
 
   const load = async () => {
     const [{ data }, journalsRes] = await Promise.all([
@@ -952,13 +1091,7 @@ function AuthorList({ wing }: { wing: Wing }) {
       citationApi.authorArticles.journals().catch(() => ({ data: [] as JournalOption[] })),
     ]);
     setRows(data as AuthorRow[]);
-    const listed = (journalsRes.data || []) as JournalOption[];
-    setJournals(listed);
-    if (!inProcess && listed.length && !crawlJournal) {
-      const first = listed[0];
-      setCrawlJournal(journalKey(first));
-      setArchiveUrl(guessArchiveUrl(first));
-    }
+    setJournals((journalsRes.data || []) as JournalOption[]);
   };
 
   useEffect(() => {
@@ -1023,49 +1156,6 @@ function AuthorList({ wing }: { wing: Wing }) {
     }
   };
 
-  const pollCrawl = async (jobId: number) => {
-    const { data: job } = await citationApi.authorArticles.crawlJob(jobId);
-    setCrawl(job as CrawlJob);
-    if (isCrawlActive(job.status)) {
-      setTimeout(() => void pollCrawl(jobId), 700);
-      return;
-    }
-    setMsg(String(job.message || `Crawl ${job.status}`));
-    await load();
-  };
-
-  const startCrawl = async () => {
-    const selected = journals.find((journal) => journalKey(journal) === crawlJournal);
-    const parsed = parseJournalKey(crawlJournal);
-    const title = parsed.journal_title || selected?.name || selected?.abbreviation || '';
-    if (!title) {
-      setError('Select a journal before crawling.');
-      return;
-    }
-    if (!archiveUrl.trim()) {
-      setError('Enter the journal archive URL.');
-      return;
-    }
-    setBusy(true);
-    setMsg('Scanning the archive…');
-    setError('');
-    try {
-      const { data } = await citationApi.authorArticles.startCrawl({
-        journal_title: title,
-        archive_url: archiveUrl.trim(),
-      });
-      setCrawl(data as CrawlJob);
-      void pollCrawl(Number(data.id));
-    } catch (err: unknown) {
-      const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        'Could not start that archive crawl.';
-      setError(String(detail));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const importExcel = async (file: File) => {
     setBusy(true);
     setMsg('');
@@ -1095,106 +1185,10 @@ function AuthorList({ wing }: { wing: Wing }) {
       <p className="text-gray-400 text-sm mb-4 max-w-4xl">
         {inProcess
           ? 'This list stays quiet: only OJS numbers. Click a number to open that article’s full historical record in a new tab. Users cannot delete records.'
-          : 'Published OJS numbers only. Click a number to open the archived original row and every modification in a new tab.'}
+          : 'Published OJS numbers are grouped by journal, then volume and issue. Click a number to open the archived original row and every modification in a new tab.'}
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
-
-      {!inProcess && (
-        <div className="panel p-4 mb-4 space-y-3">
-          <h3 className="font-medium">Crawl published articles</h3>
-          <p className="text-xs text-gray-400 max-w-3xl">
-            Paste the journal archive URL and start crawling. The same archive walk used by Citation
-            Assistant fills published-article fields (title, authors, receive / accept / publish
-            dates, DOI). Author emails are often missing — export the spreadsheet, paste emails next
-            to author names, then import again.
-          </p>
-          <div className="grid gap-3 md:grid-cols-2">
-            <label className="text-sm text-gray-300">
-              Journal
-              <select
-                className="input-field mt-1"
-                value={crawlJournal}
-                onChange={(e) => {
-                  const key = e.target.value;
-                  const selected = journals.find((journal) => journalKey(journal) === key);
-                  const previous = journals.find((journal) => journalKey(journal) === crawlJournal);
-                  setCrawlJournal(key);
-                  if (!archiveUrl || archiveUrl === guessArchiveUrl(previous)) {
-                    setArchiveUrl(guessArchiveUrl(selected));
-                  }
-                }}
-              >
-                <option value="">Select journal</option>
-                {journals.map((journal) => (
-                  <option key={journalKey(journal)} value={journalKey(journal)}>
-                    {journal.abbreviation ? `${journal.abbreviation} — ${journal.name}` : journal.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm text-gray-300 md:col-span-1">
-              Archive URL
-              <input
-                className="input-field mt-1"
-                value={archiveUrl}
-                onChange={(e) => setArchiveUrl(e.target.value)}
-                placeholder="https://journal.50sea.com/index.php/IJIST/issue/archive"
-              />
-            </label>
-          </div>
-          <div className="flex flex-wrap gap-2 items-center">
-            <button
-              className="btn-primary"
-              type="button"
-              disabled={busy || isCrawlActive(crawl?.status) || !archiveUrl}
-              onClick={() => void startCrawl()}
-            >
-              {isCrawlActive(crawl?.status) ? 'Crawling…' : 'Start crawling'}
-            </button>
-            {isCrawlActive(crawl?.status) && crawl?.id ? (
-              <button
-                className="btn-secondary"
-                type="button"
-                onClick={() => void citationApi.authorArticles.cancelCrawl(Number(crawl.id))}
-              >
-                Cancel
-              </button>
-            ) : null}
-          </div>
-          {crawl && (
-            <div className="space-y-2 text-sm">
-              <p className="text-earth-400">{crawl.message || crawl.status}</p>
-              <div className="h-2 rounded bg-gray-800 overflow-hidden">
-                <div
-                  className="h-full bg-earth-500 transition-all"
-                  style={{
-                    width: `${
-                      Number(crawl.articles_found || 0) > 0
-                        ? Math.min(
-                            100,
-                            Math.round(
-                              ((Number(crawl.articles_saved || 0) + Number(crawl.articles_skipped || 0)) /
-                                Number(crawl.articles_found || 0)) *
-                                100,
-                            ),
-                          )
-                        : isCrawlActive(crawl.status)
-                          ? 8
-                          : 0
-                    }%`,
-                  }}
-                />
-              </div>
-              <p className="text-xs text-gray-400">
-                {Number(crawl.articles_saved || 0)} added · {Number(crawl.articles_already || 0)} already
-                stored · {Number(crawl.articles_failed || 0)} failed
-                {crawl.pages_crawled ? ` · ${crawl.pages_crawled} pages` : ''}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="flex flex-wrap gap-2 mb-4">
         {inProcess && !showForm && (
@@ -1265,20 +1259,35 @@ function AuthorList({ wing }: { wing: Wing }) {
           <p className="text-gray-500 text-sm">
             {inProcess
               ? 'No under process articles yet. Add one or import an Excel file.'
-              : 'No published articles yet. Move a finished record from Under process or import Excel.'}
+              : 'No published articles yet. Add one with volume and issue, or import an Excel file.'}
           </p>
-        ) : (
+        ) : inProcess ? (
           <div className="flex flex-wrap gap-2">
             {rows.map((row) => (
-              <a
-                key={row.id}
-                className="btn-secondary font-medium"
-                href={recordPath(wing, row.id)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {row.ojs_number || `No OJS #${row.id}`}
-              </a>
+              <OjsChip key={row.id} wing={wing} row={row} />
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {groupPublishedRows(rows).map((journal) => (
+              <div key={journal.journal}>
+                <h4 className="text-sm font-semibold text-gray-200 mb-3">{journal.journal}</h4>
+                <div className="space-y-4">
+                  {journal.issues.map((group) => (
+                    <div key={`${journal.journal}-${group.volume ?? 'x'}-${group.issue ?? 'x'}`}>
+                      <p className="text-xs text-gray-500 mb-2">
+                        {issueHeading(group)}
+                        <span className="ml-2 text-gray-600">{group.rows.length}</span>
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {group.rows.map((row) => (
+                          <OjsChip key={row.id} wing={wing} row={row} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         )}
@@ -1437,9 +1446,11 @@ function AuthorRecord({ wing, articleId }: { wing: Wing; articleId: number }) {
         )}
         {inProcess ? (
           <>
-            <button className="btn-secondary" type="button" disabled={busy} onClick={() => void move('published')}>
-              Move to published
-            </button>
+            {admin ? (
+              <button className="btn-secondary" type="button" disabled={busy} onClick={() => void move('published')}>
+                Move to published
+              </button>
+            ) : null}
             <Link className="btn-secondary" to="/authors/sanitization">
               Check sanitization
             </Link>

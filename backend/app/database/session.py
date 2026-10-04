@@ -99,6 +99,10 @@ def _ensure_sqlite_columns(sync_conn) -> None:
     _add_if_missing("author_articles", "current_stage_started", "VARCHAR(32)")
     _add_if_missing("author_articles", "current_stage_days", "INTEGER DEFAULT 7")
     _add_if_missing("author_articles", "current_stage_passed", "BOOLEAN DEFAULT 0")
+    _add_if_missing("author_articles", "volume", "INTEGER")
+    _add_if_missing("author_articles", "issue_number", "INTEGER")
+    _add_if_missing("author_articles", "page", "VARCHAR(64) DEFAULT ''")
+    _add_if_missing("author_articles", "decline_reason", "TEXT DEFAULT ''")
 
 
 def _ensure_postgres_columns(sync_conn) -> None:
@@ -182,5 +186,17 @@ def _ensure_postgres_columns(sync_conn) -> None:
     )
     sync_conn.exec_driver_sql(
         "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS current_stage_passed BOOLEAN DEFAULT FALSE"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS volume INTEGER"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS issue_number INTEGER"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS page VARCHAR(64) DEFAULT ''"
+    )
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE author_articles ADD COLUMN IF NOT EXISTS decline_reason TEXT DEFAULT ''"
     )
 

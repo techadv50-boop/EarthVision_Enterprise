@@ -282,8 +282,28 @@ async def _existing_published(
     return None
 
 
-def _collect_targets(inventory: list[dict]) -> list[dict[str, str]]:
-    targets: list[dict[str, str]] = []
+def _int_or_none(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _page_text(pdf_meta: dict[str, Any]) -> str:
+    start = pdf_meta.get("page_start")
+    end = pdf_meta.get("page_end")
+    if start and end:
+        return f"{start}-{end}"
+    if start:
+        return str(start)
+    return ""
+
+
+def _collect_targets(inventory: list[dict]) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
     seen: set[str] = set()
     for issue in inventory:
         landings = [str(url) for url in (issue.get("article_urls") or []) if url]
@@ -293,6 +313,8 @@ def _collect_targets(inventory: list[dict]) -> list[dict[str, str]]:
             aid = crawler_mod._article_id(pdf)
             if aid and aid not in pdf_by_id:
                 pdf_by_id[aid] = pdf
+        volume = issue.get("volume")
+        number = issue.get("issue_number")
         for landing in landings:
             aid = crawler_mod._article_id(landing) or landing
             if aid in seen:
@@ -303,13 +325,23 @@ def _collect_targets(inventory: list[dict]) -> list[dict[str, str]]:
                     "landing": landing,
                     "pdf": pdf_by_id.get(crawler_mod._article_id(landing) or "", ""),
                     "article_id": crawler_mod._article_id(landing) or "",
+                    "volume": volume,
+                    "issue": number,
                 }
             )
         for aid, pdf in pdf_by_id.items():
             if aid in seen:
                 continue
             seen.add(aid)
-            targets.append({"landing": pdf, "pdf": pdf, "article_id": aid})
+            targets.append(
+                {
+                    "landing": pdf,
+                    "pdf": pdf,
+                    "article_id": aid,
+                    "volume": volume,
+                    "issue": number,
+                }
+            )
     return targets
 
 
@@ -337,7 +369,7 @@ def _ojs_number(html_meta: dict[str, Any], pdf_meta: dict[str, Any], abbreviatio
 
 async def _extract_article(
     fetch,
-    target: dict[str, str],
+    target: dict[str, Any],
     abbreviation: str,
     journal_title: str,
     delay: float,
@@ -406,6 +438,9 @@ async def _extract_article(
         "publish_date": published,
         "doi_in_pdf": doi,
         "comments": comments,
+        "volume": _int_or_none(pdf_meta.get("volume") if pdf_meta.get("volume") else target.get("volume")),
+        "issue": _int_or_none(pdf_meta.get("issue") if pdf_meta.get("issue") else target.get("issue")),
+        "page": _page_text(pdf_meta),
     }
 
 
@@ -506,6 +541,9 @@ async def run_author_crawl_job(job_id: int, fetch=None, delay: float = 0.0) -> N
                     current_stage="",
                     current_stage_days=DEFAULT_STAGE_DAYS,
                     doi_in_pdf=payload.get("doi_in_pdf") or "",
+                    volume=_int_or_none(payload.get("volume")),
+                    issue_number=_int_or_none(payload.get("issue")),
+                    page=payload.get("page") or "",
                     review_rounds=[],
                 )
                 db.add(row)

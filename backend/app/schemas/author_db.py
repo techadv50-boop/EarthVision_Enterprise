@@ -49,6 +49,10 @@ FIELD_LABELS = {
     "current_stage_passed": "Current state passed",
     "repeat_done": "Repeat done",
     "doi_in_pdf": "DOI in PDF",
+    "volume": "Volume",
+    "issue": "Issue",
+    "page": "Page",
+    "decline_reason": "Reason of decline",
 }
 
 COMMENT_MAX = 1000
@@ -69,6 +73,7 @@ EDITORIAL_STATUSES = [
     "Revisions have been submitted",
     "Sent for copy editing",
     "Published",
+    "Declined",
 ]
 
 
@@ -108,6 +113,10 @@ class AuthorArticleIn(BaseModel):
     current_stage_passed: bool = False
     repeat_done: bool = False
     doi_in_pdf: str = ""
+    volume: Optional[int] = None
+    issue: Optional[int] = None
+    page: str = ""
+    decline_reason: str = Field(default="", max_length=COMMENT_MAX)
 
 
 class AuthorArticlePatch(BaseModel):
@@ -140,6 +149,10 @@ class AuthorArticlePatch(BaseModel):
     current_stage_passed: Optional[bool] = None
     repeat_done: Optional[bool] = None
     doi_in_pdf: Optional[str] = None
+    volume: Optional[int] = None
+    issue: Optional[int] = None
+    page: Optional[str] = None
+    decline_reason: Optional[str] = Field(default=None, max_length=COMMENT_MAX)
 
 
 class AuthorFieldChangeOut(BaseModel):
@@ -193,6 +206,10 @@ class AuthorArticleOut(BaseModel):
     current_stage_passed: bool = False
     repeat_done: bool = False
     doi_in_pdf: str = ""
+    volume: Optional[int] = None
+    issue: Optional[int] = None
+    page: str = ""
+    decline_reason: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     original_snapshot: dict = Field(default_factory=dict)
