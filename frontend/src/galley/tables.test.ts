@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTable } from "./tables";
+import { parseTable, columnWidths } from "./tables";
 
 describe("pasted tables", () => {
   it("reads a copied spreadsheet as rows and columns", () => {
@@ -17,5 +17,14 @@ describe("pasted tables", () => {
       ["Age", "Years"],
       ["Sex", "M/F"],
     ]);
+  });
+
+  it("gives a year column only as much width as the year needs", () => {
+    const widths = columnWidths([
+      ["Name of the dataset", "Year", "Records"],
+      ["Long climate observations from several stations", "2016", "12"],
+    ]);
+    expect(widths[1]).toBeLessThan(widths[0]);
+    expect(widths.reduce((sum, value) => sum + value, 0)).toBe(100);
   });
 });

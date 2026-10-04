@@ -1,11 +1,11 @@
 import { useState } from "react";
 import type { Galley, IconAsset, Journal } from "../types";
-import { flowBody, parseStartPage } from "../metrics";
+import { flowBody, parseStartPage, figureNumber, tableNumber } from "../metrics";
 import { composedBlocks } from "../references";
 import { FrontSheet, SheetFooter, SheetHeader } from "./FirstPage";
 import { EquationView } from "./EquationView";
 import { parseMath } from "../equations";
-import { figureNumber, tableNumber } from "../metrics";
+import { columnWidths } from "../tables";
 import type { BodyBlock } from "../types";
 
 export function Proof({
@@ -102,8 +102,13 @@ export function Proof({
               <strong>Table {tableNumber(galley.blocks, selected.block.id)}. </strong>
               {selected.block.caption}
             </p>
-            <table>
-              <tbody>
+        <table>
+          <colgroup>
+            {columnWidths(selected.block.rows).map((width, index) => (
+              <col key={index} style={{ width: `${width}%` }} />
+            ))}
+          </colgroup>
+          <tbody>
                 {selected.block.rows.map((row, rowIndex) => (
                   <tr key={rowIndex}>
                     {row.map((cell, column) => (
@@ -149,7 +154,9 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
   if (block.type === "figure") {
     return (
       <figure>
-        {block.dataUrl && <img src={block.dataUrl} alt="" />}
+        {block.dataUrl && (
+          <img src={block.dataUrl} alt="" style={{ maxHeight: `${Math.min(3.4, Math.max(1.6, (block.heightPx || 220) / 96))}in` }} />
+        )}
         <figcaption>
           <strong>Figure {figureNumber(galley.blocks, block.id)}. </strong>
           {block.caption}
@@ -165,6 +172,11 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
           {block.caption}
         </p>
         <table>
+          <colgroup>
+            {columnWidths(block.rows).map((width, index) => (
+              <col key={index} style={{ width: `${width}%` }} />
+            ))}
+          </colgroup>
           <tbody>
             {block.rows.map((row, rowIndex) => (
               <tr key={rowIndex}>

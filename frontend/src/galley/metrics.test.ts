@@ -102,4 +102,35 @@ describe("page geometry", () => {
     expect(pages.map((page) => page.kind)).toEqual(["portrait", "landscape", "portrait"]);
     expect(pages[1].kind === "landscape" && pages[1].block.id).toBe("t");
   });
+
+  it("moves a heading that would sit at the page foot onto the next page and stretches the figure", () => {
+    const figure: BodyBlock = {
+      id: "fig",
+      type: "figure",
+      dataUrl: "",
+      widthPx: 400,
+      heightPx: 220,
+      caption: "Results",
+    };
+    const filler: BodyBlock[] = Array.from({ length: 34 }, (_, index) => ({
+      id: `p${index}`,
+      type: "paragraph",
+      text: "Short line.",
+    }));
+    const pages = flowBody([
+      ...filler,
+      figure,
+      { id: "h", type: "heading", text: "Discussion:" },
+      { id: "after", type: "paragraph", text: "The heading must travel with this paragraph." },
+    ]);
+    const portrait = pages.filter((page) => page.kind === "portrait");
+    expect(portrait.length).toBeGreaterThan(1);
+    const lastWithFigure = portrait.find((page) => page.kind === "portrait" && page.blocks.some((block) => block.id === "fig"));
+    const headingPage = portrait.find((page) => page.kind === "portrait" && page.blocks.some((block) => block.id === "h"));
+    expect(lastWithFigure && headingPage && lastWithFigure !== headingPage).toBe(true);
+    const flowed = lastWithFigure && lastWithFigure.kind === "portrait"
+      ? lastWithFigure.blocks.find((block) => block.id === "fig")
+      : undefined;
+    expect(flowed && flowed.type === "figure" && flowed.heightPx > 220).toBe(true);
+  });
 });

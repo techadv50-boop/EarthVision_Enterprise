@@ -51,7 +51,7 @@ export function FirstPage({
     keywords: galley.keywords,
     topIconCount: galley.topIcons.length,
     partnerCount: galley.partnerIcons.length,
-    hasIssn: Boolean(journal.issnP || journal.issnE),
+    hasIssn: false,
   });
 
   return (
@@ -243,23 +243,17 @@ export function FrontSheet({
     keywords: galley.keywords,
     topIconCount: galley.topIcons.length,
     partnerCount: galley.partnerIcons.length,
-    hasIssn: Boolean(journal.issnP || journal.issnE),
+    hasIssn: false,
   });
   return (
     <div className="sheet-frame" style={{ height: `${height / 2}in` }}>
       <article className="sheet front" style={{ minHeight: `${height}in` }}>
-        <SheetHeader journal={journal} openAccess={openAccess} />
+        <SheetHeader journal={journal} />
         <div className="logo-line">
           {galley.topIcons.map((icon) => (
             <img key={icon.id} src={icon.dataUrl} alt={icon.name} />
           ))}
         </div>
-        {(journal.issnP || journal.issnE) && (
-          <p className="issn">
-            {journal.issnP && <span>ISSN-P {journal.issnP}</span>}
-            {journal.issnE && <span>ISSN-E {journal.issnE}</span>}
-          </p>
-        )}
         <h2>{galley.title.trim() || "Title"}</h2>
         <p className="authors">
           {numbered.authors.map((author, index) => (
@@ -290,10 +284,7 @@ export function FrontSheet({
         )}
         <p>{citation}</p>
         <p className="dates">{dateLine(galley)}</p>
-        <p className="abstract">
-          <span className="drop">{galley.abstract.trim().charAt(0) || "A"}</span>
-          {galley.abstract.trim().slice(1) || "bstract"}
-        </p>
+        <p className="abstract">{galley.abstract.trim() || "Abstract"}</p>
         <p>
           <strong>Keywords: </strong>
           {galley.keywords}
@@ -309,12 +300,10 @@ export function FrontSheet({
   );
 }
 
-export function SheetHeader({ journal, openAccess }: { journal: Journal; openAccess: IconAsset | null }) {
+export function SheetHeader({ journal }: { journal: Journal; openAccess?: IconAsset | null }) {
   return (
     <header className="sheet-header">
-      {openAccess && <img src={openAccess.dataUrl} alt="Open Access" />}
-      <strong>OPEN ACCESS</strong>
-      <span>{journal.name}</span>
+      <span className="journal-banner">{journal.name}</span>
     </header>
   );
 }

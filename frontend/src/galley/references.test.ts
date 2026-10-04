@@ -58,4 +58,35 @@ describe("reference parsing", () => {
     expect(formatReference(items[0], "ieee", 1)).toContain("[1]");
     expect(formatReference(items[0], "ieee", 1)).not.toContain("(November 2024)");
   });
+
+  it("keeps leftover parts such as article numbers on the same reference", () => {
+    const item = parseReference(
+      '[1] C. Zhang, "A CNN title," IEEE Access, vol. 11, pp. 1-10, 2023, Art no. 998877, doi: 10.1109/ACCESS.2023.1',
+    );
+    expect(item.container).toContain("IEEE Access");
+    expect(item.volume).toBe("11");
+    expect(item.pages).toBe("1-10");
+    expect(item.year).toBe("2023");
+    expect(item.doi).toBe("10.1109/ACCESS.2023.1");
+    expect(item.extra.toLowerCase()).toContain("art no");
+    expect(formatReference(item, "ieee", 1)).toMatch(/Art no/i);
+  });
+
+  it("finishes one reference before opening the next, including books and proceedings", () => {
+    const items = segregateReferences(`[1] Author, A. Data Structures. Oxford University Press, 2024.
+
+[2] B. Author, "Crop models," in Proceedings of the Agriculture Conference, 2023, pp. 1-8, doi: 10.1000/conf.`);
+    expect(items).toHaveLength(2);
+    expect(items[0].kind).toBe("book");
+    expect(items[0].title).toContain("Data Structures");
+    expect(items[0].publisher).toContain("Oxford University Press");
+    expect(items[0].year).toBe("2024");
+    expect(items[1].kind).toBe("conference");
+    expect(items[1].title).toBe("Crop models");
+    expect(items[1].container).toContain("Proceedings of the Agriculture Conference");
+    expect(items[1].pages).toBe("1-8");
+    expect(items[1].doi).toBe("10.1000/conf");
+    expect(formatReference(items[0], "ieee", 1)).toContain("Oxford University Press");
+    expect(formatReference(items[1], "ieee", 2)).toContain("Proceedings of the Agriculture Conference");
+  });
 });

@@ -29,6 +29,7 @@ export function emptyReference(): ReferenceItem {
     url: "",
     publisher: "",
     city: "",
+    extra: "",
   };
 }
 
@@ -49,7 +50,11 @@ export function splitReferenceBlob(raw: string): string[] {
 }
 
 export function segregateReferences(raw: string): ReferenceItem[] {
-  return splitReferenceBlob(raw).map(parseReference);
+  const items: ReferenceItem[] = [];
+  for (const blob of splitReferenceBlob(raw)) {
+    items.push(parseReference(blob));
+  }
+  return items;
 }
 
 function looksLikeInitials(token: string): boolean {
@@ -165,18 +170,49 @@ function doiLink(doi: string): string {
 }
 
 function detectKind(text: string): ReferenceKind {
-  if (/proceedings|conference|symposium|workshop/i.test(text)) return "conference";
-  if (/\b(press|publisher|publishing)\b/i.test(text)) return "book";
+  if (/\bin\s+proceedings\b|\bconference\b|\bsymposium\b|\bworkshop\b/i.test(text)) return "conference";
+  if (/\b(press|publisher|publishing)\b/i.test(text) && !/\bvol(?:ume)?\.?\s*\d+/i.test(text)) return "book";
   return "journal";
+}
+
+function leftoverOf(original: string, item: ReferenceItem): string {
+  let rest = original.replace(/^\s*(?:\[\d+\]|\d+[.)])\s*/, "");
+  const pieces = [
+    item.authors,
+    item.title,
+    item.container,
+    item.publisher,
+    item.city,
+    item.volume ? `vol. ${item.volume}` : "",
+    item.volume ? `volume ${item.volume}` : "",
+    item.volume,
+    item.issue ? `no. ${item.issue}` : "",
+    item.issue ? `issue ${item.issue}` : "",
+    item.issue,
+    item.pages ? `pp. ${item.pages}` : "",
+    item.pages ? `pp ${item.pages}` : "",
+    item.pages,
+    item.year,
+    item.month,
+    item.doi,
+    item.url,
+  ].filter(Boolean);
+  for (const piece of pieces) {
+    const escaped = piece.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    rest = rest.replace(new RegExp(escaped, "i"), " ");
+  }
+  rest = rest.replace(/\b(doi:|https?:\/\/(?:dx\.)?doi\.org\/|vol(?:ume)?\.?|iss(?:ue)?\.?|pp\.?)\b/gi, " ");
+  rest = rest.replace(/[“”"'[\]()]/g, " ").replace(/[.,;:/]+/g, " ").replace(/\s+/g, " ").trim();
+  return rest;
 }
 
 export function parseReference(raw: string): ReferenceItem {
   const item = emptyReference();
   item.raw = raw.trim();
-  let text = raw.replace(/^\s*\[\d+\]\s*/, "").trim();
-  const doiMatch = text.match(/10\.\d{4,9}\/[^\s,;]+/i);
+  let text = raw.replace(/^\s*(?:\[\d+\]|\d+[.)])\s*/, "").trim();
+  const doiMatch = text.match(/(?:doi:\s*)?(?:https?:\/\/(?:dx\.)?doi\.org\/)?(10\.\d{4,9}\/[^\s,;]+)/i);
   if (doiMatch) {
-    item.doi = doiMatch[0].replace(/[.)]+$/, "");
+    item.doi = doiMatch[1].replace(/[.)]+$/, "");
     text = text.replace(doiMatch[0], " ");
   }
   const urlMatch = text.match(/https?:\/\/[^\s,;]+/i);
@@ -194,13 +230,15 @@ export function parseReference(raw: string): ReferenceItem {
   text = text.replace(/\bdoi:\s*/i, " ").replace(/\s+/g, " ").trim();
   const yearMatch = text.match(/\b(19|20)\d{2}\b/);
   if (yearMatch) item.year = yearMatch[0];
-  const pagesMatch = text.match(/\bpp?\.?\s*(\d+\s*[-–]\s*\d+)/i) || text.match(/:\s*(\d+\s*[-–]\s*\d+)/);
+  const pagesMatch = text.match(/\bpp?\.?\s*(\d+\s*[-–]\s*\d+|\d+)/i) || text.match(/:\s*(\d+\s*[-–]\s*\d+)/);
   if (pagesMatch) item.pages = pagesMatch[1].replace(/\s/g, "");
   const volIssue = text.match(/\b(\d+)\s*\((\d+)\)/);
   const vol = text.match(/\bvol(?:ume)?\.?\s*(\d+)/i);
-  const issue = text.match(/\b(?:no|issue)\.?\s*(\d+)/i);
+  const issueAfterVol = text.match(/\bvol(?:ume)?\.?\s*\d+\s*,\s*(?:no|iss(?:ue)?)\.?\s*(\d+)/i);
+  const issueWord = text.match(/\bissue\.?\s*(\d+)/i);
   if (vol) item.volume = vol[1];
-  if (issue) item.issue = issue[1];
+  if (issueAfterVol) item.issue = issueAfterVol[1];
+  else if (issueWord) item.issue = issueWord[1];
   if (!item.volume && volIssue) {
     item.volume = volIssue[1];
     item.issue = volIssue[2];
@@ -210,26 +248,30 @@ export function parseReference(raw: string): ReferenceItem {
     item.title = quoted[1].trim().replace(/[,.\s]+$/, "");
     item.authors = text.slice(0, quoted.index).replace(/[,\s]+$/, "");
     let after = text.slice((quoted.index || 0) + quoted[0].length);
-    after = after.replace(/^[,.\s]+/, "");
-    after = after.split(/\b(?:vol(?:ume)?|no|issue|pp|doi)\b/i)[0];
-    after = after.replace(/\b(19|20)\d{2}\b.*/, "").replace(/[,\s]+$/, "");
-    item.container = after.trim();
+    after = after.replace(/^[,.\s]+/, "").replace(/^in\s+/i, "");
+    const cut = after.search(/\b(?:vol(?:ume)?\.?|no\.?|iss(?:ue)?\.?|pp?\.?|doi:|(?:19|20)\d{2})\b/i);
+    item.container = (cut >= 0 ? after.slice(0, cut) : after).replace(/[,\s]+$/, "").trim();
   } else {
     const bits = text.split(/\.\s+/);
     if (bits.length >= 2) {
       item.authors = bits[0];
-      item.title = bits[1].replace(/[“"]/g, "");
-      item.container = bits.slice(2).join(". ").split(/\b(?:vol(?:ume)?|pp)\b/i)[0].replace(/[,\s]+$/, "");
+      item.title = bits[1].replace(/[“"]/g, "").replace(/[,\s]+$/, "");
+      const rest = bits.slice(2).join(". ");
+      const cut = rest.search(/\b(?:vol(?:ume)?\.?|pp?\.?|(?:19|20)\d{2}|press|publisher)\b/i);
+      item.container = (cut >= 0 ? rest.slice(0, cut) : rest).replace(/[,\s]+$/, "").trim();
     } else {
       item.title = text;
     }
   }
-  const probe = `${item.container} ${text}`;
+  const probe = `${item.container} ${text} ${item.raw}`;
   item.kind = detectKind(probe);
   if (item.kind !== "journal") {
-    const press = probe.match(/([A-Z][^,]{2,40}(?:Press|Publisher|Publishing))/);
+    const press = probe.match(/([A-Z][^,]{2,60}(?:Press|Publisher|Publishing))/);
     if (press) item.publisher = press[1].trim();
+    const city = probe.match(/\b([A-Z][A-Za-z.\s]+?)\s*:\s*[A-Z][^,]{2,40}(?:Press|Publisher|Publishing)/);
+    if (city) item.city = city[1].trim();
   }
+  item.extra = leftoverOf(item.raw, item);
   return item;
 }
 
@@ -246,6 +288,14 @@ function withUrl(line: string, item: ReferenceItem): string {
   return `${line.replace(/[.\s]+$/, "")}. ${item.url}`;
 }
 
+function withRest(line: string, item: ReferenceItem): string {
+  const withLink = withUrl(line, item);
+  const extra = (item.extra || "").trim();
+  if (!extra) return withLink;
+  if (withLink.toLowerCase().includes(extra.toLowerCase())) return withLink;
+  return `${withLink.replace(/[.\s]+$/, "")}, ${extra}.`;
+}
+
 export function formatReference(item: ReferenceItem, style: ReferenceStyleId, index: number): string {
   const authors = authorsOf(item);
   const doi = doiLink(item.doi);
@@ -258,62 +308,65 @@ export function formatReference(item: ReferenceItem, style: ReferenceStyleId, in
     const who = ieeeAuthors(authors);
     if (item.kind === "book") {
       const place = [item.city, item.publisher].filter(Boolean).join(": ");
-      return withUrl(`[${index}] ${[who, title && `${title}.`, place, year].filter(Boolean).join(", ")}${doi ? `, doi: ${doi}` : ""}.`.replace(".,", "."), item);
+      return withRest(`[${index}] ${[who, title && `${title}.`, place, year].filter(Boolean).join(", ")}${doi ? `, doi: ${doi}` : ""}.`.replace(".,", "."), item);
     }
     if (item.kind === "conference") {
-      return withUrl(`[${index}] ${who}, “${title},” in ${container}${year ? `, ${year}` : ""}${pages ? `, pp. ${pages}` : ""}${doi ? `, doi: ${doi}` : ""}.`, item);
+      return withRest(`[${index}] ${who}, “${title},” in ${container}${year ? `, ${year}` : ""}${pages ? `, pp. ${pages}` : ""}${doi ? `, doi: ${doi}` : ""}.`, item);
     }
     const vol = item.volume ? `vol. ${item.volume}` : "";
     const no = item.issue ? `no. ${item.issue}` : "";
     const tail = [vol, no, pages ? `pp. ${pages}` : "", year, doi ? `doi: ${doi}` : ""].filter(Boolean).join(", ");
-    return withUrl(`[${index}] ${who}, “${title},” ${container}${tail ? `, ${tail}` : ""}.`, item);
+    return withRest(`[${index}] ${who}, “${title},” ${container}${tail ? `, ${tail}` : ""}.`, item);
   }
 
   if (style === "apa") {
     const who = apaAuthors(authors);
     if (item.kind === "book") {
-      return withUrl(`${who} (${year}). ${title}. ${[item.publisher, doi && `https://doi.org/${doi}`].filter(Boolean).join(". ")}`.trim(), item);
+      return withRest(`${who} (${year}). ${title}. ${[item.publisher, doi && `https://doi.org/${doi}`].filter(Boolean).join(". ")}`.trim(), item);
     }
     if (item.kind === "conference") {
-      return withUrl(`${who} (${year}). ${title}. ${container}${pages ? ` (pp. ${pages})` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`, item);
+      return withRest(`${who} (${year}). ${title}. ${container}${pages ? ` (pp. ${pages})` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`, item);
     }
     const loc = [item.volume && item.issue ? `${item.volume}(${item.issue})` : item.volume, pages].filter(Boolean).join(", ");
-    return withUrl(`${who} (${year}). ${title}. ${container}${loc ? `, ${loc}` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`, item);
+    return withRest(`${who} (${year}). ${title}. ${container}${loc ? `, ${loc}` : ""}.${doi ? ` https://doi.org/${doi}` : ""}`, item);
   }
 
   if (style === "chicago") {
     const who = chicagoAuthors(authors);
     if (item.kind === "book") {
-      return withUrl(`${who}. ${year}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`, item);
+      return withRest(`${who}. ${year}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`, item);
+    }
+    if (item.kind === "conference") {
+      return withRest(`${who}. ${year}. “${title}.” In ${container}${pages ? `, ${pages}` : ""}.`, item);
     }
     const loc = [item.volume, item.issue ? `(${item.issue})` : "", pages ? `: ${pages}` : ""].join(" ").replace(/\s+/g, " ").trim();
-    return withUrl(`${who}. ${year}. “${title}.” ${container}${loc ? ` ${loc}` : ""}.${doi ? ` https://doi.org/${doi}.` : ""}`, item);
+    return withRest(`${who}. ${year}. “${title}.” ${container}${loc ? ` ${loc}` : ""}.${doi ? ` https://doi.org/${doi}.` : ""}`, item);
   }
 
   if (style === "vancouver") {
     const who = vancouverAuthors(authors);
     if (item.kind === "book") {
-      return withUrl(`${index}. ${who}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}; ${year}.`, item);
+      return withRest(`${index}. ${who}. ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}; ${year}.`, item);
     }
     const loc = `${year}${item.volume ? `;${item.volume}` : ""}${item.issue ? `(${item.issue})` : ""}${pages ? `:${pages}` : ""}`;
-    return withUrl(`${index}. ${who}. ${title}. ${container}. ${loc}.${doi ? ` doi: ${doi}.` : ""}`, item);
+    return withRest(`${index}. ${who}. ${title}. ${container}. ${loc}.${doi ? ` doi: ${doi}.` : ""}`, item);
   }
 
   if (style === "harvard") {
     const who = harvardAuthors(authors);
     if (item.kind === "book") {
-      return withUrl(`${who} (${year}) ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`, item);
+      return withRest(`${who} (${year}) ${title}. ${[item.city, item.publisher].filter(Boolean).join(": ")}.`, item);
     }
     const loc = [item.volume && item.issue ? `${item.volume}(${item.issue})` : item.volume, pages ? `pp. ${pages}` : ""].filter(Boolean).join(", ");
-    return withUrl(`${who} (${year}) '${title}', ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi: ${doi}.` : ""}`, item);
+    return withRest(`${who} (${year}) '${title}', ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi: ${doi}.` : ""}`, item);
   }
 
   const who = mlaAuthors(authors);
   if (item.kind === "book") {
-    return withUrl(`${who}. ${title}. ${[item.publisher, year].filter(Boolean).join(", ")}.`, item);
+    return withRest(`${who}. ${title}. ${[item.publisher, year].filter(Boolean).join(", ")}.`, item);
   }
   const loc = [item.volume ? `vol. ${item.volume}` : "", item.issue ? `no. ${item.issue}` : "", year, pages ? `pp. ${pages}` : ""].filter(Boolean).join(", ");
-  return withUrl(`${who}. “${title}.” ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi:${doi}.` : ""}`, item);
+  return withRest(`${who}. “${title}.” ${container}${loc ? `, ${loc}` : ""}.${doi ? ` doi:${doi}.` : ""}`, item);
 }
 
 export function formattedReferences(galley: Pick<Galley, "references" | "referenceStyle">): string[] {

@@ -145,20 +145,19 @@ export function firstPageHeightInches(input: {
   hasIssn: boolean;
 }): number {
   let height = PAGE.marginTopIn + PAGE.marginBottomIn;
-  height += 0.42;
-  if (input.topIconCount > 0) height += 0.85;
+  height += 0.28;
+  if (input.topIconCount > 0) height += 0.62;
   if (input.hasIssn) height += 0.28;
-  height += textLines(input.title, 48) * (16 / 72) * 1.25 + 0.15;
-  height += 0.3;
-  height += Math.max(1, input.affiliationCount) * 0.24;
-  height += 0.24;
-  height += textLines(input.citation) * LINE_IN + 0.1;
-  height += 0.32;
-  const abstractLines = textLines(input.abstract, 70);
-  height += Math.max(0.55, abstractLines * LINE_IN) + 0.16;
-  height += textLines(input.keywords ? `Keywords: ${input.keywords}` : "Keywords:") * LINE_IN + 0.12;
-  height += Math.ceil(input.partnerCount / 5) * 0.62;
-  height += 1.15;
+  height += textLines(input.title, 48) * (16 / 72) * 1.15 + 0.06;
+  height += 0.22;
+  height += Math.max(1, input.affiliationCount) * 0.22;
+  height += 0.2;
+  height += textLines(input.citation) * LINE_IN + 0.08;
+  height += 0.28;
+  height += textLines(input.abstract, 78) * LINE_IN + 0.1;
+  height += textLines(input.keywords ? `Keywords: ${input.keywords}` : "Keywords:") * LINE_IN + 0.08;
+  height += Math.ceil(Math.max(input.partnerCount, 1) / 5) * 0.45;
+  height += 0.42;
   return Math.round(height * 100) / 100;
 }
 
@@ -172,7 +171,7 @@ export function linesForBlock(block: BodyBlock): number {
     case "referenceLine":
       return textLines(block.text);
     case "figure":
-      return 16 + textLines(block.caption, 60);
+      return Math.min(28, Math.max(10, Math.round((block.heightPx || 220) / 20))) + textLines(block.caption, 60);
     case "table":
       return Math.min(PAGE.linesPerPortraitPage, 2 + block.rows.length * 2 + textLines(block.caption, 60));
     case "equation":
@@ -196,7 +195,17 @@ export function flowBody(blocks: BodyBlock[]): FlowPage[] {
     current = [];
     lines = 0;
   };
-  for (const block of blocks) {
+  const headingLike = (block: BodyBlock) =>
+    block.type === "heading" || (block.type === "section" && Boolean(block.heading));
+  const stretchLastFigure = (leftover: number) => {
+    const last = current[current.length - 1];
+    if (!last || last.type !== "figure" || leftover < 2) return;
+    const extraPx = leftover * 20;
+    current[current.length - 1] = { ...last, heightPx: (last.heightPx || 220) + extraPx };
+    lines += leftover;
+  };
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
     if (block.type === "pageBreak") {
       flush();
       continue;
@@ -207,7 +216,12 @@ export function flowBody(blocks: BodyBlock[]): FlowPage[] {
       continue;
     }
     const need = linesForBlock(block);
-    if (lines > 0 && lines + need > PAGE.linesPerPortraitPage) flush();
+    const next = blocks[index + 1];
+    const follow = headingLike(block) && next && next.type !== "pageBreak" ? Math.min(4, linesForBlock(next)) : 0;
+    if (lines > 0 && lines + need + follow > PAGE.linesPerPortraitPage) {
+      stretchLastFigure(PAGE.linesPerPortraitPage - lines);
+      flush();
+    }
     current.push(block);
     lines += need;
   }

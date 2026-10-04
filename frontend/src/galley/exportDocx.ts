@@ -11,7 +11,6 @@ import {
   Table,
   TableCell,
   TableRow,
-  TabStopType,
   TextRun,
   VerticalAlign,
   WidthType,
@@ -35,8 +34,10 @@ import {
 } from "./metrics";
 import { composedBlocks } from "./references";
 import { parseMath } from "./equations";
+import { columnWidths } from "./tables";
 
 const FONT = "Garamond";
+const JOURNAL_ORANGE = "E87722";
 const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
 const NO_BORDERS = { top: NONE, bottom: NONE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE };
 const GRID = { style: BorderStyle.SINGLE, size: 4, color: "444444" };
@@ -86,19 +87,21 @@ function bodyParagraph(children: TextRun[], extras: { center?: boolean; indent?:
   });
 }
 
-function headerFor(journalName: string, openAccess: IconAsset | null, widthIn: number): Header {
-  const mark = openAccess ? picture(openAccess, 28) : null;
+function headerFor(journalName: string, _openAccess: IconAsset | null, _widthIn: number): Header {
   return new Header({
     children: [
       new Paragraph({
-        tabStops: [{ type: TabStopType.RIGHT, position: convertInchesToTwip(widthIn) }],
-        spacing: { before: 0, after: 60 },
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 0, after: 40 },
         border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "222222", space: 1 } },
         children: [
-          ...(mark ? [mark, run("  ")] : []),
-          run("OPEN ACCESS", { bold: true, size: 16 }),
-          run("\t"),
-          run(journalName, { size: 20 }),
+          new TextRun({
+            text: journalName,
+            font: FONT,
+            bold: true,
+            size: 24,
+            color: JOURNAL_ORANGE,
+          }),
         ],
       }),
     ],
@@ -119,7 +122,7 @@ function footerFor(monthLine: string): Footer {
               new TableCell({
                 borders: { ...NO_BORDERS, top: rule },
                 width: { size: 70, type: WidthType.PERCENTAGE },
-                children: [new Paragraph({ spacing: { before: 60, after: 0 }, children: [run(monthLine, { size: 20 })] })],
+                children: [new Paragraph({ spacing: { before: 60, after: 0 }, children: [run(monthLine, { size: 24 })] })],
               }),
               new TableCell({
                 borders: { ...NO_BORDERS, top: rule },
@@ -128,7 +131,7 @@ function footerFor(monthLine: string): Footer {
                   new Paragraph({
                     alignment: AlignmentType.RIGHT,
                     spacing: { before: 60, after: 0 },
-                    children: [run("Page | ", { size: 20 }), new TextRun({ children: [PageNumber.CURRENT], font: FONT, size: 20 })],
+                    children: [run("Page | ", { size: 24 }), new TextRun({ children: [PageNumber.CURRENT], font: FONT, size: 24 })],
                   }),
                 ],
               }),
@@ -171,8 +174,51 @@ function iconRow(icons: IconAsset[], columns: number, cellWidthIn: number, maxHe
   });
 }
 
+function logoBanner(icons: IconAsset[], contentWidth: number): Table {
+  const left = icons[0] ? picture(icons[0], 58) : null;
+  const right = icons.length > 1 ? picture(icons[icons.length - 1], 58) : null;
+  return new Table({
+    width: { size: convertInchesToTwip(contentWidth), type: WidthType.DXA },
+    borders: NO_BORDERS,
+    rows: [
+      new TableRow({
+        cantSplit: true,
+        children: [
+          new TableCell({
+            width: { size: convertInchesToTwip(contentWidth / 2), type: WidthType.DXA },
+            borders: NO_BORDERS,
+            verticalAlign: VerticalAlign.CENTER,
+            margins: { top: 0, bottom: 40, left: 0, right: 40 },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.LEFT,
+                spacing: { before: 0, after: 0 },
+                children: left ? [left] : [run("")],
+              }),
+            ],
+          }),
+          new TableCell({
+            width: { size: convertInchesToTwip(contentWidth / 2), type: WidthType.DXA },
+            borders: NO_BORDERS,
+            verticalAlign: VerticalAlign.CENTER,
+            margins: { top: 0, bottom: 40, left: 40, right: 0 },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.RIGHT,
+                spacing: { before: 0, after: 0 },
+                children: right ? [right] : [run("")],
+              }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
 function dataTable(rows: string[][]): Table {
   const columns = Math.max(...rows.map((row) => row.length), 1);
+  const widths = columnWidths(rows.length ? rows : [[" "]]);
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     rows: rows.map(
@@ -183,8 +229,8 @@ function dataTable(rows: string[][]): Table {
           children: Array.from({ length: columns }, (_, column) => {
             return new TableCell({
               borders: GRID_BORDERS,
-              width: { size: Math.floor(100 / columns), type: WidthType.PERCENTAGE },
-              margins: { top: 40, bottom: 40, left: 60, right: 60 },
+              width: { size: widths[column] ?? Math.floor(100 / columns), type: WidthType.PERCENTAGE },
+              margins: { top: 40, bottom: 40, left: 40, right: 40 },
               children: [
                 new Paragraph({
                   spacing: { before: 0, after: 0 },
@@ -198,17 +244,15 @@ function dataTable(rows: string[][]): Table {
   });
 }
 
-function frontMatter(galley: Galley, journal: Journal, citation: string): FileChild[] {
+function frontMatter(galley: Galley, _journal: Journal, citation: string): FileChild[] {
   const { authors, affiliations } = numberAuthors(galley.authors);
   const children: FileChild[] = [];
   const contentWidth = PAGE.widthIn - PAGE.marginLeftIn - PAGE.marginRightIn;
-  if (galley.topIcons.length) children.push(iconRow(galley.topIcons, Math.min(galley.topIcons.length, 4), contentWidth / Math.min(galley.topIcons.length, 4), 58));
-  const issn = [journal.issnP && `ISSN-P ${journal.issnP}`, journal.issnE && `ISSN-E ${journal.issnE}`].filter(Boolean).join("    ");
-  if (issn) children.push(bodyParagraph([run(issn, { size: 18 })], { center: true, after: 80 }));
+  if (galley.topIcons.length) children.push(logoBanner(galley.topIcons, contentWidth));
   children.push(
     new Paragraph({
       alignment: AlignmentType.CENTER,
-      spacing: { before: 120, after: 120, line: 276, lineRule: "auto" },
+      spacing: { before: 40, after: 40, line: 276, lineRule: "auto" },
       children: [run(galley.title.trim() || "Untitled", { bold: true, size: 32 })],
     }),
   );
@@ -230,8 +274,11 @@ function frontMatter(galley: Galley, journal: Journal, citation: string): FileCh
   children.push(bodyParagraph([run(citation)], { after: 40 }));
   const dates = dateLine(galley);
   children.push(
-    bodyParagraph(
-      [
+    new Paragraph({
+      alignment: AlignmentType.BOTH,
+      spacing: { before: 0, after: 80, line: 240, lineRule: "auto" },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "222222", space: 4 } },
+      children: [
         run("Received", { bold: true }),
         run(` | ${dates.split("  ")[0]?.replace(/^Received \| /, "") || "—"}  `),
         run("Revised", { bold: true }),
@@ -241,42 +288,11 @@ function frontMatter(galley: Galley, journal: Journal, citation: string): FileCh
         run("Published", { bold: true }),
         run(` | ${dates.split("  ")[3]?.replace(/^Published \| /, "") || "—"}`),
       ],
-      { after: 80 },
-    ),
-  );
-  const abstract = galley.abstract.trim();
-  const letter = abstract.charAt(0) || " ";
-  const rest = abstract.slice(1);
-  children.push(
-    new Table({
-      width: { size: convertInchesToTwip(contentWidth), type: WidthType.DXA },
-      borders: NO_BORDERS,
-      rows: [
-        new TableRow({
-          cantSplit: true,
-          children: [
-            new TableCell({
-              width: { size: convertInchesToTwip(0.48), type: WidthType.DXA },
-              borders: NO_BORDERS,
-              verticalAlign: VerticalAlign.TOP,
-              children: [
-                new Paragraph({
-                  children: [run(letter, { bold: true, size: 72 })],
-                }),
-              ],
-            }),
-            new TableCell({
-              borders: NO_BORDERS,
-              verticalAlign: VerticalAlign.CENTER,
-              children: [bodyParagraph([run(rest)])],
-            }),
-          ],
-        }),
-      ],
     }),
   );
+  children.push(bodyParagraph([run(galley.abstract.trim() || "Abstract")]));
   children.push(
-    bodyParagraph([run("Keywords: ", { bold: true }), run(galley.keywords.trim())], { after: 120 }),
+    bodyParagraph([run("Keywords: ", { bold: true }), run(galley.keywords.trim())], { after: 80 }),
   );
   if (galley.partnerIcons.length) children.push(iconRow(galley.partnerIcons, 5, contentWidth / 5, 40));
   return children;
@@ -285,12 +301,30 @@ function frontMatter(galley: Galley, journal: Journal, citation: string): FileCh
 function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
   switch (block.type) {
     case "heading":
-      return [bodyParagraph([run(block.text.trim().endsWith(":") ? block.text.trim() : `${block.text.trim()}:`, { bold: true })], { after: 60 })];
+      return [
+        new Paragraph({
+          alignment: AlignmentType.BOTH,
+          keepNext: true,
+          keepLines: true,
+          spacing: { before: 0, after: 60, line: 240, lineRule: "auto" },
+          children: [run(block.text.trim().endsWith(":") ? block.text.trim() : `${block.text.trim()}:`, { bold: true })],
+        }),
+      ];
     case "section": {
       const heading = block.heading.trim();
       const titled = heading ? (heading.endsWith(":") ? heading : `${heading}:`) : "";
       return [
-        ...(titled ? [bodyParagraph([run(titled, { bold: true })], { after: 60 })] : []),
+        ...(titled
+          ? [
+              new Paragraph({
+                alignment: AlignmentType.BOTH,
+                keepNext: true,
+                keepLines: true,
+                spacing: { before: 0, after: 60, line: 240, lineRule: "auto" },
+                children: [run(titled, { bold: true })],
+              }),
+            ]
+          : []),
         ...(block.text.trim() ? [bodyParagraph([run(block.text)], { indent: true })] : []),
       ];
     }
@@ -302,7 +336,7 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
       const image = block.dataUrl
         ? picture(
             { id: block.id, name: "figure", dataUrl: block.dataUrl, widthPx: block.widthPx || 480, heightPx: block.heightPx || 280 },
-            220,
+            Math.min(340, Math.max(160, Math.round((block.heightPx || 220) * 0.75))),
           )
         : null;
       const number = figureNumber(galley.blocks, block.id);
@@ -419,7 +453,7 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
     keywords: galley.keywords,
     topIconCount: galley.topIcons.length,
     partnerCount: galley.partnerIcons.length,
-    hasIssn: Boolean(journal.issnP || journal.issnE),
+    hasIssn: false,
   });
   const month = formatMonthYear(galley.published);
   const monthLine = `${month || "Month Year"} | Vol ${galley.volume.trim() || "00"} | Issue ${galley.issue.trim() || "00"}`;

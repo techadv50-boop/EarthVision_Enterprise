@@ -152,37 +152,55 @@
 .galley-root .sheet h2{
   font-size: 16pt;
   text-align: center;
-  margin: 0.2in 0;
+  margin: 0.05in 0 0.04in;
 }
 .galley-root .sheet p{ margin: 0 0 0.08in; text-align: justify; }
 .galley-root .sheet .authors, .galley-root .sheet .affiliation, .galley-root .sheet .issn, .galley-root .sheet .caption, .galley-root .caption{ text-align: center; }
 .galley-root .indent{ text-indent: 0.5in; }
 .galley-root .heading-line{ font-weight: 700; text-indent: 0; }
-.galley-root .drop{
-  float: left;
-  font-size: 42pt;
-  line-height: 0.8;
-  font-weight: 700;
-  padding-right: 0.06in;
+.galley-root .dates{
+  border-bottom: 1px solid #222;
+  padding-bottom: 0.05in;
+  margin-bottom: 0.08in !important;
 }
-.galley-root .logo-line, .galley-root .partner-grid{
+.galley-root .logo-line{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.12in;
+  margin: 0.02in 0 0.02in;
+}
+.galley-root .logo-line img{ height: 0.55in; width: auto; }
+.galley-root .logo-line img:first-child{ margin-right: auto; }
+.galley-root .logo-line img:last-child{ margin-left: auto; }
+.galley-root .partner-grid{
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 0.15in;
   margin: 0.08in 0;
 }
-.galley-root .logo-line img{ height: 0.6in; width: auto; }
 .galley-root .partner-grid img{ height: 0.38in; width: auto; }
 .galley-root .sheet-header, .galley-root .sheet-footer{
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.2in;
-  font-size: 10pt;
+  font-size: 12pt;
 }
-.galley-root .sheet-header{ border-bottom: 1px solid #222; padding-bottom: 0.06in; margin-bottom: 0.12in; }
-.galley-root .sheet-header img{ height: 0.28in; }
+.galley-root .sheet-header{
+  border-bottom: 1px solid #222;
+  padding-bottom: 0.04in;
+  margin-bottom: 0.04in;
+  justify-content: center;
+}
+.galley-root .journal-banner{
+  color: #E87722;
+  font-size: 12pt;
+  font-weight: 700;
+  text-align: center;
+  width: 100%;
+}
 .galley-root .sheet-footer{
   position: absolute;
   left: 1in;
