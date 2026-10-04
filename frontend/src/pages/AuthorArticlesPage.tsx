@@ -576,7 +576,6 @@ function PublishedBrowser({ rows, journals }: { rows: AuthorRow[]; journals: Jou
 
       {!journal ? (
         <>
-          <h3 className="text-sm font-medium mb-3">Journals</h3>
           {journalNames.length === 0 ? (
             <p className="text-gray-500 text-sm">No journals yet.</p>
           ) : (
