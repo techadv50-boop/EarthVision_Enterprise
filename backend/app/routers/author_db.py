@@ -114,7 +114,6 @@ PUBLISHED_EXCEL_HEADERS = [
     "Receive date",
     "Acceptance date",
     "Publish date",
-    "Comments",
     "Status",
     "Reason of decline",
 ]

@@ -796,9 +796,11 @@ function HistoryCard({ ver, forPublished }: { ver: DisplayRow; forPublished?: bo
             <ReportField label="Last reminder sent" value={data.last_reminder_sent} />
           </>
         )}
-        <div className="md:col-span-2">
-          <ReportField label="Comments" value={data.comments} />
-        </div>
+        {!forPublished && (
+          <div className="md:col-span-2">
+            <ReportField label="Comments" value={data.comments} />
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1228,6 +1230,7 @@ function ArticleFormFields({
           </label>
         </>
       )}
+      {!forPublished && (
       <label className="text-sm text-gray-400 md:col-span-2">
         Comments
         <textarea
@@ -1241,6 +1244,7 @@ function ArticleFormFields({
           {commentLen} / {COMMENT_MAX} characters
         </span>
       </label>
+      )}
       <label className="text-sm text-gray-400 md:col-span-2">
         Status
         <select

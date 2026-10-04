@@ -762,16 +762,14 @@ async def test_excel_export_includes_published_and_under_process_rows(client: As
         "Receive date",
         "Acceptance date",
         "Publish date",
-        "Comments",
         "Status",
         "Reason of decline",
     ]
     ojs_idx = pub_headers.index("OJS number")
     email_idx = pub_headers.index("Email addresses of authors")
-    comments_idx = pub_headers.index("Comments")
     rows = list(pub_sheet.iter_rows(min_row=2, values_only=True))
     found = next(row for row in rows if row[ojs_idx] == "EXP-PUB-1")
-    assert "example.test/article/view/88" in str(found[comments_idx] or "")
+    assert "Comments" not in pub_headers
     assert not (found[email_idx] or "").strip()
 
 
@@ -1094,7 +1092,6 @@ async def test_excel_template_matches_new_form_fields(client: AsyncClient):
         "Receive date",
         "Acceptance date",
         "Publish date",
-        "Comments",
         "Status",
         "Reason of decline",
     ]
@@ -1105,6 +1102,7 @@ async def test_excel_template_matches_new_form_fields(client: AsyncClient):
     assert "Soft reminder sent" not in pub_headers
     assert "Last reminder sent" not in pub_headers
     assert "Second reminder sent" not in pub_headers
+    assert "Comments" not in pub_headers
     pub_sample = next(pub_sheet.iter_rows(min_row=2, max_row=2, values_only=True))
     assert pub_sample[pub_headers.index("Status")] == "Published"
     emails = str(pub_sample[pub_headers.index("Email addresses of authors")] or "")
