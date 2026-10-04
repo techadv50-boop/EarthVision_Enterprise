@@ -1158,7 +1158,7 @@ async def test_export_separates_glued_author_emails(client: AsyncClient):
     headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
     ojs_idx = headers_row.index("OJS number")
     email_idx = headers_row.index("Email addresses of authors")
-    assert found[email_idx]
+    found = next(row for row in sheet.iter_rows(min_row=2, values_only=True) if row[ojs_idx] == "IJIST-EMAIL-GLUE")
     emails = str(found[email_idx] or "")
     assert "qaziejazali@uop.edu.pk" in emails
     assert "asimali@bbsutsd.edu.pk" in emails
