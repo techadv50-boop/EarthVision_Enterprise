@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Minus, Plus } from 'lucide-react';
 import { citationApi } from '@/services/api';
 import { isFullAdmin, useAuthStore } from '@/store/authStore';
@@ -439,13 +439,6 @@ function groupPublishedRows(rows: AuthorRow[]): JournalGroup[] {
     });
 }
 
-function issueHeading(group: IssueGroup) {
-  if (group.volume == null && group.issue == null) return 'Unassigned volume / issue';
-  const volume = group.volume != null ? String(group.volume) : '—';
-  const issue = group.issue != null ? String(group.issue) : '—';
-  return `Volume ${volume} · Issue ${issue}`;
-}
-
 function OjsChip({ wing, row }: { wing: Wing; row: AuthorRow }) {
   return (
     <a
@@ -456,6 +449,201 @@ function OjsChip({ wing, row }: { wing: Wing; row: AuthorRow }) {
     >
       {row.ojs_number || `No OJS #${row.id}`}
     </a>
+  );
+}
+
+function BrowseTile({
+  label,
+  count,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className="btn-secondary text-left min-w-[11rem]" onClick={onClick}>
+      <span className="block font-medium text-gray-100">{label}</span>
+      <span className="block text-xs text-gray-500 mt-1">
+        {count} {count === 1 ? 'article' : 'articles'}
+      </span>
+    </button>
+  );
+}
+
+function volumeParam(volume: number | null) {
+  return volume == null ? 'unassigned' : String(volume);
+}
+
+function issueParam(issue: number | null) {
+  return issue == null ? 'unassigned' : String(issue);
+}
+
+function parseBrowseNumber(value: string | null): number | null | undefined {
+  if (value == null || value === '') return undefined;
+  if (value === 'unassigned') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function PublishedBrowser({ rows, journals }: { rows: AuthorRow[]; journals: JournalOption[] }) {
+  const [params, setParams] = useSearchParams();
+  const journal = params.get('journal') || '';
+  const volumeValue = parseBrowseNumber(params.get('volume'));
+  const issueValue = parseBrowseNumber(params.get('issue'));
+  const grouped = groupPublishedRows(rows);
+  const catalogNames = journals.map((item) => journalLabel(item)).filter(Boolean);
+  const journalNames = [...new Set([...catalogNames, ...grouped.map((item) => item.journal)])].sort((a, b) =>
+    a.localeCompare(b),
+  );
+
+  const setBrowse = (next: { journal?: string; volume?: string; issue?: string }) => {
+    const query = new URLSearchParams();
+    if (next.journal) query.set('journal', next.journal);
+    if (next.volume) query.set('volume', next.volume);
+    if (next.issue) query.set('issue', next.issue);
+    setParams(query);
+  };
+
+  const journalRows = journal ? rows.filter((row) => rowJournalName(row) === journal) : [];
+  const volumeBuckets = new Map<string, { volume: number | null; count: number }>();
+  for (const row of journalRows) {
+    const key = volumeParam(row.volume ?? null);
+    const prev = volumeBuckets.get(key);
+    if (prev) prev.count += 1;
+    else volumeBuckets.set(key, { volume: row.volume ?? null, count: 1 });
+  }
+  const volumes = [...volumeBuckets.values()].sort((left, right) => {
+    if (left.volume == null) return 1;
+    if (right.volume == null) return -1;
+    return (right.volume ?? -1) - (left.volume ?? -1);
+  });
+  const issueRows = journalRows.filter((row) => (row.volume ?? null) === (volumeValue === undefined ? row.volume ?? null : volumeValue));
+  const issueBuckets = new Map<string, { issue: number | null; count: number }>();
+  if (volumeValue !== undefined) {
+    for (const row of issueRows) {
+      const key = issueParam(row.issue ?? null);
+      const prev = issueBuckets.get(key);
+      if (prev) prev.count += 1;
+      else issueBuckets.set(key, { issue: row.issue ?? null, count: 1 });
+    }
+  }
+  const issues = [...issueBuckets.values()].sort((left, right) => {
+    if (left.issue == null) return 1;
+    if (right.issue == null) return -1;
+    return (right.issue ?? -1) - (left.issue ?? -1);
+  });
+  const ojsRows =
+    volumeValue === undefined || issueValue === undefined
+      ? []
+      : issueRows.filter((row) => (row.issue ?? null) === issueValue);
+
+  const crumb = (label: string, href?: { journal?: string; volume?: string; issue?: string }) =>
+    href ? (
+      <button type="button" className="text-earth-400 hover:underline" onClick={() => setBrowse(href)}>
+        {label}
+      </button>
+    ) : (
+      <span className="text-gray-200">{label}</span>
+    );
+
+  return (
+    <div className="panel p-4">
+      <div className="flex flex-wrap gap-2 text-sm text-gray-500 mb-4">
+        {crumb('Journals', {})}
+        {journal ? (
+          <>
+            <span>/</span>
+            {crumb(journal, volumeValue === undefined ? undefined : { journal })}
+          </>
+        ) : null}
+        {journal && volumeValue !== undefined ? (
+          <>
+            <span>/</span>
+            {crumb(
+              volumeValue == null ? 'Unassigned volume' : `Volume ${volumeValue}`,
+              issueValue === undefined ? undefined : { journal, volume: volumeParam(volumeValue) },
+            )}
+          </>
+        ) : null}
+        {journal && volumeValue !== undefined && issueValue !== undefined ? (
+          <>
+            <span>/</span>
+            {crumb(issueValue == null ? 'Unassigned issue' : `Issue ${issueValue}`)}
+          </>
+        ) : null}
+      </div>
+
+      {!journal ? (
+        <>
+          {journalNames.length === 0 ? (
+            <p className="text-gray-500 text-sm">No journals yet.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {journalNames.map((name) => (
+                <BrowseTile
+                  key={name}
+                  label={name}
+                  count={rows.filter((row) => rowJournalName(row) === name).length}
+                  onClick={() => setBrowse({ journal: name })}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      ) : volumeValue === undefined ? (
+        <>
+          <h3 className="text-sm font-medium mb-3">Volumes</h3>
+          {volumes.length === 0 ? (
+            <p className="text-gray-500 text-sm">No volumes for this journal yet. Add a published article with a volume.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {volumes.map((item) => (
+                <BrowseTile
+                  key={volumeParam(item.volume)}
+                  label={item.volume == null ? 'Unassigned volume' : `Volume ${item.volume}`}
+                  count={item.count}
+                  onClick={() => setBrowse({ journal, volume: volumeParam(item.volume) })}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      ) : issueValue === undefined ? (
+        <>
+          <h3 className="text-sm font-medium mb-3">Issues</h3>
+          {issues.length === 0 ? (
+            <p className="text-gray-500 text-sm">No issues in this volume yet.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {issues.map((item) => (
+                <BrowseTile
+                  key={issueParam(item.issue)}
+                  label={item.issue == null ? 'Unassigned issue' : `Issue ${item.issue}`}
+                  count={item.count}
+                  onClick={() =>
+                    setBrowse({ journal, volume: volumeParam(volumeValue), issue: issueParam(item.issue) })
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <h3 className="text-sm font-medium mb-3">OJS numbers</h3>
+          {ojsRows.length === 0 ? (
+            <p className="text-gray-500 text-sm">No OJS numbers in this issue yet.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {ojsRows.map((row) => (
+                <OjsChip key={row.id} wing="published" row={row} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1134,8 +1322,8 @@ function AuthorList({ wing }: { wing: Wing }) {
   };
 
   const downloadTemplate = async () => {
-    const { data } = await citationApi.authorArticles.template();
-    downloadBlob(data, 'author-database-template.xlsx');
+    const { data } = await citationApi.authorArticles.template(wing);
+    downloadBlob(data, inProcess ? 'author-database-template.xlsx' : 'author-database-published-template.xlsx');
   };
 
   const exportExcel = async () => {
@@ -1185,7 +1373,7 @@ function AuthorList({ wing }: { wing: Wing }) {
       <p className="text-gray-400 text-sm mb-4 max-w-4xl">
         {inProcess
           ? 'This list stays quiet: only OJS numbers. Click a number to open that article’s full historical record in a new tab. Users cannot delete records.'
-          : 'Published OJS numbers are grouped by journal, then volume and issue. Click a number to open the archived original row and every modification in a new tab.'}
+          : 'Choose a journal, then a volume, then an issue, then an OJS number. That keeps the published list readable when there are more than a thousand papers.'}
       </p>
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
@@ -1253,45 +1441,24 @@ function AuthorList({ wing }: { wing: Wing }) {
         </form>
       )}
 
-      <div className="panel p-4">
-        <h3 className="text-sm font-medium mb-3">OJS numbers</h3>
-        {rows.length === 0 ? (
-          <p className="text-gray-500 text-sm">
-            {inProcess
-              ? 'No under process articles yet. Add one or import an Excel file.'
-              : 'No published articles yet. Add one with volume and issue, or import an Excel file.'}
-          </p>
-        ) : inProcess ? (
-          <div className="flex flex-wrap gap-2">
-            {rows.map((row) => (
-              <OjsChip key={row.id} wing={wing} row={row} />
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {groupPublishedRows(rows).map((journal) => (
-              <div key={journal.journal}>
-                <h4 className="text-sm font-semibold text-gray-200 mb-3">{journal.journal}</h4>
-                <div className="space-y-4">
-                  {journal.issues.map((group) => (
-                    <div key={`${journal.journal}-${group.volume ?? 'x'}-${group.issue ?? 'x'}`}>
-                      <p className="text-xs text-gray-500 mb-2">
-                        {issueHeading(group)}
-                        <span className="ml-2 text-gray-600">{group.rows.length}</span>
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {group.rows.map((row) => (
-                          <OjsChip key={row.id} wing={wing} row={row} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {inProcess ? (
+        <div className="panel p-4">
+          <h3 className="text-sm font-medium mb-3">OJS numbers</h3>
+          {rows.length === 0 ? (
+            <p className="text-gray-500 text-sm">
+              No under process articles yet. Add one or import an Excel file.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {rows.map((row) => (
+                <OjsChip key={row.id} wing={wing} row={row} />
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <PublishedBrowser rows={rows} journals={journals} />
+      )}
     </div>
   );
 }

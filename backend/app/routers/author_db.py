@@ -58,13 +58,15 @@ from app.schemas.author_db import (
 from app.services.journal_access import allowed_journal_ids, require_journal_access, is_removed_journal, purge_removed_journals
 from app.services.author_sanitization import find_author_overlaps, overlap_message, unique_author_names
 from app.services.author_crawler import run_author_crawl_job
+from app.services.citation_parser import format_emails
 
 router = APIRouter(prefix="/author-articles", tags=["Author database"])
 
 Db = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(require_service("authors"))]
 
-EXCEL_HEADERS = [
+IN_PROCESS_EXCEL_HEADERS = [
+    "Journal",
     "OJS number",
     "Volume",
     "Issue",
@@ -72,10 +74,14 @@ EXCEL_HEADERS = [
     "Title",
     "Author names",
     "Email addresses of authors",
-    "Email sent date",
     "Plagiarism",
     "ORCID ID",
+    "Email sent date",
     "Receive date",
+    "Current state",
+    "Current-state date",
+    "Days allowed",
+    "Current state passed",
     "Round 1 review sent date",
     "Round 1 review receive date",
     "Round 2 review sent date",
@@ -86,20 +92,41 @@ EXCEL_HEADERS = [
     "Galley sent date",
     "Galley received date",
     "Publish date",
-    "Status",
-    "Reason of decline",
     "Soft reminder sent",
     "Second reminder sent",
     "Last reminder sent",
     "Comments",
-    "Current state",
-    "Current-state date",
-    "Days allowed",
-    "Current state passed",
-    "Journal",
-    "Wing",
-    "Article URL",
+    "Status",
+    "Reason of decline",
 ]
+
+PUBLISHED_EXCEL_HEADERS = [
+    "Journal",
+    "OJS number",
+    "Volume",
+    "Issue",
+    "Page",
+    "Title",
+    "Author names",
+    "Email addresses of authors",
+    "Plagiarism",
+    "ORCID ID",
+    "Receive date",
+    "Round 1 review sent date",
+    "Round 1 review receive date",
+    "Acceptance date",
+    "Publish date",
+    "Soft reminder sent",
+    "Last reminder sent",
+    "Comments",
+    "Status",
+]
+
+EXCEL_HEADERS = IN_PROCESS_EXCEL_HEADERS
+
+
+def _excel_headers(wing: str) -> list[str]:
+    return PUBLISHED_EXCEL_HEADERS if wing == "published" else IN_PROCESS_EXCEL_HEADERS
 
 
 def _blank(value: Optional[str]) -> Optional[str]:
@@ -128,7 +155,7 @@ def _article_url_of(row: AuthorArticle) -> str:
     return match.group(0).rstrip(").,;") if match else ""
 
 
-def _excel_row(row: AuthorArticle) -> list[Any]:
+def _excel_values(row: AuthorArticle) -> dict[str, Any]:
     rounds = _normalize_rounds(row.review_rounds, fallback_received=row.review_date)
 
     def round_value(number: int, key: str) -> str:
@@ -136,42 +163,63 @@ def _excel_row(row: AuthorArticle) -> list[Any]:
             return rounds[number - 1].get(key) or ""
         return ""
 
-    return [
-        row.ojs_number or "",
-        row.volume if row.volume is not None else "",
-        row.issue_number if row.issue_number is not None else "",
-        row.page or "",
-        row.title or "",
-        row.author_names or "",
-        row.author_emails or "",
-        row.email_sent_date or "",
-        row.plagiarism or "",
-        row.orcid_id or "",
-        row.received_date or "",
-        round_value(1, "sent_date"),
-        round_value(1, "received_date"),
-        round_value(2, "sent_date"),
-        round_value(2, "received_date"),
-        round_value(3, "sent_date"),
-        round_value(3, "received_date"),
-        row.accepted_date or "",
-        row.galley_sent_date or "",
-        row.galley_received_date or "",
-        row.publish_date or "",
-        row.editorial_status or "",
-        row.decline_reason or "",
-        row.soft_reminder_sent or "",
-        row.second_reminder_sent or "",
-        row.last_reminder_sent or "",
-        row.comments or "",
-        _stage_label(row.current_stage) if row.current_stage else "",
-        row.current_stage_started or "",
-        row.current_stage_days if row.current_stage_days is not None else "",
-        "Yes" if row.current_stage_passed else "No",
-        row.journal_title or "",
-        row.wing or "",
-        _article_url_of(row),
-    ]
+    return {
+        "Journal": row.journal_title or "",
+        "OJS number": row.ojs_number or "",
+        "Volume": row.volume if row.volume is not None else "",
+        "Issue": row.issue_number if row.issue_number is not None else "",
+        "Page": row.page or "",
+        "Title": row.title or "",
+        "Author names": row.author_names or "",
+        "Email addresses of authors": format_emails(row.author_emails or "", excel=True),
+        "Plagiarism": row.plagiarism or "",
+        "ORCID ID": row.orcid_id or "",
+        "Email sent date": row.email_sent_date or "",
+        "Receive date": row.received_date or "",
+        "Current state": _stage_label(row.current_stage) if row.current_stage else "",
+        "Current-state date": row.current_stage_started or "",
+        "Days allowed": row.current_stage_days if row.current_stage_days is not None else "",
+        "Current state passed": "Yes" if row.current_stage_passed else "No",
+        "Round 1 review sent date": round_value(1, "sent_date"),
+        "Round 1 review receive date": round_value(1, "received_date"),
+        "Round 2 review sent date": round_value(2, "sent_date"),
+        "Round 2 review receive date": round_value(2, "received_date"),
+        "Round 3 review sent date": round_value(3, "sent_date"),
+        "Round 3 review receive date": round_value(3, "received_date"),
+        "Acceptance date": row.accepted_date or "",
+        "Galley sent date": row.galley_sent_date or "",
+        "Galley received date": row.galley_received_date or "",
+        "Publish date": row.publish_date or "",
+        "Soft reminder sent": row.soft_reminder_sent or "",
+        "Second reminder sent": row.second_reminder_sent or "",
+        "Last reminder sent": row.last_reminder_sent or "",
+        "Comments": row.comments or "",
+        "Status": row.editorial_status or "",
+        "Reason of decline": row.decline_reason or "",
+    }
+
+
+def _excel_row(row: AuthorArticle, headers: Optional[list[str]] = None) -> list[Any]:
+    values = _excel_values(row)
+    return [values.get(label, "") for label in (headers or IN_PROCESS_EXCEL_HEADERS)]
+
+
+def _style_excel(sheet, headers: list[str]) -> None:
+    from openpyxl.styles import Alignment
+    from openpyxl.utils import get_column_letter
+
+    sheet.freeze_panes = "A2"
+    for index, header in enumerate(headers, start=1):
+        letter = get_column_letter(index)
+        width = 42 if header == "Email addresses of authors" else 18
+        if header in {"Title", "Author names", "Comments", "Reason of decline"}:
+            width = 36
+        sheet.column_dimensions[letter].width = width
+    email_idx = headers.index("Email addresses of authors") + 1 if "Email addresses of authors" in headers else 0
+    if email_idx:
+        for cell in sheet.iter_cols(min_col=email_idx, max_col=email_idx, min_row=2):
+            for item in cell:
+                item.alignment = Alignment(wrap_text=True, vertical="top")
 
 
 def _editorial_status(value: Optional[str]) -> str:
@@ -305,7 +353,7 @@ def _row_snapshot(row: AuthorArticle) -> dict[str, Any]:
         "ojs_number": row.ojs_number or "",
         "title": row.title or "",
         "author_names": row.author_names or "",
-        "author_emails": row.author_emails or "",
+        "author_emails": format_emails(row.author_emails or ""),
         "email_sent_date": row.email_sent_date,
         "plagiarism": row.plagiarism or "",
         "orcid_id": row.orcid_id or "",
@@ -417,7 +465,7 @@ def _payload(row: AuthorArticle) -> AuthorArticleOut:
         ojs_number=row.ojs_number or "",
         title=row.title or "",
         author_names=row.author_names or "",
-        author_emails=row.author_emails or "",
+        author_emails=format_emails(row.author_emails or ""),
         email_sent=bool(row.email_sent),
         email_sent_date=row.email_sent_date,
         plagiarism=row.plagiarism or "",
@@ -821,6 +869,8 @@ async def _apply_update(
                 nxt = _editorial_status(nxt)
             elif field == "comments":
                 nxt = _comments(nxt)
+            elif field == "author_emails":
+                nxt = format_emails(nxt)
             elif field == "decline_reason":
                 nxt = _comments(nxt)
             elif field == "current_stage":
@@ -1026,55 +1076,58 @@ async def add_author_journal(body: AuthorJournalIn, db: Db, user: CurrentUser):
 
 
 @router.get("/template")
-async def download_import_template():
+async def download_import_template(wing: str = Query(default="in_process")):
+    wing = (wing or "in_process").strip().lower()
+    if wing not in WINGS:
+        wing = "in_process"
+    headers = _excel_headers(wing)
     book = Workbook()
     sheet = book.active
     sheet.title = "Author database"
-    sheet.append(EXCEL_HEADERS)
-    sheet.append(
-        [
-            "IJIST-2024-118",
-            "8",
-            "5",
-            "1788-1813",
-            "Sample title",
-            "Ali Khan; Sara Ahmed",
-            "ali@example.com; sara@example.com",
-            "2024-01-05",
-            "9%",
-            "0000-0002-1825-0097",
-            "2024-01-12",
-            "2024-01-20",
-            "2024-02-01",
-            "",
-            "",
-            "",
-            "",
-            "2024-03-10",
-            "2024-03-12",
-            "2024-03-18",
-            "",
-            "Submission",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "7",
-            "No",
-            "IJIST",
-            "in_process",
-            "",
-        ]
-    )
+    sheet.append(headers)
+    sample = {
+        "Journal": "IJIST",
+        "OJS number": "IJIST-2024-118",
+        "Volume": "8",
+        "Issue": "5",
+        "Page": "1788-1813",
+        "Title": "Sample title",
+        "Author names": "Ali Khan; Sara Ahmed",
+        "Email addresses of authors": "ali@example.com; sara@example.com",
+        "Plagiarism": "9%",
+        "ORCID ID": "0000-0002-1825-0097",
+        "Email sent date": "2024-01-05",
+        "Receive date": "2024-01-12",
+        "Current state": "",
+        "Current-state date": "",
+        "Days allowed": "7",
+        "Current state passed": "No",
+        "Round 1 review sent date": "2024-01-20",
+        "Round 1 review receive date": "2024-02-01",
+        "Round 2 review sent date": "",
+        "Round 2 review receive date": "",
+        "Round 3 review sent date": "",
+        "Round 3 review receive date": "",
+        "Acceptance date": "2024-03-10",
+        "Galley sent date": "2024-03-12",
+        "Galley received date": "2024-03-18",
+        "Publish date": "2024-04-01" if wing == "published" else "",
+        "Soft reminder sent": "",
+        "Second reminder sent": "",
+        "Last reminder sent": "",
+        "Comments": "",
+        "Status": "Published" if wing == "published" else "Submission",
+        "Reason of decline": "",
+    }
+    sheet.append([sample.get(label, "") for label in headers])
+    _style_excel(sheet, headers)
     buf = io.BytesIO()
     book.save(buf)
+    name = "author-database-published-template.xlsx" if wing == "published" else "author-database-template.xlsx"
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="author-database-template.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
 
 
@@ -1089,12 +1142,14 @@ async def export_author_articles(
         raise HTTPException(status_code=400, detail="Wing must be in_process or published")
     _require_wing(user, wing)
     rows = list((await db.execute(await _visible_query(db, user, wing))).scalars().all())
+    headers = _excel_headers(wing)
     book = Workbook()
     sheet = book.active
     sheet.title = "Author database"
-    sheet.append(EXCEL_HEADERS)
+    sheet.append(headers)
     for row in rows:
-        sheet.append(_excel_row(row))
+        sheet.append(_excel_row(row, headers))
+    _style_excel(sheet, headers)
     buf = io.BytesIO()
     book.save(buf)
     label = "under-process" if wing == "in_process" else "published"
@@ -1429,7 +1484,7 @@ async def create_author_article(body: AuthorArticleIn, db: Db, user: CurrentUser
         ojs_number=(body.ojs_number or "").strip(),
         title=(body.title or "").strip(),
         author_names=(body.author_names or "").strip(),
-        author_emails=(body.author_emails or "").strip(),
+        author_emails=format_emails(body.author_emails or ""),
         email_sent=bool(body.email_sent_date) or bool(body.email_sent),
         email_sent_date=_blank(body.email_sent_date),
         plagiarism=(body.plagiarism or "").strip(),
@@ -1810,7 +1865,7 @@ async def import_author_articles(
             "ojs_number": ojs,
             "title": title,
             "author_names": item.get("author_names") or "",
-            "author_emails": item.get("author_emails") or "",
+            "author_emails": format_emails(item.get("author_emails") or ""),
             "email_sent": _parse_bool(item.get("email_sent")) or bool(item.get("email_sent_date")),
             "email_sent_date": item.get("email_sent_date") or None,
             "plagiarism": item.get("plagiarism") or "",

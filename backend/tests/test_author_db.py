@@ -729,11 +729,12 @@ async def test_excel_export_includes_published_and_under_process_rows(client: As
     sheet = book.active
     headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
     assert "OJS number" in headers_row
-    assert "Article URL" in headers_row
+    assert "Journal" in headers_row
     assert "Volume" in headers_row
     assert "Issue" in headers_row
     assert "Page" in headers_row
     assert "Reason of decline" in headers_row
+    assert "Article URL" not in headers_row
     ojs_idx = headers_row.index("OJS number")
     values = [row[ojs_idx] for row in sheet.iter_rows(min_row=2, values_only=True)]
     assert "EXP-IN-1" in values
@@ -747,12 +748,33 @@ async def test_excel_export_includes_published_and_under_process_rows(client: As
     pub_book = load_workbook(BytesIO(pub.content))
     pub_sheet = pub_book.active
     pub_headers = [cell for cell in next(pub_sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
-    url_idx = pub_headers.index("Article URL")
+    assert pub_headers == [
+        "Journal",
+        "OJS number",
+        "Volume",
+        "Issue",
+        "Page",
+        "Title",
+        "Author names",
+        "Email addresses of authors",
+        "Plagiarism",
+        "ORCID ID",
+        "Receive date",
+        "Round 1 review sent date",
+        "Round 1 review receive date",
+        "Acceptance date",
+        "Publish date",
+        "Soft reminder sent",
+        "Last reminder sent",
+        "Comments",
+        "Status",
+    ]
     ojs_idx = pub_headers.index("OJS number")
     email_idx = pub_headers.index("Email addresses of authors")
+    comments_idx = pub_headers.index("Comments")
     rows = list(pub_sheet.iter_rows(min_row=2, values_only=True))
     found = next(row for row in rows if row[ojs_idx] == "EXP-PUB-1")
-    assert found[url_idx] == "https://example.test/article/view/88"
+    assert "example.test/article/view/88" in str(found[comments_idx] or "")
     assert not (found[email_idx] or "").strip()
 
 
@@ -1032,19 +1054,108 @@ async def test_excel_template_matches_new_form_fields(client: AsyncClient):
         json={"username": "citation@xdgen.com", "password": "pak123"},
     )
     headers = _bearer(operator)
-    template = await client.get("/api/v1/author-articles/template", headers=headers)
+    template = await client.get(
+        "/api/v1/author-articles/template",
+        headers=headers,
+        params={"wing": "in_process"},
+    )
     assert template.status_code == 200
     book = load_workbook(BytesIO(template.content))
     sheet = book.active
     headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
-    assert headers_row.index("OJS number") == 0
-    assert headers_row[1:4] == ["Volume", "Issue", "Page"]
+    assert headers_row[0] == "Journal"
+    assert headers_row[1:5] == ["OJS number", "Volume", "Issue", "Page"]
     assert "Status" in headers_row
-    assert headers_row[headers_row.index("Status") + 1] == "Reason of decline"
+    assert headers_row[-1] == "Reason of decline"
     sample = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
-    assert len(sample) >= len(headers_row) or len([cell for cell in sample if cell is not None]) > 0
-    assert sample[1] == "8" or sample[1] == 8
-    assert sample[2] == "5" or sample[2] == 5
-    assert str(sample[3]) == "1788-1813"
+    ojs_idx = headers_row.index("OJS number")
+    assert sample[ojs_idx] == "IJIST-2024-118"
+    assert sample[headers_row.index("Volume")] in {"8", 8}
+    assert sample[headers_row.index("Issue")] in {"5", 5}
+    assert str(sample[headers_row.index("Page")]) == "1788-1813"
+
+    published = await client.get(
+        "/api/v1/author-articles/template",
+        headers=headers,
+        params={"wing": "published"},
+    )
+    assert published.status_code == 200
+    pub_book = load_workbook(BytesIO(published.content))
+    pub_sheet = pub_book.active
+    pub_headers = [cell for cell in next(pub_sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+    assert pub_headers == [
+        "Journal",
+        "OJS number",
+        "Volume",
+        "Issue",
+        "Page",
+        "Title",
+        "Author names",
+        "Email addresses of authors",
+        "Plagiarism",
+        "ORCID ID",
+        "Receive date",
+        "Round 1 review sent date",
+        "Round 1 review receive date",
+        "Acceptance date",
+        "Publish date",
+        "Soft reminder sent",
+        "Last reminder sent",
+        "Comments",
+        "Status",
+    ]
+    assert "Email sent date" not in pub_headers
+    assert "Galley sent date" not in pub_headers
+    assert "Second reminder sent" not in pub_headers
+    assert "Reason of decline" not in pub_headers
+    pub_sample = next(pub_sheet.iter_rows(min_row=2, max_row=2, values_only=True))
+    assert pub_sample[pub_headers.index("Status")] == "Published"
+    assert pub_sample[pub_headers.index("Email addresses of authors")] == "ali@example.com; sara@example.com"
+
+
+@pytest.mark.asyncio
+async def test_export_separates_glued_author_emails(client: AsyncClient):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "citation@xdgen.com", "password": "pak123"},
+    )
+    headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/author-articles",
+        headers=headers,
+        json={
+            "wing": "published",
+            "journal_title": "IJIST",
+            "ojs_number": "IJIST-EMAIL-GLUE",
+            "title": "Glued emails paper",
+            "author_names": "Qazi Ejaz Ali; Asim Ali",
+            "author_emails": "qaziejazali@uop.edu.pkasimali@bbsutsd.edu.pk",
+            "editorial_status": "Published",
+            "volume": 8,
+            "issue": 5,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["author_emails"] == "qaziejazali@uop.edu.pk; asimali@bbsutsd.edu.pk"
+    exported = await client.get(
+        "/api/v1/author-articles/export",
+        headers=headers,
+        params={"wing": "published"},
+    )
+    assert exported.status_code == 200
+    book = load_workbook(BytesIO(exported.content))
+    sheet = book.active
+    headers_row = [cell for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+    ojs_idx = headers_row.index("OJS number")
+    email_idx = headers_row.index("Email addresses of authors")
+    found = next(row for row in sheet.iter_rows(min_row=2, values_only=True) if row[ojs_idx] == "IJIST-EMAIL-GLUE")
+    emails = str(found[email_idx] or "")
+    assert "qaziejazali@uop.edu.pk" in emails
+    assert "asimali@bbsutsd.edu.pk" in emails
+    assert "; " in emails.replace(";\n", "; ") or ";\n" in emails
 
 

@@ -1,6 +1,6 @@
 """IJIST header fixtures and parser tests."""
 
-from app.services.citation_parser import parse_ijist_header, format_house_citation
+from app.services.citation_parser import format_house_citation, format_emails, parse_ijist_header
 
 GALLEY_EDDSA = """
 International Journal of Innovations in Science & Technology
@@ -126,3 +126,9 @@ def test_broken_banner_title_is_detected():
         ["Khan. A"],
         journal_name="Frontiers in Computational Spatial Intelligence",
     )
+
+
+def test_extract_and_format_glued_emails():
+    blob = "qaziejazali@uop.edu.pkasimali@bbsutsd.edu.pk, sara@example.com"
+    assert format_emails(blob) == "qaziejazali@uop.edu.pk; asimali@bbsutsd.edu.pk; sara@example.com"
+    assert "\n" in format_emails(blob, excel=True)

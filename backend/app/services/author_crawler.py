@@ -13,7 +13,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.database.session import AsyncSessionLocal
 from app.models.citation import AuthorArticle, AuthorCrawlJob
 from app.schemas.author_db import AUTHOR_DB_JOURNALS, COMMENT_MAX, DEFAULT_STAGE_DAYS
-from app.services.citation_parser import EMAIL_RE, MONTH_RE, parse_ijist_header, split_authors
+from app.services.citation_parser import EMAIL_RE, MONTH_RE, format_emails, parse_ijist_header, split_authors
 from app.services.pdf_text import extract_pdf_text
 from app.services import crawler as crawler_mod
 
@@ -416,8 +416,10 @@ async def _extract_article(
 
     title = (pdf_meta.get("title") or html_meta.get("title") or "").strip()
     authors = _authors_text(pdf_meta.get("authors") or html_meta.get("authors") or [])
-    emails = _unique_join(
-        [pdf_meta.get("correspondence_email") or ""] + list(html_meta.get("emails") or [])
+    emails = format_emails(
+        _unique_join(
+            [pdf_meta.get("correspondence_email") or ""] + list(html_meta.get("emails") or [])
+        )
     )
     orcids = _unique_join(list(html_meta.get("orcids") or []))
     doi = (pdf_meta.get("doi") or html_meta.get("doi") or "").strip()
