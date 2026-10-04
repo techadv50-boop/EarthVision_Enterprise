@@ -1174,11 +1174,11 @@ async def test_five_author_emails_keep_their_shape(client: AsyncClient):
     headers = _bearer(operator)
     five = "\n".join(
         [
-            "ali@example.com",
-            "sara@example.com",
-            "fatima@example.com",
-            "hassan@example.com",
-            "noor@example.com",
+            "ali.five@shape-test.example",
+            "sara.five@shape-test.example",
+            "fatima.five@shape-test.example",
+            "hassan.five@shape-test.example",
+            "noor.five@shape-test.example",
         ]
     )
     created = await client.post(
@@ -1197,11 +1197,11 @@ async def test_five_author_emails_keep_their_shape(client: AsyncClient):
     assert created.status_code == 201, created.text
     stored = created.json()["author_emails"]
     for address in (
-        "ali@example.com",
-        "sara@example.com",
-        "fatima@example.com",
-        "hassan@example.com",
-        "noor@example.com",
+        "ali.five@shape-test.example",
+        "sara.five@shape-test.example",
+        "fatima.five@shape-test.example",
+        "hassan.five@shape-test.example",
+        "noor.five@shape-test.example",
     ):
         assert address in stored
     assert stored.count("@") == 5
@@ -1224,11 +1224,11 @@ async def test_five_author_emails_keep_their_shape(client: AsyncClient):
     found = next(row for row in sheet.iter_rows(min_row=2, values_only=True) if row[ojs_idx] == "IJIST-EMAIL-FIVE")
     exported_emails = str(found[email_idx] or "")
     assert exported_emails.splitlines() == [
-        "ali@example.com",
-        "sara@example.com",
-        "fatima@example.com",
-        "hassan@example.com",
-        "noor@example.com",
+        "ali.five@shape-test.example",
+        "sara.five@shape-test.example",
+        "fatima.five@shape-test.example",
+        "hassan.five@shape-test.example",
+        "noor.five@shape-test.example",
     ]
 
 
