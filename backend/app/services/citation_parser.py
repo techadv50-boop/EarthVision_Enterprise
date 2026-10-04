@@ -41,6 +41,36 @@ DOI_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
+_EMAIL_TLD2 = r"co\.uk|ac\.uk|edu\.pk|gov\.pk|org\.pk|com\.pk|net\.pk|ac\.in|co\.in|edu\.au|com\.au"
+_EMAIL_TLD1 = r"com|org|net|edu|gov|mil|int|info|biz|io|pk|uk|au|us|de|fr|ca|za|np|bd|sa|ae"
+GLUED_EMAIL_RE = re.compile(
+    rf"(\.(?:{_EMAIL_TLD2})|\.(?:{_EMAIL_TLD1}))(?=[A-Z0-9._%+\-]+@)",
+    re.IGNORECASE,
+)
+
+
+def extract_emails(text: str) -> list[str]:
+    """Split glued addresses such as a@x.compb@y.com into separate emails."""
+    blob = GLUED_EMAIL_RE.sub(r"\1 ", str(text or ""))
+    blob = re.sub(r"[;,]+", " ", blob)
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in EMAIL_RE.finditer(blob):
+        email = match.group(0).strip().rstrip(".,);")
+        key = email.lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(email)
+    return out
+
+
+def format_emails(text: str, *, excel: bool = False) -> str:
+    emails = extract_emails(text)
+    if emails:
+        sep = ";\n" if excel else "; "
+        return sep.join(emails)
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip(" ;,")
+    return cleaned
 DATE_FIELD_RE = re.compile(
     rf"(Received|Revised|Accepted|Published)\s*\|\s*({MONTH_RE}\.?\s+\d{{1,2}},?\s+\d{{4}}|{MONTH_RE}\.?\s+\d{{1,2}}\s+\d{{4}})",
     re.IGNORECASE,

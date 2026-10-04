@@ -258,7 +258,11 @@ export const citationApi = {
     update: (id: number, data: Record<string, unknown>) => api.patch(`/author-articles/${id}`, data),
     remove: (id: number, password: string) =>
       api.delete(`/author-articles/${id}`, { data: { password } }),
-    template: () => api.get('/author-articles/template', { responseType: 'blob' }),
+    template: (wing?: string) =>
+      api.get('/author-articles/template', {
+        params: wing ? { wing } : {},
+        responseType: 'blob',
+      }),
     importFile: (file: File, wing: string) => {
       const form = new FormData();
       form.append('file', file);
