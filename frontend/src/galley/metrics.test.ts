@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   authorCitationName,
   buildCitation,
+  clampDateToCurrentEra,
+  currentYear,
+  displayTableCaption,
   endPageNumber,
   firstPageHeightInches,
   flowBody,
+  formatMonthYear,
   numberAuthors,
   parseStartPage,
 } from "./metrics";
@@ -22,6 +26,11 @@ describe("citation names", () => {
     expect(authorCitationName("Romaan khan")).toBe("Khan. R");
     expect(authorCitationName("Tufail Ahmad Khan")).toBe("Khan. T. A");
     expect(authorCitationName("Habib Un Nabi")).toBe("Nabi. H. U");
+  });
+
+  it("caps a run of fake initials and keeps a normal given-name surname", () => {
+    expect(authorCitationName("Abid. M. F. M. M. S. F. M. M. A")).toBe("Abid. M. F. M");
+    expect(authorCitationName("Muhammad Farooq Abid")).toBe("Abid. M. F");
   });
 
   it("shares one affiliation number when the affiliation text matches", () => {
@@ -45,6 +54,34 @@ describe("citation names", () => {
     expect(line).toBe(
       "Khan. R, Khan. T. A, Tahir. M, Nabi. H. U, “Group-Aware Framework”, International Journal of Innovations in Science & Technology, Vol. 7, Issue 4, pp 2705-2717, November 2025, https://doi.org/10.33411/ijist/example",
     );
+  });
+
+  it("treats impossible years such as 4454 as the current year", () => {
+    expect(clampDateToCurrentEra("4454-04-01")).toBe(`${currentYear()}-04-01`);
+    expect(formatMonthYear("4454-04-01")).toBe(`April ${currentYear()}`);
+    const line = buildCitation({
+      authors: [{ id: "1", name: "Romaan khan", affiliation: "", corresponding: false, email: "" }],
+      title: "Group-Aware Framework",
+      journal: "IJIST",
+      volume: "8",
+      issue: "2",
+      startPage: 12,
+      endPage: 20,
+      published: "4454-04-01",
+      doi: "10.1/example",
+    });
+    expect(line).toContain(`April ${currentYear()}`);
+    expect(line).not.toContain("4454");
+    expect(line).toContain("Vol. 8");
+    expect(line).toContain("Issue 2");
+    expect(line).toContain("pp 12-20");
+  });
+
+  it("does not print Table twice when the pasted caption already has a number", () => {
+    expect(displayTableCaption("Table 5 Performance Comparison of This Study with Existing Techniques", 3)).toBe(
+      "Table 3. Performance Comparison of This Study with Existing Techniques",
+    );
+    expect(displayTableCaption("Table 3. Table 5 Results", 3)).toBe("Table 3. Results");
   });
 });
 

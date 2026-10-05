@@ -1,11 +1,11 @@
 import { useState } from "react";
 import type { Galley, IconAsset, Journal } from "../types";
-import { flowBody, parseStartPage, figureNumber, tableNumber } from "../metrics";
+import { displayTableCaption, flowBody, parseStartPage, figureNumber, tableNumber } from "../metrics";
 import { composedBlocks } from "../references";
 import { FrontSheet, SheetFooter, SheetHeader } from "./FirstPage";
 import { EquationView } from "./EquationView";
 import { parseMath } from "../equations";
-import { columnWidths } from "../tables";
+import { columnWidths, sanitizeTableRows } from "../tables";
 import type { BodyBlock } from "../types";
 
 export function Proof({
@@ -98,18 +98,15 @@ export function Proof({
           <div className="sheet-frame wide" style={{ height: "3.75in" }}>
           <article className="sheet landscape">
             <SheetHeader journal={journal} openAccess={openAccess} />
-            <p className="caption">
-              <strong>Table {tableNumber(galley.blocks, selected.block.id)}. </strong>
-              {selected.block.caption}
-            </p>
+            <p className="caption">{displayTableCaption(selected.block.caption, tableNumber(galley.blocks, selected.block.id))}</p>
         <table>
           <colgroup>
-            {columnWidths(selected.block.rows).map((width, index) => (
+            {columnWidths(sanitizeTableRows(selected.block.rows)).map((width, index) => (
               <col key={index} style={{ width: `${width}%` }} />
             ))}
           </colgroup>
           <tbody>
-                {selected.block.rows.map((row, rowIndex) => (
+                {sanitizeTableRows(selected.block.rows).map((row, rowIndex) => (
                   <tr key={rowIndex}>
                     {row.map((cell, column) => (
                       <td key={column}>{cell}</td>
@@ -154,9 +151,7 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
   if (block.type === "figure") {
     return (
       <figure>
-        {block.dataUrl && (
-          <img src={block.dataUrl} alt="" style={{ maxHeight: `${Math.min(3.4, Math.max(1.6, (block.heightPx || 220) / 96))}in` }} />
-        )}
+        {block.dataUrl && <img src={block.dataUrl} alt="" />}
         <figcaption>
           <strong>Figure {figureNumber(galley.blocks, block.id)}. </strong>
           {block.caption}
@@ -167,18 +162,15 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
   if (block.type === "table") {
     return (
       <div>
-        <p className="caption">
-          <strong>Table {tableNumber(galley.blocks, block.id)}. </strong>
-          {block.caption}
-        </p>
+        <p className="caption">{displayTableCaption(block.caption, tableNumber(galley.blocks, block.id))}</p>
         <table>
           <colgroup>
-            {columnWidths(block.rows).map((width, index) => (
+            {columnWidths(sanitizeTableRows(block.rows)).map((width, index) => (
               <col key={index} style={{ width: `${width}%` }} />
             ))}
           </colgroup>
           <tbody>
-            {block.rows.map((row, rowIndex) => (
+            {sanitizeTableRows(block.rows).map((row, rowIndex) => (
               <tr key={rowIndex}>
                 {row.map((cell, column) => (
                   <td key={column}>{cell}</td>

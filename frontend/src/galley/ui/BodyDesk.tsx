@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import type { BodyBlock, EquationBlock, Galley, IconAsset, Journal, TableBlock } from "../types";
-import { figureNumber, flowBody, newId, parseStartPage, tableNumber } from "../metrics";
+import { displayTableCaption, figureNumber, flowBody, newId, parseStartPage, tableNumber } from "../metrics";
 import { composedBlocks } from "../references";
 import { fileToDataUrl } from "../storage";
 import { parseMath, sourceFromAtoms } from "../equations";
-import { parseTable } from "../tables";
+import { columnWidths, parseTable, sanitizeTableRows } from "../tables";
 import { readEquation } from "../api";
 import { SheetFooter, SheetHeader } from "./FirstPage";
 import { ReferencesPanel } from "./ReferencesPanel";
@@ -218,13 +218,17 @@ function BlockPreview({ block, galley }: { block: BodyBlock; galley: Galley }) {
     return (
       <div>
         <p className="caption">
-          <strong>Table {tableNumber(galley.blocks, block.id)}. </strong>
-          {block.caption}
+          {displayTableCaption(block.caption, tableNumber(galley.blocks, block.id))}
           {block.landscape ? " (landscape page)" : ""}
         </p>
         <table>
+          <colgroup>
+            {columnWidths(sanitizeTableRows(block.rows)).map((width, index) => (
+              <col key={index} style={{ width: `${width}%` }} />
+            ))}
+          </colgroup>
           <tbody>
-            {block.rows.map((row, index) => (
+            {sanitizeTableRows(block.rows).map((row, index) => (
               <tr key={index}>
                 {row.map((cell, column) => (
                   <td key={column}>{cell}</td>
@@ -263,7 +267,7 @@ function TablePaste({ block, onChange }: { block: TableBlock; onChange: (block: 
         Landscape page
       </label>
       <p className="muted">
-        Pages stay portrait. Checking this places the table on its own landscape page and inserts the page break and section break around it.
+        Pages stay portrait. Checking Landscape places the table on its own landscape page. Paste the table from Word or Excel; Mendeley/Zotero field codes are stripped so Year and other short columns keep their width.
       </p>
       <label>
         Paste the table
@@ -284,8 +288,13 @@ function TablePaste({ block, onChange }: { block: TableBlock; onChange: (block: 
       </label>
       {block.rows.length > 0 && (
         <table className="pasted">
+          <colgroup>
+            {columnWidths(sanitizeTableRows(block.rows)).map((width, index) => (
+              <col key={index} style={{ width: `${width}%` }} />
+            ))}
+          </colgroup>
           <tbody>
-            {block.rows.map((row, rowIndex) => (
+            {sanitizeTableRows(block.rows).map((row, rowIndex) => (
               <tr key={rowIndex}>
                 {row.map((cell, column) => (
                   <td key={column}>{cell}</td>

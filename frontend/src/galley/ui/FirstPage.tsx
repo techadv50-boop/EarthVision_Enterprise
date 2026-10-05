@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { Galley, IconAsset, Journal } from "../types";
 import {
   buildCitation,
@@ -7,6 +8,8 @@ import {
   flowBody,
   numberAuthors,
   parseStartPage,
+  clampDateToCurrentEra,
+  formatMonthYear,
 } from "../metrics";
 import { composedBlocks } from "../references";
 import { blankAuthor } from "../storage";
@@ -28,6 +31,20 @@ export function FirstPage({
   onNext: () => void;
 }) {
   const patch = (partial: Partial<Galley>) => onChange({ ...galley, ...partial, updatedAt: Date.now() });
+  useEffect(() => {
+    const received = clampDateToCurrentEra(galley.received);
+    const revised = clampDateToCurrentEra(galley.revised);
+    const accepted = clampDateToCurrentEra(galley.accepted);
+    const published = clampDateToCurrentEra(galley.published);
+    if (
+      received !== galley.received ||
+      revised !== galley.revised ||
+      accepted !== galley.accepted ||
+      published !== galley.published
+    ) {
+      patch({ received, revised, accepted, published });
+    }
+  }, [galley.received, galley.revised, galley.accepted, galley.published]);
   const start = parseStartPage(galley.startPage);
   const bodyPages = flowBody(composedBlocks(galley)).length;
   const end = start ? endPageNumber(start, bodyPages) : null;
@@ -85,12 +102,14 @@ export function FirstPage({
                 +
               </button>
             </legend>
+            <p className="muted">One author per row. Type the real name, affiliation, and email. Click + for each extra author.</p>
             {galley.authors.map((author, index) => (
               <div key={author.id} className="author-row">
                 <label>
                   Name
                   <input
                     value={author.name}
+                    placeholder="Given names Surname"
                     onChange={(event) => {
                       const authors = galley.authors.slice();
                       authors[index] = { ...author, name: event.target.value };
@@ -145,14 +164,17 @@ export function FirstPage({
             ))}
           </fieldset>
           <p className="citation-line">{citation}</p>
+          <p className="muted">
+            Volume, issue, start page, and the four dates fill the citation and the footer. Use the real journal values. Invalid years are treated as the current year.
+          </p>
           <div className="split">
             <label>
               Volume
-              <input value={galley.volume} onChange={(event) => patch({ volume: event.target.value })} />
+              <input value={galley.volume} onChange={(event) => patch({ volume: event.target.value })} placeholder="e.g. 8" />
             </label>
             <label>
               Issue
-              <input value={galley.issue} onChange={(event) => patch({ issue: event.target.value })} />
+              <input value={galley.issue} onChange={(event) => patch({ issue: event.target.value })} placeholder="e.g. 5" />
             </label>
             <label>
               Start page
@@ -160,6 +182,7 @@ export function FirstPage({
                 inputMode="numeric"
                 value={galley.startPage}
                 onChange={(event) => patch({ startPage: event.target.value })}
+                placeholder="e.g. 1788"
                 required
               />
             </label>
@@ -171,19 +194,19 @@ export function FirstPage({
           <div className="split">
             <label>
               Received
-              <input type="date" value={galley.received} onChange={(event) => patch({ received: event.target.value })} />
+              <input type="date" value={galley.received} onChange={(event) => patch({ received: clampDateToCurrentEra(event.target.value) })} />
             </label>
             <label>
               Revised
-              <input type="date" value={galley.revised} onChange={(event) => patch({ revised: event.target.value })} />
+              <input type="date" value={galley.revised} onChange={(event) => patch({ revised: clampDateToCurrentEra(event.target.value) })} />
             </label>
             <label>
               Accepted
-              <input type="date" value={galley.accepted} onChange={(event) => patch({ accepted: event.target.value })} />
+              <input type="date" value={galley.accepted} onChange={(event) => patch({ accepted: clampDateToCurrentEra(event.target.value) })} />
             </label>
             <label>
               Published
-              <input type="date" value={galley.published} onChange={(event) => patch({ published: event.target.value })} />
+              <input type="date" value={galley.published} onChange={(event) => patch({ published: clampDateToCurrentEra(event.target.value) })} />
             </label>
           </div>
           <label>
@@ -248,7 +271,7 @@ export function FrontSheet({
   return (
     <div className="sheet-frame" style={{ height: `${height / 2}in` }}>
       <article className="sheet front" style={{ minHeight: `${height}in` }}>
-        <SheetHeader journal={journal} />
+        <SheetHeader journal={journal} openAccess={openAccess} />
         <div className="logo-line">
           {galley.topIcons.map((icon) => (
             <img key={icon.id} src={icon.dataUrl} alt={icon.name} />
@@ -300,22 +323,24 @@ export function FrontSheet({
   );
 }
 
-export function SheetHeader({ journal }: { journal: Journal; openAccess?: IconAsset | null }) {
+export function SheetHeader({ journal, openAccess }: { journal: Journal; openAccess?: IconAsset | null }) {
   return (
     <header className="sheet-header">
+      <span className="oa-mark">
+        {openAccess && <img src={openAccess.dataUrl} alt="" />}
+        <strong>OPEN ACCESS</strong>
+      </span>
       <span className="journal-banner">{journal.name}</span>
     </header>
   );
 }
 
 export function SheetFooter({ galley, page }: { galley: Galley; page: number | string }) {
-  const month = galley.published
-    ? new Date(`${galley.published}T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" })
-    : "Month Year";
+  const month = formatMonthYear(galley.published);
   return (
     <footer className="sheet-footer">
       <span>
-        {month} | Vol {galley.volume || "00"} | Issue {galley.issue || "00"}
+        {month} | Vol {galley.volume.trim() || "00"} | Issue {galley.issue.trim() || "00"}
       </span>
       <span className="footer-pages">Page | {page}</span>
     </footer>

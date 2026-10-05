@@ -18,17 +18,42 @@ export function newId(): string {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+export function currentYear(): number {
+  return new Date().getFullYear();
+}
+
+export function clampDateToCurrentEra(iso: string): string {
+  const match = /^(\d{4,})-(\d{2})-(\d{2})$/.exec((iso || "").trim());
+  if (!match) return "";
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+  const now = currentYear();
+  const useYear = year >= 1990 && year <= now + 1 ? year : now;
+  return `${String(useYear).padStart(4, "0")}-${match[2]}-${match[3]}`;
+}
+
 export function authorCitationName(fullName: string): string {
-  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  const parts = fullName.trim().replace(/\./g, " ").split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "";
   const cap = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+  const letterCount = (word: string) => word.replace(/[^A-Za-z]/g, "").length;
+  const initialish = (word: string) => letterCount(word) <= 1;
   if (parts.length === 1) return cap(parts[0]);
+  const trailingInitials = parts.slice(1).filter(initialish).length;
+  if (trailingInitials >= Math.max(2, parts.length - 2) && initialish(parts[parts.length - 1])) {
+    const surname = cap(parts[0]);
+    const initials = parts
+      .slice(1, 4)
+      .map((part) => part.replace(/[^A-Za-z]/g, "").charAt(0).toUpperCase())
+      .filter(Boolean);
+    return initials.length ? `${surname}. ${initials.join(". ")}` : surname;
+  }
   const surname = cap(parts[parts.length - 1]);
-  const initials = parts
-    .slice(0, -1)
-    .map((part) => part.charAt(0).toUpperCase())
-    .filter(Boolean);
-  return `${surname}. ${initials.join(". ")}`;
+  const given = parts.slice(0, -1).slice(0, 3);
+  const initials = given.map((part) => part.replace(/[^A-Za-z]/g, "").charAt(0).toUpperCase()).filter(Boolean);
+  return initials.length ? `${surname}. ${initials.join(". ")}` : surname;
 }
 
 export type NumberedAuthor = Author & { affiliationNo: number };
@@ -52,9 +77,10 @@ export function numberAuthors(authors: Author[]): { authors: NumberedAuthor[]; a
 }
 
 export function formatLongDate(iso: string): string {
-  if (!iso) return "";
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!match) return iso;
+  const clean = clampDateToCurrentEra(iso);
+  if (!clean) return "";
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(clean);
+  if (!match) return "";
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
@@ -72,15 +98,24 @@ export function formatLongDate(iso: string): string {
     "November",
     "December",
   ];
-  if (month < 1 || month > 12) return iso;
+  if (month < 1 || month > 12) return "";
   return `${names[month - 1]} ${String(day).padStart(2, "0")}, ${year}`;
 }
 
 export function formatMonthYear(iso: string): string {
   const long = formatLongDate(iso);
   const match = /^([A-Za-z]+)\s+\d{2},\s+(\d{4})$/.exec(long);
-  if (!match) return long;
-  return `${match[1]} ${match[2]}`;
+  if (match) return `${match[1]} ${match[2]}`;
+  const now = new Date();
+  return now.toLocaleString("en-US", { month: "long", year: "numeric" });
+}
+
+export function displayTableCaption(caption: string, number: number): string {
+  let trimmed = caption.trim();
+  while (/^tables?\s*\d+[.:)]?\s*/i.test(trimmed)) {
+    trimmed = trimmed.replace(/^tables?\s*\d+[.:)]?\s*/i, "").trim();
+  }
+  return trimmed ? `Table ${number}. ${trimmed}` : `Table ${number}.`;
 }
 
 export function buildCitation(input: {

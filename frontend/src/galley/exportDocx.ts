@@ -11,6 +11,7 @@ import {
   Table,
   TableCell,
   TableRow,
+  TabStopType,
   TextRun,
   VerticalAlign,
   WidthType,
@@ -31,10 +32,11 @@ import {
   numberAuthors,
   parseStartPage,
   tableNumber,
+  displayTableCaption,
 } from "./metrics";
 import { composedBlocks } from "./references";
 import { parseMath } from "./equations";
-import { columnWidths } from "./tables";
+import { columnWidths, sanitizeTableRows } from "./tables";
 
 const FONT = "Garamond";
 const JOURNAL_ORANGE = "E87722";
@@ -66,6 +68,32 @@ function picture(icon: IconAsset, maxHeight: number): ImageRun | null {
   });
 }
 
+function figurePicture(block: Extract<BodyBlock, { type: "figure" }>): ImageRun | null {
+  const parsed = imageBytes(block.dataUrl);
+  if (!parsed) return null;
+  const contentPx = Math.round((PAGE.widthIn - PAGE.marginLeftIn - PAGE.marginRightIn) * 96);
+  const maxHeightPx = Math.round(5.2 * 96);
+  const natW = Math.max(1, block.widthPx || contentPx);
+  const natH = Math.max(1, block.heightPx || Math.round(contentPx * 0.55));
+  const fit = Math.min(contentPx / natW, maxHeightPx / natH);
+  const upscale = Math.max(fit, contentPx * 0.72 / natW);
+  let width = Math.round(natW * upscale);
+  let height = Math.round(natH * upscale);
+  if (width > contentPx) {
+    height = Math.round(height * (contentPx / width));
+    width = contentPx;
+  }
+  if (height > maxHeightPx) {
+    width = Math.round(width * (maxHeightPx / height));
+    height = maxHeightPx;
+  }
+  return new ImageRun({
+    type: parsed.type,
+    data: parsed.data,
+    transformation: { width: Math.max(120, width), height: Math.max(80, height) },
+  });
+}
+
 function run(text: string, options: { bold?: boolean; italics?: boolean; size?: number; super?: boolean; sub?: boolean } = {}): TextRun {
   return new TextRun({
     text,
@@ -87,14 +115,18 @@ function bodyParagraph(children: TextRun[], extras: { center?: boolean; indent?:
   });
 }
 
-function headerFor(journalName: string, _openAccess: IconAsset | null, _widthIn: number): Header {
+function headerFor(journalName: string, openAccess: IconAsset | null, widthIn: number): Header {
+  const mark = openAccess ? picture(openAccess, 28) : null;
   return new Header({
     children: [
       new Paragraph({
-        alignment: AlignmentType.CENTER,
+        tabStops: [{ type: TabStopType.RIGHT, position: convertInchesToTwip(widthIn) }],
         spacing: { before: 0, after: 40 },
         border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "222222", space: 1 } },
         children: [
+          ...(mark ? [mark, run("  ")] : []),
+          run("OPEN ACCESS", { bold: true, size: 24 }),
+          run("\t"),
           new TextRun({
             text: journalName,
             font: FONT,
@@ -217,11 +249,12 @@ function logoBanner(icons: IconAsset[], contentWidth: number): Table {
 }
 
 function dataTable(rows: string[][]): Table {
-  const columns = Math.max(...rows.map((row) => row.length), 1);
-  const widths = columnWidths(rows.length ? rows : [[" "]]);
+  const cleaned = sanitizeTableRows(rows.length ? rows : [[" "]]);
+  const columns = Math.max(...cleaned.map((row) => row.length), 1);
+  const widths = columnWidths(cleaned);
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: rows.map(
+    rows: cleaned.map(
       (row, rowIndex) =>
         new TableRow({
           cantSplit: true,
@@ -333,12 +366,7 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
     case "referenceLine":
       return [bodyParagraph([run(block.text)], { after: 60 })];
     case "figure": {
-      const image = block.dataUrl
-        ? picture(
-            { id: block.id, name: "figure", dataUrl: block.dataUrl, widthPx: block.widthPx || 480, heightPx: block.heightPx || 280 },
-            Math.min(340, Math.max(160, Math.round((block.heightPx || 220) * 0.75))),
-          )
-        : null;
+      const image = block.dataUrl ? figurePicture(block) : null;
       const number = figureNumber(galley.blocks, block.id);
       return [
         new Paragraph({
@@ -351,8 +379,11 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
     }
     case "table": {
       const number = tableNumber(galley.blocks, block.id);
+      const caption = displayTableCaption(block.caption, number);
+      const heading = `Table ${number}.`;
+      const rest = caption.slice(heading.length).trim();
       return [
-        bodyParagraph([run(`Table ${number}. `, { bold: true }), run(block.caption.trim())], { center: true, after: 60 }),
+        bodyParagraph([run(`${heading} `, { bold: true }), run(rest)], { center: true, after: 60 }),
         dataTable(block.rows.length ? block.rows : [[" "]]),
         bodyParagraph([run("")], { after: 80 }),
       ];

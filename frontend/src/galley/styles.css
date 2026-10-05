@@ -191,15 +191,23 @@
 .galley-root .sheet-header{
   border-bottom: 1px solid #222;
   padding-bottom: 0.04in;
-  margin-bottom: 0.04in;
-  justify-content: center;
+  margin-bottom: 0.08in;
+  justify-content: space-between;
 }
+.galley-root .oa-mark{
+  display: inline-flex;
+  align-items: center;
+  gap: 0.08in;
+  font-size: 12pt;
+  white-space: nowrap;
+}
+.galley-root .sheet-header img{ height: 0.28in; width: auto; }
 .galley-root .journal-banner{
   color: #E87722;
   font-size: 12pt;
   font-weight: 700;
-  text-align: center;
-  width: 100%;
+  text-align: right;
+  margin-left: auto;
 }
 .galley-root .sheet-footer{
   position: absolute;
@@ -212,9 +220,33 @@
 .galley-root .footer-pages{ margin-left: auto; white-space: nowrap; }
 .galley-root .body-copy{ max-height: 8.2in; overflow: hidden; }
 .galley-root .body-copy figure{ margin: 0.1in 0; text-align: center; }
-.galley-root .body-copy img, .galley-root .figure-thumb{ max-width: 100%; max-height: 2.2in; }
-.galley-root .body-copy table, .galley-root .sheet table{ width: 100%; border-collapse: collapse; font-size: 10pt; }
-.galley-root .body-copy td, .galley-root .sheet td{ border: 1px solid #444; padding: 0.04in; }
+.galley-root .body-copy img, .galley-root .figure-thumb, .galley-root .sheet figure img{
+  max-width: 100%;
+  width: 6in;
+  height: auto;
+  max-height: 5.2in;
+  object-fit: contain;
+}
+.galley-root .figure-thumb{ width: auto; max-height: 2.4in; }
+.galley-root .body-copy table, .galley-root .sheet table, .galley-root .pasted{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10pt;
+  table-layout: fixed;
+}
+.galley-root .body-copy td, .galley-root .sheet td, .galley-root .pasted td{
+  border: 1px solid #444;
+  padding: 0.04in;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.galley-root .body-copy tr:first-child td, .galley-root .sheet tr:first-child td, .galley-root .pasted tr:first-child td{
+  white-space: nowrap;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .galley-root .icon-tray{ border: 1px solid #ddd4c6; border-radius: 6px; padding: 0.6rem; }
 .galley-root .icon-tray legend{ padding: 0 0.3rem; }

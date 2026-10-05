@@ -54,12 +54,16 @@ const galley: Galley = {
     {
       id: "t",
       type: "table",
-      caption: "A wide comparison that does not fit portrait",
+      caption: "Table 5 Performance Comparison of This Study with Existing Techniques",
       source: "Model\tAUC\nCatBoost\t0.91",
       landscape: true,
       rows: [
-        ["Model", "AUC", "Notes"],
-        ["CatBoost", "0.91", "Selected"],
+        ["Author(s)", "Year", "Dataset"],
+        [
+          'Stamatatos et al. ADDIN CSL_CITATION {"citationItems":[{"id":"ITEM-1","itemData":{"author":[{"family":"Stamatatos"}]},"formattedCitation":"Stamatatos et al., 2009"}]}',
+          "2009",
+          "PAN",
+        ],
       ],
     },
     { id: "r", type: "heading", text: "References:" },
@@ -88,11 +92,17 @@ print("\\n".join(parts))`,
     expect(packed).toContain('w:start="2705"');
     expect(packed).toContain("International Journal of Innovations in Science");
     expect(packed).toContain("Heart Disease Prediction");
-    expect(packed).not.toContain("OPEN ACCESS");
+    expect(packed).toContain("OPEN ACCESS");
     expect(packed).not.toContain("ISSN-P");
     expect(packed).toContain("E87722");
     expect(packed).toContain("Accurate and reliable heart disease prediction can support early risk assessment.");
     expect(packed).toContain("November 2025 | Vol 7 | Issue 4");
+    expect(packed).toContain("Table 1.");
+    expect(packed).toContain("Performance Comparison of This Study with Existing Techniques");
+    expect(packed).not.toContain("Table 5");
+    expect(packed).toContain("Stamatatos et al.");
+    expect(packed).not.toContain("ADDIN");
+    expect(packed).not.toContain("citationItems");
     expect(packed).toContain("PAGE");
     const sections = packed.split("<w:sectPr").slice(1);
     expect(sections.length).toBeGreaterThanOrEqual(3);
