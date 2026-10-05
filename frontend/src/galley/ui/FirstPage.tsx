@@ -194,19 +194,43 @@ export function FirstPage({
           <div className="split">
             <label>
               Received
-              <input type="date" value={galley.received} onChange={(event) => patch({ received: clampDateToCurrentEra(event.target.value) })} />
+              <input
+                type="date"
+                min="1990-01-01"
+                max={`${new Date().getFullYear() + 1}-12-31`}
+                value={clampDateToCurrentEra(galley.received)}
+                onChange={(event) => patch({ received: clampDateToCurrentEra(event.target.value) })}
+              />
             </label>
             <label>
               Revised
-              <input type="date" value={galley.revised} onChange={(event) => patch({ revised: clampDateToCurrentEra(event.target.value) })} />
+              <input
+                type="date"
+                min="1990-01-01"
+                max={`${new Date().getFullYear() + 1}-12-31`}
+                value={clampDateToCurrentEra(galley.revised)}
+                onChange={(event) => patch({ revised: clampDateToCurrentEra(event.target.value) })}
+              />
             </label>
             <label>
               Accepted
-              <input type="date" value={galley.accepted} onChange={(event) => patch({ accepted: clampDateToCurrentEra(event.target.value) })} />
+              <input
+                type="date"
+                min="1990-01-01"
+                max={`${new Date().getFullYear() + 1}-12-31`}
+                value={clampDateToCurrentEra(galley.accepted)}
+                onChange={(event) => patch({ accepted: clampDateToCurrentEra(event.target.value) })}
+              />
             </label>
             <label>
               Published
-              <input type="date" value={galley.published} onChange={(event) => patch({ published: clampDateToCurrentEra(event.target.value) })} />
+              <input
+                type="date"
+                min="1990-01-01"
+                max={`${new Date().getFullYear() + 1}-12-31`}
+                value={clampDateToCurrentEra(galley.published)}
+                onChange={(event) => patch({ published: clampDateToCurrentEra(event.target.value) })}
+              />
             </label>
           </div>
           <label>
