@@ -118,6 +118,14 @@ export function displayTableCaption(caption: string, number: number): string {
   return trimmed ? `Table ${number}. ${trimmed}` : `Table ${number}.`;
 }
 
+export function displayFigureCaption(caption: string, number: number): string {
+  let trimmed = caption.trim();
+  while (/^figures?\s*\d+[.:)]?\s*/i.test(trimmed)) {
+    trimmed = trimmed.replace(/^figures?\s*\d+[.:)]?\s*/i, "").trim();
+  }
+  return trimmed ? `Figure ${number}. ${trimmed}` : `Figure ${number}.`;
+}
+
 export function buildCitation(input: {
   authors: Author[];
   title: string;
@@ -189,10 +197,10 @@ export function firstPageHeightInches(input: {
   height += 0.2;
   height += textLines(input.citation) * LINE_IN + 0.08;
   height += 0.28;
-  height += textLines(input.abstract, 78) * LINE_IN + 0.1;
-  height += textLines(input.keywords ? `Keywords: ${input.keywords}` : "Keywords:") * LINE_IN + 0.08;
-  height += Math.ceil(Math.max(input.partnerCount, 1) / 5) * 0.45;
-  height += 0.42;
+  height += textLines(input.abstract, 70) * LINE_IN + 0.12;
+  height += textLines(input.keywords ? `Keywords: ${input.keywords}` : "Keywords:", 62) * LINE_IN + 0.12;
+  height += Math.max(1, Math.ceil(Math.max(input.partnerCount, 1) / 5)) * 0.62;
+  height += 0.55;
   return Math.round(height * 100) / 100;
 }
 
@@ -206,7 +214,7 @@ export function linesForBlock(block: BodyBlock): number {
     case "referenceLine":
       return textLines(block.text);
     case "figure":
-      return Math.min(28, Math.max(10, Math.round((block.heightPx || 220) / 20))) + textLines(block.caption, 60);
+      return Math.min(26, Math.max(8, Math.round((block.heightPx || 220) / 20))) + Math.max(1, textLines(block.caption, 60));
     case "table":
       return Math.min(PAGE.linesPerPortraitPage, 2 + block.rows.length * 2 + textLines(block.caption, 60));
     case "equation":
@@ -239,6 +247,69 @@ export function flowBody(blocks: BodyBlock[]): FlowPage[] {
     current[current.length - 1] = { ...last, heightPx: (last.heightPx || 220) + extraPx };
     lines += leftover;
   };
+  const captionNeed = (block: Extract<BodyBlock, { type: "figure" }>) => 1 + textLines(block.caption, 60);
+  const MIN_IMAGE_LINES = 12;
+  const ABSOLUTE_MIN_IMAGE = 8;
+  const fitFigure = (block: Extract<BodyBlock, { type: "figure" }>, leftover: number) => {
+    const imageLines = leftover - captionNeed(block);
+    if (imageLines < ABSOLUTE_MIN_IMAGE) return null;
+    return { ...block, heightPx: imageLines * 20 };
+  };
+  const placeFigure = (block: Extract<BodyBlock, { type: "figure" }>) => {
+    const leftover = PAGE.linesPerPortraitPage - lines;
+    const need = linesForBlock(block);
+    if (lines === 0 || need <= leftover) {
+      const room = lines === 0 ? PAGE.linesPerPortraitPage : leftover;
+      const fitted = need > room ? fitFigure(block, room) : block;
+      const placed = fitted ?? { ...block, heightPx: Math.max(ABSOLUTE_MIN_IMAGE, room - captionNeed(block)) * 20 };
+      current.push(placed);
+      lines += linesForBlock(placed);
+      return;
+    }
+    const comfortable = leftover - captionNeed(block) >= MIN_IMAGE_LINES;
+    const acceptable = leftover - captionNeed(block) >= ABSOLUTE_MIN_IMAGE;
+    if (comfortable || (acceptable && !(current[current.length - 1]?.type === "paragraph" || current[current.length - 1]?.type === "section"))) {
+      const fitted = fitFigure(block, leftover);
+      if (fitted) {
+        current.push(fitted);
+        lines = PAGE.linesPerPortraitPage;
+        return;
+      }
+    }
+    let carried: BodyBlock | null = null;
+    const last = current[current.length - 1];
+    if (
+      last &&
+      leftover - captionNeed(block) < MIN_IMAGE_LINES &&
+      (last.type === "paragraph" || last.type === "section") &&
+      current.length >= 2
+    ) {
+      carried = current.pop() ?? null;
+      if (carried) lines -= linesForBlock(carried);
+    }
+    stretchLastFigure(PAGE.linesPerPortraitPage - lines);
+    flush();
+    if (carried) {
+      const carriedNeed = linesForBlock(carried);
+      const figureNeed = Math.min(linesForBlock(block), PAGE.linesPerPortraitPage - carriedNeed);
+      if (carriedNeed + Math.max(figureNeed, MIN_IMAGE_LINES + captionNeed(block)) > PAGE.linesPerPortraitPage) {
+        current.push(carried);
+        lines = carriedNeed;
+        stretchLastFigure(PAGE.linesPerPortraitPage - lines);
+        flush();
+        const top = fitFigure(block, PAGE.linesPerPortraitPage) ?? block;
+        current.push(top);
+        lines = linesForBlock(top);
+        return;
+      }
+      current.push(carried);
+      lines = carriedNeed;
+    }
+    const pageLeft = PAGE.linesPerPortraitPage - lines;
+    const placed = fitFigure(block, pageLeft) ?? block;
+    current.push(placed);
+    lines += linesForBlock(placed);
+  };
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index];
     if (block.type === "pageBreak") {
@@ -248,6 +319,10 @@ export function flowBody(blocks: BodyBlock[]): FlowPage[] {
     if (block.type === "table" && block.landscape) {
       flush();
       pages.push({ kind: "landscape", block });
+      continue;
+    }
+    if (block.type === "figure") {
+      placeFigure(block);
       continue;
     }
     const need = linesForBlock(block);

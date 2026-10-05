@@ -347,13 +347,9 @@ export function FrontSheet({
   );
 }
 
-export function SheetHeader({ journal, openAccess }: { journal: Journal; openAccess?: IconAsset | null }) {
+export function SheetHeader({ journal }: { journal: Journal; openAccess?: IconAsset | null }) {
   return (
     <header className="sheet-header">
-      <span className="oa-mark">
-        {openAccess && <img src={openAccess.dataUrl} alt="" />}
-        <strong>OPEN ACCESS</strong>
-      </span>
       <span className="journal-banner">{journal.name}</span>
     </header>
   );

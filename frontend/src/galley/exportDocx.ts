@@ -11,7 +11,6 @@ import {
   Table,
   TableCell,
   TableRow,
-  TabStopType,
   TextRun,
   VerticalAlign,
   WidthType,
@@ -32,6 +31,7 @@ import {
   numberAuthors,
   parseStartPage,
   tableNumber,
+  displayFigureCaption,
   displayTableCaption,
 } from "./metrics";
 import { composedBlocks } from "./references";
@@ -74,23 +74,23 @@ function figurePicture(block: Extract<BodyBlock, { type: "figure" }>): ImageRun 
   const contentPx = Math.round((PAGE.widthIn - PAGE.marginLeftIn - PAGE.marginRightIn) * 96);
   const maxHeightPx = Math.round(5.2 * 96);
   const natW = Math.max(1, block.widthPx || contentPx);
-  const natH = Math.max(1, block.heightPx || Math.round(contentPx * 0.55));
-  const fit = Math.min(contentPx / natW, maxHeightPx / natH);
-  const upscale = Math.max(fit, contentPx * 0.72 / natW);
-  let width = Math.round(natW * upscale);
-  let height = Math.round(natH * upscale);
+  const natH = Math.max(1, block.heightPx || Math.round(natW * 0.55));
+  const layoutMax = Math.min(maxHeightPx, Math.max(80, natH));
+  const scale = Math.min(contentPx / natW, layoutMax / natH, 1.15);
+  let width = Math.round(natW * scale);
+  let height = Math.round(natH * scale);
   if (width > contentPx) {
     height = Math.round(height * (contentPx / width));
     width = contentPx;
   }
-  if (height > maxHeightPx) {
-    width = Math.round(width * (maxHeightPx / height));
-    height = maxHeightPx;
+  if (height > layoutMax) {
+    width = Math.round(width * (layoutMax / height));
+    height = layoutMax;
   }
   return new ImageRun({
     type: parsed.type,
     data: parsed.data,
-    transformation: { width: Math.max(120, width), height: Math.max(80, height) },
+    transformation: { width: Math.max(80, width), height: Math.max(60, height) },
   });
 }
 
@@ -115,18 +115,14 @@ function bodyParagraph(children: TextRun[], extras: { center?: boolean; indent?:
   });
 }
 
-function headerFor(journalName: string, openAccess: IconAsset | null, widthIn: number): Header {
-  const mark = openAccess ? picture(openAccess, 28) : null;
+function headerFor(journalName: string, _openAccess: IconAsset | null, _widthIn: number): Header {
   return new Header({
     children: [
       new Paragraph({
-        tabStops: [{ type: TabStopType.RIGHT, position: convertInchesToTwip(widthIn) }],
+        alignment: AlignmentType.RIGHT,
         spacing: { before: 0, after: 40 },
         border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "222222", space: 1 } },
         children: [
-          ...(mark ? [mark, run("  ")] : []),
-          run("OPEN ACCESS", { bold: true, size: 24 }),
-          run("\t"),
           new TextRun({
             text: journalName,
             font: FONT,
@@ -178,7 +174,7 @@ function footerFor(monthLine: string): Footer {
 function iconRow(icons: IconAsset[], columns: number, cellWidthIn: number, maxHeight: number): Table {
   const rows: IconAsset[][] = [];
   for (let index = 0; index < icons.length; index += columns) rows.push(icons.slice(index, index + columns));
-  return new Table({
+  const grid = new Table({
     width: { size: convertInchesToTwip(cellWidthIn * columns), type: WidthType.DXA },
     borders: NO_BORDERS,
     rows: rows.map(
@@ -187,12 +183,12 @@ function iconRow(icons: IconAsset[], columns: number, cellWidthIn: number, maxHe
           cantSplit: true,
           children: Array.from({ length: columns }, (_, column) => {
             const icon = row[column];
-            const image = icon ? picture(icon, maxHeight) : null;
+            const image = icon ? picture(icon, Math.min(36, maxHeight)) : null;
             return new TableCell({
               width: { size: convertInchesToTwip(cellWidthIn), type: WidthType.DXA },
               borders: NO_BORDERS,
               verticalAlign: VerticalAlign.CENTER,
-              margins: { top: 40, bottom: 40, left: 40, right: 40 },
+              margins: { top: 20, bottom: 20, left: 20, right: 20 },
               children: [
                 new Paragraph({
                   alignment: AlignmentType.CENTER,
@@ -203,6 +199,22 @@ function iconRow(icons: IconAsset[], columns: number, cellWidthIn: number, maxHe
           }),
         }),
     ),
+  });
+  return new Table({
+    width: { size: convertInchesToTwip(cellWidthIn * columns), type: WidthType.DXA },
+    borders: NO_BORDERS,
+    rows: [
+      new TableRow({
+        cantSplit: true,
+        children: [
+          new TableCell({
+            borders: NO_BORDERS,
+            width: { size: convertInchesToTwip(cellWidthIn * columns), type: WidthType.DXA },
+            children: [grid],
+          }),
+        ],
+      }),
+    ],
   });
 }
 
@@ -325,7 +337,7 @@ function frontMatter(galley: Galley, _journal: Journal, citation: string): FileC
   );
   children.push(bodyParagraph([run(galley.abstract.trim() || "Abstract")]));
   children.push(
-    bodyParagraph([run("Keywords: ", { bold: true }), run(galley.keywords.trim())], { after: 80 }),
+    bodyParagraph([run("Keywords: ", { bold: true }), run(galley.keywords.trim())], { after: 40 }),
   );
   if (galley.partnerIcons.length) children.push(iconRow(galley.partnerIcons, 5, contentWidth / 5, 40));
   return children;
@@ -368,13 +380,23 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
     case "figure": {
       const image = block.dataUrl ? figurePicture(block) : null;
       const number = figureNumber(galley.blocks, block.id);
+      const caption = displayFigureCaption(block.caption, number);
+      const heading = `Figure ${number}.`;
+      const rest = caption.slice(heading.length).trim();
       return [
         new Paragraph({
           alignment: AlignmentType.CENTER,
-          spacing: { before: 120, after: 40 },
+          keepNext: true,
+          keepLines: true,
+          spacing: { before: 40, after: 40 },
           children: image ? [image] : [run("")],
         }),
-        bodyParagraph([run(`Figure ${number}. `, { bold: true }), run(block.caption.trim())], { center: true, after: 120 }),
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          keepLines: true,
+          spacing: { before: 0, after: 60, line: 240, lineRule: "auto" },
+          children: [run(`${heading} `, { bold: true }), run(rest)],
+        }),
       ];
     }
     case "table": {
@@ -500,36 +522,24 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
     },
   ];
 
-  let bucket: FileChild[] = [];
-  const pushPortrait = () => {
-    if (bucket.length === 0) return;
-    sections.push({
-      properties: pageProperties(PAGE.widthIn, PAGE.bodyHeightIn, false, null),
-      headers: { default: headerFor(journal.name, openAccess, portraitWidth) },
-      footers: { default: footerFor(monthLine) },
-      children: bucket,
-    });
-    bucket = [];
-  };
-
-  for (const block of manuscript) {
-    if (block.type === "pageBreak") {
-      bucket.push(new Paragraph({ children: [], pageBreakBefore: true }));
-      continue;
-    }
-    if (block.type === "table" && block.landscape) {
-      pushPortrait();
+  for (const page of bodyPages) {
+    if (page.kind === "landscape") {
       sections.push({
         properties: pageProperties(PAGE.bodyHeightIn, PAGE.widthIn, true, null),
         headers: { default: headerFor(journal.name, openAccess, landscapeWidth) },
         footers: { default: footerFor(monthLine) },
-        children: blockChildren(block, galley),
+        children: blockChildren(page.block, galley),
       });
       continue;
     }
-    bucket.push(...blockChildren(block, galley));
+    const children = page.blocks.flatMap((block) => blockChildren(block, galley));
+    sections.push({
+      properties: pageProperties(PAGE.widthIn, PAGE.bodyHeightIn, false, null),
+      headers: { default: headerFor(journal.name, openAccess, portraitWidth) },
+      footers: { default: footerFor(monthLine) },
+      children: children.length ? children : [bodyParagraph([run("")])],
+    });
   }
-  pushPortrait();
   if (sections.length === 1) {
     sections.push({
       properties: pageProperties(PAGE.widthIn, PAGE.bodyHeightIn, false, null),

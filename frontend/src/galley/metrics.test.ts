@@ -4,6 +4,7 @@ import {
   buildCitation,
   clampDateToCurrentEra,
   currentYear,
+  displayFigureCaption,
   displayTableCaption,
   endPageNumber,
   firstPageHeightInches,
@@ -82,6 +83,13 @@ describe("citation names", () => {
       "Table 3. Performance Comparison of This Study with Existing Techniques",
     );
     expect(displayTableCaption("Table 3. Table 5 Results", 3)).toBe("Table 3. Results");
+  });
+
+  it("does not print Figure twice when the pasted caption already has a number", () => {
+    expect(displayFigureCaption("Figure 3. Percentage of Quality Score for Quality Assessment Question No.1", 3)).toBe(
+      "Figure 3. Percentage of Quality Score for Quality Assessment Question No.1",
+    );
+    expect(displayFigureCaption("Figure 3. Figure 3. Quality score", 3)).toBe("Figure 3. Quality score");
   });
 });
 
@@ -169,5 +177,50 @@ describe("page geometry", () => {
       ? lastWithFigure.blocks.find((block) => block.id === "fig")
       : undefined;
     expect(flowed && flowed.type === "figure" && flowed.heightPx > 220).toBe(true);
+  });
+
+  it("shrinks a tall figure to fill leftover space instead of leaving a gap", () => {
+    const filler: BodyBlock[] = Array.from({ length: 30 }, (_, index) => ({
+      id: `p${index}`,
+      type: "paragraph",
+      text: "Short line.",
+    }));
+    const figure: BodyBlock = {
+      id: "big",
+      type: "figure",
+      dataUrl: "",
+      widthPx: 800,
+      heightPx: 900,
+      caption: "Quality score",
+    };
+    const pages = flowBody([...filler, figure]);
+    const portrait = pages.filter((page) => page.kind === "portrait");
+    const withFigure = portrait.find((page) => page.kind === "portrait" && page.blocks.some((block) => block.id === "big"));
+    expect(withFigure && withFigure.kind === "portrait" && withFigure.blocks.some((block) => block.type === "paragraph")).toBe(true);
+    const flowed = withFigure && withFigure.kind === "portrait" ? withFigure.blocks.find((block) => block.id === "big") : undefined;
+    expect(flowed && flowed.type === "figure" && flowed.heightPx < 900).toBe(true);
+    expect(flowed && flowed.type === "figure" && flowed.heightPx >= 160).toBe(true);
+  });
+
+  it("moves the paragraph before a figure when shrinking it would make the figure too small", () => {
+    const filler: BodyBlock[] = Array.from({ length: 42 }, (_, index) => ({
+      id: `p${index}`,
+      type: "paragraph",
+      text: "Short line.",
+    }));
+    const before: BodyBlock = { id: "before", type: "paragraph", text: "The sentence immediately before the figure." };
+    const figure: BodyBlock = {
+      id: "tiny-room",
+      type: "figure",
+      dataUrl: "",
+      widthPx: 800,
+      heightPx: 700,
+      caption: "Responses",
+    };
+    const pages = flowBody([...filler, before, figure]);
+    const portrait = pages.filter((page) => page.kind === "portrait");
+    const figurePage = portrait.find((page) => page.kind === "portrait" && page.blocks.some((block) => block.id === "tiny-room"));
+    expect(figurePage && figurePage.kind === "portrait" && figurePage.blocks.some((block) => block.id === "before")).toBe(true);
+    expect(figurePage && figurePage.kind === "portrait" && figurePage.blocks.some((block) => block.id === "tiny-room")).toBe(true);
   });
 });

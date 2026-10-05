@@ -92,7 +92,7 @@ print("\\n".join(parts))`,
     expect(packed).toContain('w:start="2705"');
     expect(packed).toContain("International Journal of Innovations in Science");
     expect(packed).toContain("Heart Disease Prediction");
-    expect(packed).toContain("OPEN ACCESS");
+    expect(packed).not.toContain("OPEN ACCESS");
     expect(packed).not.toContain("ISSN-P");
     expect(packed).toContain("E87722");
     expect(packed).toContain("Accurate and reliable heart disease prediction can support early risk assessment.");

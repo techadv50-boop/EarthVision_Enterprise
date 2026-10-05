@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Galley, IconAsset, Journal } from "../types";
-import { displayTableCaption, flowBody, parseStartPage, figureNumber, tableNumber } from "../metrics";
+import { displayFigureCaption, displayTableCaption, flowBody, parseStartPage, figureNumber, tableNumber } from "../metrics";
 import { composedBlocks } from "../references";
 import { FrontSheet, SheetFooter, SheetHeader } from "./FirstPage";
 import { EquationView } from "./EquationView";
@@ -152,10 +152,7 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
     return (
       <figure>
         {block.dataUrl && <img src={block.dataUrl} alt="" />}
-        <figcaption>
-          <strong>Figure {figureNumber(galley.blocks, block.id)}. </strong>
-          {block.caption}
-        </figcaption>
+        <figcaption>{displayFigureCaption(block.caption, figureNumber(galley.blocks, block.id))}</figcaption>
       </figure>
     );
   }
