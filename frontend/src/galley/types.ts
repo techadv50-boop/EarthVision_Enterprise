@@ -79,6 +79,7 @@ export type ReferenceItem = {
   url: string;
   publisher: string;
   city: string;
+  extra: string;
 };
 
 export type BodyBlock =

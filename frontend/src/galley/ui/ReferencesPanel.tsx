@@ -57,7 +57,9 @@ export function ReferencesPanel({
         >
           {busy ? "Segregating…" : "Segregate"}
         </button>
-        <p className="muted">Author, title, journal, month, issue, volume, pages, URL, and DOI are read for each reference.</p>
+        <p className="muted">
+          Author, title, journal, volume, issue, pages, month, year, DOI, URL, publisher, and city are read for each reference. Nothing is left unattended.
+        </p>
       </div>
       {notice && <p className="notice">{notice}</p>}
       <div className="style-box">

@@ -54,12 +54,16 @@ const galley: Galley = {
     {
       id: "t",
       type: "table",
-      caption: "A wide comparison that does not fit portrait",
+      caption: "Table 5 Performance Comparison of This Study with Existing Techniques",
       source: "Model\tAUC\nCatBoost\t0.91",
       landscape: true,
       rows: [
-        ["Model", "AUC", "Notes"],
-        ["CatBoost", "0.91", "Selected"],
+        ["Author(s)", "Year", "Dataset"],
+        [
+          'Stamatatos et al. ADDIN CSL_CITATION {"citationItems":[{"id":"ITEM-1","itemData":{"author":[{"family":"Stamatatos"}]},"formattedCitation":"Stamatatos et al., 2009"}]}',
+          "2009",
+          "PAN",
+        ],
       ],
     },
     { id: "r", type: "heading", text: "References:" },
@@ -88,15 +92,48 @@ print("\\n".join(parts))`,
     expect(packed).toContain('w:start="2705"');
     expect(packed).toContain("International Journal of Innovations in Science");
     expect(packed).toContain("Heart Disease Prediction");
-    expect(packed).toContain("OPEN ACCESS");
+    expect(packed).not.toContain("OPEN ACCESS");
+    expect(packed).not.toContain("ISSN-P");
+    expect(packed).toContain("E87722");
+    expect(packed).toContain("Accurate and reliable heart disease prediction can support early risk assessment.");
     expect(packed).toContain("November 2025 | Vol 7 | Issue 4");
+    expect(packed).toContain("Table 1.");
+    expect(packed).toContain("Performance Comparison of This Study with Existing Techniques");
+    expect(packed).not.toContain("Table 5");
+    expect(packed).toContain("Stamatatos et al.");
+    expect(packed).not.toContain("ADDIN");
+    expect(packed).not.toContain("citationItems");
     expect(packed).toContain("PAGE");
     const sections = packed.split("<w:sectPr").slice(1);
-    expect(sections.length).toBeGreaterThanOrEqual(3);
+    expect(sections.length).toBe(4);
+    expect(sections.length).toBeLessThan(8);
     expect(sections.some((section) => section.includes('w:orient="landscape"'))).toBe(true);
     const widths = [...packed.matchAll(/<w:pgSz[^>]*>/g)].map((match) => match[0]);
     expect(widths[0]).toContain('w:w="10800"');
     expect(widths.some((size) => size.includes('w:h="14400"') && size.includes('w:orient="portrait"'))).toBe(true);
     expect(packed.match(/w:start="\d+"/g)).toEqual(['w:start="2705"']);
+  });
+
+  it("keeps the body in one flowing portrait section so pages fill instead of stacking empty 10-inch sections", async () => {
+    const packedGalley: Galley = {
+      ...galley,
+      blocks: Array.from({ length: 40 }, (_, index) => ({
+        id: `p${index}`,
+        type: "paragraph" as const,
+        text: "Agile processes change rapidly and formal methods can support quality.",
+      })),
+    };
+    const buffer = await Packer.toBuffer(galleyDocument(packedGalley, journal, null));
+    const dir = mkdtempSync(join(tmpdir(), "galley-"));
+    const file = join(dir, "flow.docx");
+    writeFileSync(file, buffer);
+    const packed = execFileSync("python3", [
+      "-c",
+      `import zipfile,sys
+z=zipfile.ZipFile(sys.argv[1])
+print(z.read("word/document.xml").decode("utf-8").count("<w:sectPr"))`,
+      file,
+    ]).toString();
+    expect(Number(packed.trim())).toBe(2);
   });
 });

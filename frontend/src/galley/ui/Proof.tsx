@@ -1,11 +1,11 @@
 import { useState } from "react";
 import type { Galley, IconAsset, Journal } from "../types";
-import { flowBody, parseStartPage } from "../metrics";
+import { displayFigureCaption, displayTableCaption, flowBody, parseStartPage, figureNumber, tableNumber } from "../metrics";
 import { composedBlocks } from "../references";
 import { FrontSheet, SheetFooter, SheetHeader } from "./FirstPage";
 import { EquationView } from "./EquationView";
 import { parseMath } from "../equations";
-import { figureNumber, tableNumber } from "../metrics";
+import { columnWidths, sanitizeTableRows } from "../tables";
 import type { BodyBlock } from "../types";
 
 export function Proof({
@@ -98,13 +98,15 @@ export function Proof({
           <div className="sheet-frame wide" style={{ height: "3.75in" }}>
           <article className="sheet landscape">
             <SheetHeader journal={journal} openAccess={openAccess} />
-            <p className="caption">
-              <strong>Table {tableNumber(galley.blocks, selected.block.id)}. </strong>
-              {selected.block.caption}
-            </p>
-            <table>
-              <tbody>
-                {selected.block.rows.map((row, rowIndex) => (
+            <p className="caption">{displayTableCaption(selected.block.caption, tableNumber(galley.blocks, selected.block.id))}</p>
+        <table>
+          <colgroup>
+            {columnWidths(sanitizeTableRows(selected.block.rows)).map((width, index) => (
+              <col key={index} style={{ width: `${width}%` }} />
+            ))}
+          </colgroup>
+          <tbody>
+                {sanitizeTableRows(selected.block.rows).map((row, rowIndex) => (
                   <tr key={rowIndex}>
                     {row.map((cell, column) => (
                       <td key={column}>{cell}</td>
@@ -150,23 +152,22 @@ function ProofBlock({ block, galley }: { block: BodyBlock; galley: Galley }) {
     return (
       <figure>
         {block.dataUrl && <img src={block.dataUrl} alt="" />}
-        <figcaption>
-          <strong>Figure {figureNumber(galley.blocks, block.id)}. </strong>
-          {block.caption}
-        </figcaption>
+        <figcaption>{displayFigureCaption(block.caption, figureNumber(galley.blocks, block.id))}</figcaption>
       </figure>
     );
   }
   if (block.type === "table") {
     return (
       <div>
-        <p className="caption">
-          <strong>Table {tableNumber(galley.blocks, block.id)}. </strong>
-          {block.caption}
-        </p>
+        <p className="caption">{displayTableCaption(block.caption, tableNumber(galley.blocks, block.id))}</p>
         <table>
+          <colgroup>
+            {columnWidths(sanitizeTableRows(block.rows)).map((width, index) => (
+              <col key={index} style={{ width: `${width}%` }} />
+            ))}
+          </colgroup>
           <tbody>
-            {block.rows.map((row, rowIndex) => (
+            {sanitizeTableRows(block.rows).map((row, rowIndex) => (
               <tr key={rowIndex}>
                 {row.map((cell, column) => (
                   <td key={column}>{cell}</td>
