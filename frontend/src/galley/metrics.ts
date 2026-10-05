@@ -8,7 +8,7 @@ export const PAGE = {
   marginTopIn: 0.06,
   marginBottomIn: 0.5,
   charsPerLine: 78,
-  linesPerPortraitPage: 48,
+  linesPerPortraitPage: 56,
 };
 
 const LINE_IN = 12 / 72;
@@ -214,7 +214,7 @@ export function linesForBlock(block: BodyBlock): number {
     case "referenceLine":
       return textLines(block.text);
     case "figure":
-      return Math.min(26, Math.max(8, Math.round((block.heightPx || 220) / 20))) + Math.max(1, textLines(block.caption, 60));
+      return Math.min(22, Math.max(8, Math.round((block.heightPx || 220) / 24))) + Math.max(1, textLines(block.caption, 60));
     case "table":
       return Math.min(PAGE.linesPerPortraitPage, 2 + block.rows.length * 2 + textLines(block.caption, 60));
     case "equation":

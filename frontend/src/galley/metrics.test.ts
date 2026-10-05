@@ -157,7 +157,7 @@ describe("page geometry", () => {
       heightPx: 220,
       caption: "Results",
     };
-    const filler: BodyBlock[] = Array.from({ length: 34 }, (_, index) => ({
+    const filler: BodyBlock[] = Array.from({ length: 44 }, (_, index) => ({
       id: `p${index}`,
       type: "paragraph",
       text: "Short line.",
@@ -180,7 +180,7 @@ describe("page geometry", () => {
   });
 
   it("shrinks a tall figure to fill leftover space instead of leaving a gap", () => {
-    const filler: BodyBlock[] = Array.from({ length: 30 }, (_, index) => ({
+    const filler: BodyBlock[] = Array.from({ length: 40 }, (_, index) => ({
       id: `p${index}`,
       type: "paragraph",
       text: "Short line.",

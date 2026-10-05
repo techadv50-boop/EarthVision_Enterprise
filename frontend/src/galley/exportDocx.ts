@@ -72,11 +72,11 @@ function figurePicture(block: Extract<BodyBlock, { type: "figure" }>): ImageRun 
   const parsed = imageBytes(block.dataUrl);
   if (!parsed) return null;
   const contentPx = Math.round((PAGE.widthIn - PAGE.marginLeftIn - PAGE.marginRightIn) * 96);
-  const maxHeightPx = Math.round(5.2 * 96);
+  const maxHeightPx = Math.round(4.0 * 96);
   const natW = Math.max(1, block.widthPx || contentPx);
   const natH = Math.max(1, block.heightPx || Math.round(natW * 0.55));
   const layoutMax = Math.min(maxHeightPx, Math.max(80, natH));
-  const scale = Math.min(contentPx / natW, layoutMax / natH, 1.15);
+  const scale = Math.min(contentPx / natW, layoutMax / natH, 1);
   let width = Math.round(natW * scale);
   let height = Math.round(natH * scale);
   if (width > contentPx) {
@@ -350,8 +350,7 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
         new Paragraph({
           alignment: AlignmentType.BOTH,
           keepNext: true,
-          keepLines: true,
-          spacing: { before: 0, after: 60, line: 240, lineRule: "auto" },
+          spacing: { before: 0, after: 40, line: 240, lineRule: "auto" },
           children: [run(block.text.trim().endsWith(":") ? block.text.trim() : `${block.text.trim()}:`, { bold: true })],
         }),
       ];
@@ -364,8 +363,7 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
               new Paragraph({
                 alignment: AlignmentType.BOTH,
                 keepNext: true,
-                keepLines: true,
-                spacing: { before: 0, after: 60, line: 240, lineRule: "auto" },
+                spacing: { before: 0, after: 40, line: 240, lineRule: "auto" },
                 children: [run(titled, { bold: true })],
               }),
             ]
@@ -376,7 +374,7 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
     case "paragraph":
       return [bodyParagraph([run(block.text)], { indent: true })];
     case "referenceLine":
-      return [bodyParagraph([run(block.text)], { after: 60 })];
+      return [bodyParagraph([run(block.text)], { after: 40 })];
     case "figure": {
       const image = block.dataUrl ? figurePicture(block) : null;
       const number = figureNumber(galley.blocks, block.id);
@@ -387,14 +385,12 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
         new Paragraph({
           alignment: AlignmentType.CENTER,
           keepNext: true,
-          keepLines: true,
           spacing: { before: 40, after: 40 },
           children: image ? [image] : [run("")],
         }),
         new Paragraph({
           alignment: AlignmentType.CENTER,
-          keepLines: true,
-          spacing: { before: 0, after: 60, line: 240, lineRule: "auto" },
+          spacing: { before: 0, after: 40, line: 240, lineRule: "auto" },
           children: [run(`${heading} `, { bold: true }), run(rest)],
         }),
       ];
@@ -405,9 +401,13 @@ function blockChildren(block: BodyBlock, galley: Galley): FileChild[] {
       const heading = `Table ${number}.`;
       const rest = caption.slice(heading.length).trim();
       return [
-        bodyParagraph([run(`${heading} `, { bold: true }), run(rest)], { center: true, after: 60 }),
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          keepNext: true,
+          spacing: { before: 0, after: 40, line: 240, lineRule: "auto" },
+          children: [run(`${heading} `, { bold: true }), run(rest)],
+        }),
         dataTable(block.rows.length ? block.rows : [[" "]]),
-        bodyParagraph([run("")], { after: 80 }),
       ];
     }
     case "equation": {
@@ -522,24 +522,33 @@ export function galleyDocument(galley: Galley, journal: Journal, openAccess: Ico
     },
   ];
 
-  for (const page of bodyPages) {
-    if (page.kind === "landscape") {
-      sections.push({
-        properties: pageProperties(PAGE.bodyHeightIn, PAGE.widthIn, true, null),
-        headers: { default: headerFor(journal.name, openAccess, landscapeWidth) },
-        footers: { default: footerFor(monthLine) },
-        children: blockChildren(page.block, galley),
-      });
-      continue;
-    }
-    const children = page.blocks.flatMap((block) => blockChildren(block, galley));
+  let bucket: FileChild[] = [];
+  const flushPortrait = () => {
+    if (bucket.length === 0) return;
     sections.push({
       properties: pageProperties(PAGE.widthIn, PAGE.bodyHeightIn, false, null),
       headers: { default: headerFor(journal.name, openAccess, portraitWidth) },
       footers: { default: footerFor(monthLine) },
-      children: children.length ? children : [bodyParagraph([run("")])],
+      children: bucket,
     });
+    bucket = [];
+  };
+
+  for (const block of manuscript) {
+    if (block.type === "pageBreak") continue;
+    if (block.type === "table" && block.landscape) {
+      flushPortrait();
+      sections.push({
+        properties: pageProperties(PAGE.bodyHeightIn, PAGE.widthIn, true, null),
+        headers: { default: headerFor(journal.name, openAccess, landscapeWidth) },
+        footers: { default: footerFor(monthLine) },
+        children: blockChildren(block, galley),
+      });
+      continue;
+    }
+    bucket.push(...blockChildren(block, galley));
   }
+  flushPortrait();
   if (sections.length === 1) {
     sections.push({
       properties: pageProperties(PAGE.widthIn, PAGE.bodyHeightIn, false, null),

@@ -217,7 +217,7 @@
   max-width: 100%;
   width: 6in;
   height: auto;
-  max-height: 5.2in;
+  max-height: 4in;
   object-fit: contain;
 }
 .galley-root .figure-thumb{ width: auto; max-height: 2.4in; }
