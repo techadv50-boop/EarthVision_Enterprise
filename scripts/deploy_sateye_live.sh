@@ -377,12 +377,15 @@ restart_backend_only() {
   docker compose ps
 }
 
-# Update ADMIN_PASSWORD in live .env without printing the value.
-# Default password reset target: Alihussain (override with ADMIN_PASSWORD_RESET).
+# Update ADMIN_EMAIL + ADMIN_PASSWORD + MASTER_PASSWORD in live .env and compose.
+# Default login: admin@xdgen.com / pak123 (override with ADMIN_*_RESET).
 # Set RESET_ADMIN_PASSWORD=0 to skip.
+# When reset is enabled we ALWAYS mark ADMIN_PASSWORD_SYNCED=1 so the backend
+# is recreated even if .env already matched (DB hash can still be stale).
 ADMIN_PASSWORD_SYNCED=0
 sync_admin_password_env() {
-  local new_pw="${ADMIN_PASSWORD_RESET:-Alihussain}"
+  local new_pw="${ADMIN_PASSWORD_RESET:-pak123}"
+  local new_email="${ADMIN_EMAIL_RESET:-admin@xdgen.com}"
   local do_sync="${RESET_ADMIN_PASSWORD:-1}"
   ADMIN_PASSWORD_SYNCED=0
   if [[ "$do_sync" != "1" ]]; then
@@ -390,8 +393,7 @@ sync_admin_password_env() {
     return 0
   fi
   [[ -f .env ]] || die "missing .env for admin password sync"
-  local before after
-  before="$(sha256_file .env)"
+
   if grep -qE '^ADMIN_PASSWORD=' .env; then
     awk -v pw="$new_pw" '
       BEGIN { done=0 }
@@ -406,18 +408,63 @@ sync_admin_password_env() {
       }
     ' .env > .env.tmp_admin
     mv .env.tmp_admin .env
-    chmod 600 .env || true
   else
     printf '\nADMIN_PASSWORD=%s\n' "$new_pw" >> .env
-    chmod 600 .env || true
   fi
-  after="$(sha256_file .env)"
-  if [[ "$before" != "$after" ]]; then
-    ADMIN_PASSWORD_SYNCED=1
-    log "ADMIN_PASSWORD synced in .env (value not printed; checksum changed)"
+  if grep -qE '^ADMIN_EMAIL=' .env; then
+    awk -v em="$new_email" '
+      BEGIN { done=0 }
+      /^ADMIN_EMAIL=/ {
+        print "ADMIN_EMAIL=" em
+        done=1
+        next
+      }
+      { print }
+      END {
+        if (!done) print "ADMIN_EMAIL=" em
+      }
+    ' .env > .env.tmp_admin
+    mv .env.tmp_admin .env
   else
-    log "ADMIN_PASSWORD already at requested value in .env"
+    printf '\nADMIN_EMAIL=%s\n' "$new_email" >> .env
   fi
+  if grep -qE '^MASTER_PASSWORD=' .env; then
+    awk -v pw="$new_pw" '
+      BEGIN { done=0 }
+      /^MASTER_PASSWORD=/ {
+        print "MASTER_PASSWORD=" pw
+        done=1
+        next
+      }
+      { print }
+      END {
+        if (!done) print "MASTER_PASSWORD=" pw
+      }
+    ' .env > .env.tmp_admin
+    mv .env.tmp_admin .env
+  else
+    printf '\nMASTER_PASSWORD=%s\n' "$new_pw" >> .env
+  fi
+  chmod 600 .env || true
+  log "ADMIN_EMAIL/ADMIN_PASSWORD/MASTER_PASSWORD synced in .env (values not printed)"
+
+  if [[ -f docker-compose.yml ]]; then
+    if grep -qE '^[[:space:]]*ADMIN_EMAIL:' docker-compose.yml; then
+      sed -i -E "s|^([[:space:]]*ADMIN_EMAIL:).*|\1 \${ADMIN_EMAIL:-$new_email}|" docker-compose.yml
+    fi
+    if grep -qE '^[[:space:]]*ADMIN_PASSWORD:' docker-compose.yml; then
+      sed -i -E "s|^([[:space:]]*ADMIN_PASSWORD:).*|\1 \${ADMIN_PASSWORD:-$new_pw}|" docker-compose.yml
+    fi
+    if grep -qE '^[[:space:]]*MASTER_PASSWORD:' docker-compose.yml; then
+      sed -i -E "s|^([[:space:]]*MASTER_PASSWORD:).*|\1 \${MASTER_PASSWORD:-$new_pw}|" docker-compose.yml
+    else
+      sed -i -E "/^[[:space:]]*ADMIN_PASSWORD:/a\\      MASTER_PASSWORD: \${MASTER_PASSWORD:-$new_pw}" docker-compose.yml
+    fi
+    log "ADMIN_EMAIL/ADMIN_PASSWORD/MASTER_PASSWORD wired in docker-compose.yml via env substitution"
+  fi
+
+  # Force backend recreate so bootstrap re-hashes even when .env was already correct.
+  ADMIN_PASSWORD_SYNCED=1
 }
 
 local_health_ok() {

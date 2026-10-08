@@ -23,8 +23,8 @@ async def test_login_and_catalog():
             login = await client.post(
                 "/api/v1/auth/login",
                 json={
-                    "email": "admin@earthvision.io",
-                    "password": "Alihussain",
+                    "email": "admin@xdgen.com",
+                    "password": "pak123",
                 },
             )
             assert login.status_code == 200, login.text
