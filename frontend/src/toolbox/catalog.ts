@@ -108,6 +108,24 @@ export const TOOLBOXES: ToolboxDef[] = [
       { id: 'true_color', label: 'True Color', action: { type: 'process', op: 'true_color' }, needsScene: true },
       { id: 'false_color', label: 'False Color', action: { type: 'process', op: 'false_color' }, needsScene: true },
       {
+        id: 'agriculture',
+        label: 'Agriculture',
+        action: { type: 'process', op: 'agriculture' },
+        needsScene: true,
+      },
+      {
+        id: 'swir_composite',
+        label: 'Shortwave Infrared',
+        action: { type: 'process', op: 'swir_composite' },
+        needsScene: true,
+      },
+      {
+        id: 'urban_buildup',
+        label: 'Urban / Buildup',
+        action: { type: 'process', op: 'urban_buildup' },
+        needsScene: true,
+      },
+      {
         id: 'unsupervised_classify',
         label: 'Unsupervised Classify',
         action: { type: 'process', op: 'unsupervised_classify' },

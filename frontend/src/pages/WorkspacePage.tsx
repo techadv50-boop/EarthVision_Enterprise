@@ -984,29 +984,27 @@ export function WorkspacePage() {
 
   const applyProcessFilter = (op: string) => {
     if (op === 'true_color') {
-      // Never leave CSS brightness/contrast on the map — it neon-blows True Color
+      // Natural color: satellite-specific Red-Green-Blue (e.g. S2 B04-B03-B02, L8/9 B4-B3-B2)
       setProcessFilter({ brightness: 1, contrast: 1, gamma: 1 });
       setStretchParams((s) => ({ ...s, brightness: 1.0, contrast: 1.0, gamma: 1.2 }));
       void runComposite('true_color');
       return;
     }
     if (op === 'false_color') {
-      // Cycle USGS/ESA professional false-color recipes on repeat clicks
-      const fccCycle: CompositePreset[] = [
-        'false_color_infrared',
-        'false_color_agriculture',
-        'false_color_urban',
-        'swir_composite',
-        'land_water',
-        'vegetation_health',
-        'burn_severity',
-        'geology',
-        'atmospheric_penetration',
-      ];
-      const cur = (compositeResult?.preset || 'false_color_infrared') as CompositePreset;
-      const idx = fccCycle.indexOf(cur);
-      const next = fccCycle[(idx + 1) % fccCycle.length];
-      void runComposite(next);
+      // Classic false-color infrared: NIR-Red-Green (not RGB) — veg bright red
+      void runComposite('false_color_infrared');
+      return;
+    }
+    if (op === 'agriculture') {
+      void runComposite('false_color_agriculture');
+      return;
+    }
+    if (op === 'swir_composite') {
+      void runComposite('swir_composite');
+      return;
+    }
+    if (op === 'urban_buildup') {
+      void runComposite('false_color_urban');
       return;
     }
     if (op === 'unsupervised_classify') {
@@ -1197,7 +1195,7 @@ export function WorkspacePage() {
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
       setLastMessage(
-        `${result.label} · ${result.formula} · download GeoTIFF from Image Processing exports`,
+        `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
       );
       upsertOverlay({
         id: `composite-${preset}`,

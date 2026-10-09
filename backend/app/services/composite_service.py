@@ -57,16 +57,16 @@ COMPOSITE_PRESETS: dict[str, dict[str, Any]] = {
     "false_color_urban": {
         "label": "Urban / Built-up",
         "keys": COMPOSITE_REQUIRED_KEYS["false_color_urban"],
-        "display": {"R": "SWIR1", "G": "NIR", "B": "Red"},
-        "formula": "R=SWIR1, G=NIR, B=Red — built-up bright",
+        "display": {"R": "SWIR2", "G": "SWIR1", "B": "Red"},
+        "formula": "R=SWIR2, G=SWIR1, B=Red — built-up / urban bright (USGS/Esri)",
         "use": "Urban fabric, impervious surfaces (pairs with NDBI)",
     },
     "swir_composite": {
-        "label": "SWIR Composite",
+        "label": "Shortwave Infrared (SWIR)",
         "keys": COMPOSITE_REQUIRED_KEYS["swir_composite"],
-        "display": {"R": "SWIR2", "G": "SWIR1", "B": "Red"},
-        "formula": "R=SWIR2, G=SWIR1, B=Red — moisture & geology",
-        "use": "Soil moisture, lithology, burn scars",
+        "display": {"R": "SWIR2", "G": "NIR", "B": "Red"},
+        "formula": "R=SWIR2, G=NIR, B=Red — moisture, burns, geology (USGS/Esri)",
+        "use": "Soil moisture, burn scars, lithology",
     },
     "geology": {
         "label": "Geology / Lithology",
@@ -346,6 +346,11 @@ class CompositeService:
         png = self._rgb_to_png(
             rgb, valid_mask=valid_mask, quality=85 if preset_id == "true_color" else 70
         )
+        sat_codes = ""
+        if family:
+            sat = composite_for_family(preset_id, family)
+            if sat and sat.get("codes"):
+                sat_codes = f" · bands {sat['codes']}"
         return CompositeResponse(
             preset=preset_id,
             label=label,
@@ -357,8 +362,8 @@ class CompositeService:
             histogram=hist,
             legend=self._rgb_legend(label, formula),
             message=(
-                f"{label} · {family_label(family) if family else 'scene'} · "
-                f"{stretch_label} · professional EO standard"
+                f"{label} · {family_label(family) if family else 'scene'}"
+                f"{sat_codes} · {stretch_label}"
             ),
             stretch=f"{stretch_label} p{request.p_low}-{request.p_high}",
         )

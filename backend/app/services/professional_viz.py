@@ -47,9 +47,9 @@ PROFESSIONAL_COMPOSITE_NOTES: dict[str, str] = {
     "false_color_infrared": (
         "Classic FCC: NIR-Red-Green (S2 B08-B04-B03 / L8 B5-B4-B3) — vegetation red"
     ),
-    "false_color_agriculture": "SWIR1-NIR-Blue — crop / soil contrast (USGS agri combo)",
-    "false_color_urban": "SWIR1-NIR-Red — built-up bright (pairs with NDBI)",
-    "swir_composite": "SWIR2-SWIR1-Red — moisture & geology",
+    "false_color_agriculture": "SWIR1-NIR-Blue — crop / soil contrast (USGS/Esri agri)",
+    "false_color_urban": "SWIR2-SWIR1-Red — urban / buildup (USGS/Esri urban FCC)",
+    "swir_composite": "SWIR2-NIR-Red — shortwave IR (USGS/Esri SWIR)",
     "geology": "SWIR2-SWIR1-Blue — lithology",
     "atmospheric_penetration": "SWIR2-SWIR1-NIR — haze / smoke penetration",
     "land_water": "NIR-SWIR1-Red — water dark",

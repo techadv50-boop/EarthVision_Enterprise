@@ -148,48 +148,50 @@ COMPOSITE_BAND_CODES: dict[str, dict[str, dict[str, str]]] = {
             "formula": "R=SWIR1(B06), G=NIR(B02), B=Blue(B03) — crops & soils",
         },
     },
+    # USGS/Esri “False Color (urban)” = SWIR2-SWIR1-Red
     "false_color_urban": {
         "SENTINEL-2": {
-            "codes": "B11-B08-B04",
-            "formula": "R=SWIR1(B11), G=NIR(B08), B=Red(B04) — built-up bright",
-        },
-        "LANDSAT-8": {
-            "codes": "B6-B5-B4",
-            "formula": "R=SWIR1(B6), G=NIR(B5), B=Red(B4) — built-up bright",
-        },
-        "LANDSAT-9": {
-            "codes": "B6-B5-B4",
-            "formula": "R=SWIR1(B6), G=NIR(B5), B=Red(B4) — built-up bright",
-        },
-        "LANDSAT-7": {
-            "codes": "B5-B4-B3",
-            "formula": "R=SWIR1(B5), G=NIR(B4), B=Red(B3) — built-up bright",
-        },
-        "MODIS": {
-            "codes": "B06-B02-B01",
-            "formula": "R=SWIR1(B06), G=NIR(B02), B=Red(B01) — built-up bright",
-        },
-    },
-    "swir_composite": {
-        "SENTINEL-2": {
             "codes": "B12-B11-B04",
-            "formula": "R=SWIR2(B12), G=SWIR1(B11), B=Red(B04) — moisture & geology",
+            "formula": "R=SWIR2(B12), G=SWIR1(B11), B=Red(B04) — built-up / urban bright",
         },
         "LANDSAT-8": {
             "codes": "B7-B6-B4",
-            "formula": "R=SWIR2(B7), G=SWIR1(B6), B=Red(B4) — moisture & geology",
+            "formula": "R=SWIR2(B7), G=SWIR1(B6), B=Red(B4) — built-up / urban bright",
         },
         "LANDSAT-9": {
             "codes": "B7-B6-B4",
-            "formula": "R=SWIR2(B7), G=SWIR1(B6), B=Red(B4) — moisture & geology",
+            "formula": "R=SWIR2(B7), G=SWIR1(B6), B=Red(B4) — built-up / urban bright",
         },
         "LANDSAT-7": {
             "codes": "B7-B5-B3",
-            "formula": "R=SWIR2(B7), G=SWIR1(B5), B=Red(B3) — moisture & geology",
+            "formula": "R=SWIR2(B7), G=SWIR1(B5), B=Red(B3) — built-up / urban bright",
         },
         "MODIS": {
             "codes": "B07-B06-B01",
-            "formula": "R=SWIR2(B07), G=SWIR1(B06), B=Red(B01) — moisture & geology",
+            "formula": "R=SWIR2(B07), G=SWIR1(B06), B=Red(B01) — built-up / urban bright",
+        },
+    },
+    # USGS/Esri “Shortwave Infrared” = SWIR2-NIR-Red
+    "swir_composite": {
+        "SENTINEL-2": {
+            "codes": "B12-B08-B04",
+            "formula": "R=SWIR2(B12), G=NIR(B08), B=Red(B04) — moisture, burns, geology",
+        },
+        "LANDSAT-8": {
+            "codes": "B7-B5-B4",
+            "formula": "R=SWIR2(B7), G=NIR(B5), B=Red(B4) — moisture, burns, geology",
+        },
+        "LANDSAT-9": {
+            "codes": "B7-B5-B4",
+            "formula": "R=SWIR2(B7), G=NIR(B5), B=Red(B4) — moisture, burns, geology",
+        },
+        "LANDSAT-7": {
+            "codes": "B7-B4-B3",
+            "formula": "R=SWIR2(B7), G=NIR(B4), B=Red(B3) — moisture, burns, geology",
+        },
+        "MODIS": {
+            "codes": "B07-B02-B01",
+            "formula": "R=SWIR2(B07), G=NIR(B02), B=Red(B01) — moisture, burns, geology",
         },
     },
     "geology": {
@@ -309,8 +311,8 @@ COMPOSITE_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "true_color": ("red", "green", "blue"),
     "false_color_infrared": ("nir", "red", "green"),
     "false_color_agriculture": ("swir", "nir", "blue"),
-    "false_color_urban": ("swir", "nir", "red"),
-    "swir_composite": ("swir2", "swir", "red"),
+    "false_color_urban": ("swir2", "swir", "red"),
+    "swir_composite": ("swir2", "nir", "red"),
     "geology": ("swir2", "swir", "blue"),
     "atmospheric_penetration": ("swir2", "swir", "nir"),
     "land_water": ("nir", "swir", "red"),

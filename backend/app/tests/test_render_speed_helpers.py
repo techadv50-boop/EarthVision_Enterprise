@@ -268,7 +268,7 @@ def test_false_color_professional_and_index_viz_ranges():
 
 
 def test_toolbox_catalog_keeps_148_ai_inactive_except_ship():
-    """148 tools restored; AI tools inactive except Ship Detection (water AOI gate)."""
+    """Image composites present; AI tools inactive except Ship Detection."""
     from pathlib import Path
     import re
 
@@ -281,8 +281,13 @@ def test_toolbox_catalog_keeps_148_ai_inactive_except_ship():
     )
     text = catalog.read_text(encoding="utf-8")
     tool_ids = re.findall(r"\{\s*id:\s*'([^']+)',\s*label:", text)
-    assert len(tool_ids) == 148, f"expected 148 tools, got {len(tool_ids)}"
+    # 148 baseline + Agriculture + Shortwave Infrared + Urban/Buildup
+    assert len(tool_ids) == 151, f"expected 151 tools, got {len(tool_ids)}"
     assert "true_color" in tool_ids
+    assert "false_color" in tool_ids
+    assert "agriculture" in tool_ids
+    assert "swir_composite" in tool_ids
+    assert "urban_buildup" in tool_ids
     assert "ship_detection" in tool_ids
     assert "building_detection" in tool_ids
     assert re.search(
