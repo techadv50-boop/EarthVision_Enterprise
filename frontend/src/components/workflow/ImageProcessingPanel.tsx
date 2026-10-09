@@ -10,6 +10,15 @@ import type {
 import { compositeService } from '../../services/compositeService';
 import type { IndexName, IndexResult, ColormapInfo, ColormapName } from '../../services/analyticsService';
 import { analyticsService } from '../../services/analyticsService';
+import type {
+  ClassCount,
+  ClassStyle,
+  ClassificationResult,
+} from '../../services/classificationService';
+import {
+  DEFAULT_CLASS_STYLES,
+  stylesForCount,
+} from '../../services/classificationService';
 
 const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapName }> = [
   { id: 'NDVI', label: 'NDVI', defaultRamp: 'rdylgn' },
@@ -23,17 +32,95 @@ const INDEX_LIST: Array<{ id: IndexName; label: string; defaultRamp: ColormapNam
   { id: 'LST', label: 'LST', defaultRamp: 'thermal' },
 ];
 
+type SensorFamily =
+  | 'optical'
+  | 'sentinel-1'
+  | 'sentinel-3'
+  | 'sentinel-5p'
+  | 'smos'
+  | 'unknown';
+
+function sensorFamily(collection?: string | null): SensorFamily {
+  const c = (collection || '').toUpperCase().replace(/_/g, '-');
+  if (!c) return 'unknown';
+  if (c.includes('SENTINEL-1') || c.startsWith('S1')) return 'sentinel-1';
+  if (
+    c.includes('SENTINEL-3') ||
+    c === 'S3' ||
+    c === 'OLCI' ||
+    c === 'SLSTR' ||
+    c.startsWith('S3-')
+  ) {
+    return 'sentinel-3';
+  }
+  if (c.includes('SENTINEL-5') || c.includes('S5P')) return 'sentinel-5p';
+  if (c.includes('SMOS')) return 'smos';
+  if (
+    c.includes('SENTINEL-2') ||
+    c.startsWith('S2') ||
+    c.includes('LANDSAT') ||
+    c.includes('MODIS') ||
+    c === 'TERRA' ||
+    c === 'AQUA' ||
+    c === 'TERRAAQUA'
+  ) {
+    return 'optical';
+  }
+  return 'unknown';
+}
+
+/** Optical multispectral families that support RGB composites / most indices. */
+function isOpticalMultispectral(collection?: string | null): boolean {
+  return sensorFamily(collection) === 'optical' || sensorFamily(collection) === 'unknown';
+}
+
+function toolsOffNotice(family: SensorFamily): string | null {
+  switch (family) {
+    case 'sentinel-1':
+      return (
+        'Sentinel-1 SAR — Image Processing tools are off. GRD is single-polarization ' +
+        'radar (no optical RGB / SWIR / thermal bands), so true color, false color, ' +
+        'spectral indices, classification, histogram stretch, and related exports do ' +
+        'not apply. SAR ship tools stay under Maritime when unlocked.'
+      );
+    case 'sentinel-3':
+      return (
+        'Sentinel-3 (OLCI/SLSTR) — Image Processing tools are off. This app does not ' +
+        'load Sentinel-3 land optical analysis bands for composites or indices ' +
+        '(NDVI, NDWI, NDBI, …). Use Sentinel-2 or Landsat for those tools.'
+      );
+    case 'sentinel-5p':
+      return (
+        'Sentinel-5P — Image Processing tools are off. Atmospheric-chemistry products ' +
+        'are not used for land optical composites or spectral indices here.'
+      );
+    case 'smos':
+      return (
+        'SMOS — Image Processing tools are off. Passive microwave soil-moisture data ' +
+        'does not support optical RGB composites or spectral indices.'
+      );
+    default:
+      return null;
+  }
+}
+
 interface Props {
   hasScene: boolean;
+  /** Active scene collection id (e.g. SENTINEL-2, LANDSAT-8) for indicator gating. */
+  sceneCollection?: string | null;
   loading: boolean;
   activeToolId: string | null;
   indexResult: IndexResult | null;
   compositeResult: CompositeResult | null;
   stretchResult: StretchResult | null;
+  classificationResult?: ClassificationResult | null;
   stretchParams: { p_low: number; p_high: number; gamma: number; brightness: number; contrast: number };
   colormap?: ColormapName | string | null;
   onComposite: (preset: CompositePreset) => void;
   onIndex: (index: IndexName) => void;
+  onClassify?: (opts: { n_classes: ClassCount; class_styles: ClassStyle[] }) => void;
+  /** Apply new colors to an existing classification (no re-run). */
+  onRecolorClassify?: (styles: ClassStyle[]) => void;
   onColormapChange?: (cmap: ColormapName) => void;
   onStretch: () => void;
   onStretchParams: (patch: Partial<Props['stretchParams']>) => void;
@@ -43,6 +130,14 @@ interface Props {
   onExportCompositePng: () => void;
   onExportStretchPng: () => void;
   onExportOverlayPng: () => void;
+  onExportIndexGeotiff?: () => void;
+  onExportCompositeGeotiff?: () => void;
+  onExportStretchGeotiff?: () => void;
+  onExportOverlayGeotiff?: () => void;
+  onExportClassifyPng?: () => void;
+  onExportClassifyCsv?: () => void;
+  onExportClassifyGeotiff?: () => void;
+  geotiffBusy?: boolean;
 }
 
 function HistogramChart({
@@ -110,17 +205,36 @@ function HistogramChart({
   );
 }
 
+function bandCodesLine(p: CompositePresetInfo): string {
+  if (p.enabled !== false && p.active_codes) {
+    const fam = p.active_family ? `${p.active_family} ` : '';
+    return `${fam}${p.active_codes}`;
+  }
+  const parts = [
+    p.sentinel2 ? `S2 ${p.sentinel2}` : '',
+    (p.landsat8 || p.landsat) ? `L8 ${p.landsat8 || p.landsat}` : '',
+    p.landsat9 ? `L9 ${p.landsat9}` : '',
+    p.landsat7 ? `L7 ${p.landsat7}` : '',
+    p.modis ? `MODIS ${p.modis}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
 export function ImageProcessingPanel({
   hasScene,
+  sceneCollection = null,
   loading,
   activeToolId,
   indexResult,
   compositeResult,
   stretchResult,
+  classificationResult = null,
   stretchParams,
   colormap = null,
   onComposite,
   onIndex,
+  onClassify,
+  onRecolorClassify,
   onColormapChange,
   onStretch,
   onStretchParams,
@@ -130,17 +244,51 @@ export function ImageProcessingPanel({
   onExportCompositePng,
   onExportStretchPng,
   onExportOverlayPng,
+  onExportIndexGeotiff,
+  onExportCompositeGeotiff,
+  onExportStretchGeotiff,
+  onExportOverlayGeotiff,
+  onExportClassifyPng,
+  onExportClassifyCsv,
+  onExportClassifyGeotiff,
+  geotiffBusy = false,
 }: Props) {
   const [presets, setPresets] = useState<CompositePresetInfo[]>([]);
   const [thematic, setThematic] = useState<IndexThematicInfo[]>([]);
   const [ramps, setRamps] = useState<ColormapInfo[]>([]);
+  const [nClasses, setNClasses] = useState<ClassCount>(6);
+  const [allStyles, setAllStyles] = useState<ClassStyle[]>(DEFAULT_CLASS_STYLES);
+
+  const activeStyles = useMemo(
+    () => stylesForCount(nClasses, allStyles),
+    [nClasses, allStyles],
+  );
 
   useEffect(() => {
-    void compositeService.listPresets().then(setPresets).catch(() => setPresets([]));
-    void compositeService.listIndexThematic().then(setThematic).catch(() => setThematic([]));
+    void compositeService
+      .listPresets({ collection: sceneCollection })
+      .then(setPresets)
+      .catch(() => setPresets([]));
+    void compositeService
+      .listIndexThematic({ collection: sceneCollection })
+      .then(setThematic)
+      .catch(() => setThematic([]));
+  }, [sceneCollection]);
+
+  useEffect(() => {
     void analyticsService.listColormaps().then(setRamps).catch(() => setRamps([]));
   }, []);
 
+  const updateStyle = (name: string, patch: Partial<ClassStyle>) => {
+    setAllStyles((prev) =>
+      prev.map((s) => (s.name === name ? { ...s, ...patch } : s)),
+    );
+  };
+
+  const family = sensorFamily(sceneCollection);
+  const opticalOk = isOpticalMultispectral(sceneCollection);
+  const toolsOff = Boolean(sceneCollection) && family !== 'optical' && family !== 'unknown';
+  const offNotice = toolsOffNotice(family);
   const activeThematic = thematic.find((t) => t.id === indexResult?.index);
   const activeIndexMeta = INDEX_LIST.find((i) => i.id === indexResult?.index);
   const selectedRamp =
@@ -157,19 +305,38 @@ export function ImageProcessingPanel({
 
   return (
     <div className="mb-3 space-y-3 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/30 p-2">
-      {!hasScene && (
-        <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
-          Toggle a Sentinel-2 / Landsat scene eye for best results. Tools can still run on the AOI.
+      {offNotice ? (
+        <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
+          {offNotice}
         </p>
+      ) : (
+        <>
+          {!hasScene && (
+            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+              Toggle a Sentinel-2 / Landsat / MODIS scene eye for best results. Tools can still run on the AOI.
+            </p>
+          )}
+          {sceneCollection && (
+            <p className="rounded border border-[var(--line)] bg-white px-2 py-1 text-[10px] text-[var(--muted)]">
+              Indicators filtered for{' '}
+              <strong className="text-[var(--ink,#0f172a)]">{sceneCollection}</strong>
+              — unavailable composites/indices are dimmed.
+            </p>
+          )}
+        </>
       )}
 
+      <div
+        className={toolsOff ? 'pointer-events-none space-y-3 opacity-40' : 'space-y-3'}
+        aria-disabled={toolsOff || undefined}
+      >
       {/* Band combinations */}
       <section>
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
           Band combinations (RGB)
         </h3>
         <p className="mb-1 text-[10px] text-[var(--muted)]">
-          False color infrared default: <strong>R=NIR, G=Red, B=Green</strong> (veg = red)
+          Formulas use sensor-accurate band codes for the active satellite.
         </p>
         <div className="grid grid-cols-1 gap-1">
           {(presets.length
@@ -183,6 +350,7 @@ export function ImageProcessingPanel({
                   sentinel2: 'B04-B03-B02',
                   landsat: 'B4-B3-B2',
                   bands: { R: 'Red', G: 'Green', B: 'Blue' },
+                  enabled: true,
                 },
                 {
                   id: 'false_color_infrared' as CompositePreset,
@@ -192,33 +360,275 @@ export function ImageProcessingPanel({
                   sentinel2: 'B08-B04-B03',
                   landsat: 'B5-B4-B3',
                   bands: { R: 'NIR', G: 'Red', B: 'Green' },
+                  enabled: true,
                 },
               ]
           ).map((p) => {
             const active = activeToolId === `composite-${p.id}` || compositeResult?.preset === p.id;
+            const enabled = p.enabled !== false;
             return (
               <button
                 key={p.id}
                 type="button"
-                disabled={loading}
+                disabled={loading || !enabled || toolsOff}
+                title={
+                  toolsOff
+                    ? offNotice || 'Not applicable to this satellite'
+                    : enabled
+                      ? p.use || p.formula
+                      : p.disabled_reason || 'Not applicable'
+                }
                 onClick={() => onComposite(p.id)}
                 className={`rounded-lg border px-2 py-1.5 text-left text-[11px] ${
-                  active
-                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                    : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+                  !enabled || toolsOff
+                    ? 'cursor-not-allowed border-[var(--line)] bg-[var(--bg)] opacity-45'
+                    : active
+                      ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                      : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
                 }`}
               >
-                <div className="font-semibold">{p.label}</div>
-                <div className={`font-mono text-[9px] ${active ? 'text-white/80' : 'text-[var(--muted)]'}`}>
+                <div className="font-semibold">
+                  {p.label}
+                  {(!enabled || toolsOff) && (
+                    <span className="ml-1 text-[9px] font-normal uppercase tracking-wide">
+                      off
+                    </span>
+                  )}
+                </div>
+                <div className={`font-mono text-[9px] ${active && enabled ? 'text-white/80' : 'text-[var(--muted)]'}`}>
                   {p.formula}
                 </div>
-                <div className={`text-[9px] ${active ? 'text-white/70' : 'text-[var(--muted)]'}`}>
-                  S2 {p.sentinel2} · LS {p.landsat}
+                <div className={`text-[9px] ${active && enabled ? 'text-white/70' : 'text-[var(--muted)]'}`}>
+                  {enabled ? bandCodesLine(p) : p.disabled_reason || 'Not applicable to this satellite'}
                 </div>
               </button>
             );
           })}
         </div>
+      </section>
+
+      {/* Unsupervised classification */}
+      <section>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+          Unsupervised classification
+        </h3>
+        <p className="mb-1.5 text-[10px] text-[var(--muted)]">
+          Choose <strong>3–8</strong> classes, optionally set colors, then run. After
+          classification you can change colors anytime without re-running.
+        </p>
+
+        <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
+          Number of classes
+        </label>
+        <div className="mb-2 grid grid-cols-6 gap-1">
+          {([3, 4, 5, 6, 7, 8] as ClassCount[]).map((n) => (
+            <button
+              key={n}
+              type="button"
+              disabled={loading}
+              onClick={() => setNClasses(n)}
+              className={`rounded border px-1 py-1.5 text-[11px] font-semibold ${
+                nClasses === n
+                  ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                  : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+              }`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+
+        <div className="mb-1 flex items-center justify-between">
+          <label className="text-[10px] font-medium text-[var(--muted)]">
+            Colors before run
+          </label>
+          <button
+            type="button"
+            className="text-[10px] text-[var(--accent)] underline-offset-2 hover:underline"
+            onClick={() => setAllStyles(DEFAULT_CLASS_STYLES.map((s) => ({ ...s })))}
+          >
+            Reset defaults
+          </button>
+        </div>
+        <div className="mb-2 space-y-1 rounded border border-[var(--line)] bg-white p-1.5">
+          {activeStyles.map((s) => (
+            <div
+              key={s.name}
+              className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-[var(--surface-2,#f8fafc)]"
+            >
+              <input
+                type="color"
+                value={s.color}
+                aria-label={`Color for ${s.label}`}
+                className="h-7 w-8 cursor-pointer rounded border border-[var(--line)] bg-transparent p-0"
+                onChange={(e) => updateStyle(s.name, { color: e.target.value.toUpperCase() })}
+              />
+              <input
+                type="text"
+                value={s.color}
+                spellCheck={false}
+                className="w-[72px] rounded border border-[var(--line)] px-1 py-0.5 font-mono text-[10px]"
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  if (/^#?[0-9a-fA-F]{6}$/.test(v)) {
+                    updateStyle(s.name, {
+                      color: (v.startsWith('#') ? v : `#${v}`).toUpperCase(),
+                    });
+                  }
+                }}
+              />
+              <input
+                type="text"
+                value={s.label}
+                className="min-w-0 flex-1 rounded border border-[var(--line)] px-1.5 py-0.5 text-[11px]"
+                onChange={(e) => updateStyle(s.name, { label: e.target.value })}
+                aria-label={`Label for ${s.name}`}
+              />
+            </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          disabled={loading || !onClassify || !opticalOk}
+          title={
+            opticalOk
+              ? undefined
+              : 'Unsupervised classify needs optical multispectral bands (S2 / Landsat / MODIS)'
+          }
+          onClick={() =>
+            onClassify?.({ n_classes: nClasses, class_styles: activeStyles })
+          }
+          className={`w-full rounded-lg border px-2 py-2 text-left text-[11px] font-semibold ${
+            !opticalOk
+              ? 'cursor-not-allowed border-[var(--line)] bg-[var(--bg)] opacity-45'
+              : activeToolId === 'unsupervised_classify' || classificationResult
+                ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+          }`}
+        >
+          {opticalOk
+            ? `Run ${nClasses}-class unsupervised classify`
+            : 'Unsupervised classify (off for this satellite)'}
+        </button>
+        {classificationResult && (
+          <div className="mt-2 space-y-2 rounded border border-[var(--line)] bg-white p-2">
+            <div className="text-[10px] text-[var(--muted)]">
+              {classificationResult.message}
+              {classificationResult.agreement_percent != null
+                ? ` · member agreement ${classificationResult.agreement_percent}%`
+                : ''}
+            </div>
+
+            <div className="rounded border border-dashed border-[var(--line)] bg-[var(--surface-2,#f8fafc)] p-1.5">
+              <div className="mb-1 text-[10px] font-semibold text-[var(--ink,#0f172a)]">
+                Change colors after classification
+              </div>
+              <p className="mb-1.5 text-[9px] text-[var(--muted)]">
+                Pick new colors below — the map updates immediately (no re-classify).
+              </p>
+              <div className="space-y-1">
+                {classificationResult.classes.map((c) => (
+                  <div key={c.class_id} className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={c.color}
+                      aria-label={`Recolor ${c.label}`}
+                      className="h-7 w-8 cursor-pointer rounded border border-[var(--line)] bg-transparent p-0"
+                      disabled={!classificationResult.class_map_base64 || !onRecolorClassify}
+                      onChange={(e) => {
+                        const color = e.target.value.toUpperCase();
+                        const next = classificationResult.classes.map((row) =>
+                          row.class_id === c.class_id
+                            ? {
+                                name: row.name,
+                                label: row.label,
+                                color,
+                                class_id: row.class_id,
+                              }
+                            : {
+                                name: row.name,
+                                label: row.label,
+                                color: row.color,
+                                class_id: row.class_id,
+                              },
+                        );
+                        onRecolorClassify?.(next);
+                      }}
+                    />
+                    <span
+                      className="inline-block h-3 w-3 rounded-sm border border-black/10"
+                      style={{ background: c.color }}
+                    />
+                    <span className="min-w-0 flex-1 text-[11px]">{c.label}</span>
+                    <span className="font-mono text-[9px] text-[var(--muted)]">
+                      {c.color}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="text-[var(--muted)]">
+                  <th className="py-0.5 font-medium">Class</th>
+                  <th className="py-0.5 font-medium">%</th>
+                  <th className="py-0.5 font-medium">Area (km²)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {classificationResult.classes.map((c) => (
+                  <tr key={c.class_id} className="border-t border-[var(--line)]">
+                    <td className="py-0.5">
+                      <span className="inline-flex items-center gap-1">
+                        <span
+                          className="inline-block h-2 w-2 rounded-sm border border-black/10"
+                          style={{ background: c.color }}
+                        />
+                        {c.label}
+                      </span>
+                    </td>
+                    <td className="py-0.5">{c.percent.toFixed(1)}</td>
+                    <td className="py-0.5 font-medium">{Math.round(c.area_km2)}</td>
+                  </tr>
+                ))}
+                <tr className="border-t border-[var(--line)] font-semibold">
+                  <td className="py-0.5">Total</td>
+                  <td className="py-0.5">100</td>
+                  <td className="py-0.5">
+                    {Math.round(classificationResult.total_area_km2)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div className="grid grid-cols-3 gap-1">
+              <button
+                type="button"
+                className="ev-btn-ghost justify-center px-1 py-1 text-[10px]"
+                disabled={!classificationResult.overlay_base64}
+                onClick={() => onExportClassifyPng?.()}
+              >
+                <Download className="h-3 w-3" /> Map PNG
+              </button>
+              <button
+                type="button"
+                className="ev-btn-ghost justify-center px-1 py-1 text-[10px]"
+                onClick={() => onExportClassifyCsv?.()}
+              >
+                <Download className="h-3 w-3" /> Areas CSV
+              </button>
+              <button
+                type="button"
+                className="ev-btn-ghost justify-center px-1 py-1 text-[10px]"
+                disabled={geotiffBusy}
+                onClick={() => onExportClassifyGeotiff?.()}
+              >
+                <Download className="h-3 w-3" /> GeoTIFF
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Spectral indices */}
@@ -229,17 +639,25 @@ export function ImageProcessingPanel({
         <div className="mt-1 grid grid-cols-3 gap-1">
           {INDEX_LIST.map((idx) => {
             const them = thematic.find((t) => t.id === idx.id);
+            const enabled = them?.enabled !== false;
+            const tip = them
+              ? enabled
+                ? `${them.formula}\nBands: ${them.bands}`
+                : them.disabled_reason || 'Not applicable'
+              : idx.label;
             return (
               <button
                 key={idx.id}
                 type="button"
-                title={them ? `${them.formula}\nBands: ${them.bands}` : idx.label}
-                disabled={loading}
+                title={tip}
+                disabled={loading || !enabled}
                 onClick={() => onIndex(idx.id)}
                 className={`rounded-lg border px-1.5 py-1.5 text-[11px] font-semibold ${
-                  indexResult?.index === idx.id
-                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                    : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
+                  !enabled
+                    ? 'cursor-not-allowed border-[var(--line)] bg-[var(--bg)] opacity-40'
+                    : indexResult?.index === idx.id
+                      ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                      : 'border-[var(--line)] bg-white hover:border-[var(--accent)]'
                 }`}
               >
                 {idx.label}
@@ -428,6 +846,10 @@ export function ImageProcessingPanel({
         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
           Export processed outcomes
         </h3>
+        <p className="mb-1 text-[10px] text-[var(--muted)]">
+          After True Color / indices / stretch, download PNG or georeferenced{' '}
+          <strong>GeoTIFF</strong>.
+        </p>
         <div className="mt-1 grid grid-cols-2 gap-1">
           <button
             type="button"
@@ -436,6 +858,15 @@ export function ImageProcessingPanel({
             onClick={onExportIndexPng}
           >
             <Download className="h-3 w-3" /> Index PNG
+          </button>
+          <button
+            type="button"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={!indexResult || geotiffBusy}
+            onClick={() => onExportIndexGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Index GeoTIFF
           </button>
           <button
             type="button"
@@ -455,6 +886,15 @@ export function ImageProcessingPanel({
           </button>
           <button
             type="button"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={!compositeResult || geotiffBusy}
+            onClick={() => onExportCompositeGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Composite GeoTIFF
+          </button>
+          <button
+            type="button"
             className="ev-btn border border-[var(--line)] bg-white text-[10px]"
             disabled={!stretchResult?.overlay_base64}
             onClick={onExportStretchPng}
@@ -463,13 +903,32 @@ export function ImageProcessingPanel({
           </button>
           <button
             type="button"
-            className="ev-btn col-span-2 border border-[var(--line)] bg-white text-[10px]"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={!stretchResult || geotiffBusy}
+            onClick={() => onExportStretchGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Stretch GeoTIFF
+          </button>
+          <button
+            type="button"
+            className="ev-btn border border-[var(--line)] bg-white text-[10px]"
             onClick={onExportOverlayPng}
           >
-            <Download className="h-3 w-3" /> Download active map overlay PNG
+            <Download className="h-3 w-3" /> Active overlay PNG
+          </button>
+          <button
+            type="button"
+            className="ev-btn border border-[var(--accent)] bg-[var(--accent-soft)] text-[10px] text-[var(--accent)]"
+            disabled={geotiffBusy}
+            onClick={() => onExportOverlayGeotiff?.()}
+          >
+            {geotiffBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+            Active overlay GeoTIFF
           </button>
         </div>
       </section>
+      </div>
     </div>
   );
 }

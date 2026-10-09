@@ -8,6 +8,9 @@ interface Props {
   focusSceneId: string | null;
   loading: boolean;
   loadingOverlayIds: string[];
+  satelliteLabel?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
   onToggleEye: (scene: SceneSummary) => void;
   onFocus: (scene: SceneSummary) => void;
   onBack: () => void;
@@ -33,6 +36,9 @@ export function ScenesStep({
   focusSceneId,
   loading,
   loadingOverlayIds,
+  satelliteLabel,
+  dateFrom,
+  dateTo,
   onToggleEye,
   onFocus,
   onBack,
@@ -41,13 +47,29 @@ export function ScenesStep({
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3">
         <button type="button" className="ev-btn-ghost mb-1 -ml-2 px-2 py-1 text-xs" onClick={onBack}>
-          <ArrowLeft className="h-3.5 w-3.5" /> Change place
+          <ArrowLeft className="h-3.5 w-3.5" /> Change satellite / dates
         </button>
         <h2 className="font-display text-lg font-semibold">Satellite images</h2>
         <p className="text-sm text-[var(--muted)]">
           Near <span className="font-medium text-[var(--ink)]">{placeName}</span>
-          {' — '}eye shows real scene imagery (S2 color / S1 grayscale / Landsat tilted)
+          {' — '}use the eye icon to show or hide imagery on the map.
         </p>
+        {(satelliteLabel || (dateFrom && dateTo)) && (
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            {satelliteLabel && (
+              <>
+                Satellite:{' '}
+                <span className="font-medium text-[var(--ink)]">{satelliteLabel}</span>
+              </>
+            )}
+            {satelliteLabel && dateFrom && dateTo ? ' · ' : null}
+            {dateFrom && dateTo && (
+              <>
+                {formatDate(dateFrom)} → {formatDate(dateTo)}
+              </>
+            )}
+          </p>
+        )}
       </div>
 
       {loading && (
@@ -58,7 +80,9 @@ export function ScenesStep({
 
       {!loading && scenes.length === 0 && (
         <div className="rounded-lg bg-[var(--accent-soft)] p-4 text-sm text-[var(--accent)]">
-          No scenes found. Try another place or AOI.
+          No scenes found for this date range
+          {dateFrom && dateTo ? ` (${formatDate(dateFrom)} → ${formatDate(dateTo)})` : ''}.
+          Try different From/To dates or another area.
         </div>
       )}
 
@@ -118,7 +142,6 @@ export function ScenesStep({
                         <div className="truncate text-sm font-medium">{scene.name}</div>
                         <div className="mt-0.5 text-xs text-[var(--muted)]">
                           {formatDate(scene.sensing_time)}
-                          {scene.cloud_cover != null && ` · ${scene.cloud_cover}% cloud`}
                         </div>
                       </div>
                     </div>

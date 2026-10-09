@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models.user import UserRole
+from app.models.user import AccountStatus, UserRole
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    # Ops admin/master reset passwords may be shorter than registration minimum.
+    password: str = Field(min_length=6, max_length=128)
 
 
 class RegisterRequest(BaseModel):
@@ -40,6 +41,8 @@ class UserResponse(BaseModel):
     organization: str | None = None
     avatar_url: str | None = None
     allowed_tools: list[str] | None = None
+    allowed_satellites: list[str] | None = None
+    account_status: AccountStatus = AccountStatus.APPROVED
 
     model_config = {"from_attributes": True}
 

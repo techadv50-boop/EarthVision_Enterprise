@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { LegendInfo } from './analyticsService';
+import { toOverlayDataUrl } from '../utils/overlayDataUrl';
 
 export type TerrainProduct =
   | 'dem'
@@ -44,7 +45,7 @@ export interface BufferResult {
 }
 
 function toDataUrl(b64: string): string {
-  return `data:image/png;base64,${b64}`;
+  return toOverlayDataUrl(b64);
 }
 
 export const terrainService = {

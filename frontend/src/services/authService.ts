@@ -1,5 +1,7 @@
 import { api } from './api';
 
+export type AccountStatus = 'pending' | 'approved' | 'declined' | 'restricted';
+
 export interface User {
   id: string;
   email: string;
@@ -11,6 +13,9 @@ export interface User {
   avatar_url?: string | null;
   /** null = all toolboxes; list = only those toolbox ids */
   allowed_tools?: string[] | null;
+  /** null = all satellites; list = satellite name keys */
+  allowed_satellites?: string[] | null;
+  account_status?: AccountStatus;
 }
 
 export interface TokenResponse {

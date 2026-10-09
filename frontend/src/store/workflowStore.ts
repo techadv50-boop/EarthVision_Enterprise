@@ -20,7 +20,7 @@ export interface PlaceSelection {
 
 export interface MapOverlay {
   id: string;
-  kind: 'scene' | 'index' | 'change' | 'terrain' | 'buffer' | 'detection';
+  kind: 'scene' | 'index' | 'change' | 'terrain' | 'buffer' | 'detection' | 'classify';
   sceneId?: string;
   /** Static image URL (indices / change / terrain). Empty when using tileUrl or geojson-only. */
   url: string;
@@ -224,7 +224,8 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         overlay.kind === 'index' ||
         overlay.kind === 'change' ||
         overlay.kind === 'terrain' ||
-        overlay.kind === 'detection'
+        overlay.kind === 'detection' ||
+        overlay.kind === 'classify'
       ) {
         next = next.filter((o) => o.kind !== overlay.kind);
       }

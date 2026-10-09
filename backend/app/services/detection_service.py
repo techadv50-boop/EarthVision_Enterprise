@@ -1,4 +1,4 @@
-"""Spectral-index–guided AI / maritime / air-domain detectors for Light Explorer."""
+"""Spectral-index–guided AI / maritime / air-domain detectors for Eye In Sky."""
 
 from __future__ import annotations
 
@@ -143,8 +143,24 @@ TASK_META: dict[str, dict[str, Any]] = {
         "kind": "point",
         "count": (5, 18),
         "domain": "ai",
-        "algorithm": "Bright-target CFAR-style peaks on water (NDWI mask)",
-        "spectral": "water_blob",
+        "algorithm": (
+            "GEE OPT · AOI-first sensitive NIR (~0.04–0.07 + soft wakes) · "
+            "morph red outline · connected-pixel contacts"
+        ),
+        "spectral": "optical_nir_ship",
+        "optical_only": True,
+    },
+    "ship_detection_optical": {
+        "label": "Ship (optical)",
+        "kind": "point",
+        "count": (5, 18),
+        "domain": "maritime",
+        "algorithm": (
+            "GEE OPT · AOI-first sensitive NIR (~0.04–0.07 + soft wakes) · "
+            "morph red outline · connected-pixel contacts"
+        ),
+        "spectral": "optical_nir_ship",
+        "optical_only": True,
     },
     "aircraft_detection": {
         "label": "Aircraft",
@@ -250,14 +266,6 @@ TASK_META: dict[str, dict[str, Any]] = {
         "domain": "maritime",
         "algorithm": "CFAR bright-target detection on SAR-like intensity",
         "spectral": "blob",
-    },
-    "ship_detection_optical": {
-        "label": "Ship (optical)",
-        "kind": "point",
-        "count": (5, 18),
-        "domain": "maritime",
-        "algorithm": "Optical CFAR on NDWI water mask",
-        "spectral": "water_blob",
     },
     "vessel_density_map": {
         "label": "Vessel density",
@@ -527,6 +535,99 @@ class DetectionService:
         }
         algorithm = str(meta.get("algorithm") or "heuristic detector")
 
+        # Optical NIR ship detection (AI Tools → Ship Detection)
+        from app.services.optical_ship_detection import (
+            OPTICAL_SHIP_TASKS,
+            collection_is_optical_landsat_or_s2,
+            detect_ships_optical_nir,
+        )
+
+        if task in OPTICAL_SHIP_TASKS:
+            if not request.scene_id:
+                raise ValidationError(
+                    "Ship Detection stays off until you select a Landsat or Sentinel-2 image "
+                    "(turn the eye on)."
+                )
+            collection = self._scene_collection(request.scene_id)
+            if not collection_is_optical_landsat_or_s2(collection):
+                raise ValidationError(
+                    "Ship Detection works only with Landsat and Sentinel-2 optical imagery "
+                    f"(got {collection or 'unknown'})."
+                )
+            aoi_geom = request.aoi
+            if not aoi_geom or (aoi_geom.get("type") if isinstance(aoi_geom, dict) else None) != "Polygon":
+                raise ValidationError(
+                    "Ship Detection needs a drawn water-body AOI — use Rect AOI or Poly AOI "
+                    "to demarcate the water, then run again."
+                )
+            # OPT (GEE): clip load to water AOI bbox; NIR-only (+SCL) — fewer bands,
+            # higher res on the small AOI intersection.
+            aoi_bounds = bounds
+            try:
+                from shapely.geometry import shape as shp_shape
+
+                geom = shp_shape(aoi_geom)
+                if not geom.is_empty:
+                    minx, miny, maxx, maxy = geom.bounds
+                    aoi_bounds = [float(minx), float(miny), float(maxx), float(maxy)]
+            except Exception:  # noqa: BLE001
+                aoi_bounds = bounds
+            bands_pack = self._try_load_bands_with_bounds(
+                request.scene_id,
+                bounds=aoi_bounds,
+                size=1536,
+                max_edge=2048,
+                band_names=("nir", "scl"),
+            )
+            if not bands_pack or "nir" not in bands_pack[0]:
+                # Fallback: include VIS if NIR-only fetch failed
+                bands_pack = self._try_load_bands_with_bounds(
+                    request.scene_id,
+                    bounds=aoi_bounds,
+                    size=1280,
+                    max_edge=1536,
+                    band_names=("red", "green", "blue", "nir", "scl"),
+                )
+            if not bands_pack or "nir" not in bands_pack[0]:
+                raise ValidationError(
+                    "Could not load the NIR band for this scene — turn the eye off/on and retry."
+                )
+            bands, band_bounds = bands_pack
+            conf_min = float(request.confidence_min if request.confidence_min is not None else 0.08)
+            conf_min = max(0.05, min(conf_min, 0.9))
+            result = detect_ships_optical_nir(
+                bands,
+                band_bounds,
+                confidence_min=conf_min,
+                collection=collection,
+                aoi_polygon=aoi_geom,
+                # Keep the same sensitive open-sea logic as the working GEE version:
+                # AOI-adaptive NIR threshold constrained to 0.040–0.070, with
+                # a soft 0.72× band for faint decks/wakes.
+                nir_threshold=None,
+            )
+            overlay_b64 = None
+            if result.get("overlay") is not None:
+                from app.services.overlay_encode import encode_rgba_overlay
+
+                data, _mime = encode_rgba_overlay(result["overlay"], prefer="webp", quality=75)
+                overlay_b64 = base64.b64encode(data).decode("ascii")
+            out_bounds = result.get("bounds") or band_bounds
+            legend = self._legend(meta["label"], result["formula"])
+            return DetectionRunResponse(
+                task=task,
+                bounds=[float(x) for x in out_bounds],
+                overlay_base64=overlay_b64,
+                geojson=result["geojson"],
+                count=int(result["count"]),
+                legend=legend,
+                message=result["message"],
+                formula=result["formula"],
+                # On-image red demarcation only — no automatic shapefile download
+                shapefile_ready=False,
+                geometry_types=["Point", "Polygon"],
+            )
+
         bands = self._try_load_bands(request.scene_id)
         features: list[dict[str, Any]] = []
         mode = "synthetic_seeded"
@@ -563,14 +664,61 @@ class DetectionService:
             formula=f"{algorithm} [{mode}]",
         )
 
-    def _try_load_bands(self, scene_id: str | None) -> dict[str, np.ndarray] | None:
+    def _scene_collection(self, scene_id: str) -> str | None:
+        try:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            layer = SceneImageryService().get_layer(scene_id)
+            if layer:
+                return str(layer.get("collection") or layer.get("source") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("scene collection lookup failed: {}", exc)
+        return None
+
+    def _try_load_bands_with_bounds(
+        self,
+        scene_id: str | None,
+        *,
+        bounds: list[float],
+        size: int = 1024,
+        max_edge: int = 1536,
+        band_names: tuple[str, ...] = ("red", "green", "blue", "nir", "swir", "swir2"),
+    ) -> tuple[dict[str, np.ndarray], list[float]] | None:
+        """Load bands clipped to ``bounds`` (viewport / AOI) at higher resolution."""
+        if not scene_id:
+            return None
+        try:
+            from app.services.scene_imagery_service import SceneImageryService
+
+            bands, used_bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
+                scene_id,
+                size=size,
+                bounds=bounds,
+                band_names=band_names,
+                max_edge=max_edge,
+            )
+            if not bands:
+                return None
+            return bands, [float(x) for x in used_bounds]
+        except Exception as exc:  # noqa: BLE001
+            logger.info("No scene bands for detection ({}): {}", scene_id, exc)
+            return None
+
+    def _try_load_bands(
+        self,
+        scene_id: str | None,
+        size: int = 256,
+        band_names: tuple[str, ...] = ("red", "green", "blue", "nir", "swir", "swir2"),
+    ) -> dict[str, np.ndarray] | None:
         if not scene_id:
             return None
         try:
             from app.services.scene_imagery_service import SceneImageryService
 
             bands, _bounds, _fp, _layer = SceneImageryService().load_analysis_bands(
-                scene_id, size=256
+                scene_id,
+                size=size,
+                band_names=band_names,
             )
             return bands or None
         except Exception as exc:  # noqa: BLE001
@@ -1062,9 +1210,10 @@ class DetectionService:
         rgba[..., 1] = (g * 255).astype(np.uint8)
         rgba[..., 2] = (b * 255).astype(np.uint8)
         rgba[..., 3] = alpha
-        buf = io.BytesIO()
-        Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=True)
-        return buf.getvalue()
+        from app.services.overlay_encode import encode_rgba_overlay
+
+        data, _mime = encode_rgba_overlay(rgba, prefer="webp", quality=70)
+        return data
 
     def _legend(self, label: str, algorithm: str) -> LegendInfo:
         stops = [

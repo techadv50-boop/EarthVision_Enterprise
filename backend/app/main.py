@@ -1,12 +1,15 @@
-"""EarthVision Enterprise — FastAPI application entrypoint."""
+"""SAT EYE — Eye In Sky FastAPI application entrypoint."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.core.config import get_settings
@@ -15,6 +18,10 @@ from app.core.logging import setup_logging
 from app.database.session import init_db
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routers import build_api_router
+
+# Production UI build (frontend/dist). Served from the API so public tunnels
+# only need one port and avoid Vite's many-module 503 failures.
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 @asynccontextmanager
@@ -33,7 +40,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "EarthVision Enterprise — Commercial Earth Observation Platform. "
+            "SAT EYE — Eye In Sky commercial Earth observation platform. "
             "Satellite imagery search, GIS analysis, remote sensing analytics, "
             "and machine learning for geospatial intelligence."
         ),
@@ -46,6 +53,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=r"https?://.*",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -59,6 +67,35 @@ def create_app() -> FastAPI:
     from app.routers import health
 
     app.include_router(health.router)
+
+    if FRONTEND_DIST.is_dir() and (FRONTEND_DIST / "index.html").is_file():
+        assets_dir = FRONTEND_DIST / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+        index_html = FRONTEND_DIST / "index.html"
+
+        @app.get("/", include_in_schema=False)
+        async def spa_root() -> FileResponse:
+            """Serve the UI at the public root URL (not API JSON)."""
+            return FileResponse(index_html)
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> FileResponse:
+            """Serve built SPA files; fall back to index.html for client routes."""
+            # Never shadow API / docs (registered above; this is last-resort only)
+            candidate = (FRONTEND_DIST / full_path).resolve()
+            try:
+                candidate.relative_to(FRONTEND_DIST.resolve())
+            except ValueError:
+                return FileResponse(index_html)
+            if candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(index_html)
+
+        logger.info("Serving frontend from {}", FRONTEND_DIST)
+    else:
+        logger.warning("Frontend dist not found at {}; UI not mounted", FRONTEND_DIST)
 
     return app
 

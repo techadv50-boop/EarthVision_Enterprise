@@ -16,8 +16,8 @@ export function AppRouter() {
         <Route element={<ProtectedRoute />}>
           <Route path="/app" element={<WorkspacePage />} />
         </Route>
-        <Route path="/" element={<Navigate to="/app" replace />} />
-        <Route path="*" element={<Navigate to="/app" replace />} />
+        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>
   );

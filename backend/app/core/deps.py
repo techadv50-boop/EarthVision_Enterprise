@@ -38,8 +38,8 @@ async def get_current_user(
         raise UnauthorizedError("Invalid token subject")
     service = UserService(db)
     user = await service.get_by_id(user_id)
-    if user is None or not user.is_active:
-        raise UnauthorizedError("User not found or inactive")
+    if user is None or not user.can_login():
+        raise UnauthorizedError("User not found, inactive, or awaiting admin approval")
     return user
 
 

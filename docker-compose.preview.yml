@@ -1,0 +1,128 @@
+# SATEYE isolated PREVIEW stack — NOT production.
+#
+# Safety rules:
+# - Separate Compose project name: sateye-preview
+# - Separate ports (8200/8201/8202) — does not collide with Dokploy prod 8100–8102
+# - Separate named volumes — NEVER reuse production pgdata / cache / uploads
+# - Separate admin credentials (see .env.preview.example)
+# - Does not modify production project sateye-fz2ic4 or https://sateye.xdgen.com
+#
+# Start (on server, outside Dokploy prod project):
+#   docker compose -p sateye-preview -f docker-compose.preview.yml --env-file .env.preview up -d --build
+#
+# Preferred public host (requires DNS + reverse proxy):
+#   https://sateye-preview.xdgen.com  →  127.0.0.1:8202
+
+name: sateye-preview
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sateye_preview
+      POSTGRES_PASSWORD: ${PREVIEW_POSTGRES_PASSWORD:-preview-only-change-me}
+      POSTGRES_DB: sateye_preview
+    volumes:
+      - sateye_preview_pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # Preview DB is not published on the host by default (safety).
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sateye_preview -d sateye_preview"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sateye_preview_net
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    expose:
+      - "6379"
+    networks:
+      - sateye_preview_net
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sateye_preview:${PREVIEW_POSTGRES_PASSWORD:-preview-only-change-me}@db:5432/sateye_preview
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${PREVIEW_SECRET_KEY:-preview-secret-key-change-me-32chars!!}
+      CORS_ORIGINS: ${PREVIEW_CORS_ORIGINS:-["https://sateye-preview.xdgen.com","http://127.0.0.1:8202"]}
+      ADMIN_EMAIL: ${PREVIEW_ADMIN_EMAIL:-preview-admin@xdgen.com}
+      ADMIN_PASSWORD: ${PREVIEW_ADMIN_PASSWORD:-PreviewOnly123}
+      MASTER_PASSWORD: ${PREVIEW_MASTER_PASSWORD:-PreviewOnly123}
+      IMAGERY_CACHE_DIR: /data/cache
+      IMAGERY_DIR: /data/imagery
+      UPLOADS_DIR: /data/uploads
+      LOGS_DIR: /data/logs
+      COPERNICUS_USERNAME: ${COPERNICUS_USERNAME:-}
+      COPERNICUS_PASSWORD: ${COPERNICUS_PASSWORD:-}
+      CESIUM_ION_TOKEN: ${CESIUM_ION_TOKEN:-}
+    volumes:
+      - sateye_preview_cache:/data/cache
+      - sateye_preview_imagery:/data/imagery
+      - sateye_preview_uploads:/data/uploads
+      - sateye_preview_logs:/data/logs
+    ports:
+      - "127.0.0.1:8200:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\"",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 50s
+    networks:
+      - sateye_preview_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8201:80"
+    depends_on:
+      - backend
+    networks:
+      - sateye_preview_net
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./deployment/nginx.preview.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "127.0.0.1:8202:80"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - sateye_preview_net
+
+volumes:
+  sateye_preview_pgdata:
+  sateye_preview_cache:
+  sateye_preview_imagery:
+  sateye_preview_uploads:
+  sateye_preview_logs:
+
+networks:
+  sateye_preview_net:
+    name: sateye_preview_net
+    driver: bridge

@@ -1,5 +1,5 @@
 import { api } from './api';
-import type { User } from './authService';
+import type { AccountStatus, User } from './authService';
 
 export type ClientRole = User['role'];
 
@@ -7,6 +7,7 @@ export interface AdminUser extends User {
   bio?: string | null;
   created_at?: string;
   updated_at?: string;
+  account_status: AccountStatus;
 }
 
 export interface UserListResponse {
@@ -24,6 +25,10 @@ export interface CreateClientPayload {
   organization?: string;
   /** null = all toolboxes; list = only those */
   allowed_tools: string[] | null;
+  /** null = all satellites; list = satellite name keys */
+  allowed_satellites: string[] | null;
+  account_status?: AccountStatus;
+  is_active?: boolean;
 }
 
 export interface UpdateClientPayload {
@@ -32,12 +37,25 @@ export interface UpdateClientPayload {
   role?: ClientRole;
   is_active?: boolean;
   allowed_tools?: string[] | null;
+  allowed_satellites?: string[] | null;
+  account_status?: AccountStatus;
+}
+
+export interface AccountDecisionPayload {
+  status: 'approved' | 'declined' | 'restricted';
+  role?: ClientRole;
+  allowed_tools?: string[] | null;
+  allowed_satellites?: string[] | null;
 }
 
 export const adminService = {
-  async listUsers(page = 1, pageSize = 50): Promise<UserListResponse> {
+  async listUsers(
+    page = 1,
+    pageSize = 100,
+    status?: AccountStatus,
+  ): Promise<UserListResponse> {
     const { data } = await api.get<UserListResponse>('/users', {
-      params: { page, page_size: pageSize },
+      params: { page, page_size: pageSize, status },
     });
     return data;
   },
@@ -49,6 +67,14 @@ export const adminService = {
 
   async updateUser(userId: string, payload: UpdateClientPayload): Promise<AdminUser> {
     const { data } = await api.patch<AdminUser>(`/users/${userId}`, payload);
+    return data;
+  },
+
+  async decideAccount(
+    userId: string,
+    payload: AccountDecisionPayload,
+  ): Promise<AdminUser> {
+    const { data } = await api.post<AdminUser>(`/users/${userId}/decision`, payload);
     return data;
   },
 };

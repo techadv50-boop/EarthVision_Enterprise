@@ -31,7 +31,7 @@ def setup_logging() -> None:
         diagnose=settings.debug,
     )
     logger.add(
-        Path(log_dir) / "earthvision_{time:YYYY-MM-DD}.log",
+        Path(log_dir) / "sateye_{time:YYYY-MM-DD}.log",
         rotation="00:00",
         retention="30 days",
         compression="gz",

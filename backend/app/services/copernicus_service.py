@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -13,6 +14,18 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.config import get_settings
 from app.core.exceptions import ExternalServiceError, UnauthorizedError
 from app.schemas.catalog import CatalogSearchRequest, SceneSummary
+
+EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
+PC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+
+# Map UI collection names → (STAC endpoint, STAC collection ids, optional platform filter)
+STAC_COLLECTION_MAP: dict[str, tuple[str, list[str], str | None]] = {
+    "SENTINEL-2": (EARTH_SEARCH_URL, ["sentinel-2-l2a"], None),
+    "SENTINEL-1": (EARTH_SEARCH_URL, ["sentinel-1-grd"], None),
+    "LANDSAT-9": (PC_STAC_URL, ["landsat-c2-l2"], "landsat-9"),
+    "LANDSAT-8": (PC_STAC_URL, ["landsat-c2-l2"], "landsat-8"),
+    "LANDSAT-7": (PC_STAC_URL, ["landsat-c2-l2"], "landsat-7"),
+}
 
 
 class CopernicusTokenManager:
@@ -79,9 +92,16 @@ def get_token_manager() -> CopernicusTokenManager:
 COLLECTION_MAP: dict[str, str] = {
     "SENTINEL-1": "SENTINEL-1",
     "SENTINEL-2": "SENTINEL-2",
+    "SENTINEL-3": "SENTINEL-3",
+    "SENTINEL-5P": "SENTINEL-5P",
+    "LANDSAT-7": "LANDSAT-7",
     "LANDSAT-8": "LANDSAT-8",
     "LANDSAT-9": "LANDSAT-9",
-    "MODIS": "TERRA",
+    "MODIS": "TERRAAQUA",
+    "TERRAAQUA": "TERRAAQUA",
+    "TERRA": "TERRA",
+    "AQUA": "AQUA",
+    "SMOS": "SMOS",
 }
 
 
@@ -192,10 +212,31 @@ class CopernicusCatalogService:
             },
         )
 
+    def _resolve_date_window(
+        self, request: CatalogSearchRequest
+    ) -> tuple[datetime, datetime]:
+        """Return timezone-aware [start, end] from the UI date range."""
+        end = request.end_date or datetime.now(UTC)
+        start = request.start_date or (end - timedelta(days=90))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        else:
+            start = start.astimezone(UTC)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        else:
+            end = end.astimezone(UTC)
+        if start > end:
+            start, end = end, start
+        return start, end
+
     async def search(self, request: CatalogSearchRequest) -> tuple[list[SceneSummary], int]:
-        """Search the CDSE catalog. Falls back to synthetic demo scenes when unauthenticated."""
+        """Search the CDSE catalog. Falls back to STAC (date-aware) then demo scenes."""
         if not self.token_manager.is_configured:
-            logger.warning("CDSE not configured — returning demo catalog results")
+            logger.warning("CDSE not configured — searching public STAC with requested dates")
+            stac = await self._stac_results(request)
+            if stac[0]:
+                return stac
             return self._demo_results(request)
 
         filter_expr = self._build_filter(request)
@@ -226,14 +267,164 @@ class CopernicusCatalogService:
                 scenes = [self._parse_scene(item) for item in items]
                 return scenes, len(scenes)
         except (httpx.HTTPError, ExternalServiceError, UnauthorizedError) as exc:
-            logger.warning("Catalog search error, falling back to demo: {}", exc)
+            logger.warning("Catalog search error, falling back to STAC/demo: {}", exc)
+            stac = await self._stac_results(request)
+            if stac[0]:
+                return stac
             return self._demo_results(request)
 
-    def _demo_results(self, request: CatalogSearchRequest) -> tuple[list[SceneSummary], int]:
-        """Generate realistic recent demo scenes (default 20) for offline / unconfigured CDSE."""
-        import uuid
-        from datetime import timedelta
+    async def _stac_results(
+        self, request: CatalogSearchRequest
+    ) -> tuple[list[SceneSummary], int]:
+        """Search Element84 / Planetary Computer STAC using the UI date range."""
+        start, end = self._resolve_date_window(request)
+        bbox = request.bbox
+        if not bbox or len(bbox) != 4:
+            logger.warning("STAC catalog search skipped — bbox required to apply date range")
+            return [], 0
 
+        collections = list(request.collections or ["SENTINEL-2"])
+        limit = max(1, min(request.max_results, 20))
+        cloud_max = request.cloud_cover_max
+        start_s = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_s = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+        scenes: list[SceneSummary] = []
+
+        try:
+            async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+                for coll in collections:
+                    mapping = STAC_COLLECTION_MAP.get(coll)
+                    if not mapping:
+                        continue
+                    url, stac_collections, platform = mapping
+                    body: dict[str, Any] = {
+                        "collections": stac_collections,
+                        "bbox": [float(x) for x in bbox],
+                        "datetime": f"{start_s}/{end_s}",
+                        "limit": limit,
+                        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
+                    }
+                    query: dict[str, Any] = {}
+                    if cloud_max is not None and (
+                        coll.startswith("SENTINEL-2") or coll.startswith("LANDSAT")
+                    ):
+                        query["eo:cloud_cover"] = {"lt": float(cloud_max) + 0.01}
+                    if query:
+                        body["query"] = query
+
+                    response = await client.post(url, json=body)
+                    if response.status_code != 200:
+                        logger.warning(
+                            "STAC catalog {} → {} {}",
+                            coll,
+                            response.status_code,
+                            response.text[:200],
+                        )
+                        continue
+
+                    for feat in response.json().get("features") or []:
+                        scene = self._parse_stac_feature(feat, coll, platform)
+                        if scene is None:
+                            continue
+                        # Enforce the UI date window strictly
+                        if scene.sensing_time is not None:
+                            st = scene.sensing_time
+                            if st.tzinfo is None:
+                                st = st.replace(tzinfo=UTC)
+                            else:
+                                st = st.astimezone(UTC)
+                            if st < start or st > end:
+                                continue
+                        scenes.append(scene)
+                        if len(scenes) >= limit:
+                            break
+                    if len(scenes) >= limit:
+                        break
+        except httpx.HTTPError as exc:
+            logger.warning("STAC catalog search failed: {}", exc)
+            return [], 0
+
+        scenes.sort(
+            key=lambda s: s.sensing_time or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        scenes = scenes[:limit]
+        if scenes:
+            logger.info(
+                "STAC catalog returned {} scene(s) for {} → {}",
+                len(scenes),
+                start_s,
+                end_s,
+            )
+        return scenes, len(scenes)
+
+    def _parse_stac_feature(
+        self,
+        feat: dict[str, Any],
+        ui_collection: str,
+        platform_filter: str | None,
+    ) -> SceneSummary | None:
+        props = feat.get("properties") or {}
+        plat = str(props.get("platform") or "").lower().replace("_", "-")
+        if platform_filter:
+            wanted = platform_filter.lower().replace("_", "-")
+            # Accept "landsat-8", "landsat_8", or bare "8"/"9" in platform string
+            if wanted not in plat and wanted.split("-")[-1] not in plat:
+                return None
+
+        dt_raw = props.get("datetime") or props.get("start_datetime")
+        sensing_time = None
+        if isinstance(dt_raw, str):
+            try:
+                sensing_time = datetime.fromisoformat(dt_raw.replace("Z", "+00:00"))
+            except ValueError:
+                sensing_time = None
+
+        geom = feat.get("geometry")
+        center = None
+        if isinstance(geom, dict) and geom.get("type") == "Polygon":
+            try:
+                ring = geom["coordinates"][0]
+                lons = [c[0] for c in ring]
+                lats = [c[1] for c in ring]
+                center = [(min(lons) + max(lons)) / 2, (min(lats) + max(lats)) / 2]
+            except (IndexError, TypeError, KeyError):
+                center = None
+        elif feat.get("bbox") and len(feat["bbox"]) == 4:
+            bb = feat["bbox"]
+            center = [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2]
+
+        cloud = props.get("eo:cloud_cover")
+        try:
+            cloud_cover = float(cloud) if cloud is not None else None
+        except (TypeError, ValueError):
+            cloud_cover = None
+
+        stac_id = str(feat.get("id") or uuid.uuid4())
+        name = str(props.get("s2:product_uri") or props.get("landsat:scene_id") or stac_id)
+
+        return SceneSummary(
+            id=stac_id,
+            name=name,
+            collection=ui_collection,
+            platform=str(props.get("platform") or ui_collection.split("-")[0]),
+            sensing_time=sensing_time,
+            cloud_cover=cloud_cover,
+            footprint=geom if isinstance(geom, dict) else None,
+            center=center,
+            thumbnail_url=(feat.get("assets") or {}).get("thumbnail", {}).get("href"),
+            size_bytes=None,
+            content_date=dt_raw if isinstance(dt_raw, str) else None,
+            product_type=str(props.get("s2:product_type") or props.get("instruments") or "L2"),
+            metadata={
+                "source": "stac-catalog",
+                "stac_id": stac_id,
+                "stac_collection": (feat.get("collection") or ""),
+            },
+        )
+
+    def _demo_results(self, request: CatalogSearchRequest) -> tuple[list[SceneSummary], int]:
+        """Generate demo scenes constrained to the requested From/To date range."""
         bbox = request.bbox or [2.0, 48.5, 2.8, 49.1]
         west, south, east, north = bbox
         clon = (west + east) / 2
@@ -250,13 +441,20 @@ class CopernicusCatalogService:
             "MODIS": "MOD09GA",
         }
 
-        limit = max(1, min(request.max_results, 20))
-        now = datetime.now(UTC)
+        start, end = self._resolve_date_window(request)
+        span_seconds = max((end - start).total_seconds(), 86400.0)
+        # ~one scene every 5 days inside the window, capped by max_results
+        approx_count = max(1, int(span_seconds / (5 * 86400)) + 1)
+        limit = max(1, min(request.max_results, 20, approx_count))
+
         scenes: list[SceneSummary] = []
         for j in range(limit):
             collection = collections[j % len(collections)]
-            # Most recent first: every ~5 days back
-            sensing = now - timedelta(days=j * 5, hours=j % 7)
+            # Most recent first, evenly spaced inside [start, end]
+            frac = j / max(limit - 1, 1)
+            sensing = end - timedelta(seconds=span_seconds * frac)
+            if sensing < start:
+                sensing = start
             cloud_cap = request.cloud_cover_max if request.cloud_cover_max is not None else 80.0
             cloud = round((j * 4.7) % max(cloud_cap, 1.0), 1)
             # Footprints: Landsat/S1 are orbit-tilted parallelograms; S2 closer to rectangular tile
@@ -315,7 +513,13 @@ class CopernicusCatalogService:
                     size_bytes=int(720_000_000 + j * 18_000_000 + abs(math.sin(j)) * 2_000_000),
                     content_date=sensing.isoformat(),
                     product_type=product_types.get(collection, "L2"),
-                    metadata={"demo": True, "source": "earthvision-demo-catalog", "rank": j + 1},
+                    metadata={
+                        "demo": True,
+                        "source": "earthvision-demo-catalog",
+                        "rank": j + 1,
+                        "date_from": start.isoformat(),
+                        "date_to": end.isoformat(),
+                    },
                 )
             )
         return scenes, len(scenes)

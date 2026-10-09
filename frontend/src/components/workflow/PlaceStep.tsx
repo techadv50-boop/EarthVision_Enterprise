@@ -1,8 +1,13 @@
-import { useState } from 'react';
-import { MapPin, Search } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Crosshair, Loader2, MapPin, Plus, Search, Shield } from 'lucide-react';
 import { gisService, type GeocodeResult } from '../../services/gisService';
 import { getErrorMessage } from '../../services/api';
+import type { CollectionName } from '../../services/catalogService';
+import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import type { PlaceSelection } from '../../store/workflowStore';
+
+/** Half-width of the search window around a point (degrees ≈ 20 km at mid-latitudes). */
+const DEFAULT_COORD_PAD = 0.2;
 
 const QUICK_PLACES: PlaceSelection[] = [
   {
@@ -31,9 +36,54 @@ const QUICK_PLACES: PlaceSelection[] = [
   },
 ];
 
+export interface SceneDateRange {
+  startDate: string; // YYYY-MM-DD
+  endDate: string;
+}
+
+export interface SatelliteOption {
+  id: string;
+  label: string;
+  collections: CollectionName[];
+  /** High-res flag — unlocks AI / Change / Maritime / Air when true. */
+  isHighResolution?: boolean;
+}
+
+/** Fallback if the satellites API is unreachable. */
+export const SATELLITE_OPTIONS: SatelliteOption[] = [
+  { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'], isHighResolution: false },
+  { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'], isHighResolution: false },
+  { id: 'SENTINEL-3', label: 'Sentinel-3', collections: ['SENTINEL-3'], isHighResolution: false },
+  { id: 'SENTINEL-5P', label: 'Sentinel-5P', collections: ['SENTINEL-5P'], isHighResolution: false },
+  { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'], isHighResolution: false },
+  { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'], isHighResolution: false },
+  { id: 'LANDSAT-7', label: 'Landsat-7', collections: ['LANDSAT-7'], isHighResolution: false },
+  { id: 'MODIS', label: 'MODIS (Terra+Aqua)', collections: ['TERRAAQUA'], isHighResolution: false },
+  { id: 'TERRA', label: 'Terra MODIS', collections: ['TERRA'], isHighResolution: false },
+  { id: 'AQUA', label: 'Aqua MODIS', collections: ['AQUA'], isHighResolution: false },
+  { id: 'SMOS', label: 'SMOS', collections: ['SMOS'], isHighResolution: false },
+];
+
+export interface CatalogFilters {
+  satelliteId: string;
+  satelliteLabel: string;
+  collections: CollectionName[];
+  /** True only for future high-res satellite APIs. */
+  isHighResolution: boolean;
+  startDate: string;
+  endDate: string;
+}
+
 interface Props {
-  onSelect: (place: PlaceSelection) => void;
+  onSelect: (place: PlaceSelection, filters: CatalogFilters) => void;
   busy?: boolean;
+  filters: CatalogFilters;
+  onFiltersChange: (filters: CatalogFilters) => void;
+  /** Admin-only: show entry point to add satellite catalog APIs. */
+  isAdmin?: boolean;
+  onOpenSatelliteAdmin?: () => void;
+  /** Bump to reload the enabled satellite list after admin changes. */
+  satelliteRefreshKey?: number;
 }
 
 function resultToPlace(r: GeocodeResult): PlaceSelection {
@@ -55,21 +105,158 @@ function resultToPlace(r: GeocodeResult): PlaceSelection {
   };
 }
 
-export function PlaceStep({ onSelect, busy }: Props) {
-  const [query, setQuery] = useState('Lahore');
+function toOptions(rows: SatellitePublic[]): SatelliteOption[] {
+  return rows.map((row) => ({
+    id: row.name,
+    label: row.label,
+    collections: [row.collection_id],
+    isHighResolution: Boolean(row.is_high_resolution),
+  }));
+}
+
+function parseCoord(raw: string): number | null {
+  const n = Number(String(raw).trim().replace(/°/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function placeFromCoordinates(
+  latitude: number,
+  longitude: number,
+  pad = DEFAULT_COORD_PAD,
+): PlaceSelection {
+  return {
+    name: `${latitude.toFixed(4)}°, ${longitude.toFixed(4)}°`,
+    longitude,
+    latitude,
+    bbox: [longitude - pad, latitude - pad, longitude + pad, latitude + pad],
+  };
+}
+
+export function PlaceStep({
+  onSelect,
+  busy,
+  filters,
+  onFiltersChange,
+  isAdmin = false,
+  onOpenSatelliteAdmin,
+  satelliteRefreshKey = 0,
+}: Props) {
+  const [query, setQuery] = useState('');
+  const [latInput, setLatInput] = useState('');
+  const [lonInput, setLonInput] = useState('');
   const [results, setResults] = useState<GeocodeResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [satellites, setSatellites] = useState<SatelliteOption[]>(SATELLITE_OPTIONS);
+  const [satsLoading, setSatsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setSatsLoading(true);
+      try {
+        const rows = await satelliteService.listEnabled();
+        if (!cancelled) {
+          // Empty list is intentional for restricted accounts with no satellite grants.
+          setSatellites(rows.length ? toOptions(rows) : []);
+        }
+      } catch {
+        // Keep static fallback only when the API is unreachable.
+      } finally {
+        if (!cancelled) setSatsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [satelliteRefreshKey]);
+
+  const satelliteSelected = Boolean(filters.satelliteId);
+  const { startDate, endDate } = filters;
+  const rangeError =
+    startDate && endDate && startDate > endDate
+      ? 'From date must be on or before To date'
+      : null;
+  const canSearchPlace =
+    satelliteSelected && Boolean(startDate) && Boolean(endDate) && !rangeError;
+
+  const pickSatellite = (option: SatelliteOption) => {
+    setError(null);
+    onFiltersChange({
+      ...filters,
+      satelliteId: option.id,
+      satelliteLabel: option.label,
+      collections: option.collections,
+      isHighResolution: Boolean(option.isHighResolution),
+    });
+  };
+
+  const selectPlace = (place: PlaceSelection) => {
+    if (!filters.satelliteId) {
+      setError('Select a satellite first');
+      return;
+    }
+    if (rangeError || !startDate || !endDate) {
+      setError(rangeError || 'Choose a From and To date for scenes');
+      return;
+    }
+    setError(null);
+    onSelect(place, filters);
+  };
+
+  const searchByCoordinates = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!canSearchPlace) {
+      setError(
+        !filters.satelliteId
+          ? 'Select a satellite first'
+          : rangeError || 'Choose a From and To date for scenes',
+      );
+      return;
+    }
+    const lat = parseCoord(latInput);
+    const lon = parseCoord(lonInput);
+    if (lat == null || lon == null) {
+      setError('Enter both latitude and longitude to search an area');
+      return;
+    }
+    if (lat < -90 || lat > 90) {
+      setError('Latitude must be between −90 and 90');
+      return;
+    }
+    if (lon < -180 || lon > 180) {
+      setError('Longitude must be between −180 and 180');
+      return;
+    }
+    setError(null);
+    setResults([]);
+    selectPlace(placeFromCoordinates(lat, lon));
+  };
 
   const search = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!query.trim()) return;
+    if (!query.trim()) {
+      setError('Enter a place name, or add coordinates below to search an area');
+      return;
+    }
+    if (!canSearchPlace) {
+      setError(
+        !filters.satelliteId
+          ? 'Select a satellite first'
+          : rangeError || 'Choose a From and To date for scenes',
+      );
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const data = await gisService.geocode(query.trim(), 6);
       setResults(data);
-      if (data.length === 1) onSelect(resultToPlace(data[0]));
+      if (data.length === 0) {
+        setError('No places found — try coordinates instead (latitude & longitude)');
+      } else if (data.length === 1) {
+        selectPlace(resultToPlace(data[0]));
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -80,59 +267,232 @@ export function PlaceStep({ onSelect, busy }: Props) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="font-display text-lg font-semibold text-[var(--ink)]">Choose a place</h2>
+        <h2 className="font-display text-lg font-semibold text-[var(--ink)]">Find scenes</h2>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Search a city or click the map. We load the 20 most recent satellite scenes for that area.
+          Choose a satellite and date range, then add coordinates to search an area.
         </p>
       </div>
 
-      <form onSubmit={search} className="flex gap-2">
-        <input
-          className="ev-input"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="e.g. Lahore"
-          disabled={busy}
-        />
-        <button type="submit" className="ev-btn-primary shrink-0" disabled={loading || busy}>
-          <Search className="h-4 w-4" />
-          {loading ? '…' : 'Search'}
-        </button>
-      </form>
-
-      {error && <p className="text-xs text-red-600">{error}</p>}
-
-      <div className="flex flex-wrap gap-2">
-        {QUICK_PLACES.map((p) => (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            1. Satellite
+          </div>
+          {isAdmin && onOpenSatelliteAdmin && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)] hover:underline"
+              onClick={onOpenSatelliteAdmin}
+            >
+              <Plus className="h-3 w-3" />
+              Add API
+            </button>
+          )}
+        </div>
+        {satsLoading ? (
+          <div className="flex items-center gap-2 py-2 text-xs text-[var(--muted)]">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading satellites…
+          </div>
+        ) : satellites.length ? (
+          <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-0.5">
+            {satellites.map((option) => {
+              const active = filters.satelliteId === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => pickSatellite(option)}
+                  className={`rounded-lg border px-3 py-2 text-left text-sm font-medium transition ${
+                    active
+                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/30'
+                      : 'border-[var(--line)] bg-white text-[var(--ink)] hover:bg-[var(--accent-soft)]/50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--muted)]">
+            No satellites are enabled for this account. Ask an administrator to grant access.
+          </p>
+        )}
+        {isAdmin && onOpenSatelliteAdmin && (
           <button
-            key={p.name}
             type="button"
-            className="rounded-full border border-[var(--line)] bg-[var(--accent-soft)] px-3 py-1 text-xs font-medium text-[var(--accent)] hover:brightness-95"
-            onClick={() => onSelect(p)}
-            disabled={busy}
+            onClick={onOpenSatelliteAdmin}
+            className="flex w-full items-start gap-2 rounded-lg border border-dashed border-[var(--accent)]/50 bg-[var(--accent-soft)]/50 px-3 py-2.5 text-left transition hover:bg-[var(--accent-soft)]"
           >
-            {p.name.split(',')[0]}
+            <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
+            <span>
+              <span className="block text-sm font-semibold text-[var(--accent)]">
+                Admin · Add satellite API
+              </span>
+              <span className="mt-0.5 block text-[11px] text-[var(--muted)]">
+                Register a new catalog API (URL, token, credentials). Visible to admin only;
+                enabled satellites appear here for all clients.
+              </span>
+            </span>
           </button>
-        ))}
+        )}
       </div>
 
-      {results.length > 0 && (
-        <ul className="max-h-48 space-y-1 overflow-y-auto">
-          {results.map((r) => (
-            <li key={`${r.longitude}-${r.latitude}-${r.display_name}`}>
+      {satelliteSelected && (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            2. Date range
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-[var(--muted)]">From</span>
+              <input
+                type="date"
+                className="ev-input text-sm"
+                value={startDate}
+                max={endDate || undefined}
+                onChange={(e) =>
+                  onFiltersChange({ ...filters, startDate: e.target.value })
+                }
+                disabled={busy}
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-[var(--muted)]">To</span>
+              <input
+                type="date"
+                className="ev-input text-sm"
+                value={endDate}
+                min={startDate || undefined}
+                onChange={(e) =>
+                  onFiltersChange({ ...filters, endDate: e.target.value })
+                }
+                disabled={busy}
+                required
+              />
+            </label>
+          </div>
+          {rangeError && <p className="text-xs text-red-600">{rangeError}</p>}
+        </div>
+      )}
+
+      {canSearchPlace && (
+        <div className="space-y-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            3. Area
+          </div>
+
+          <div className="rounded-lg border border-[var(--accent)]/35 bg-[var(--accent-soft)]/40 px-3 py-3">
+            <p className="text-sm font-medium text-[var(--ink)]">
+              Add coordinates to search an area
+            </p>
+            <p className="mt-0.5 text-[11px] text-[var(--muted)]">
+              Enter latitude and longitude (WGS84). Decimal degrees, e.g. 31.5204, 74.3587.
+            </p>
+            <form onSubmit={searchByCoordinates} className="mt-3 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-[11px] text-[var(--muted)]">Latitude</span>
+                  <input
+                    className="ev-input text-sm"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="e.g. 31.5204"
+                    value={latInput}
+                    onChange={(e) => setLatInput(e.target.value)}
+                    disabled={busy}
+                    aria-label="Latitude"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] text-[var(--muted)]">Longitude</span>
+                  <input
+                    className="ev-input text-sm"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="e.g. 74.3587"
+                    value={lonInput}
+                    onChange={(e) => setLonInput(e.target.value)}
+                    disabled={busy}
+                    aria-label="Longitude"
+                  />
+                </label>
+              </div>
               <button
-                type="button"
-                className="flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-[var(--accent-soft)]"
-                onClick={() => onSelect(resultToPlace(r))}
+                type="submit"
+                className="ev-btn-primary w-full justify-center"
                 disabled={busy}
               >
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
-                <span>{r.display_name}</span>
+                <Crosshair className="h-4 w-4" />
+                Search this area
               </button>
-            </li>
-          ))}
-        </ul>
+            </form>
+          </div>
+
+          <div className="relative py-1 text-center text-[11px] uppercase tracking-wide text-[var(--muted)]">
+            <span className="bg-[var(--panel,#fff)] px-2 relative z-[1]">or</span>
+            <span className="absolute inset-x-0 top-1/2 h-px bg-[var(--line)]" aria-hidden />
+          </div>
+
+          <form onSubmit={search} className="flex gap-2">
+            <input
+              className="ev-input"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by place name"
+              disabled={busy}
+            />
+            <button
+              type="submit"
+              className="ev-btn-primary shrink-0"
+              disabled={loading || busy}
+            >
+              <Search className="h-4 w-4" />
+              {loading ? '…' : 'Search'}
+            </button>
+          </form>
+
+          <div className="flex flex-wrap gap-2">
+            {QUICK_PLACES.map((p) => (
+              <button
+                key={p.name}
+                type="button"
+                className="rounded-full border border-[var(--line)] bg-[var(--accent-soft)] px-3 py-1 text-xs font-medium text-[var(--accent)] hover:brightness-95"
+                onClick={() => selectPlace(p)}
+                disabled={busy}
+              >
+                {p.name.split(',')[0]}
+              </button>
+            ))}
+          </div>
+
+          <p className="text-[11px] text-[var(--muted)]">
+            Or click the map to drop a point and search that location.
+          </p>
+
+          {results.length > 0 && (
+            <ul className="max-h-48 space-y-1 overflow-y-auto">
+              {results.map((r) => (
+                <li key={`${r.longitude}-${r.latitude}-${r.display_name}`}>
+                  <button
+                    type="button"
+                    className="flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-[var(--accent-soft)]"
+                    onClick={() => selectPlace(resultToPlace(r))}
+                    disabled={busy}
+                  >
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
+                    <span>{r.display_name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
     </div>
   );
 }

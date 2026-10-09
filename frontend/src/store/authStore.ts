@@ -7,6 +7,8 @@ interface AuthState {
   loading: boolean;
   error: string | null;
   initialized: boolean;
+  /** Set after public registration while waiting for admin approval. */
+  registrationPending: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (payload: {
     email: string;
@@ -24,9 +26,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   loading: false,
   error: null,
   initialized: false,
+  registrationPending: false,
 
   login: async (email, password) => {
-    set({ loading: true, error: null });
+    set({ loading: true, error: null, registrationPending: false });
     try {
       await authService.login(email, password);
       const user = await authService.me();
@@ -38,12 +41,16 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   register: async (payload) => {
-    set({ loading: true, error: null });
+    set({ loading: true, error: null, registrationPending: false });
     try {
+      // Do not auto-login — public accounts require admin approval first.
       await authService.register(payload);
-      await authService.login(payload.email, payload.password);
-      const user = await authService.me();
-      set({ user, loading: false, initialized: true });
+      set({
+        user: null,
+        loading: false,
+        initialized: true,
+        registrationPending: true,
+      });
     } catch (error) {
       set({ error: getErrorMessage(error), loading: false });
       throw error;
@@ -52,7 +59,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   logout: () => {
     authService.logout();
-    set({ user: null });
+    set({ user: null, registrationPending: false });
   },
 
   loadUser: async () => {

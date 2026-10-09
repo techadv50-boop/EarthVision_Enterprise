@@ -2,9 +2,11 @@ import axios, { type AxiosInstance, type AxiosError } from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
 
+// Slightly above server 55s render budget so users see our 504 message,
+// not the opaque "timeout of 60000ms exceeded" axios error.
 export const api: AxiosInstance = axios.create({
   baseURL: API_URL,
-  timeout: 60000,
+  timeout: 75000,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -47,10 +49,26 @@ api.interceptors.response.use(
 
 export function getErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
     const detail = error.response?.data?.detail;
-    if (typeof detail === 'string') return detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
     if (Array.isArray(detail)) return detail.map((d) => d.msg || String(d)).join(', ');
-    return error.message;
+
+    const code = error.code;
+    if (
+      code === 'ECONNABORTED' ||
+      /timeout/i.test(error.message) ||
+      status === 504
+    ) {
+      return 'Request timed out — zoom in or retry. Previews stay small on slow links.';
+    }
+    if (status === 502 || status === 503 || status === 520 || status === 524) {
+      return 'Server temporarily unavailable — please retry in a moment.';
+    }
+    if (status === 500) {
+      return 'Internal server error — please retry. If it persists, turn the eye off/on.';
+    }
+    return error.message || 'Request failed';
   }
   if (error instanceof Error) return error.message;
   return 'Unexpected error';

@@ -21,7 +21,7 @@ class ReportService:
         doc = SimpleDocTemplate(buffer, pagesize=A4, title=title)
         styles = getSampleStyleSheet()
         story: list[Any] = []
-        story.append(Paragraph("EarthVision Enterprise", styles["Title"]))
+        story.append(Paragraph("SAT EYE — Eye In Sky", styles["Title"]))
         story.append(Paragraph(title, styles["Heading1"]))
         story.append(
             Paragraph(
