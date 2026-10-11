@@ -27,8 +27,10 @@ def encode_rgba_overlay(
     buf = io.BytesIO()
     if prefer == "webp":
         try:
-            # method=0 → fastest encode; quality trades size vs fidelity
-            img.save(buf, format="WEBP", quality=int(quality), method=0)
+            # method=4 → sharper encode than method=0 (was a blur source on map overlays)
+            q = int(quality)
+            method = 4 if q >= 85 else 0
+            img.save(buf, format="WEBP", quality=q, method=method)
             return buf.getvalue(), "image/webp"
         except Exception:  # noqa: BLE001
             buf = io.BytesIO()

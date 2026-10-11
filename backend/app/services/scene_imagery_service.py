@@ -1557,8 +1557,9 @@ class SceneImageryService:
                             float(window.width) < target_w
                             or float(window.height) < target_h
                         )
+                        # Cubic downsample keeps edges sharper than bilinear for TCI.
                         resampling = (
-                            Resampling.nearest if oversampling else Resampling.bilinear
+                            Resampling.nearest if oversampling else Resampling.cubic
                         )
                         count = min(3, src.count)
                         data = src.read(

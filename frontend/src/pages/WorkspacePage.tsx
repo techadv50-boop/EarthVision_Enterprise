@@ -1189,7 +1189,6 @@ export function WorkspacePage() {
         scene_id: focusScene.id,
         collection: focusScene.collection,
         bbox: [...bounds],
-        size: 512,
         ...stretch,
       });
       setCompositeResult(result);

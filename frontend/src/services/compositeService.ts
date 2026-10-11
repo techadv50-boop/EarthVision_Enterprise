@@ -1,6 +1,10 @@
 import { api } from './api';
 import type { LegendInfo } from './analyticsService';
-import { INTERACTIVE_PREVIEW_SIZE, toOverlayDataUrl } from '../utils/overlayDataUrl';
+import {
+  COMPOSITE_PREVIEW_SIZE,
+  INTERACTIVE_PREVIEW_SIZE,
+  toOverlayDataUrl,
+} from '../utils/overlayDataUrl';
 
 export type CompositePreset =
   | 'true_color'
@@ -120,15 +124,17 @@ export const compositeService = {
     brightness?: number;
     contrast?: number;
   }): Promise<CompositeResult> {
+    const { size: requestedSize, ...rest } = payload;
     const { data } = await api.post<CompositeResult>('/analytics/composite', {
       stretch: 'percentile',
-      size: INTERACTIVE_PREVIEW_SIZE,
       p_low: 2,
       p_high: 98,
-      gamma: 1.35,
+      gamma: 1.25,
       brightness: 1.0,
-      contrast: 1.05,
-      ...payload,
+      contrast: 1.0,
+      ...rest,
+      // Sharp composite grid — avoid soft 512px stretch over full scene footprint.
+      size: Math.max(requestedSize ?? 0, COMPOSITE_PREVIEW_SIZE),
     });
     return data;
   },

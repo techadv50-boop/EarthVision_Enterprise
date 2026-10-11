@@ -35,7 +35,8 @@ class CompositeRequest(BaseModel):
     red_band: str | None = None
     green_band: str | None = None
     blue_band: str | None = None
-    size: int = Field(default=512, ge=64, le=640)
+    # Larger default so True/False Color overlays stay sharp on the map.
+    size: int = Field(default=1280, ge=64, le=1536)
     stretch: Literal["percentile", "minmax", "none"] = "percentile"
     p_low: float = Field(default=2.0, ge=0, le=49)
     p_high: float = Field(default=98.0, ge=51, le=100)

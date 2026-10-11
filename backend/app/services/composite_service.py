@@ -275,10 +275,10 @@ class CompositeService:
         else:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
 
-        # True/false color: build from surface-reflectance bands with EO stretch.
-        # Extent follows the scene layer bounds passed by the client (original image).
-        # Use client size as-is — interactive map overlays stay fast on slow links.
-        size = max(64, min(int(request.size or 512), 640))
+        # True/false color: mix satellite-accurate R/G/B (or FCC) bands, tone-map,
+        # then encode as a map overlay. Cap raised to 1536 so full-scene footprints
+        # are not soft when a ~512px preview is stretched across the globe.
+        size = max(64, min(int(request.size or 1280), 1536))
 
         if preset_id == "true_color" and request.scene_id:
             # Prefer ESA/USGS official visual TCI — already natural-color balanced.
@@ -293,7 +293,8 @@ class CompositeService:
                     contrast=request.contrast if abs(request.contrast - 1.0) > 0.02 else 1.0,
                 )
                 hist = self._rgb_histogram(rgb)
-                png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=85)
+                # Higher quality — low WebP q is a major blur source on the map.
+                png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=92)
                 return CompositeResponse(
                     preset=preset_id,
                     label=label,
@@ -306,7 +307,8 @@ class CompositeService:
                     legend=self._rgb_legend(label, formula),
                     message=(
                         f"{label} · {family_label(family) if family else 'scene'} · "
-                        f"esa_tci · official natural color"
+                        f"bands {(composite_for_family(preset_id, family) or {}).get('codes', 'RGB')} · "
+                        f"esa_tci · preview {size}px"
                     ),
                     stretch="esa_tci",
                 )
@@ -337,15 +339,13 @@ class CompositeService:
                 p_low=request.p_low,
                 p_high=request.p_high,
                 gamma=request.gamma if request.gamma else 1.25,
-                brightness=request.brightness,
-                contrast=request.contrast,
+                brightness=request.brightness if request.brightness else 1.0,
+                contrast=request.contrast if request.contrast else 1.0,
             )
             stretch_label = "fcc_professional"
 
         hist = self._rgb_histogram(rgb)
-        png = self._rgb_to_png(
-            rgb, valid_mask=valid_mask, quality=85 if preset_id == "true_color" else 70
-        )
+        png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=92)
         sat_codes = ""
         if family:
             sat = composite_for_family(preset_id, family)
@@ -363,7 +363,7 @@ class CompositeService:
             legend=self._rgb_legend(label, formula),
             message=(
                 f"{label} · {family_label(family) if family else 'scene'}"
-                f"{sat_codes} · {stretch_label}"
+                f"{sat_codes} · {stretch_label} · preview {size}px"
             ),
             stretch=f"{stretch_label} p{request.p_low}-{request.p_high}",
         )
