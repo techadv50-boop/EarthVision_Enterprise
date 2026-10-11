@@ -1528,7 +1528,7 @@ class SceneImageryService:
                                 or float(window.height) < target_h
                             )
                             resampling = (
-                                Resampling.nearest if oversampling else Resampling.bilinear
+                                Resampling.nearest if oversampling else Resampling.cubic
                             )
                             arr = src.read(
                                 1,
