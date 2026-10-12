@@ -276,9 +276,10 @@ class CompositeService:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
 
         # True/false color: mix satellite-accurate R/G/B (or FCC) bands, tone-map,
-        # then encode as a map overlay. Cap raised to 1536 so full-scene footprints
-        # are not soft when a ~512px preview is stretched across the globe.
-        size = max(64, min(int(request.size or 1536), 1536))
+        # then encode as a map overlay. Cap raised to 2048 so full-scene footprints
+        # are not soft when a small preview is stretched across the globe.
+        size = max(64, min(int(request.size or 2048), 2048))
+        footprint: dict[str, Any] | None = None
 
         if preset_id == "true_color" and request.scene_id:
             # Prefer ESA/USGS official visual TCI — already natural-color balanced.
@@ -286,7 +287,8 @@ class CompositeService:
             if visual is not None:
                 from app.services.professional_viz import prepare_tci_display
 
-                rgb_raw, bounds, valid_mask = visual
+                rgb_raw, bounds, valid_mask, footprint = visual
+                valid_mask = self._clip_mask_to_footprint(valid_mask, bounds, footprint)
                 rgb = prepare_tci_display(
                     rgb_raw,
                     brightness=request.brightness if abs(request.brightness - 1.0) > 0.02 else 1.0,
@@ -294,7 +296,7 @@ class CompositeService:
                 )
                 hist = self._rgb_histogram(rgb)
                 # Higher quality — low WebP q is a major blur source on the map.
-                png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=92)
+                png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=95)
                 return CompositeResponse(
                     preset=preset_id,
                     label=label,
@@ -311,15 +313,17 @@ class CompositeService:
                         f"esa_tci · preview {size}px"
                     ),
                     stretch="esa_tci",
+                    footprint=footprint,
                 )
 
-        bands, bounds = self._load_bands(
+        bands, bounds, footprint = self._load_bands(
             request.scene_id, request.bbox, size, band_names=keys
         )
         r = self._pick(bands, keys[0], required=True)
         g = self._pick(bands, keys[1], required=True)
         b = self._pick(bands, keys[2], required=True)
         valid_mask = np.isfinite(r) & np.isfinite(g) & np.isfinite(b)
+        valid_mask = self._clip_mask_to_footprint(valid_mask, bounds, footprint)
 
         if preset_id == "true_color":
             # Highlight Optimized Natural Color (Sentinel Hub) — no neon blowouts
@@ -334,18 +338,26 @@ class CompositeService:
         else:
             from app.services.professional_viz import false_color_professional
 
+            # Classic FCC / thematic: stronger NIR→red so False Color never looks
+            # like natural RGB when vegetation is present.
             rgb = false_color_professional(
                 r, g, b,
                 p_low=request.p_low,
                 p_high=request.p_high,
                 gamma=request.gamma if request.gamma else 1.25,
                 brightness=request.brightness if request.brightness else 1.0,
-                contrast=request.contrast if request.contrast else 1.0,
+                contrast=request.contrast if request.contrast else 1.05,
+                sat=1.18 if preset_id == "false_color_infrared" else 1.08,
             )
             stretch_label = "fcc_professional"
 
+        # Zero outside footprint so ImageOverlay alpha matches the tilted outline
+        if valid_mask is not None:
+            rgb = rgb.copy()
+            rgb[~valid_mask] = 0.0
+
         hist = self._rgb_histogram(rgb)
-        png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=92)
+        png = self._rgb_to_png(rgb, valid_mask=valid_mask, quality=95)
         sat_codes = ""
         if family:
             sat = composite_for_family(preset_id, family)
@@ -366,6 +378,7 @@ class CompositeService:
                 f"{sat_codes} · {stretch_label} · preview {size}px"
             ),
             stretch=f"{stretch_label} p{request.p_low}-{request.p_high}",
+            footprint=footprint,
         )
 
     def _resolve_family(self, scene_id: str | None, collection: str | None) -> str | None:
@@ -391,7 +404,7 @@ class CompositeService:
             if blocked:
                 raise ValidationError(blocked)
         size = max(64, min(int(request.size or 512), 640))
-        bands, bounds = self._load_bands(
+        bands, bounds, _fp = self._load_bands(
             request.scene_id,
             request.bbox,
             size,
@@ -455,7 +468,7 @@ class CompositeService:
 
     def _load_visual_rgb(
         self, scene_id: str, bbox: list[float] | None, size: int
-    ) -> tuple[np.ndarray, list[float], np.ndarray] | None:
+    ) -> tuple[np.ndarray, list[float], np.ndarray, dict[str, Any] | None] | None:
         try:
             from app.services.scene_imagery_service import SceneImageryService
 
@@ -463,16 +476,61 @@ class CompositeService:
             layer = imagery.get_layer(scene_id)
             if not layer:
                 return None
-            bounds = imagery.clip_bounds_to_layer(layer, bbox)
+            # Prefer full STAC scene envelope so overlay matches footprint outline
+            bounds = list(layer.get("bounds") or imagery.clip_bounds_to_layer(layer, bbox))
+            if bbox and len(bbox) == 4:
+                # Only shrink when the request is clearly an AOI inside the scene
+                clipped = imagery.clip_bounds_to_layer(layer, bbox)
+                scene = [float(x) for x in layer["bounds"]]
+                span_req = (clipped[2] - clipped[0]) * (clipped[3] - clipped[1])
+                span_scene = (scene[2] - scene[0]) * (scene[3] - scene[1])
+                if span_scene > 0 and span_req / span_scene < 0.92:
+                    bounds = clipped
             result = imagery.read_visual_rgb(scene_id, bounds, size=size)
             if result is None:
                 return None
             rgb, bounds = result
             valid = np.any(rgb > 0.01, axis=2) & np.all(np.isfinite(rgb), axis=2)
-            return rgb, bounds, valid
+            return rgb, bounds, valid, layer.get("footprint")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Visual composite load failed: {}", exc)
             return None
+
+    @staticmethod
+    def _clip_mask_to_footprint(
+        valid_mask: np.ndarray,
+        bounds: list[float],
+        footprint: dict[str, Any] | None,
+    ) -> np.ndarray:
+        """Intersect validity with tilted STAC footprint (fixes bbox vs outline mismatch)."""
+        if not footprint or footprint.get("type") != "Polygon":
+            return valid_mask
+        h, w = valid_mask.shape[:2]
+        west, south, east, north = (float(v) for v in bounds)
+        if east <= west or north <= south or h < 2 or w < 2:
+            return valid_mask
+        try:
+            from affine import Affine
+            from rasterio.features import geometry_mask
+
+            transform = Affine(
+                (east - west) / w,
+                0.0,
+                west,
+                0.0,
+                (south - north) / h,
+                north,
+            )
+            outside = geometry_mask(
+                [footprint],
+                out_shape=(h, w),
+                transform=transform,
+                all_touched=True,
+                invert=False,
+            )
+            return valid_mask & ~outside
+        except Exception:  # noqa: BLE001
+            return valid_mask
 
     def _true_color_stretch(
         self,
@@ -544,17 +602,34 @@ class CompositeService:
         bbox: list[float] | None,
         size: int,
         band_names: tuple[str, ...] | list[str] | None = None,
-    ) -> tuple[dict[str, np.ndarray], list[float]]:
+    ) -> tuple[dict[str, np.ndarray], list[float], dict[str, Any] | None]:
         bounds = bbox if bbox and len(bbox) == 4 else [74.15, 31.35, 74.55, 31.7]
         if scene_id:
             from app.services.scene_imagery_service import SceneImageryService
 
             imagery = SceneImageryService()
             try:
-                bands, bounds, _fp, _layer = imagery.load_analysis_bands(
+                layer = imagery.get_layer(scene_id)
+                # Prefer full scene envelope so RGB/FCC matches the STAC footprint outline
+                load_bounds = bbox
+                if layer and layer.get("bounds"):
+                    scene_b = [float(x) for x in layer["bounds"]]
+                    if bbox and len(bbox) == 4:
+                        clipped = imagery.clip_bounds_to_layer(layer, bbox)
+                        span_req = (clipped[2] - clipped[0]) * (clipped[3] - clipped[1])
+                        span_scene = (scene_b[2] - scene_b[0]) * (scene_b[3] - scene_b[1])
+                        # Near-full scene request → use exact layer bounds (no AOI shrink drift)
+                        load_bounds = (
+                            clipped
+                            if span_scene > 0 and span_req / span_scene < 0.92
+                            else scene_b
+                        )
+                    else:
+                        load_bounds = scene_b
+                bands, bounds, fp, layer = imagery.load_analysis_bands(
                     scene_id,
                     size=size,
-                    bounds=bbox,
+                    bounds=load_bounds,
                     band_names=band_names,
                     # Bypass default 640 interactive cap — composites need a sharp grid.
                     max_edge=size,
@@ -572,7 +647,7 @@ class CompositeService:
                     "No optical bands available for this scene — "
                     "turn the eye on first, then retry the composite."
                 )
-            return bands, bounds
+            return bands, bounds, fp or (layer.get("footprint") if layer else None)
 
         from app.services.analytics_service import AnalyticsService
 
@@ -580,7 +655,7 @@ class CompositeService:
         synth = AnalyticsService()._synthetic_bands(
             size=size, seed=hash(scene_id or "comp") % (2**31)
         )
-        return synth, [float(x) for x in bounds]
+        return synth, [float(x) for x in bounds], None
 
     def _pick(
         self,

@@ -24,7 +24,7 @@ HIGHLIGHT_GAIN = 0.6
 FCC_P_LOW = 2.0
 FCC_P_HIGH = 98.0
 FCC_GAMMA = 1.25
-FCC_SAT = 1.08
+FCC_SAT = 1.15
 
 # Index visualization ranges (QGIS / ArcGIS Pro practice)
 INDEX_VIZ_RANGE: dict[str, tuple[float, float]] = {

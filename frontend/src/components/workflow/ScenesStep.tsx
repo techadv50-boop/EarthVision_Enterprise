@@ -142,6 +142,9 @@ export function ScenesStep({
                         <div className="truncate text-sm font-medium">{scene.name}</div>
                         <div className="mt-0.5 text-xs text-[var(--muted)]">
                           {formatDate(scene.sensing_time)}
+                          {scene.cloud_cover != null && Number.isFinite(Number(scene.cloud_cover))
+                            ? ` · Cloud ${Math.round(Number(scene.cloud_cover))}%`
+                            : ''}
                         </div>
                       </div>
                     </div>

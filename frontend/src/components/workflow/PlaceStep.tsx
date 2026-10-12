@@ -72,6 +72,8 @@ export interface CatalogFilters {
   isHighResolution: boolean;
   startDate: string;
   endDate: string;
+  /** Max cloud cover % for optical catalog search (Sentinel-2 / Landsat). */
+  cloudCoverMax: number;
 }
 
 interface Props {
@@ -375,6 +377,33 @@ export function PlaceStep({
             </label>
           </div>
           {rangeError && <p className="text-xs text-red-600">{rangeError}</p>}
+          <label className="block">
+            <span className="mb-1 flex items-center justify-between text-[11px] text-[var(--muted)]">
+              <span>Max cloud cover</span>
+              <span className="font-mono text-[var(--ink)]">
+                {Math.round(filters.cloudCoverMax ?? 80)}%
+              </span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              className="w-full accent-[var(--accent)]"
+              value={filters.cloudCoverMax ?? 80}
+              onChange={(e) =>
+                onFiltersChange({
+                  ...filters,
+                  cloudCoverMax: Number(e.target.value),
+                })
+              }
+              disabled={busy}
+              aria-label="Maximum cloud cover percent"
+            />
+            <span className="mt-0.5 block text-[10px] text-[var(--muted)]">
+              Optical scenes only (Sentinel-2 / Landsat). Lower = fewer cloudy results.
+            </span>
+          </label>
         </div>
       )}
 

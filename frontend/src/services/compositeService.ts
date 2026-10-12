@@ -66,6 +66,7 @@ export interface CompositeResult {
   legend?: LegendInfo | null;
   message?: string | null;
   stretch?: string | null;
+  footprint?: GeoJSON.Polygon | null;
 }
 
 export interface StretchResult {

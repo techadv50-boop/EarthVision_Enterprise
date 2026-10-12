@@ -954,7 +954,9 @@ export function LightMap({
           [north, east],
         ];
         const footprintRing =
-          overlay.kind === 'scene' &&
+          (overlay.kind === 'scene' ||
+            overlay.kind === 'composite' ||
+            overlay.id.startsWith('composite-')) &&
           overlay.footprint?.type === 'Polygon' &&
           overlay.footprint.coordinates?.[0]
             ? overlay.footprint.coordinates[0].map(
@@ -963,12 +965,12 @@ export function LightMap({
             : null;
 
         const zIndex = overlayZIndex.get(overlay.id) ?? 430;
+        // Categorical LULC stays nearest-neighbor; continuous RGB composites use
+        // high-res source + smooth browser scale (pixelated made them look soft).
         const crispRaster =
           overlay.id.startsWith('classify-') ||
-          overlay.id.startsWith('composite-') ||
-          (overlay.label ?? '').toLowerCase().includes('lulc') ||
-          (overlay.label ?? '').toLowerCase().includes('true color') ||
-          (overlay.label ?? '').toLowerCase().includes('false color');
+          overlay.kind === 'classify' ||
+          (overlay.label ?? '').toLowerCase().includes('lulc');
         const tagHandlers = {
           add: (e: { target: L.Layer & { getContainer?: () => HTMLElement; getElement?: () => HTMLElement } }) => {
             const el =

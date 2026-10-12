@@ -212,6 +212,7 @@ export function WorkspacePage() {
       isHighResolution: false,
       startDate: start.toISOString().slice(0, 10),
       endDate: end.toISOString().slice(0, 10),
+      cloudCoverMax: 80,
     };
   });
   const [geotiffLayerId, setGeotiffLayerId] = useState<string | null>(null);
@@ -390,7 +391,7 @@ export function WorkspacePage() {
           collections: filters.collections,
           start_date: `${filters.startDate}T00:00:00.000Z`,
           end_date: `${filters.endDate}T23:59:59.000Z`,
-          cloud_cover_max: 80,
+          cloud_cover_max: filters.cloudCoverMax ?? 80,
           bbox: [...bbox],
           max_results: 20,
         });
@@ -541,6 +542,7 @@ export function WorkspacePage() {
       if (visibleSceneIds.length <= 1) {
         removeOverlaysByKind('index');
         removeOverlaysByKind('change');
+        removeOverlaysByKind('composite');
       }
       return;
     }
@@ -548,6 +550,8 @@ export function WorkspacePage() {
     clearAnalysis();
     removeOverlaysByKind('index');
     removeOverlaysByKind('change');
+    removeOverlaysByKind('composite');
+    setCompositeResult(null);
     await loadSceneOverlay(scene);
   };
 
@@ -1196,26 +1200,35 @@ export function WorkspacePage() {
       setLastMessage(
         `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
       );
-      // 1) Hide eye TileLayer for this scene — stacking soft ImageOverlay on sharp
-      //    XYZ tiles was the main “blurry / wrong display” symptom.
-      // 2) Hide other composites for this scene so True/False Color do not stack.
+      // Hide eye TileLayer + any prior composites so FCC/True Color is the only imagery.
+      // Stacking soft ImageOverlay on sharp XYZ tiles caused blur / “still true color”.
       const store = useWorkflowStore.getState();
+      const opacity = store.layerOpacity;
       for (const o of store.overlays) {
         if (o.sceneId !== focusScene.id) continue;
-        if (o.kind === 'scene' || (o.id.startsWith('composite-') && o.id !== `composite-${preset}`)) {
-          if (o.visible !== false) store.upsertOverlay({ ...o, visible: false });
+        if (
+          o.kind === 'scene' ||
+          o.kind === 'composite' ||
+          o.id.startsWith('composite-')
+        ) {
+          if (o.visible !== false) {
+            store.setOverlayVisible(o.id, false);
+          }
         }
       }
+      const fp =
+        (result.footprint as GeoJSON.Polygon | null | undefined) ??
+        sceneOverlay?.footprint ??
+        null;
       upsertOverlay({
         id: `composite-${preset}`,
-        kind: 'index',
+        kind: 'composite',
         sceneId: focusScene.id,
         url: compositeService.toDataUrl(result.overlay_base64),
-        // Prefer backend bounds, but never shrink below the original scene extent.
+        // Prefer backend bounds (STAC envelope) so outline matches the image.
         bounds: (result.bounds as [number, number, number, number]) ?? bounds,
-        footprint: sceneOverlay?.footprint ?? null,
-        // RGB composites must stay fully opaque (ignore global layerOpacity).
-        opacity: 1,
+        footprint: fp,
+        opacity,
         label: result.label,
         visible: true,
       });
@@ -1452,6 +1465,27 @@ export function WorkspacePage() {
       }
       if (action.type === 'process') {
         setProcessFilter({ brightness: 1, contrast: 1, gamma: 1 });
+        if (
+          action.op === 'true_color' ||
+          action.op === 'false_color' ||
+          action.op === 'agriculture' ||
+          action.op === 'swir_composite' ||
+          action.op === 'urban_buildup'
+        ) {
+          removeOverlaysByKind('composite');
+          setCompositeResult(null);
+          // Restore eye tiles for the focused scene if still visible
+          const state = useWorkflowStore.getState();
+          for (const o of state.overlays) {
+            if (
+              o.kind === 'scene' &&
+              state.focusSceneId &&
+              o.sceneId === state.focusSceneId
+            ) {
+              state.setOverlayVisible(o.id, true);
+            }
+          }
+        }
       }
     },
     [
