@@ -1196,6 +1196,16 @@ export function WorkspacePage() {
       setLastMessage(
         `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
       );
+      // 1) Hide eye TileLayer for this scene — stacking soft ImageOverlay on sharp
+      //    XYZ tiles was the main “blurry / wrong display” symptom.
+      // 2) Hide other composites for this scene so True/False Color do not stack.
+      const store = useWorkflowStore.getState();
+      for (const o of store.overlays) {
+        if (o.sceneId !== focusScene.id) continue;
+        if (o.kind === 'scene' || (o.id.startsWith('composite-') && o.id !== `composite-${preset}`)) {
+          if (o.visible !== false) store.upsertOverlay({ ...o, visible: false });
+        }
+      }
       upsertOverlay({
         id: `composite-${preset}`,
         kind: 'index',
@@ -1204,7 +1214,7 @@ export function WorkspacePage() {
         // Prefer backend bounds, but never shrink below the original scene extent.
         bounds: (result.bounds as [number, number, number, number]) ?? bounds,
         footprint: sceneOverlay?.footprint ?? null,
-        // RGB composites should be fully opaque for natural color
+        // RGB composites must stay fully opaque (ignore global layerOpacity).
         opacity: 1,
         label: result.label,
         visible: true,

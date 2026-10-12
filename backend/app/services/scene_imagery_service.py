@@ -1726,7 +1726,8 @@ class SceneImageryService:
                     boa_scale=float(boa_scale) if boa_scale is not None else None,
                     boa_offset=float(boa_offset) if boa_offset is not None else None,
                     client=client,
-                    high_quality=False,
+                    # Cubic/area resampling when grids are large (composites pass max_edge).
+                    high_quality=bool(max_edge is not None and int(max_edge) >= 1024),
                 )
                 return names, arr, None
             except Exception as exc:  # noqa: BLE001

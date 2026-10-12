@@ -278,7 +278,7 @@ class CompositeService:
         # True/false color: mix satellite-accurate R/G/B (or FCC) bands, tone-map,
         # then encode as a map overlay. Cap raised to 1536 so full-scene footprints
         # are not soft when a ~512px preview is stretched across the globe.
-        size = max(64, min(int(request.size or 1280), 1536))
+        size = max(64, min(int(request.size or 1536), 1536))
 
         if preset_id == "true_color" and request.scene_id:
             # Prefer ESA/USGS official visual TCI — already natural-color balanced.
@@ -556,6 +556,8 @@ class CompositeService:
                     size=size,
                     bounds=bbox,
                     band_names=band_names,
+                    # Bypass default 640 interactive cap — composites need a sharp grid.
+                    max_edge=size,
                 )
             except ValidationError:
                 raise

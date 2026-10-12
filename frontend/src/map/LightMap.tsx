@@ -965,7 +965,10 @@ export function LightMap({
         const zIndex = overlayZIndex.get(overlay.id) ?? 430;
         const crispRaster =
           overlay.id.startsWith('classify-') ||
-          (overlay.label ?? '').toLowerCase().includes('lulc');
+          overlay.id.startsWith('composite-') ||
+          (overlay.label ?? '').toLowerCase().includes('lulc') ||
+          (overlay.label ?? '').toLowerCase().includes('true color') ||
+          (overlay.label ?? '').toLowerCase().includes('false color');
         const tagHandlers = {
           add: (e: { target: L.Layer & { getContainer?: () => HTMLElement; getElement?: () => HTMLElement } }) => {
             const el =

@@ -324,9 +324,11 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   setLayerOpacity: (layerOpacity) =>
     set((state) => ({
       layerOpacity,
-      overlays: state.overlays.map((o) =>
-        o.kind === 'scene' ? o : { ...o, opacity: layerOpacity },
-      ),
+      overlays: state.overlays.map((o) => {
+        // Keep True/False Color (and other RGB composites) fully opaque.
+        if (o.kind === 'scene' || o.id.startsWith('composite-')) return o;
+        return { ...o, opacity: layerOpacity };
+      }),
     })),
 
   showScene: (sceneId) =>

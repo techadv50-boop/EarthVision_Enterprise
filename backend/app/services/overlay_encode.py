@@ -69,7 +69,10 @@ def encode_rgb_mask_overlay(
     *,
     quality: int = 72,
 ) -> tuple[bytes, str]:
-    """RGB float/uint8 + mask → compact WebP/PNG overlay."""
+    """RGB float/uint8 + mask → overlay bytes.
+
+    High quality (≥90) uses PNG so True/False Color is not soft-smeared by WebP.
+    """
     if rgb.dtype != np.uint8:
         u8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
     else:
@@ -78,4 +81,5 @@ def encode_rgb_mask_overlay(
         valid_mask = np.any(u8 > 2, axis=2)
     alpha = np.where(valid_mask, 255, 0).astype(np.uint8)
     rgba = np.dstack([u8, alpha])
-    return encode_rgba_overlay(rgba, prefer="webp", quality=quality)
+    prefer: OverlayFormat = "png" if int(quality) >= 90 else "webp"
+    return encode_rgba_overlay(rgba, prefer=prefer, quality=quality)
