@@ -24,7 +24,16 @@ jobs:
         run: |
           export DATABASE_URL=sqlite+aiosqlite:///./test.db
           export SECRET_KEY=ci-test-secret-key-at-least-32-characters
-          pytest app/tests -q || pytest -q || python -c "from app.main import app; print(app.title)"
+          # Prefer full suite; never skip Stage C tool-protection modules.
+          pytest app/tests -q
+      - name: Tool protection subset (hard fail)
+        run: |
+          export DATABASE_URL=sqlite+aiosqlite:///./test.db
+          export SECRET_KEY=ci-test-secret-key-at-least-32-characters
+          pytest -q \
+            app/tests/tools/test_manifest_integrity.py \
+            app/tests/tools/test_true_color_poc.py \
+            app/tests/tools/test_ship_detection_canary.py
 
   frontend:
     runs-on: ubuntu-latest
