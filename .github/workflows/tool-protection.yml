@@ -52,6 +52,7 @@ jobs:
           pytest -q \
             app/tests/tools/test_manifest_integrity.py \
             app/tests/tools/test_true_color_poc.py \
+            app/tests/tools/test_true_color_pack_e1.py \
             app/tests/tools/test_ship_detection_canary.py \
             app/tests/test_composite_band_recipes.py \
             app/tests/test_optical_ship_detection.py

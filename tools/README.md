@@ -27,4 +27,8 @@ Baseline tag: `sateye-baseline-20261012-1e71b7a` (immutable; do not move).
 
 ## Deploy honesty
 
-Changing an approved tool still requires a **full-app** rebuild/redeploy. The manifest + CI guard only prevent *silent* regressions and force an explicit version bump + tests before those paths land on the deploy branch.
+- **Unmigrated tools:** still require full-app Deploy SATEYE.
+- **E1 `true_color` Tool Pack:** algorithm packs under `tools/artifacts/true_color/` can be pinned via `runtime_pins.json` **without rebuilding the shell image** (dev promote scripts). Default remains `builtin`.
+- See `tools/PACKS.md` and `docs/TOOL_PACK_*.md`.
+
+The Stage C manifest + CI path guard still prevent *silent* regressions for approved tool source paths.

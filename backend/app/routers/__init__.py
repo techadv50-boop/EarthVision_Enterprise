@@ -19,6 +19,7 @@ from app.routers import (
     satellites,
     subscriptions,
     terrain,
+    tools_runtime,
     users,
 )
 
@@ -42,4 +43,5 @@ def build_api_router() -> APIRouter:
     api.include_router(raster.router)
     api.include_router(subscriptions.router)
     api.include_router(reports.router)
+    api.include_router(tools_runtime.router)
     return api

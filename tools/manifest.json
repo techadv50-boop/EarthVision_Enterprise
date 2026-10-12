@@ -5,9 +5,9 @@
   "baseline_tag": "sateye-baseline-20261012-1e71b7a",
   "baseline_commit": "1e71b7abaa0fa8d4b70225d949afc8ae79923bb6",
   "created_at": "2026-10-12T22:28:18Z",
-  "stage": "C",
-  "deployment_model": "full_app_only",
-  "deployment_model_note": "Tools are validated and version-pinned individually, but production still deploys the entire application image. This is NOT independent per-tool deployment.",
+  "stage": "E1",
+  "deployment_model": "full_app_shell_plus_optional_tool_packs",
+  "deployment_model_note": "Shell still deploys as a full app image via Deploy SATEYE. Pinned Tool Packs (true_color only in E1) can be swapped via runtime_pins.json without rebuilding the shell image. This is genuine pack-level independence for extracted tools; unmigrated tools remain full-app.",
   "counts": {
     "catalog_entries": 151,
     "unique_ids": 148,
@@ -656,8 +656,20 @@
         "frontend/src/toolbox/catalog.ts"
       ],
       "regression_role": null,
-      "notes": "Stage C PoC approved tool \u2014 Natural Color / TCI + highlight-optimized",
-      "rollback_ref": "1e71b7abaa0fa8d4b70225d949afc8ae79923bb6"
+      "notes": "Stage C PoC approved tool \u2014 Natural Color / TCI + highlight-optimized | E1: Tool Pack artifacts under tools/artifacts/true_color/{version}; default pin=builtin",
+      "rollback_ref": "1e71b7abaa0fa8d4b70225d949afc8ae79923bb6",
+      "pack": {
+        "ui_strategy": "shell_facade",
+        "artifacts": {
+          "1.0.0": "sha256:e550e1a12cf72639e834dcdd77439ae5212b87d3ba7232151ad453fd3eb6536b",
+          "1.1.0": "sha256:7e6ae07e6ec267d9f704d1384a93e8051d4791b5620ab2dd68dcc32643800f87"
+        },
+        "default_runtime": "builtin",
+        "rollback_targets": [
+          "builtin",
+          "1.0.0"
+        ]
+      }
     },
     {
       "registry_key": "false_color",

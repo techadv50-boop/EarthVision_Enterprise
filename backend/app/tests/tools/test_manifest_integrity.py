@@ -16,8 +16,12 @@ def test_manifest_file_exists_and_loads():
     data = load_manifest()
     assert data["schema_version"] == 1
     assert data["deploy_branch"] == "cursor/scene-download-eye-5d6d"
-    assert data["deployment_model"] == "full_app_only"
-    assert "independent" not in (data.get("deployment_model") or "")
+    assert data["deployment_model"] in {
+        "full_app_only",
+        "full_app_shell_plus_optional_tool_packs",
+    }
+    # Honesty: shell remains full-app; optional packs are additive (E1).
+    assert "full_app" in (data.get("deployment_model") or "")
 
 
 def test_manifest_matches_catalog_counts():

@@ -52,8 +52,15 @@ def main() -> int:
 
     if data.get("deploy_branch") != "cursor/scene-download-eye-5d6d":
         errors.append("deploy_branch must remain cursor/scene-download-eye-5d6d")
-    if data.get("deployment_model") != "full_app_only":
-        errors.append("deployment_model must be full_app_only (honesty constraint)")
+    allowed_models = {
+        "full_app_only",
+        "full_app_shell_plus_optional_tool_packs",
+    }
+    if data.get("deployment_model") not in allowed_models:
+        errors.append(
+            "deployment_model must declare full-app shell honesty "
+            f"(got {data.get('deployment_model')!r})"
+        )
 
     # PoC invariants
     poc = data.get("poc") or {}

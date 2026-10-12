@@ -52,10 +52,13 @@ def main() -> int:
         return 2
 
     data = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    if data.get("deployment_model") != "full_app_only":
+    allowed_models = {
+        "full_app_only",
+        "full_app_shell_plus_optional_tool_packs",
+    }
+    if data.get("deployment_model") not in allowed_models:
         print(
-            "ERROR: deployment_model must remain full_app_only — "
-            "do not claim independent tool deployment",
+            "ERROR: deployment_model must declare full-app shell honesty",
             file=sys.stderr,
         )
         return 1

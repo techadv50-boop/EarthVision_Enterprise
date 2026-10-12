@@ -250,6 +250,18 @@ class CompositeService:
 
     def render_composite(self, request: CompositeRequest) -> CompositeResponse:
         preset_id = request.preset
+        # E1: true_color may be served from a pinned Tool Pack (else builtin below).
+        if preset_id == "true_color":
+            from app.tools.pack_loader import PackIntegrityError, resolve_true_color_render
+
+            try:
+                source, pack_render = resolve_true_color_render()
+            except PackIntegrityError as exc:
+                raise ValidationError(f"true_color tool pack rejected: {exc}") from exc
+            if pack_render is not None:
+                return pack_render(request)
+            # source == builtin → fall through to in-tree implementation
+
         meta = COMPOSITE_PRESETS.get(preset_id)
         family = self._resolve_family(request.scene_id, request.collection)
 
