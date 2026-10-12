@@ -1,0 +1,57 @@
+# Copy to config.yaml on the central VPS. Do not commit config.yaml.
+# Put passwords in the environment (see deploy/relay.service), not in this file.
+
+poll_interval_seconds: 60
+local_ttl_hours: 24
+# A file is copied only after its size and modification time stay the same
+# for this long, so a half-written upload is left for the next pass.
+stability_seconds: 60
+staging_dir: /var/lib/file-relay/staging
+database_path: /var/lib/file-relay/relay.db
+
+sources:
+  - id: namecheap
+    protocol: sftp
+    host: server123.web-hosting.com
+    port: 21098
+    username: cpanel_user
+    password_env: SOURCE_PASSWORD
+    remote_dir: /home/cpanel_user/drop
+    known_hosts_path: /var/lib/file-relay/known_hosts
+    host_key_policy: accept-new
+    # "all" forwards to every destination. A list names destinations.
+    # One destination is a one-item list: [archive]
+    deliver_to: all
+
+  # Another shared host or VPS is another entry. Uncomment to enable.
+  # - id: second-drop
+  #   protocol: sftp
+  #   host: 203.0.113.20
+  #   port: 22
+  #   username: drop
+  #   private_key_path: /etc/file-relay/keys/second-drop
+  #   remote_dir: /srv/drop
+  #   known_hosts_path: /var/lib/file-relay/known_hosts
+  #   host_key_policy: reject
+  #   deliver_to: [archive]
+
+destinations:
+  - id: archive
+    protocol: sftp
+    host: 203.0.113.10
+    port: 22
+    username: relay
+    private_key_path: /etc/file-relay/keys/archive
+    remote_dir: /srv/incoming
+    known_hosts_path: /var/lib/file-relay/known_hosts
+    host_key_policy: reject
+
+  # A shared-hosting destination uses SFTP on that host's port (21098 on Namecheap).
+  # If that account has no SFTP, set protocol: ftps and port: 21.
+  # - id: shared-copy
+  #   protocol: ftps
+  #   host: server456.web-hosting.com
+  #   port: 21
+  #   username: other_cpanel_user
+  #   password_env: SHARED_COPY_PASSWORD
+  #   remote_dir: /home/other_cpanel_user/incoming

@@ -1,0 +1,13 @@
+services:
+  file-relay:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - /etc/file-relay/relay.env
+    volumes:
+      - /etc/file-relay/config.yaml:/etc/file-relay/config.yaml:ro
+      - /etc/file-relay/keys:/etc/file-relay/keys:ro
+      - file-relay-data:/var/lib/file-relay
+
+volumes:
+  file-relay-data:

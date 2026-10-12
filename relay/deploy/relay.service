@@ -1,0 +1,17 @@
+[Unit]
+Description=File relay (poll drop folders and forward new files)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=file-relay
+Group=file-relay
+EnvironmentFile=-/etc/file-relay/relay.env
+WorkingDirectory=/var/lib/file-relay
+ExecStart=/opt/file-relay/venv/bin/python -m relay --config /etc/file-relay/config.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
