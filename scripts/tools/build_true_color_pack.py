@@ -40,11 +40,14 @@ def main() -> int:
         return 2
 
     dest = OUT_ROOT / version
-    if dest.exists():
-        print(f"ERROR: artifact already exists (immutable): {dest}", file=sys.stderr)
+    if dest.exists() and any(dest.iterdir()):
+        print(
+            f"ERROR: artifact immutable — refusing overwrite: {dest}",
+            file=sys.stderr,
+        )
         return 1
 
-    dest.mkdir(parents=True)
+    dest.mkdir(parents=True, exist_ok=True)
     for rel in HASHED_RELS:
         src_f = SRC / rel
         if not src_f.is_file():

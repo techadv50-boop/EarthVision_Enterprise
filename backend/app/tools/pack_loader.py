@@ -11,7 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from app.tools.runtime_pins import get_pin, repo_root
+from app.tools.runtime_pins import HOST_SDK_VERSION, get_pin, repo_root
 
 _LOCK = threading.RLock()
 # Cache by (tool_id, version, digest) → module
@@ -38,6 +38,45 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _parse_simple_semver(v: str) -> tuple[int, int, int]:
+    parts = (v or "0").split("+")[0].split("-")[0].split(".")
+    nums = []
+    for i in range(3):
+        try:
+            nums.append(int(parts[i]) if i < len(parts) else 0)
+        except ValueError:
+            nums.append(0)
+    return nums[0], nums[1], nums[2]
+
+
+def host_sdk_compatible(requirement: str | None, host_version: str = HOST_SDK_VERSION) -> bool:
+    """Support ranges like ``>=1.0.0,<2`` (E1 packs)."""
+    if not requirement:
+        return True
+    host = _parse_simple_semver(host_version)
+    for part in requirement.split(","):
+        part = part.strip()
+        if part.startswith(">="):
+            if host < _parse_simple_semver(part[2:]):
+                return False
+        elif part.startswith("<"):
+            if host >= _parse_simple_semver(part[1:]):
+                return False
+        elif part.startswith("=="):
+            if host != _parse_simple_semver(part[2:]):
+                return False
+    return True
+
+
+def assert_artifact_immutable(tool_id: str, version: str) -> None:
+    """Refuse operations that would overwrite an existing approved artifact dir."""
+    root = pack_dir(tool_id, version)
+    if root.is_dir() and any(root.iterdir()):
+        raise PackIntegrityError(
+            f"artifact is immutable and already exists: {tool_id}@{version} ({root})"
+        )
+
+
 def verify_pack(tool_id: str, version: str, expected_digest: str | None = None) -> dict[str, Any]:
     root = pack_dir(tool_id, version)
     pack_json = root / "pack.json"
@@ -55,6 +94,12 @@ def verify_pack(tool_id: str, version: str, expected_digest: str | None = None) 
     meta = json.loads(pack_json.read_text(encoding="utf-8"))
     if meta.get("tool_id") != tool_id or meta.get("version") != version:
         raise PackIntegrityError("pack.json tool_id/version mismatch")
+
+    req = meta.get("host_sdk")
+    if not host_sdk_compatible(str(req) if req else None):
+        raise PackIntegrityError(
+            f"incompatible host SDK: pack requires {req!r}, host is {HOST_SDK_VERSION}"
+        )
 
     # Verify hashed payload files listed in SHA256SUMS
     for line in sums.read_text(encoding="utf-8").splitlines():
