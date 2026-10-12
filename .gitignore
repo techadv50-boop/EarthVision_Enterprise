@@ -56,3 +56,7 @@ Thumbs.db
 *.db
 earthvision.db
 
+# File relay secrets and local copies
+relay/config.yaml
+relay/data/
+
