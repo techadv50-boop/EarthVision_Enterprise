@@ -1,0 +1,36 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "study-recall/**"
+      - ".github/workflows/windows-installer.yml"
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: study-recall
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: study-recall/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: npm test
+      - name: Run study engine tests
+        run: cargo test -p study-core
+      - name: Build the NSIS installer
+        run: npx tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: study-recall-windows-installer
+          path: study-recall/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
