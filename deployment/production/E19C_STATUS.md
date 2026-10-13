@@ -1,7 +1,8 @@
-# Stage E1.9C Status — Operator-Assisted Read-Only Inventory Preparation
+# Stage E1.9C / E1.9C-R1 Status
 
 **Date:** 2026-10-13  
-**Scope:** Prepare runbook + helper only. **No** production access. **No** Deploy SATEYE. **No** Stage E2.
+**Scope:** Operator inventory **preparation + safety corrections** only.  
+**Production execution:** **Not authorized** by this stage.
 
 ## Tip preservation
 
@@ -9,24 +10,28 @@
 |------|--------|
 | Approved deploy branch | `cursor/scene-download-eye-5d6d` |
 | Approved deploy tip | `e3012ce0a26e049d0af981d5994d0d829c3b647e` |
-| This preparation branch | `cursor/sateye-e19c-inventory-runbook-5d6d` (docs/helper only) |
+| Docs/helper branch | `cursor/sateye-e19c-inventory-runbook-5d6d` (PR #76) |
 
-Merging this preparation branch is optional documentation hygiene. It does **not** authorize production changes. Deploy tip for Host Shell remains `e3012ce` until the owner explicitly re-stamps a later tip.
+Do **not** merge this branch into the approved deploy tip unless the owner explicitly re-stamps a new tip.
 
-## Deliverables
+## E1.9C-R1 corrections
 
-| Artifact | Purpose |
-|----------|---------|
-| `deployment/production/E19C_OPERATOR_INVENTORY_RUNBOOK.md` | Single manual operator runbook |
-| `scripts/e19c_operator_inventory.sh` | Optional all-in-one read-only helper (redacts secrets; writes under `OUT_DIR` only) |
-| This status file | Pointer + blocker map |
+1. Service-scoped identity: backend + frontend + proxy must belong to `sateye-fz2ic4`
+2. Removed `SKIP_HOST_CHECK` (rejected if set)
+3. Replaced `docker compose config` + regex redaction with allowlisted compose **file** structure
+4. Scoped image/volume/container inspect to verified services
+5. No shared temp health body files
+6. Missing evidence → `UNKNOWN` / `FAIL` / `STOP`
+7. Allowlisted gh runner/runs fields; no `gh auth status` dump
+8. Secret scanner gates archive + `share_safe`
+9. Symlink-resolved private `OUT_DIR` under `/tmp`, `/var/tmp`, or `$HOME`
+10. Adversarial tests: `scripts/tests/test_e19c_inventory_safety.py`
 
-## Agent constraints honored
+## GO / NO-GO
 
-- Did not SSH / Docker against production
-- Did not trigger workflows
-- Did not modify live compose, env, containers, volumes, or credentials
-
-## After operator returns results
-
-Owner reviews sanitized bundle → update E1.9B blockers → separate explicit approval required before any production modification.
+| Question | Answer |
+|----------|--------|
+| Merge PR #76 into deploy tip? | **NO** (unless owner re-stamps tip) |
+| Run inventory on production now? | **NO-GO** until explicit owner approval |
+| Host Shell Deploy SATEYE? | **NO-GO** |
+| Stage E2? | **NO-GO** |
