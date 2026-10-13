@@ -1,0 +1,37 @@
+# PROPOSED additive merge into the LIVE server docker-compose.yml overlay.
+# DO NOT apply until explicit production approval.
+#
+# How to introduce safely (ops, on zhzh, AFTER backup of live compose):
+# 1. Copy live /opt/earthvision/docker-compose.yml → preserve dir (deploy script also does this).
+# 2. Merge ONLY the keys below into services.backend.environment and volumes.
+# 3. Do NOT remove or rename pgdata / imagery / uploads / cache / logs mounts.
+# 4. Do NOT change ports, credentials, or image build contexts except as needed for Host Shell.
+# 5. Point EV_PACK_PUBLISHERS at the production allowlist on the tool_packs volume
+#    (NOT the preview-dev file baked into the image default).
+#
+# After Host Shell Deploy SATEYE rebuilds images, ensure the live overlay still
+# restores these keys (deploy script restores the whole compose overlay file).
+
+services:
+  backend:
+    environment:
+      # Dedicated Tool Pack store (additive)
+      EV_TOOL_PACKS_ROOT: /data/tool_packs
+      EV_RUNTIME_PINS: /data/tool_packs/runtime_pins.json
+      EV_ARTIFACTS_ROOT: /data/tool_packs/artifacts
+      # CRITICAL: production allowlist on volume — overrides image default (preview-dev)
+      EV_PACK_PUBLISHERS: /data/tool_packs/publishers/approved_publishers.json
+      EV_PACK_REQUIRE_SIGNATURE: "1"
+      EV_PACK_AUDIT_LOG: /data/tool_packs/audit/promotions.jsonl
+      EV_TOOLS_MANIFEST: /app/tools_manifest/manifest.json
+    volumes:
+      # Existing mounts MUST remain (illustrative — keep live paths as-is):
+      # - ./cache:/data/cache
+      # - ./imagery:/data/imagery
+      # - ./uploads:/data/uploads
+      # - ./logs:/data/logs
+      - tool_packs_data:/data/tool_packs
+
+volumes:
+  # Named volume — independent of pgdata
+  tool_packs_data:

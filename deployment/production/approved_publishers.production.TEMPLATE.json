@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "notes": "PRODUCTION publisher allowlist TEMPLATE. Do NOT copy preview-dev keys here. Ops must generate an offline Ed25519 keypair, store the private key in a secrets manager (never git), and place only the public_key below. Until at least one production publisher is enabled, Tool Pack activation must remain forbidden.",
+  "publishers": [
+    {
+      "id": "REPLACE_WITH_PROD_PUBLISHER_ID",
+      "name": "SATEYE Production Pack Publisher",
+      "environment": "production",
+      "enabled": false,
+      "public_key": "REPLACE_WITH_BASE64URL_ED25519_PUBLIC_KEY"
+    }
+  ]
+}

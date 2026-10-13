@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "notes": "Seed for production tool_packs volume on first Host Shell cutover. true_color MUST remain builtin. Do not set mode=pack during Host Shell deploy.",
+  "pins": {
+    "true_color": {
+      "mode": "builtin",
+      "version": null,
+      "digest": null,
+      "updated_at": null,
+      "note": "Host Shell cutover default — verified in-tree CompositeService path"
+    }
+  }
+}
