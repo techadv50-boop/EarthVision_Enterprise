@@ -3,7 +3,7 @@
 **Status:** Review package only. **No production changes applied.**  
 **Date:** 2026-10-13  
 **Branch:** `cursor/scene-download-eye-5d6d`  
-**Proposed Host Shell deploy commit:** `3e6be12096d068e83e18057f07cedf3c8bf5358e` (`3e6be12`)  
+**Proposed Host Shell deploy commit:** `f7e6d9fb3b87c08d38a78cb61254129283c8697a` (`f7e6d9f`)  
 **Imagery / approved-tool baseline tag:** `sateye-baseline-20261012-1e71b7a` → `1e71b7a` (**ancestor of tip**)
 
 ---
@@ -37,14 +37,14 @@ Host Shell code is ready in git and validated in isolated preview, but the follo
 | `deployment/production/PREFLIGHT_CHECKLIST.md` | PASS/FAIL gate sheet |
 | This document | Authorization package |
 
-### What reaches production from tip `3e6be12` vs baseline `1e71b7a`
+### What reaches production from tip `f7e6d9f` vs baseline `1e71b7a`
 
 **4 commits** after imagery baseline:
 
 1. `6c1956c` — Stage C manifest + CI guards  
 2. `47ab90a` — E0/E1 Host SDK + true_color packs  
 3. `1810247` — E1.5 pin reliability  
-4. `3e6be12` — E1.7 volume paths, signed install/activate, preview wiring  
+4. `f7e6d9f` — E1.7 volume paths, signed install/activate, preview wiring  
 
 **58 files**, ~7682 insertions (mostly `tools/manifest.json` + tests/docs/packs).  
 
