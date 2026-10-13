@@ -27,7 +27,9 @@ from app.tools.pack_paths import (
 )
 from app.tools.pack_signatures import (
     PackSignatureError,
+    load_approved_publishers,
     read_signature_file,
+    trust_profile,
     verify_digest_signature,
 )
 from app.tools.runtime_pins import get_pin, load_pins, write_pins
@@ -41,6 +43,20 @@ class PackOpsError(Exception):
 
 def _require_signature() -> bool:
     return os.environ.get("EV_PACK_REQUIRE_SIGNATURE", "1") != "0"
+
+
+def assert_production_trust_ready() -> None:
+    """Fail closed before install/activate when production trust is misconfigured."""
+    if trust_profile() != "production":
+        return
+    try:
+        pubs = load_approved_publishers()
+    except PackSignatureError as exc:
+        raise PackOpsError(f"production trust rejected: {exc}") from exc
+    for pub in pubs:
+        if str(pub.get("id")) == "preview-dev" or str(pub.get("environment") or "").lower() == "preview":
+            raise PackOpsError("production trust rejected: preview publisher present")
+
 
 
 def _now() -> str:
@@ -117,6 +133,7 @@ def install_pack_from_dir(
         raise PackOpsError(f"tool not approved for pack install: {tool_id}")
     if not source_dir.is_dir():
         raise PackOpsError(f"source missing: {source_dir}")
+    assert_production_trust_ready()
 
     # Stage under unique dir
     stage = staging_root() / f"{tool_id}-{version}-{time.time_ns()}"
@@ -214,6 +231,7 @@ def activate_pack(
         raise PackOpsError("refusing activate: confirm must be exactly 'activate'")
     if tool_id not in ALLOWED_TOOLS:
         raise PackOpsError(f"tool not approved for activation: {tool_id}")
+    assert_production_trust_ready()
 
     try:
         meta = verify_pack(tool_id, version)

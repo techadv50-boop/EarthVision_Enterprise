@@ -66,7 +66,9 @@ services:
       EV_TOOL_PACKS_ROOT: /data/tool_packs
       EV_RUNTIME_PINS: /data/tool_packs/runtime_pins.json
       EV_ARTIFACTS_ROOT: /data/tool_packs/artifacts
-      EV_PACK_PUBLISHERS: /app/pack_publishers/approved_publishers.json
+      # Preview trust root (NOT production). Overrides image_default empty allowlist.
+      EV_PACK_PUBLISHERS: /seed/publishers/approved_publishers.preview.json
+      EV_PACK_TRUST_PROFILE: preview
       EV_PACK_REQUIRE_SIGNATURE: "1"
       EV_PACK_AUDIT_LOG: /data/tool_packs/audit/promotions.jsonl
       COPERNICUS_USERNAME: ${COPERNICUS_USERNAME:-}
@@ -80,7 +82,7 @@ services:
       - sateye_preview_tool_packs:/data/tool_packs
       # Read-only seed of signed repo artifacts for install rehearsals (not the runtime store)
       - ./tools/artifacts:/seed/artifacts:ro
-      - ./tools/publishers/approved_publishers.json:/seed/publishers/approved_publishers.json:ro
+      - ./tools/publishers/approved_publishers.preview.json:/seed/publishers/approved_publishers.preview.json:ro
     ports:
       - "127.0.0.1:8200:8000"
     depends_on:

@@ -349,6 +349,13 @@ update_source_ff_only() {
     || abort_before_docker ".env checksum changed during deploy"
   [[ -f .env ]] || abort_before_docker ".env missing after merge"
 
+  # E1.9A: refuse deploy if tip moved since CI gate resolved the SHA
+  if [[ -n "${DEPLOY_EXPECTED_SHA:-}" ]]; then
+    [[ "$after" == "$DEPLOY_EXPECTED_SHA" ]] \
+      || abort_before_docker "post-merge SHA $after != gated DEPLOY_EXPECTED_SHA $DEPLOY_EXPECTED_SHA"
+    log "deploy SHA matches CI gate ($after)"
+  fi
+
   log "updated $before -> $after"
   log ".env unchanged ($(env_fingerprint .env))"
   return 0
@@ -378,18 +385,18 @@ restart_backend_only() {
 }
 
 # Update ADMIN_EMAIL + ADMIN_PASSWORD + MASTER_PASSWORD in live .env and compose.
-# Default login: admin@xdgen.com / pak123 (override with ADMIN_*_RESET).
-# Set RESET_ADMIN_PASSWORD=0 to skip.
+# E1.9A: DEFAULT IS OFF. Ordinary deploys must not reset admin credentials.
+# Enable only when RESET_ADMIN_PASSWORD=1 (Deploy workflow requires admin_reset_confirm=reset-admin).
 # When reset is enabled we ALWAYS mark ADMIN_PASSWORD_SYNCED=1 so the backend
 # is recreated even if .env already matched (DB hash can still be stale).
 ADMIN_PASSWORD_SYNCED=0
 sync_admin_password_env() {
   local new_pw="${ADMIN_PASSWORD_RESET:-pak123}"
   local new_email="${ADMIN_EMAIL_RESET:-admin@xdgen.com}"
-  local do_sync="${RESET_ADMIN_PASSWORD:-1}"
+  local do_sync="${RESET_ADMIN_PASSWORD:-0}"
   ADMIN_PASSWORD_SYNCED=0
   if [[ "$do_sync" != "1" ]]; then
-    log "skipping ADMIN_PASSWORD sync (RESET_ADMIN_PASSWORD!=1)"
+    log "skipping ADMIN_PASSWORD sync (RESET_ADMIN_PASSWORD!=1; default disabled)"
     return 0
   fi
   [[ -f .env ]] || die "missing .env for admin password sync"
@@ -552,6 +559,12 @@ main() {
 
   if [[ "$update_rc" -eq 2 ]]; then
     log "Already up to date"
+    if [[ -n "${DEPLOY_EXPECTED_SHA:-}" ]]; then
+      local head_now
+      head_now="$(git rev-parse HEAD)"
+      [[ "$head_now" == "$DEPLOY_EXPECTED_SHA" ]] \
+        || die "live SHA $head_now != gated DEPLOY_EXPECTED_SHA $DEPLOY_EXPECTED_SHA"
+    fi
     if local_health_ok && [[ "$ADMIN_PASSWORD_SYNCED" -eq 0 ]] && [[ "${FORCE_REBUILD:-0}" != "1" ]]; then
       log "local health OK and password unchanged — skipping rebuild"
       healthcheck

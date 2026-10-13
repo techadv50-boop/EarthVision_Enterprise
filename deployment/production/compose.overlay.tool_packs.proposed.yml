@@ -19,8 +19,9 @@ services:
       EV_TOOL_PACKS_ROOT: /data/tool_packs
       EV_RUNTIME_PINS: /data/tool_packs/runtime_pins.json
       EV_ARTIFACTS_ROOT: /data/tool_packs/artifacts
-      # CRITICAL: production allowlist on volume — overrides image default (preview-dev)
+      # CRITICAL: production allowlist on volume — never preview-dev / never image_default empty for activate
       EV_PACK_PUBLISHERS: /data/tool_packs/publishers/approved_publishers.json
+      EV_PACK_TRUST_PROFILE: production
       EV_PACK_REQUIRE_SIGNATURE: "1"
       EV_PACK_AUDIT_LOG: /data/tool_packs/audit/promotions.jsonl
       EV_TOOLS_MANIFEST: /app/tools_manifest/manifest.json

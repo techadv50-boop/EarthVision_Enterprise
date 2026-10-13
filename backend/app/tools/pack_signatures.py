@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +27,17 @@ from cryptography.hazmat.primitives.serialization import (
 
 from app.tools.pack_paths import publishers_path
 
+# Never trusted in production profile
+_PREVIEW_PUBLISHER_IDS = frozenset({"preview-dev"})
+
 
 class PackSignatureError(Exception):
     """Missing, unauthorized, or invalid pack signature."""
+
+
+def trust_profile() -> str:
+    """``production`` | ``preview`` | ``dev`` (default production for fail-closed images)."""
+    return (os.environ.get("EV_PACK_TRUST_PROFILE") or "production").strip().lower()
 
 
 def _b64(data: bytes) -> str:
@@ -40,15 +49,33 @@ def _b64decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + pad)
 
 
+def _is_preview_publisher(pub: dict[str, Any]) -> bool:
+    pid = str(pub.get("id") or "")
+    env = str(pub.get("environment") or "").lower()
+    return pid in _PREVIEW_PUBLISHER_IDS or env == "preview"
+
+
 def load_approved_publishers(path: Path | None = None) -> list[dict[str, Any]]:
     p = path or publishers_path()
     if not p.is_file():
         raise PackSignatureError(f"approved publishers file missing: {p}")
     data = json.loads(p.read_text(encoding="utf-8"))
     pubs = data.get("publishers") or []
-    if not isinstance(pubs, list) or not pubs:
-        raise PackSignatureError("no approved publishers configured")
-    return [p for p in pubs if isinstance(p, dict) and p.get("enabled", True)]
+    if not isinstance(pubs, list):
+        raise PackSignatureError("publishers must be a list")
+    enabled = [x for x in pubs if isinstance(x, dict) and x.get("enabled", True)]
+    profile = trust_profile()
+    if profile == "production":
+        # Fail closed: never accept preview-dev / environment=preview
+        enabled = [x for x in enabled if not _is_preview_publisher(x)]
+        if not enabled:
+            raise PackSignatureError(
+                "production trust profile has no enabled non-preview publishers "
+                f"(file={p}; set EV_PACK_PUBLISHERS to a production allowlist)"
+            )
+    elif not enabled:
+        raise PackSignatureError(f"no approved publishers configured in {p}")
+    return enabled
 
 
 def generate_keypair() -> tuple[str, str]:

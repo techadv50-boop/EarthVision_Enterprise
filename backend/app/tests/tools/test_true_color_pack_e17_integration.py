@@ -60,6 +60,8 @@ def pack_volume(tmp_path, monkeypatch):
     monkeypatch.setenv("EV_ARTIFACTS_ROOT", str(arts))
     monkeypatch.setenv("EV_PACK_PUBLISHERS", str(pubs / "approved_publishers.json"))
     monkeypatch.setenv("EV_PACK_REQUIRE_SIGNATURE", "1")
+    # Ephemeral test publisher is production-profile-safe (not preview-dev)
+    monkeypatch.setenv("EV_PACK_TRUST_PROFILE", "production")
     monkeypatch.setenv("EV_PACK_AUDIT_LOG", str(root / "audit" / "promotions.jsonl"))
     from app.tools import runtime_pins as rp
 

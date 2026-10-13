@@ -1,13 +1,5 @@
 {
   "schema_version": 1,
-  "notes": "Approved Tool Pack publishers. preview-dev is for preview/CI only \u2014 use distinct production keys.",
-  "publishers": [
-    {
-      "id": "preview-dev",
-      "name": "SATEYE Preview Dev Publisher",
-      "environment": "preview",
-      "enabled": true,
-      "public_key": "izevWnELgnNCnLKPrjQKcWOuKQ7f1x4q86wP18SyVzY"
-    }
-  ]
+  "notes": "Repo default mirrors image_default (no enabled publishers). Preview/CI tests use approved_publishers.preview.json or ephemeral keys. Production uses a volume allowlist — never preview-dev.",
+  "publishers": []
 }
