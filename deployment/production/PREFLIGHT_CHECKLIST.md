@@ -1,6 +1,6 @@
 # Production Host Shell Preflight Checklist (E1.8)
 
-**Deploy commit (proposed):** `f7e6d9fb3b87c08d38a78cb61254129283c8697a`  
+**Deploy tip (proposed):** `origin/cursor/scene-download-eye-5d6d` (E1.7 runtime `3e6be12` + E1.8 package)  
 **Branch:** `cursor/scene-download-eye-5d6d`  
 **Baseline preserved:** `sateye-baseline-20261012-1e71b7a` (`1e71b7a` imagery fixes = ancestor)
 
@@ -18,7 +18,7 @@ Mark each item PASS / FAIL. Any FAIL = **STOP**.
 
 | # | Criterion | PASS/FAIL |
 |---|-----------|-----------|
-| B1 | Tip SHA equals approved package SHA `f7e6d9f…` (or newer E1.8 package SHA if docs-only commit follows) | |
+| B1 | Tip is `cursor/scene-download-eye-5d6d` and contains `3e6be12` (E1.7) + E1.8 `deployment/production/` package | |
 | B2 | `git merge-base --is-ancestor 1e71b7a HEAD` → yes (imagery fixes retained) | |
 | B3 | GitHub **CI** workflow green on tip | |
 | B4 | GitHub **Tool Protection** workflow green on tip (includes E1.5 + E1.7) | |
