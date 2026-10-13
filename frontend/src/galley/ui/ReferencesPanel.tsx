@@ -1,6 +1,12 @@
 import { useState } from "react";
 import type { Galley } from "../types";
-import { REFERENCE_STYLES, formattedReferences, segregateReferences } from "../references";
+import {
+  REFERENCE_STYLES,
+  formattedReferences,
+  referenceTextFromBlocks,
+  segregateReferences,
+  splitBodyAndReferences,
+} from "../references";
 import { auditCitations, stitchBlocks } from "../citations";
 
 export function ReferencesPanel({
@@ -28,7 +34,7 @@ export function ReferencesPanel({
         <textarea
           rows={12}
           aria-label="Original references"
-          placeholder="Paste every reference here, one after another"
+          placeholder="Paste every reference here, one after another. A mashed list is fine."
           value={galley.referenceSource}
           onChange={(event) => {
             setNotice("");
@@ -39,16 +45,30 @@ export function ReferencesPanel({
       <div className="tool-row">
         <button
           type="button"
-          disabled={busy || !galley.referenceSource.trim()}
+          disabled={!referenceTextFromBlocks(galley.blocks)}
+          onClick={() => {
+            const source = referenceTextFromBlocks(galley.blocks);
+            patch({ referenceSource: source });
+            setNotice("The References section of the manuscript was copied into this box.");
+          }}
+        >
+          Use manuscript references
+        </button>
+        <button
+          type="button"
+          disabled={busy || !(galley.referenceSource.trim() || referenceTextFromBlocks(galley.blocks))}
           onClick={() => {
             setBusy(true);
             setNotice("");
             window.setTimeout(() => {
-              const references = segregateReferences(galley.referenceSource);
-              patch({ references, blocks: stitch(references, galley.referenceStyle) });
+              const extracted = splitBodyAndReferences(galley.blocks);
+              const source = galley.referenceSource.trim() || extracted.referenceText;
+              const references = segregateReferences(source);
+              const blocks = stitchBlocks(extracted.body, references, galley.referenceStyle);
+              patch({ referenceSource: source, references, blocks });
               setNotice(
                 references.length
-                  ? `Segregation completed. ${references.length} ${references.length === 1 ? "reference" : "references"}. Names and numbers in the text were stitched.`
+                  ? `Segregation completed. ${references.length} ${references.length === 1 ? "reference" : "references"} were split into authors, title, journal, volume, issue, pages, DOI, and the rest. Names and numbers in the text were stitched to that list.`
                   : "Segregation completed. No references were found in that box.",
               );
               setBusy(false);
@@ -58,7 +78,7 @@ export function ReferencesPanel({
           {busy ? "Segregating…" : "Segregate"}
         </button>
         <p className="muted">
-          Author, title, journal, volume, issue, pages, month, year, DOI, URL, publisher, and city are read for each reference. Nothing is left unattended.
+          Each reference is split into authors, title, journal, volume, issue, pages, month, year, DOI, URL, publisher, city, and any leftover part. Numbered lists that Word mashed into one paragraph are separated first.
         </p>
       </div>
       {notice && <p className="notice">{notice}</p>}
@@ -94,7 +114,9 @@ export function ReferencesPanel({
         >
           Stitch citations
         </button>
-        <p className="muted">Names and years are matched to the segregated list. A number such as [1] is reference 1.</p>
+        <p className="muted">
+          Author names in the text are matched to the reference list. A number such as [1] is stitched to reference 1.
+        </p>
       </div>
       <section className="report" aria-label="Citation report">
         <h2>Citation report</h2>

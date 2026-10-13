@@ -1,5 +1,10 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { formatReference, parseAuthorList, parseReference, segregateReferences } from "./references";
+import { formatReference, parseAuthorList, parseReference, segregateReferences, splitReferenceBlob } from "./references";
+
+const mashed = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures/mashed-references.txt"), "utf8");
 
 const sample =
   '[29] C. Zhang, J. Wang, and Y. Shi, "A CNN-transformer hybrid network for image super-resolution," IEEE Transactions on Image Processing, vol. 29, no. 4, pp. 12-20, 2026, doi: 10.1109/TIP.2026.1';
@@ -88,5 +93,32 @@ describe("reference parsing", () => {
     expect(items[1].doi).toBe("10.1000/conf");
     expect(formatReference(items[0], "ieee", 1)).toContain("Oxford University Press");
     expect(formatReference(items[1], "ieee", 2)).toContain("Proceedings of the Agriculture Conference");
+  });
+
+  it("splits a Word-mashed IEEE list and reads authors, title, journal, volume, issue, pages, and DOI", () => {
+    const blobs = splitReferenceBlob(mashed);
+    expect(blobs.some((blob) => /refrences/i.test(blob))).toBe(false);
+    const items = segregateReferences(mashed);
+    expect(items.length).toBeGreaterThanOrEqual(40);
+    expect(items[0].authors).toMatch(/Hasheminejad/i);
+    expect(items[0].title).toMatch(/Hazard Identification/i);
+    expect(items[0].container).toMatch(/Occupational Health/i);
+    expect(items[0].doi).toContain("10.52547/johe.11.1.32");
+    expect(items[1].authors).toMatch(/Strzałkowski/i);
+    expect(items[1].title).toMatch(/Identification and systematics/i);
+    expect(items[1].container).toMatch(/Sci Rep/i);
+    expect(items[1].volume).toBe("15");
+    expect(items[1].issue).toBe("1");
+    expect(items[1].pages).toBe("30492");
+    expect(items[1].year).toBe("2025");
+    expect(items[1].doi).toBe("10.1038/s41598-025-16437-z");
+    const joseph = items[9];
+    expect(joseph.authors).toMatch(/Joseph/i);
+    expect(joseph.title).toMatch(/Environmental issues in Mining/i);
+    expect(joseph.volume).toBe("31");
+    expect(joseph.issue).toBe("3");
+    expect(joseph.pages).toBe("51-71");
+    expect(joseph.doi).toMatch(/^10\.2478\/minrv-2025-0029$/);
+    expect(parseAuthorList(items[1].authors)[0]?.family).toMatch(/Strzałkowski/i);
   });
 });

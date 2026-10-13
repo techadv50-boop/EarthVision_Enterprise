@@ -1,6 +1,10 @@
 import type { BodyBlock, ReferenceItem, ReferenceStyleId } from "./types";
 import { parseAuthorList } from "./references";
 
+function isReferencesHeading(text: string): boolean {
+  return /^references\b/i.test(text.replace(/[:\s]+$/g, "").trim());
+}
+
 export type CitationAudit = {
   missingInReferences: string[];
   unusedReferences: string[];
@@ -188,7 +192,14 @@ export function stitchText(
 }
 
 function eachText(blocks: BodyBlock[], visit: (text: string) => void): void {
+  let skip = false;
   blocks.forEach((block) => {
+    const heading = block.type === "section" ? block.heading : block.type === "heading" ? block.text : "";
+    if (isReferencesHeading(heading) || block.type === "referenceLine") {
+      skip = true;
+      return;
+    }
+    if (skip) return;
     if (block.type === "section") {
       visit(block.heading);
       visit(block.text);
@@ -198,7 +209,14 @@ function eachText(blocks: BodyBlock[], visit: (text: string) => void): void {
 
 export function stitchBlocks(blocks: BodyBlock[], references: ReferenceItem[], style: ReferenceStyleId): BodyBlock[] {
   const apply = (text: string) => stitchText(text, references, style).text;
+  let skip = false;
   return blocks.map((block) => {
+    const heading = block.type === "section" ? block.heading : block.type === "heading" ? block.text : "";
+    if (isReferencesHeading(heading) || block.type === "referenceLine") {
+      skip = true;
+      return block;
+    }
+    if (skip) return block;
     if (block.type === "section") return { ...block, heading: apply(block.heading), text: apply(block.text) };
     if (block.type === "paragraph" || block.type === "heading") return { ...block, text: apply(block.text) };
     return block;
