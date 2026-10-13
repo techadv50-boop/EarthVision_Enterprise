@@ -1,4 +1,4 @@
-"""Parse IJIST galley first-page headers (Citation| / running Vol/Issue/Page)."""
+"""Parse journal galley first-page headers (Citation| / running Vol/Issue/Page)."""
 
 from __future__ import annotations
 
@@ -22,16 +22,30 @@ MONTHS = (
 MONTH_RE = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
 
 RUNNING_HEADER_RE = re.compile(
-    rf"(?P<month>{MONTH_RE})\s+(?P<year>\d{{4}})\s*\|\s*Vol\.?\s*(?P<volume>\d+)\s*\|\s*Issue\s*(?P<issue>\d+)",
+    rf"(?P<month>{MONTH_RE})\s+(?P<year>\d{{4}})\s*\|\s*Vol\.?\s*(?P<volume>\d+)\s*\|\s*Issue\.?\s*(?P<issue>\d+)",
     re.IGNORECASE,
 )
 PAGE_RE = re.compile(r"Page\s*\|\s*(?P<page>\d+)", re.IGNORECASE)
 CITATION_RE = re.compile(
-    r"Citation\|\s*(?P<authors>.+?),\s*[“\"\"](?P<title>.+?)[”\"\"]\s*,\s*IJIST,\s*"
-    r"Vol\.\s*(?P<volume>\d+)\s*Issue\.\s*(?P<issue>\d+)\s*"
-    r"pp\s*(?P<start>\d+)\s*-\s*(?P<end>\d+)\s*,\s*(?P<monthyear>[A-Za-z]+\s+\d{4})",
+    r"Citation\|\s*(?P<authors>.+?),\s*[“\"\"](?P<title>.+?)[”\"\"]\s*,\s*(?:[A-Za-z][A-Za-z0-9&./\s-]{1,40},?\s+)?"
+    r"Vol\.?\s*(?P<volume>\d+)\s*(?:Issue|No)\.?\s*(?P<issue>\d+)\s*"
+    r"pp\.?\s*(?P<start>\d+)\s*-\s*(?P<end>\d+)\s*,?\s*(?P<monthyear>[A-Za-z]+\s+\d{4})?",
     re.IGNORECASE | re.DOTALL,
 )
+# Generic "Vol. 1 No. 2 (2019)" / "Volume 1, Issue 2" / filename "vol1_issue2".
+VOL_ISSUE_RE = re.compile(
+    r"\bVol(?:ume)?\.?\s*(?P<volume>\d+)\s*"
+    r"(?:[,|/]\s*)?(?:No\.?|Iss(?:ue)?\.?)\s*(?P<issue>\d+)"
+    r"(?:\s*\((?P<year>\d{4})\))?",
+    re.IGNORECASE,
+)
+VOL_ISSUE_FILENAME_RE = re.compile(
+    r"(?:^|[_\-./\s])vol(?:ume)?[._\-\s]*(?P<volume>\d+)[._\-\s]*"
+    r"(?:iss(?:ue)?|no)[._\-\s]*(?P<issue>\d+)",
+    re.IGNORECASE,
+)
+YEAR_RE = re.compile(r"\((?P<year>19\d{2}|20\d{2})\)")
+ARTICLE_ID_RE = re.compile(r"/article/(?:view|download)/(\d+)", re.I)
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 DATE_FIELD_RE = re.compile(
@@ -46,6 +60,40 @@ def normalize_whitespace(text: str) -> str:
 
 def collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def article_id_from_url(url: str) -> Optional[str]:
+    match = ARTICLE_ID_RE.search(url or "")
+    return match.group(1) if match else None
+
+
+def parse_volume_issue(*texts: str) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """Best-effort (volume, issue, year) from titles, HTML, filenames, or URLs."""
+    volume = issue = year = None
+    for raw in texts:
+        blob = collapse(raw or "")
+        if not blob:
+            continue
+        for pattern in (VOL_ISSUE_RE, VOL_ISSUE_FILENAME_RE, RUNNING_HEADER_RE):
+            match = pattern.search(blob) or pattern.search(raw or "")
+            if not match:
+                continue
+            groups = match.groupdict()
+            if groups.get("volume") and volume is None:
+                volume = int(groups["volume"])
+            if groups.get("issue") and issue is None:
+                issue = int(groups["issue"])
+            if groups.get("year") and year is None:
+                year = int(groups["year"])
+            if volume and issue:
+                break
+        if year is None:
+            found_year = YEAR_RE.search(blob)
+            if found_year:
+                year = int(found_year.group("year"))
+        if volume and issue:
+            break
+    return volume, issue, year
 
 
 def split_authors(raw: str) -> list[str]:
@@ -144,6 +192,15 @@ def parse_ijist_header(text: str) -> dict[str, Any]:
             result["month"] = parts[0]
         if len(parts) > 1 and parts[-1].isdigit():
             result["year"] = int(parts[-1])
+
+    if result["volume"] is None or result["issue"] is None:
+        vol, iss, year = parse_volume_issue(first, collapsed_first, collapsed_all)
+        if result["volume"] is None and vol:
+            result["volume"] = vol
+        if result["issue"] is None and iss:
+            result["issue"] = iss
+        if result["year"] is None and year:
+            result["year"] = year
 
     if not result["title"]:
         # Lines after running header until author superscripts.

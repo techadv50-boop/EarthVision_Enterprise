@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import get_current_user
-from app.database.session import get_db
+from app.database.session import AsyncSessionLocal, get_db
 from app.models.citation import (
     Article,
     CrawlJob,
@@ -44,8 +44,13 @@ from app.schemas.citation import (
     VolumeOut,
 )
 from app.services.citation_counts import sync_article_citations
-from app.services.crawler import run_crawl_job, run_download_job
-from app.services.ingest import compute_issue_coverage, ingest_article_text, ingest_pdf_bytes
+from app.services.crawler import _issue_key, run_crawl_job, run_download_job
+from app.services.ingest import (
+    compute_issue_coverage,
+    ingest_article_text,
+    ingest_pdf_bytes,
+    refile_unfiled_articles,
+)
 from app.services.matcher import house_citation_for, split_manuscript_paragraphs, suggest_for_manuscript
 from app.services.citation_parser import split_paragraphs
 from app.services.manuscript_export import assign_citations
@@ -177,7 +182,7 @@ async def list_journals(db: Db, _user: CurrentUser):
     for journal in journals:
         issues_res = await db.execute(select(Issue).where(Issue.journal_id == journal.id))
         issues = list(issues_res.scalars().all())
-        vols = {i.volume for i in issues}
+        vols = {i.volume for i in issues if i.volume > 0}
         count_res = await db.execute(
             select(func.count(Article.id))
             .join(Issue, Article.issue_id == Issue.id)
@@ -247,10 +252,10 @@ async def list_volumes(journal_id: int, db: Db, _user: CurrentUser):
     by_vol: dict[int, list[Issue]] = defaultdict(list)
     for issue in issues:
         by_vol[issue.volume].append(issue)
-    volumes = sorted(by_vol)
+    numbered = sorted(volume for volume in by_vol if volume > 0)
     out: list[VolumeOut] = []
-    if volumes:
-        for missing in range(volumes[0], volumes[-1] + 1):
+    if numbered:
+        for missing in range(numbered[0], numbered[-1] + 1):
             if missing not in by_vol:
                 out.append(VolumeOut(volume=missing, article_count=0, issue_count=0, missing=True))
                 continue
@@ -271,6 +276,22 @@ async def list_volumes(journal_id: int, db: Db, _user: CurrentUser):
                     missing=False,
                 )
             )
+    if 0 in by_vol:
+        group = by_vol[0]
+        count_res = await db.execute(
+            select(func.count(Article.id))
+            .join(Issue, Article.issue_id == Issue.id)
+            .where(Issue.journal_id == journal_id, Issue.volume == 0)
+        )
+        out.append(
+            VolumeOut(
+                volume=0,
+                article_count=int(count_res.scalar() or 0),
+                issue_count=len(group),
+                missing=False,
+                unfiled=True,
+            )
+        )
     return out
 
 
@@ -310,23 +331,36 @@ async def list_issues(journal_id: int, volume: int, db: Db, _user: CurrentUser):
             )
         ).scalars().all()
     )
-    present = {i.issue_number for i in issues}
+    present = {i.issue_number for i in issues if i.issue_number > 0}
     out: list[IssueStatsOut] = []
-    if present:
-        for num in range(min(present), max(present) + 1):
-            issue = next((i for i in issues if i.issue_number == num), None)
-            if issue is None:
-                out.append(
-                    IssueStatsOut(
-                        id=0, volume=volume, issue_number=num, article_count=0,
-                        cited_count=0, uncited_count=0,
-                    )
-                )
-                continue
+    if volume == 0:
+        for issue in issues:
             arts = list(
                 (await db.execute(select(Article).where(Article.issue_id == issue.id))).scalars().all()
             )
             out.append(_issue_stats(issue, arts))
+        return out
+    max_num = max(present) if present else 0
+    for num in range(1, max_num + 1):
+        issue = next((i for i in issues if i.issue_number == num), None)
+        if issue is None:
+            out.append(
+                IssueStatsOut(
+                    id=0, volume=volume, issue_number=num, article_count=0,
+                    cited_count=0, uncited_count=0,
+                )
+            )
+            continue
+        arts = list(
+            (await db.execute(select(Article).where(Article.issue_id == issue.id))).scalars().all()
+        )
+        out.append(_issue_stats(issue, arts))
+    extras = [i for i in issues if i.issue_number <= 0]
+    for issue in extras:
+        arts = list(
+            (await db.execute(select(Article).where(Article.issue_id == issue.id))).scalars().all()
+        )
+        out.append(_issue_stats(issue, arts))
     return out
 
 
@@ -345,7 +379,14 @@ async def list_issue_articles(
         )
     ).scalar_one_or_none()
     if issue is None:
-        raise HTTPException(status_code=404, detail="Issue not found")
+        return {
+            "issue": IssueStatsOut(
+                id=0, volume=volume, issue_number=issue_number, article_count=0,
+                cited_count=0, uncited_count=0,
+            ),
+            "articles": [],
+            "coverage": {"present": [], "gaps": [], "overlaps": [], "article_count": 0},
+        }
     arts = list(
         (
             await db.execute(
@@ -375,19 +416,40 @@ async def issue_coverage(
     return data["coverage"]
 
 
-@router.post("/journals/{journal_id}/papers")
-async def upload_papers(
-    journal_id: int,
-    db: Db,
-    _user: CurrentUser,
-    files: list[UploadFile] = File(...),
-):
-    journal = await _journal_or_404(db, journal_id)
+async def _latest_inventory(db: AsyncSession, journal_id: int) -> list:
+    job = (
+        await db.execute(
+            select(CrawlJob)
+            .where(CrawlJob.journal_id == journal_id)
+            .order_by(CrawlJob.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return list(job.inventory or []) if job else []
+
+
+async def _save_uploaded_pdfs(
+    db: AsyncSession,
+    journal: Journal,
+    files: list[UploadFile],
+    *,
+    volume: Optional[int] = None,
+    issue: Optional[int] = None,
+    force_placement: bool = False,
+) -> dict:
+    inventory = await _latest_inventory(db, journal.id)
     saved = []
     for upload in files:
         data = await upload.read()
         article, created = await ingest_pdf_bytes(
-            db, journal, data, upload.filename or "upload.pdf"
+            db,
+            journal,
+            data,
+            upload.filename or "upload.pdf",
+            volume=volume,
+            issue_number=issue,
+            inventory=inventory,
+            force_placement=force_placement,
         )
         await db.flush()
         article = (
@@ -401,6 +463,46 @@ async def upload_papers(
     return {"articles": saved}
 
 
+@router.post("/journals/{journal_id}/papers")
+async def upload_papers(
+    journal_id: int,
+    db: Db,
+    _user: CurrentUser,
+    files: list[UploadFile] = File(...),
+    volume: Optional[int] = Query(None),
+    issue: Optional[int] = Query(None),
+):
+    journal = await _journal_or_404(db, journal_id)
+    return await _save_uploaded_pdfs(
+        db,
+        journal,
+        files,
+        volume=volume,
+        issue=issue,
+        force_placement=volume is not None and issue is not None,
+    )
+
+
+@router.post("/journals/{journal_id}/volumes/{volume}/issues/{issue_number}/papers")
+async def upload_issue_papers(
+    journal_id: int,
+    volume: int,
+    issue_number: int,
+    db: Db,
+    _user: CurrentUser,
+    files: list[UploadFile] = File(...),
+):
+    journal = await _journal_or_404(db, journal_id)
+    return await _save_uploaded_pdfs(
+        db,
+        journal,
+        files,
+        volume=volume,
+        issue=issue_number,
+        force_placement=True,
+    )
+
+
 @router.post("/journals/{journal_id}/papers-text")
 async def upload_paper_text(journal_id: int, body: TextPaperIn, db: Db, _user: CurrentUser):
     journal = await _journal_or_404(db, journal_id)
@@ -410,6 +512,9 @@ async def upload_paper_text(journal_id: int, body: TextPaperIn, db: Db, _user: C
         body.text,
         source_url=body.source_url,
         original_filename=body.filename,
+        volume=body.volume,
+        issue_number=body.issue,
+        inventory=await _latest_inventory(db, journal_id),
     )
     await db.flush()
     article = (
@@ -432,12 +537,28 @@ async def start_crawl(
 ):
     journal = await _journal_or_404(db, journal_id)
     journal.archive_url = body.archive_url
+    running = list(
+        (
+            await db.execute(
+                select(CrawlJob).where(
+                    CrawlJob.journal_id == journal.id,
+                    CrawlJob.status.in_(["queued", "running"]),
+                )
+            )
+        ).scalars().all()
+    )
+    for old in running:
+        old.cancel_requested = True
+        if old.status == "queued":
+            old.status = "cancelled"
+            old.phase = "cancelled"
+            old.message = "Replaced by a new scan."
     job = CrawlJob(journal_id=journal.id, archive_url=body.archive_url, status="queued")
     db.add(job)
     await db.flush()
     job_id = job.id
     await db.commit()
-    background.add_task(run_crawl_job, job_id)
+    background.add_task(run_crawl_job, job_id, auto_download=body.auto_download)
     return CrawlJobOut.model_validate(job)
 
 
@@ -496,11 +617,11 @@ async def start_download(
             status_code=400,
             detail="Scan the archive first so issues can be listed",
         )
-    known = {str(row.get("url") or "").rstrip("/") for row in inventory}
+    known = {_issue_key(str(row.get("url") or "")) for row in inventory}
     selected = []
     seen: set[str] = set()
     for url in body.issue_urls:
-        key = url.rstrip("/")
+        key = _issue_key(url)
         if key in known and key not in seen:
             selected.append(url)
             seen.add(key)
@@ -628,24 +749,57 @@ async def sync_issue_citations(issue_id: int, db: Db, _user: CurrentUser):
     return {"articles": synced}
 
 
-@router.post("/journals/{journal_id}/sync-citations")
-async def sync_journal_citations(journal_id: int, db: Db, _user: CurrentUser):
-    await _journal_or_404(db, journal_id)
-    arts = list(
-        (
-            await db.execute(
-                select(Article)
-                .options(selectinload(Article.issue).selectinload(Issue.journal))
-                .join(Issue, Article.issue_id == Issue.id)
-                .where(Issue.journal_id == journal_id)
-            )
-        ).scalars().all()
+async def run_journal_citation_sync(journal_id: int, force: bool = False) -> None:
+    async with AsyncSessionLocal() as db:
+        arts = list(
+            (
+                await db.execute(
+                    select(Article)
+                    .options(selectinload(Article.issue).selectinload(Issue.journal))
+                    .join(Issue, Article.issue_id == Issue.id)
+                    .where(Issue.journal_id == journal_id)
+                    .order_by(Issue.volume.desc(), Issue.issue_number.desc(), Article.page_start)
+                )
+            ).scalars().all()
+        )
+        for index, article in enumerate(arts):
+            if not force and article.citation_synced_at:
+                continue
+            try:
+                await sync_article_citations(db, article)
+            except Exception:
+                article.citation_sync_status = "error"
+            if index % 5 == 0:
+                await db.commit()
+        await db.commit()
+
+
+@router.post("/journals/{journal_id}/refile")
+async def refile_journal(journal_id: int, db: Db, _user: CurrentUser):
+    journal = await _journal_or_404(db, journal_id)
+    result = await refile_unfiled_articles(
+        db, journal, await _latest_inventory(db, journal_id)
     )
-    synced = []
-    for article in arts[:80]:
-        await sync_article_citations(db, article)
-        synced.append(_article_out(article))
-    return {"synced": len(synced), "articles": synced}
+    await db.flush()
+    return result
+
+
+@router.post("/journals/{journal_id}/sync-citations")
+async def sync_journal_citations(
+    journal_id: int,
+    background: BackgroundTasks,
+    db: Db,
+    _user: CurrentUser,
+    force: bool = False,
+):
+    await _journal_or_404(db, journal_id)
+    background.add_task(run_journal_citation_sync, journal_id, force)
+    return {
+        "synced": 0,
+        "status": "queued",
+        "articles": [],
+        "message": "Refreshing citation counts in the background for every article in this journal.",
+    }
 
 
 @router.post("/manuscripts", status_code=status.HTTP_201_CREATED)
