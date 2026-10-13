@@ -185,12 +185,15 @@ export const citationApi = {
     uploadPapers: (id: number, files: File[], placement?: { volume?: number; issue?: number }) => {
       const form = new FormData();
       files.forEach((f) => form.append('files', f));
-      const params: Record<string, number> = {};
-      if (placement?.volume && placement.volume > 0) params.volume = placement.volume;
-      if (placement?.issue && placement.issue > 0) params.issue = placement.issue;
+      const volume = placement?.volume;
+      const issue = placement?.issue;
+      if (volume && volume > 0 && issue && issue > 0) {
+        return api.post(`/journals/${id}/volumes/${volume}/issues/${issue}/papers`, form, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+      }
       return api.post(`/journals/${id}/papers`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        params,
       });
     },
     uploadText: (id: number, data: Record<string, unknown>) =>

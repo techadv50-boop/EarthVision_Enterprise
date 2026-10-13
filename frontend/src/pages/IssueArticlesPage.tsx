@@ -161,8 +161,20 @@ export default function IssueArticlesPage() {
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
     setMsg('Uploading…');
-    await citationApi.journals.uploadPapers(id, Array.from(files), { volume: vol, issue: iss });
-    setMsg('Papers filed into this volume and issue.');
+    const { data } = await citationApi.journals.uploadPapers(id, Array.from(files), {
+      volume: vol,
+      issue: iss,
+    });
+    const rows = Array.isArray(data?.articles) ? data.articles : [];
+    const here = rows.filter(
+      (row: { article?: { volume?: number; issue_number?: number } }) =>
+        Number(row.article?.volume) === vol && Number(row.article?.issue_number) === iss
+    ).length;
+    setMsg(
+      here
+        ? `Filed ${here} paper${here === 1 ? '' : 's'} into Volume ${vol} Issue ${iss}.`
+        : 'Upload finished, but the papers did not land in this issue.'
+    );
     await load();
   };
 

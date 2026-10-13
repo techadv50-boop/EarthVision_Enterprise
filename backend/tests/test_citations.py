@@ -916,6 +916,42 @@ async def test_upload_files_into_issue_rack_and_filename(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_issue_page_upload_stays_on_that_rack(client: AsyncClient):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Forced Rack Journal", "abbreviation": "FRJ"},
+    )
+    jid = created.json()["id"]
+    pdf = _pdf_from_text(GALLEY_WATER)
+
+    pinned = await client.post(
+        f"/api/v1/journals/{jid}/volumes/8/issues/1/papers",
+        headers=headers,
+        files=[("files", ("water-on-issue-1.pdf", pdf, "application/pdf"))],
+    )
+    assert pinned.status_code == 200, pinned.text
+    article = pinned.json()["articles"][0]["article"]
+    assert article["volume"] == 8
+    assert article["issue_number"] == 1
+    assert "Water" in (article["title"] or "") or article["page_start"] == 2211
+
+    listing = await client.get(
+        f"/api/v1/journals/{jid}/volumes/8/issues/1/articles", headers=headers
+    )
+    assert listing.status_code == 200
+    assert listing.json()["issue"]["article_count"] >= 1
+    assert listing.json()["articles"]
+    assert all(row["issue_number"] == 1 for row in listing.json()["articles"])
+
+    elsewhere = await client.get(
+        f"/api/v1/journals/{jid}/volumes/8/issues/5/articles", headers=headers
+    )
+    assert elsewhere.json()["issue"]["article_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_unfiled_volume_is_flagged_not_mixed_into_volume_one(client: AsyncClient):
     headers = await _auth(client)
     created = await client.post(

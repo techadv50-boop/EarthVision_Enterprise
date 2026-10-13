@@ -428,17 +428,16 @@ async def _latest_inventory(db: AsyncSession, journal_id: int) -> list:
     return list(job.inventory or []) if job else []
 
 
-@router.post("/journals/{journal_id}/papers")
-async def upload_papers(
-    journal_id: int,
-    db: Db,
-    _user: CurrentUser,
-    files: list[UploadFile] = File(...),
-    volume: Optional[int] = Query(None),
-    issue: Optional[int] = Query(None),
-):
-    journal = await _journal_or_404(db, journal_id)
-    inventory = await _latest_inventory(db, journal_id)
+async def _save_uploaded_pdfs(
+    db: AsyncSession,
+    journal: Journal,
+    files: list[UploadFile],
+    *,
+    volume: Optional[int] = None,
+    issue: Optional[int] = None,
+    force_placement: bool = False,
+) -> dict:
+    inventory = await _latest_inventory(db, journal.id)
     saved = []
     for upload in files:
         data = await upload.read()
@@ -450,6 +449,7 @@ async def upload_papers(
             volume=volume,
             issue_number=issue,
             inventory=inventory,
+            force_placement=force_placement,
         )
         await db.flush()
         article = (
@@ -461,6 +461,46 @@ async def upload_papers(
         ).scalar_one()
         saved.append({"created": created, "article": _article_out(article)})
     return {"articles": saved}
+
+
+@router.post("/journals/{journal_id}/papers")
+async def upload_papers(
+    journal_id: int,
+    db: Db,
+    _user: CurrentUser,
+    files: list[UploadFile] = File(...),
+    volume: Optional[int] = Query(None),
+    issue: Optional[int] = Query(None),
+):
+    journal = await _journal_or_404(db, journal_id)
+    return await _save_uploaded_pdfs(
+        db,
+        journal,
+        files,
+        volume=volume,
+        issue=issue,
+        force_placement=volume is not None and issue is not None,
+    )
+
+
+@router.post("/journals/{journal_id}/volumes/{volume}/issues/{issue_number}/papers")
+async def upload_issue_papers(
+    journal_id: int,
+    volume: int,
+    issue_number: int,
+    db: Db,
+    _user: CurrentUser,
+    files: list[UploadFile] = File(...),
+):
+    journal = await _journal_or_404(db, journal_id)
+    return await _save_uploaded_pdfs(
+        db,
+        journal,
+        files,
+        volume=volume,
+        issue=issue_number,
+        force_placement=True,
+    )
 
 
 @router.post("/journals/{journal_id}/papers-text")

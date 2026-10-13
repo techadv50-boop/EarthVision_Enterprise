@@ -64,8 +64,13 @@ def resolve_placement(
     issue_number: Optional[int] = None,
     year: Optional[int] = None,
     inventory: Optional[list[dict[str, Any]]] = None,
+    force_placement: bool = False,
 ) -> tuple[int, int, Optional[int]]:
-    """Header first, then caller hints, inventory, filename/URL — never invent volume 0 when a rack is known."""
+    """Header first, then caller hints, inventory, filename/URL — never invent volume 0 when a rack is known.
+
+    When force_placement is set (operator uploaded onto a specific issue rack), that
+    rack wins even if the PDF header names a different volume/issue.
+    """
     meta = parse_ijist_header(text or "")
     hint_vol, hint_iss, hint_year = parse_volume_issue(
         filename or "",
@@ -76,6 +81,11 @@ def resolve_placement(
     parsed_vol = meta.get("volume")
     parsed_iss = meta.get("issue")
     parsed_year = meta.get("year")
+    target_vol = _first_positive(volume)
+    target_iss = _first_positive(issue_number)
+    if force_placement and target_vol and target_iss:
+        year_out = _first_positive(parsed_year, year, inv_year, hint_year)
+        return int(target_vol), int(target_iss), year_out
     vol = _first_positive(parsed_vol, volume, inv_vol, hint_vol)
     iss = _first_positive(parsed_iss, issue_number, inv_iss, hint_iss)
     year_out = _first_positive(parsed_year, year, inv_year, hint_year)
@@ -140,6 +150,7 @@ async def ingest_article_text(
     year: Optional[int] = None,
     month: Optional[str] = None,
     inventory: Optional[list[dict[str, Any]]] = None,
+    force_placement: bool = False,
 ) -> tuple[Article, bool]:
     meta = parse_ijist_header(text)
     volume_no, issue_no, year_no = resolve_placement(
@@ -150,6 +161,7 @@ async def ingest_article_text(
         issue_number=issue_number,
         year=year,
         inventory=inventory,
+        force_placement=force_placement,
     )
     page_start = int(meta.get("page_start") or 0) or 1
 
@@ -261,6 +273,7 @@ async def ingest_pdf_bytes(
     issue_number: Optional[int] = None,
     year: Optional[int] = None,
     inventory: Optional[list[dict[str, Any]]] = None,
+    force_placement: bool = False,
 ) -> tuple[Article, bool]:
     text, ocr_status = extract_pdf_text(data)
     if not text.strip():
@@ -274,6 +287,7 @@ async def ingest_pdf_bytes(
         issue_number=issue_number,
         year=year,
         inventory=inventory,
+        force_placement=force_placement,
     )
     dest = archive_pdf_path(journal.id, vol, iss, filename)
     dest.write_bytes(data)
@@ -285,10 +299,11 @@ async def ingest_pdf_bytes(
         source_url=source_url,
         ocr_status=ocr_status,
         original_filename=filename,
-        volume=vol,
-        issue_number=iss,
+        volume=vol if not force_placement else volume,
+        issue_number=iss if not force_placement else issue_number,
         year=year_no,
         inventory=inventory,
+        force_placement=force_placement,
     )
 
 
