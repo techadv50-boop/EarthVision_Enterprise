@@ -3,14 +3,14 @@
 **Status:** HANDOFF READY — production inventory execution requires **separate owner authorization**.  
 **Date (UTC):** 2026-10-13  
 **PR:** [#76](https://github.com/techadv50-boop/EarthVision_Enterprise/pull/76)  
-**Package branch commit:** `74b00932a34f4e0911f3af796124f8d5ecabb7c7`  
+**Package branch commit:** `f71a877aeee8a85cd7552b4129beef5fd6e1ccdf`  
 **Approved deploy tip (unchanged):** `e3012ce0a26e049d0af981d5994d0d829c3b647e` on `cursor/scene-download-eye-5d6d`
 
 ## Independent verification (this stage)
 
 | Check | Result |
 |-------|--------|
-| PR #76 latest commit | `74b00932a34f4e0911f3af796124f8d5ecabb7c7` (helper code verified at `61978c5` + this handoff) |
+| PR #76 latest commit | `f71a877aeee8a85cd7552b4129beef5fd6e1ccdf` (helper code verified at `61978c5` + this handoff) |
 | Safety suite rerun | **65 pass / 0 fail** |
 | Deploy tip `e3012ce` | Confirmed on `origin/cursor/scene-download-eye-5d6d` |
 | Production accessed | **No** |
