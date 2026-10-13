@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage E1.9C-R1 — Read-only production inventory helper (hardened).
+# Stage E1.9C-R2 — Read-only production inventory helper (hardened + typed fields).
 #
 # Identity mismatches ALWAYS stop (SKIP_HOST_CHECK is rejected if set).
 # Does not run `docker compose config`, does not dump secret values,
@@ -30,8 +30,8 @@ if [[ -z "${OUT_DIR}" ]]; then
   exit 1
 fi
 
-# Refuse known bypass flag if present in environment
-if [[ -n "${SKIP_HOST_CHECK+x}" && -n "${SKIP_HOST_CHECK}" ]]; then
+# Refuse known bypass flag if present in environment (any value, including empty)
+if [[ -n "${SKIP_HOST_CHECK+x}" ]]; then
   printf '[e19c] ERROR: SKIP_HOST_CHECK is not supported and must not be set\n' >&2
   exit 1
 fi

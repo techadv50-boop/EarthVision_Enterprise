@@ -135,9 +135,12 @@ class MockCmd:
         if op == "docker" and argv[1] == "image":
             return (
                 0,
-                '["ev-backend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] ["ev-backend:live"] 2026-10-01T00:00:00Z sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n',
+                '["ev-backend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]|||["ev-backend:live"]\n',
                 "",
             )
+        if op == "tar":
+            # Archive is built in-process via tarfile; shell tar should not be required.
+            return 0, "", ""
         if op == "docker" and argv[1] == "volume":
             return 0, "sateye-fz2ic4_pgdata\tlocal\nother_project_vol\tlocal\n", ""
         if op == "git":
@@ -205,12 +208,6 @@ class MockCmd:
                 }
                 return 0, json.dumps(payload), ""
             return 1, "", "unexpected"
-        if op == "tar":
-            if self.scenario == "tar_fail":
-                return 1, "", "tar failed"
-            # create empty archive path
-            Path(argv[argv.index("-czf") + 1]).write_bytes(b"fake")
-            return 0, "", ""
         return 127, "", "command_not_found"
 
 
@@ -449,6 +446,111 @@ def test_missing_evidence_marked_unknown_on_docker_ps_fail() -> None:
         ok("identity not silently passed", result.summary.get("identity_result") == "STOP")
 
 
+def test_credential_like_metadata_rejected() -> None:
+    from e19c_inventory_lib import (
+        v_hostname,
+        v_docker_name,
+        v_git_branch,
+        v_image_ref,
+        v_mount_dest,
+        v_runner_name,
+        allowlisted_health_fields,
+        parse_docker_ps_lines,
+    )
+
+    ok("hostname rejects password URI", v_hostname("host://user:pass@evil") == "UNKNOWN")
+    ok("hostname rejects too long", v_hostname("a" * 300) == "UNKNOWN")
+    ok(
+        "container name rejects credential-like",
+        v_docker_name("backend;password=hunter2") == "UNKNOWN",
+    )
+    ok(
+        "git branch with ghp_ => UNKNOWN",
+        v_git_branch("feat/ghp_abcdefghijklmnopqrstuvwxyz012345") == "UNKNOWN",
+    )
+    ok(
+        "image ref rejects user:pass@",
+        v_image_ref("registry.example/user:SuperSecret@repo/img:latest") == "UNKNOWN",
+    )
+    ok(
+        "mount dest rejects query secret",
+        v_mount_dest("/data/imagery?token=abc123secrettoken") == "UNKNOWN",
+    )
+    ok("runner name rejects token", v_runner_name("runner_token=abc123secrettoken") == "UNKNOWN")
+    fields = allowlisted_health_fields(
+        '{"status":"healthy password=leak","version":"1.0.0","database":"postgresql"}'
+    )
+    ok("malformed health status => UNKNOWN", fields.get("status") == "UNKNOWN")
+
+    # docker ps line with credential-like container name dropped
+    lines = (
+        "sateye-fz2ic4-backend-1\tsateye-fz2ic4\tbackend\tUp\tev-backend:live\n"
+        "evil;password=x\tsateye-fz2ic4\tfrontend\tUp\tev-frontend:live\n"
+    )
+    rows = parse_docker_ps_lines(lines)
+    ok("credential-like container row dropped", all(r["name"] != "evil;password=x" for r in rows))
+    ok("valid backend row kept", any(r["service"] == "backend" for r in rows))
+
+
+def test_archive_contains_only_approved_files() -> None:
+    import tarfile
+    import stat as statmod
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        app = _prep_app(td_path)
+        out = Path("/tmp") / f"e19c-arch-{os.getpid()}"
+        if out.exists():
+            for p in sorted(out.rglob("*"), reverse=True):
+                if p.is_file():
+                    p.unlink()
+                elif p.is_dir():
+                    p.rmdir()
+            if out.exists():
+                out.rmdir()
+        result = run_inventory(
+            app_dir=str(app),
+            out_dir=str(out),
+            hostname_value="zhzh",
+            cmd=MockCmd("happy", app),
+            include_runner_checks=True,
+            approved_tip="e3012ce0a26e049d0af981d5994d0d829c3b647e",
+        )
+        ok("archive path share_safe", result.share_safe is True)
+        ok("archive_path set", bool(result.archive_path))
+        assert result.archive_path
+        ap = Path(result.archive_path)
+        ok("archive mode 0600", statmod.S_IMODE(ap.stat().st_mode) == 0o600)
+        with tarfile.open(ap, "r:gz") as tar:
+            members = sorted(m.name.split("/", 1)[-1] for m in tar.getmembers() if m.isfile())
+        from e19c_inventory_lib import APPROVED_ARCHIVE_FILES
+
+        ok("archive members subset of approved", set(members) <= APPROVED_ARCHIVE_FILES)
+        ok("summary in archive", "00_return_summary.txt" in members)
+        ok("manifest in archive", "15_manifest.txt" in members)
+        ok("STOP files not in archive", "STOP.txt" not in members and "STOP_SECRETS.txt" not in members)
+        # cleanup
+        ap.unlink(missing_ok=True)
+        for p in sorted(out.rglob("*"), reverse=True):
+            if p.is_file():
+                p.unlink()
+            elif p.is_dir():
+                p.rmdir()
+        if out.exists():
+            out.rmdir()
+
+
+def test_malformed_values_never_written_as_literals() -> None:
+    from e19c_inventory_lib import v_hostname, v_git_sha, v_image_id, v_http_code
+
+    ok("newline hostname UNKNOWN", v_hostname("zhzh\npassword=x") == "UNKNOWN")
+    ok("short git sha ok", v_git_sha("1e71b7a") != "UNKNOWN")
+    ok("invalid git sha UNKNOWN", v_git_sha("ZZZZZZZ") == "UNKNOWN")
+    ok("invalid image id UNKNOWN", v_image_id("sha256:deadbeef") == "UNKNOWN")
+    ok("http 200 ok", v_http_code("200") == "200")
+    ok("http garbage UNKNOWN", v_http_code("200 OK password=x") == "UNKNOWN")
+
+
 def main() -> int:
     test_compose_structure_allowlist()
     test_health_allowlist()
@@ -462,6 +564,9 @@ def main() -> int:
     test_out_dir_rejects_app_tree_and_sets_private_mode()
     test_skip_host_check_rejected_by_shell()
     test_missing_evidence_marked_unknown_on_docker_ps_fail()
+    test_credential_like_metadata_rejected()
+    test_archive_contains_only_approved_files()
+    test_malformed_values_never_written_as_literals()
     print(f"\nRESULT pass={PASS} fail={FAIL}")
     return 0 if FAIL == 0 else 1
 

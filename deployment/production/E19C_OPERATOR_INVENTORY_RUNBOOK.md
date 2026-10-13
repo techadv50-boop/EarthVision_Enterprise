@@ -1,6 +1,6 @@
-# Stage E1.9C-R1 — Operator Read-Only Production Inventory Runbook
+# Stage E1.9C-R2 — Operator Read-Only Production Inventory Runbook
 
-**Status:** PREPARATION / SAFETY-CORRECTED — execute on production only after explicit owner approval.  
+**Status:** PREPARATION / SAFETY-CORRECTED (R2 field validation + archive allowlist) — execute on production only after explicit owner approval.  
 **Date:** 2026-10-13  
 **Approved deploy tip (unchanged):** `cursor/scene-download-eye-5d6d` @ `e3012ce0a26e049d0af981d5994d0d829c3b647e`  
 **Helper:** `scripts/e19c_operator_inventory.sh` + `scripts/e19c_inventory_lib.py`
@@ -46,7 +46,9 @@
 
 **Never run** `docker compose config` for capture (it expands secrets). Structural inventory is parsed from the live `docker-compose.yml` **file** with values discarded.
 
-**Share rule:** If the secret scanner is unavailable or reports hits → **do not archive**, **do not mark share-safe**, do not distribute the bundle.
+**Field validation (R2):** Every externally sourced value is type/format-checked (length, charset, allowlists). Credential-like strings in metadata (e.g. `user:pass@`, `ghp_`, `?token=`) become `UNKNOWN`/`FAIL` before write — not deferred solely to the final scanner.
+
+**Share rule:** Summary + manifest must be complete first. Archive includes **only** `APPROVED_ARCHIVE_FILES`, mode `0600`. If the secret scanner fails/hits, or archive member verification fails → **do not share**.
 
 ---
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""E1.9C-R1 inventory library: allowlisted, secret-safe structural capture.
+"""E1.9C-R2 inventory library: allowlisted, type-validated, secret-safe capture.
 
 Used by scripts/e19c_operator_inventory.sh and adversarial tests.
 Never prints environment values, connection strings, tokens, or private keys.
+Every externally sourced field is format-validated before disk write.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import os
 import re
 import stat
 import subprocess
+import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -24,6 +26,27 @@ APP_SERVICE_ALIASES = {
     "proxy": PROXY_SERVICE_ALIASES,
 }
 
+# Exact files permitted in a shareable archive (basename only).
+APPROVED_ARCHIVE_FILES = frozenset(
+    {
+        "00_return_summary.txt",
+        "01_identity.txt",
+        "02_project_services.json",
+        "04_git.txt",
+        "05_fingerprints.txt",
+        "06_images.txt",
+        "07_rollback.txt",
+        "08_compose_services.txt",
+        "09_compose_structure.json",
+        "10_volumes_mounts.txt",
+        "11_health.txt",
+        "12_env_names.txt",
+        "13_runner.txt",
+        "14_baseline_and_config.txt",
+        "15_manifest.txt",
+    }
+)
+
 SENSITIVE_KEY = re.compile(
     r"(PASSWORD|SECRET|TOKEN|PRIVATE|API[_-]?KEY|AUTH|CREDENTIAL|DATABASE_URL|"
     r"POSTGRES|REDIS_URL|CONNECTION_STRING|ADMIN_PASS|JWT|SESSION|SMTP|"
@@ -33,6 +56,11 @@ SENSITIVE_KEY = re.compile(
 # DB/broker URIs only — do not treat http(s) health URLs as secrets.
 CONN_URI = re.compile(r"(?i)\b(postgres|postgresql|redis|mysql|mongodb|amqp)://\S+")
 SECRETISH = re.compile(r"(?i)(password|secret|token|private[_-]?key|bearer\s+[a-z0-9\.\-_]+)")
+CREDENTIAL_LIKE = re.compile(
+    r"(?i)(://|[?&](password|token|secret|key|auth)=|:\S{4,}@|"
+    r"\b(AKIA|ghp_|gho_|github_pat_|xox[baprs]-|eyJ[A-Za-z0-9_-]{10,}\.))|"
+    r"(password|secret|token|api[_-]?key)\s*[:=]"
+)
 # Keys that may contain the word "secret" but are inventory metadata, not credentials.
 META_KEYS_ALLOW = frozenset(
     {
@@ -42,6 +70,33 @@ META_KEYS_ALLOW = frozenset(
         "scanner_hits",
         "archive_allowed",
     }
+)
+
+RE_HOSTNAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+RE_DOCKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+RE_SERVICE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+RE_GIT_BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$")
+RE_GIT_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+RE_IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+RE_DIGEST_REF = re.compile(r"^[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$")
+RE_IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,250}$")
+RE_MOUNT_DEST = re.compile(r"^/[A-Za-z0-9._/-]{0,250}$")
+RE_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+RE_HTTP = re.compile(r"^(?:[1-5][0-9]{2}|ERR|UNKNOWN)$")
+RE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+RE_RUNNER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+RE_ISO_TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+HEALTH_STATUS_ALLOW = frozenset({"healthy", "unhealthy", "degraded", "ok", "up", "down", "UNKNOWN"})
+HEALTH_DB_ALLOW = frozenset({"postgresql", "postgres", "sqlite", "mysql", "unknown", "UNKNOWN"})
+HEALTH_ENV_ALLOW = frozenset({"production", "development", "staging", "test", "UNKNOWN"})
+RUNNER_STATUS_ALLOW = frozenset({"online", "offline", "idle", "active", "busy", "UNKNOWN"})
+DOCKER_STATUS_ALLOW_PREFIX = ("Up", "Exited", "Created", "Restarting", "Paused", "Dead", "Removing")
+MOUNT_TYPES = frozenset({"volume", "bind", "tmpfs", "npipe", "UNKNOWN"})
+YN_ALLOW = frozenset({"yes", "no", "UNKNOWN", "object_missing", "missing_locally"})
+IDENTITY_ALLOW = frozenset({"PASS", "STOP", "FAIL", "UNKNOWN"})
+PERM_ALLOW = frozenset(
+    {"ok", "denied", "unauthorized", "not_found", "error", "gh_missing", "skipped", "UNKNOWN"}
 )
 
 
@@ -58,6 +113,242 @@ class InventoryResult:
     summary: dict[str, str] = field(default_factory=dict)
     share_safe: bool = False
     stop_reason: str | None = None
+    archive_path: str | None = None
+
+
+def _has_credential_like(value: str) -> bool:
+    if not value:
+        return False
+    if CREDENTIAL_LIKE.search(value):
+        return True
+    if CONN_URI.search(value):
+        return True
+    if " " in value and SECRETISH.search(value):
+        return True
+    return False
+
+
+def validate_or_unknown(
+    value: Any,
+    *,
+    kind: str,
+    max_len: int,
+    pattern: re.Pattern[str] | None = None,
+    allow: frozenset[str] | None = None,
+    allow_prefix: tuple[str, ...] | None = None,
+) -> str:
+    """Constrain an externally sourced value. Malformed → UNKNOWN (never raw unsafe literal)."""
+    if value is None:
+        return "UNKNOWN"
+    if not isinstance(value, (str, int, float, bool)):
+        return "UNKNOWN"
+    text = str(value).strip()
+    if not text:
+        return "UNKNOWN"
+    if len(text) > max_len:
+        return "UNKNOWN"
+    if any(ch in text for ch in ("\n", "\r", "\t", "\x00")):
+        return "UNKNOWN"
+    if _has_credential_like(text):
+        return "UNKNOWN"
+    if allow is not None:
+        return text if text in allow else "UNKNOWN"
+    if allow_prefix is not None:
+        if any(text == p or text.startswith(p + " ") or text.startswith(p + "(") for p in allow_prefix):
+            # collapse docker status to prefix token only
+            for p in allow_prefix:
+                if text == p or text.startswith(p + " ") or text.startswith(p + "("):
+                    return p
+        return "UNKNOWN"
+    if pattern is not None and not pattern.fullmatch(text):
+        return "UNKNOWN"
+    # image refs must not embed user:password@
+    if kind == "image_ref" and re.search(r":[^/]+@", text):
+        return "UNKNOWN"
+    return text
+
+
+def v_hostname(v: Any) -> str:
+    return validate_or_unknown(v, kind="hostname", max_len=253, pattern=RE_HOSTNAME)
+
+
+def v_docker_name(v: Any) -> str:
+    return validate_or_unknown(v, kind="docker_name", max_len=128, pattern=RE_DOCKER_NAME)
+
+
+def v_service(v: Any) -> str:
+    return validate_or_unknown(v, kind="service", max_len=64, pattern=RE_SERVICE)
+
+
+def v_git_branch(v: Any) -> str:
+    out = validate_or_unknown(v, kind="git_branch", max_len=200, pattern=RE_GIT_BRANCH)
+    if out != "UNKNOWN" and (".." in out or out.startswith("/") or out.endswith("/")):
+        return "UNKNOWN"
+    return out
+
+
+def v_git_sha(v: Any) -> str:
+    return validate_or_unknown(v, kind="git_sha", max_len=40, pattern=RE_GIT_SHA)
+
+
+def v_image_id(v: Any) -> str:
+    return validate_or_unknown(v, kind="image_id", max_len=80, pattern=RE_IMAGE_ID)
+
+
+def v_image_ref(v: Any) -> str:
+    return validate_or_unknown(v, kind="image_ref", max_len=250, pattern=RE_IMAGE_REF)
+
+
+def v_mount_dest(v: Any) -> str:
+    out = validate_or_unknown(v, kind="mount_dest", max_len=250, pattern=RE_MOUNT_DEST)
+    if out != "UNKNOWN" and (".." in out or "//" in out):
+        return "UNKNOWN"
+    return out
+
+
+def v_env_name(v: Any) -> str:
+    return validate_or_unknown(v, kind="env_name", max_len=128, pattern=RE_ENV_NAME)
+
+
+def v_http_code(v: Any) -> str:
+    return validate_or_unknown(v, kind="http", max_len=7, pattern=RE_HTTP)
+
+
+def v_sha256(v: Any) -> str:
+    return validate_or_unknown(v, kind="sha256", max_len=64, pattern=RE_SHA256)
+
+
+def v_runner_name(v: Any) -> str:
+    return validate_or_unknown(v, kind="runner_name", max_len=64, pattern=RE_RUNNER_NAME)
+
+
+def v_runner_status(v: Any) -> str:
+    return validate_or_unknown(v, kind="runner_status", max_len=16, allow=RUNNER_STATUS_ALLOW)
+
+
+def v_docker_status(v: Any) -> str:
+    return validate_or_unknown(
+        v, kind="docker_status", max_len=64, allow_prefix=DOCKER_STATUS_ALLOW_PREFIX
+    )
+
+
+def v_mount_type(v: Any) -> str:
+    return validate_or_unknown(v, kind="mount_type", max_len=16, allow=MOUNT_TYPES)
+
+
+def v_health_status(v: Any) -> str:
+    text = str(v).strip().lower() if v is not None else ""
+    return validate_or_unknown(text, kind="health_status", max_len=32, allow=HEALTH_STATUS_ALLOW)
+
+
+def v_health_db(v: Any) -> str:
+    text = str(v).strip().lower() if v is not None else ""
+    return validate_or_unknown(text, kind="health_db", max_len=32, allow=HEALTH_DB_ALLOW)
+
+
+def v_health_env(v: Any) -> str:
+    text = str(v).strip().lower() if v is not None else ""
+    return validate_or_unknown(text, kind="health_env", max_len=32, allow=HEALTH_ENV_ALLOW)
+
+
+def v_health_version(v: Any) -> str:
+    return validate_or_unknown(
+        v, kind="health_version", max_len=32, pattern=re.compile(r"^[A-Za-z0-9._+-]{1,32}$")
+    )
+
+
+def v_enum(v: Any, allow: frozenset[str]) -> str:
+    return validate_or_unknown(v, kind="enum", max_len=64, allow=allow)
+
+
+def v_repo_digests(raw: Any) -> str:
+    """Validate RepoDigests JSON list; return compact JSON or UNKNOWN."""
+    try:
+        if isinstance(raw, str):
+            data = json.loads(raw)
+        else:
+            data = raw
+    except Exception:
+        return "UNKNOWN"
+    if not isinstance(data, list):
+        return "UNKNOWN"
+    cleaned = []
+    for item in data[:16]:
+        if not isinstance(item, str):
+            return "UNKNOWN"
+        one = validate_or_unknown(item, kind="digest_ref", max_len=300, pattern=RE_DIGEST_REF)
+        if one == "UNKNOWN":
+            return "UNKNOWN"
+        cleaned.append(one)
+    return json.dumps(cleaned, separators=(",", ":"))
+
+
+def v_repo_tags(raw: Any) -> str:
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return "UNKNOWN"
+    if not isinstance(data, list):
+        return "UNKNOWN"
+    cleaned = []
+    for item in data[:16]:
+        tag = v_image_ref(item)
+        if tag == "UNKNOWN":
+            return "UNKNOWN"
+        cleaned.append(tag)
+    return json.dumps(cleaned, separators=(",", ":"))
+
+
+def harden_file_mode(path: Path, mode: int = 0o600) -> None:
+    os.chmod(path, mode)
+
+
+def build_allowlisted_archive(out_path: Path, files: dict[str, str]) -> tuple[str | None, str]:
+    """Create archive with precisely approved files. Returns (archive_path|None, result)."""
+    # Drop any unexpected files from the directory before archiving
+    for child in list(out_path.iterdir()):
+        if child.name not in APPROVED_ARCHIVE_FILES and child.name not in {
+            "STOP.txt",
+            "STOP_SECRETS.txt",
+        }:
+            try:
+                child.unlink()
+            except OSError:
+                return None, "FAIL"
+            files.pop(child.name, None)
+
+    approved_present = sorted(n for n in files if n in APPROVED_ARCHIVE_FILES)
+    # Summary + manifest must exist before archive
+    if "00_return_summary.txt" not in files or "15_manifest.txt" not in files:
+        return None, "FAIL"
+
+    archive_path = out_path.parent / f"{out_path.name}.tar.gz"
+    try:
+        with tarfile.open(archive_path, "w:gz") as tar:
+            for name in approved_present:
+                fp = out_path / name
+                if not fp.is_file():
+                    return None, "FAIL"
+                harden_file_mode(fp, 0o600)
+                tar.add(fp, arcname=f"{out_path.name}/{name}")
+        harden_file_mode(archive_path, 0o600)
+        # Verify members
+        with tarfile.open(archive_path, "r:gz") as tar:
+            members = sorted(
+                m.name.split("/", 1)[-1]
+                for m in tar.getmembers()
+                if m.isfile()
+            )
+        expected = approved_present
+        if members != expected:
+            try:
+                archive_path.unlink()
+            except OSError:
+                pass
+            return None, "FAIL"
+    except Exception:
+        return None, "FAIL"
+    return str(archive_path), "OK"
 
 
 def _run(
@@ -228,13 +519,21 @@ def parse_docker_ps_lines(text: str) -> list[dict[str, str]]:
         parts = line.split("\t")
         if len(parts) < 5:
             continue
+        name = v_docker_name(parts[0])
+        project = v_docker_name(parts[1])
+        service = v_service(parts[2])
+        status = v_docker_status(parts[3])
+        image = v_image_ref(parts[4])
+        # Drop rows whose critical identity fields failed validation
+        if name == "UNKNOWN" or project == "UNKNOWN" or service == "UNKNOWN":
+            continue
         rows.append(
             {
-                "name": parts[0],
-                "project": parts[1],
-                "service": parts[2],
-                "status": parts[3],
-                "image": parts[4],
+                "name": name,
+                "project": project,
+                "service": service,
+                "status": status,
+                "image": image,
             }
         )
     return rows
@@ -245,8 +544,15 @@ def verify_project_services(
     expected_project: str,
 ) -> dict[str, Any]:
     """Require backend, frontend, proxy containers labeled with expected_project."""
+    expected_project = v_docker_name(expected_project)
     in_project = [r for r in rows if r.get("project") == expected_project]
-    other_projects = sorted({r["project"] for r in rows if r.get("project") and r["project"] != expected_project})
+    other_projects = sorted(
+        {
+            r["project"]
+            for r in rows
+            if r.get("project") and r["project"] != expected_project and r["project"] != "UNKNOWN"
+        }
+    )
 
     found: dict[str, dict[str, str]] = {}
     for logical, aliases in APP_SERVICE_ALIASES.items():
@@ -258,9 +564,14 @@ def verify_project_services(
 
     missing = [s for s in REQUIRED_SERVICES if not found[s]]
     result = {
-        "expected_project": expected_project,
+        "expected_project": expected_project if expected_project != "UNKNOWN" else "FAIL",
         "containers_in_project": [
-            {"name": r["name"], "service": r["service"], "status": r["status"], "image": r["image"]}
+            {
+                "name": r["name"],
+                "service": r["service"],
+                "status": r["status"],
+                "image": r["image"],
+            }
             for r in in_project
         ],
         "other_projects_present": other_projects,
@@ -289,7 +600,7 @@ def verify_project_services(
 
 
 def allowlisted_health_fields(body: str) -> dict[str, Any]:
-    """Parse health JSON in-memory; keep only allowlisted keys."""
+    """Parse health JSON in-memory; keep only allowlisted, type-validated keys."""
     try:
         data = json.loads(body)
     except Exception:
@@ -297,15 +608,14 @@ def allowlisted_health_fields(body: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {"parse": "FAIL", "status": "UNKNOWN"}
     out: dict[str, Any] = {"parse": "OK"}
-    for key in ("status", "version", "environment", "database"):
-        if key not in data:
-            continue
-        val = data[key]
-        if val is None or isinstance(val, (str, int, float, bool)):
-            if isinstance(val, str) and (len(val) > 80 or SECRETISH.search(val) or CONN_URI.search(val)):
-                out[key] = "REDACTED"
-            else:
-                out[key] = val
+    if "status" in data:
+        out["status"] = v_health_status(data.get("status"))
+    if "version" in data:
+        out["version"] = v_health_version(data.get("version"))
+    if "environment" in data:
+        out["environment"] = v_health_env(data.get("environment"))
+    if "database" in data:
+        out["database"] = v_health_db(data.get("database"))
     return out
 
 
@@ -383,7 +693,7 @@ def scan_for_secrets(text: str) -> list[str]:
 
 
 def filter_runner_json(payload: str) -> dict[str, Any]:
-    """Keep allowlisted runner fields only."""
+    """Keep allowlisted runner fields only; type-validate each field."""
     try:
         data = json.loads(payload)
     except Exception:
@@ -394,21 +704,32 @@ def filter_runner_json(payload: str) -> dict[str, Any]:
     if not isinstance(runners, list):
         return {"result": "FAIL", "parse": "FAIL"}
     out = []
-    for r in runners:
+    label_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    for r in runners[:32]:
         if not isinstance(r, dict):
             continue
         labels = []
-        for lab in r.get("labels") or []:
-            if isinstance(lab, dict) and "name" in lab:
-                labels.append(str(lab["name"]))
-            elif isinstance(lab, str):
-                labels.append(lab)
+        for lab in (r.get("labels") or [])[:32]:
+            raw = lab.get("name") if isinstance(lab, dict) else lab if isinstance(lab, str) else None
+            lab_v = validate_or_unknown(raw, kind="label", max_len=64, pattern=label_re)
+            if lab_v != "UNKNOWN":
+                labels.append(lab_v)
+        rid = r.get("id", "UNKNOWN")
+        if isinstance(rid, bool) or not isinstance(rid, (int, str)):
+            rid = "UNKNOWN"
+        elif isinstance(rid, str) and not re.fullmatch(r"[0-9]{1,12}", rid):
+            rid = "UNKNOWN"
+        elif isinstance(rid, int) and not (0 <= rid < 10**12):
+            rid = "UNKNOWN"
+        busy = r.get("busy", "UNKNOWN")
+        if not isinstance(busy, bool):
+            busy = "UNKNOWN"
         out.append(
             {
-                "name": str(r.get("name") or "UNKNOWN"),
-                "id": r.get("id", "UNKNOWN"),
-                "status": str(r.get("status") or "UNKNOWN"),
-                "busy": r.get("busy", "UNKNOWN"),
+                "name": v_runner_name(r.get("name")),
+                "id": rid,
+                "status": v_runner_status(r.get("status")),
+                "busy": busy,
                 "labels": labels,
             }
         )
@@ -425,23 +746,43 @@ def filter_actions_runs(payload: str, expected_sha: str) -> dict[str, Any]:
         runs = data["runs"]
     if not isinstance(runs, list):
         return {"result": "FAIL", "parse": "FAIL"}
+    expected_sha = v_git_sha(expected_sha)
     keep = []
-    for r in runs:
+    name_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,80}$")
+    path_re = re.compile(r"^[A-Za-z0-9._-]{1,80}\.yml$")
+    status_allow = frozenset({"completed", "in_progress", "queued", "waiting", "requested", "pending", "UNKNOWN"})
+    concl_allow = frozenset(
+        {
+            "success",
+            "failure",
+            "cancelled",
+            "skipped",
+            "timed_out",
+            "action_required",
+            "neutral",
+            "stale",
+            "UNKNOWN",
+            "None",
+        }
+    )
+    event_allow = frozenset({"push", "pull_request", "workflow_dispatch", "schedule", "UNKNOWN"})
+    for r in runs[:50]:
         if not isinstance(r, dict):
             continue
-        head = str(r.get("head_sha") or "")
-        if head and head != expected_sha:
+        head = v_git_sha(r.get("head_sha") or "")
+        if expected_sha != "UNKNOWN" and head != "UNKNOWN" and head != expected_sha:
             continue
-        path = str(r.get("path") or "")
-        name = str(r.get("name") or "")
+        path = str(r.get("path") or "").replace("\\", "/").split("/")[-1]
+        path_v = validate_or_unknown(path, kind="wf_path", max_len=80, pattern=path_re)
+        name_v = validate_or_unknown(r.get("name"), kind="wf_name", max_len=80, pattern=name_re)
         keep.append(
             {
-                "name": name,
-                "path": path.split("/")[-1] if path else "UNKNOWN",
-                "head_sha": head or "UNKNOWN",
-                "status": str(r.get("status") or "UNKNOWN"),
-                "conclusion": str(r.get("conclusion") or "UNKNOWN"),
-                "event": str(r.get("event") or "UNKNOWN"),
+                "name": name_v,
+                "path": path_v,
+                "head_sha": head if head != "UNKNOWN" else "UNKNOWN",
+                "status": v_enum(r.get("status") or "UNKNOWN", status_allow),
+                "conclusion": v_enum(str(r.get("conclusion") if r.get("conclusion") is not None else "UNKNOWN"), concl_allow),
+                "event": v_enum(r.get("event") or "UNKNOWN", event_allow),
             }
         )
     return {"result": "OK", "count": len(keep), "runs": keep}
@@ -502,30 +843,44 @@ def run_inventory(
         return InventoryResult(status=exc.code, stop_reason=str(exc), share_safe=False, summary=summary)
 
     def write(name: str, content: str) -> None:
+        # Only approved evidence filenames (plus STOP markers) may be written
+        if name not in APPROVED_ARCHIVE_FILES and name not in {"STOP.txt", "STOP_SECRETS.txt"}:
+            raise InventoryError("FAIL", f"unapproved output file: {name}")
         files[name] = content
-        (out_path / name).write_text(content, encoding="utf-8")
+        target = out_path / name
+        target.write_text(content, encoding="utf-8")
+        harden_file_mode(target, 0o600)
 
-    host = hostname_value if hostname_value is not None else (run(["hostname"])[1].strip() or "UNKNOWN")
-    summary["hostname"] = host or "UNKNOWN"
+    raw_host = hostname_value if hostname_value is not None else (run(["hostname"])[1].strip() or "")
+    host = v_hostname(raw_host)
+    expected_host_v = v_hostname(expected_host)
+    expected_project_v = v_docker_name(expected_project)
+    approved_tip_v = v_git_sha(approved_tip)
+    expected_baseline_v = v_git_sha(expected_baseline)
+    summary["hostname"] = host
     identity_lines = [
         f"captured_at=UNKNOWN",  # filled below
         f"hostname={summary['hostname']}",
         f"app_dir={app_dir}",
         f"app_dir_exists={'1' if Path(app_dir).is_dir() else '0'}",
-        f"expected_host={expected_host}",
-        f"expected_project={expected_project}",
-        f"approved_tip={approved_tip}",
-        f"expected_baseline={expected_baseline}",
+        f"expected_host={expected_host_v}",
+        f"expected_project={expected_project_v}",
+        f"approved_tip={approved_tip_v}",
+        f"expected_baseline={expected_baseline_v}",
     ]
     from datetime import datetime, timezone
 
-    identity_lines[0] = f"captured_at={datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    identity_lines[0] = f"captured_at={ts if RE_ISO_TS.fullmatch(ts) else 'UNKNOWN'}"
 
     # --- HARD IDENTITY GATE (must pass before any further inventory) ---
-    if summary["hostname"] != expected_host:
-        reason = f"STOP: hostname {summary['hostname']} != expected {expected_host}"
+    if host == "UNKNOWN" or expected_host_v == "UNKNOWN" or host != expected_host_v:
+        reason = (
+            "STOP: hostname validation/identity failed "
+            f"(got={summary['hostname']} expected={expected_host_v})"
+        )
         identity_lines.append("identity_result=STOP")
-        identity_lines.append(f"stop_reason={reason}")
+        identity_lines.append("stop_reason=hostname_mismatch_or_invalid")
         write("01_identity.txt", "\n".join(identity_lines) + "\n")
         write("STOP.txt", reason + "\n")
         summary["identity_result"] = "STOP"
@@ -533,7 +888,16 @@ def run_inventory(
         return InventoryResult(status="STOP", files=files, summary=summary, share_safe=False, stop_reason=reason)
 
     if not Path(app_dir).is_dir():
-        reason = f"STOP: APP_DIR missing: {app_dir}"
+        reason = "STOP: APP_DIR missing"
+        identity_lines.append("identity_result=STOP")
+        write("01_identity.txt", "\n".join(identity_lines) + "\n")
+        write("STOP.txt", reason + "\n")
+        summary["identity_result"] = "STOP"
+        write("00_return_summary.txt", _format_summary(summary))
+        return InventoryResult(status="STOP", files=files, summary=summary, share_safe=False, stop_reason=reason)
+
+    if expected_project_v == "UNKNOWN":
+        reason = "STOP: expected compose project invalid"
         identity_lines.append("identity_result=STOP")
         write("01_identity.txt", "\n".join(identity_lines) + "\n")
         write("STOP.txt", reason + "\n")
@@ -561,31 +925,30 @@ def run_inventory(
         return InventoryResult(status="STOP", files=files, summary=summary, share_safe=False, stop_reason=reason)
 
     rows = parse_docker_ps_lines(ps_out)
-    svc_check = verify_project_services(rows, expected_project)
-    write("02_project_services.json", json.dumps(svc_check, indent=2) + "\n")
+    svc_check = verify_project_services(rows, expected_project_v)
+    write("02_project_services.json", json.dumps(svc_check, indent=2, sort_keys=True) + "\n")
 
     if svc_check["missing_required"]:
         reason = (
             "STOP: required services missing from project "
-            f"{expected_project}: {','.join(svc_check['missing_required'])}"
+            f"{expected_project_v}: {','.join(svc_check['missing_required'])}"
         )
         identity_lines.append("identity_result=STOP")
         identity_lines.append(f"missing_required={','.join(svc_check['missing_required'])}")
-        # Explicitly note that other projects on host do not satisfy identity
         if svc_check["other_projects_present"]:
             identity_lines.append(
-                "other_projects_ignored=" + ",".join(svc_check["other_projects_present"])
+                "other_projects_ignored="
+                + ",".join(v_docker_name(p) for p in svc_check["other_projects_present"])
             )
         write("01_identity.txt", "\n".join(identity_lines) + "\n")
         write("STOP.txt", reason + "\n")
         summary["identity_result"] = "STOP"
-        summary["compose_project"] = expected_project
+        summary["compose_project"] = expected_project_v
         write("00_return_summary.txt", _format_summary(summary))
-        # CRITICAL: do not continue inventory
         return InventoryResult(status="STOP", files=files, summary=summary, share_safe=False, stop_reason=reason)
 
     identity_lines.append("identity_result=PASS")
-    identity_lines.append(f"compose_project={expected_project}")
+    identity_lines.append(f"compose_project={expected_project_v}")
     for logical in REQUIRED_SERVICES:
         info = svc_check["required"][logical]
         identity_lines.append(
@@ -593,12 +956,11 @@ def run_inventory(
         )
     write("01_identity.txt", "\n".join(identity_lines) + "\n")
     summary["identity_result"] = "PASS"
-    summary["compose_project"] = expected_project
+    summary["compose_project"] = expected_project_v
 
     verified_containers = {
         logical: svc_check["required"][logical]["container"] for logical in REQUIRED_SERVICES
     }
-    verified_names = set(verified_containers.values())
 
     # --- Git (read-only) ---
     git: dict[str, str] = {}
@@ -608,32 +970,43 @@ def run_inventory(
             r, o, e = run(["git", "-C", app_dir, *args])
             return o.strip() if r == 0 else ""
 
-        branch = git_out(["branch", "--show-current"]) or "UNKNOWN"
-        commit = git_out(["rev-parse", "HEAD"]) or "UNKNOWN"
-        short = git_out(["rev-parse", "--short", "HEAD"]) or "UNKNOWN"
-        status_sb = git_out(["status", "-sb"]).splitlines()[0] if git_out(["status", "-sb"]) else "UNKNOWN"
+        branch = v_git_branch(git_out(["branch", "--show-current"]) or "")
+        commit = v_git_sha(git_out(["rev-parse", "HEAD"]) or "")
+        short = v_git_sha(git_out(["rev-parse", "--short", "HEAD"]) or "")
+        # status summary is not shared as free text — collapse to dirty flag only
+        status_raw = git_out(["status", "--porcelain"])
+        dirty = "yes" if status_raw.strip() else "no"
         baseline_ancestor = "UNKNOWN"
-        r, o, e = run(["git", "-C", app_dir, "cat-file", "-e", f"{expected_baseline}^{{commit}}"])
-        if r == 0:
-            r2, _, _ = run(["git", "-C", app_dir, "merge-base", "--is-ancestor", expected_baseline, "HEAD"])
-            baseline_ancestor = "yes" if r2 == 0 else "no"
+        if expected_baseline_v == "UNKNOWN":
+            baseline_ancestor = "UNKNOWN"
         else:
-            baseline_ancestor = "object_missing"
-        tip_eq = "yes" if commit == approved_tip else "no"
+            r, o, e = run(["git", "-C", app_dir, "cat-file", "-e", f"{expected_baseline_v}^{{commit}}"])
+            if r == 0:
+                r2, _, _ = run(
+                    ["git", "-C", app_dir, "merge-base", "--is-ancestor", expected_baseline_v, "HEAD"]
+                )
+                baseline_ancestor = "yes" if r2 == 0 else "no"
+            else:
+                baseline_ancestor = "object_missing"
+        tip_eq = (
+            "yes"
+            if commit != "UNKNOWN" and approved_tip_v != "UNKNOWN" and commit == approved_tip_v
+            else ("no" if commit != "UNKNOWN" else "UNKNOWN")
+        )
         git = {
             "branch": branch,
             "commit": commit,
             "commit_short": short,
-            "status_summary": status_sb,
-            "baseline_1e71b7a_ancestor": baseline_ancestor,
-            "live_equals_approved_tip_e3012ce": tip_eq,
+            "working_tree_dirty": dirty,
+            "baseline_1e71b7a_ancestor": v_enum(baseline_ancestor, YN_ALLOW),
+            "live_equals_approved_tip_e3012ce": v_enum(tip_eq, frozenset({"yes", "no", "UNKNOWN"})),
         }
     else:
         git = {
             "branch": "UNKNOWN",
             "commit": "UNKNOWN",
             "commit_short": "UNKNOWN",
-            "status_summary": "UNKNOWN",
+            "working_tree_dirty": "UNKNOWN",
             "baseline_1e71b7a_ancestor": "UNKNOWN",
             "live_equals_approved_tip_e3012ce": "UNKNOWN",
             "git": "MISSING",
@@ -648,39 +1021,78 @@ def run_inventory(
     env_path = app / ".env"
     if env_path.is_file():
         fp.append("env_present=1")
-        fp.append(f"env_size={env_path.stat().st_size}")
+        size = env_path.stat().st_size
+        fp.append(f"env_size={size if isinstance(size, int) and 0 <= size < 10**9 else 'UNKNOWN'}")
         r, o, e = run(["sha256sum", str(env_path)])
-        fp.append(f"env_sha256={o.split()[0] if r == 0 and o else 'UNKNOWN'}")
-        summary["env_sha256"] = fp[-1].split("=", 1)[1]
+        digest = v_sha256(o.split()[0] if r == 0 and o else "")
+        fp.append(f"env_sha256={digest}")
+        summary["env_sha256"] = digest
     else:
         fp.append("env_present=0")
         fp.append("env_sha256=UNKNOWN")
     compose_path = app / compose_file_name
     if compose_path.is_file():
         r, o, e = run(["sha256sum", str(compose_path)])
-        fp.append(f"compose_sha256={o.split()[0] if r == 0 and o else 'UNKNOWN'}")
-        summary["compose_sha256"] = fp[-1].split("=", 1)[1]
-        # Structural parse of FILE (not docker compose config)
+        digest = v_sha256(o.split()[0] if r == 0 and o else "")
+        fp.append(f"compose_sha256={digest}")
+        summary["compose_sha256"] = digest
         try:
             structure = parse_compose_structure(compose_path.read_text(encoding="utf-8", errors="replace"))
-            write("09_compose_structure.json", json.dumps(structure, indent=2) + "\n")
+            # Re-validate service/env/mount names in structure
+            structure["service_names"] = [
+                n for n in (v_service(s) for s in structure["service_names"]) if n != "UNKNOWN"
+            ]
+            for sname, svc in list(structure["services"].items()):
+                vs = v_service(sname)
+                if vs == "UNKNOWN":
+                    structure["services"].pop(sname, None)
+                    continue
+                if sname != vs:
+                    structure["services"][vs] = structure["services"].pop(sname)
+                    sname = vs
+                svc["env_names"] = [n for n in (v_env_name(x) for x in svc.get("env_names") or []) if n != "UNKNOWN"]
+                mounts = []
+                for m in svc.get("mounts") or []:
+                    mounts.append(
+                        {
+                            "destination": v_mount_dest(m.get("destination")),
+                            "source_kind": v_enum(
+                                m.get("source_kind"),
+                                frozenset({"named", "bind_or_path", "volume", "bind", "UNKNOWN"}),
+                            ),
+                            "source_name": v_docker_name(m.get("source_name"))
+                            if m.get("source_kind") in {"named", "volume"}
+                            else "<path>",
+                        }
+                    )
+                svc["mounts"] = mounts
+            structure["named_volumes"] = [
+                n for n in (v_docker_name(x) for x in structure.get("named_volumes") or []) if n != "UNKNOWN"
+            ]
+            write("09_compose_structure.json", json.dumps(structure, indent=2, sort_keys=True) + "\n")
             write("08_compose_services.txt", "\n".join(structure["service_names"]) + "\n")
         except InventoryError as exc:
-            write("09_compose_structure.json", json.dumps({"result": exc.code, "error": str(exc)}) + "\n")
+            write(
+                "09_compose_structure.json",
+                json.dumps({"result": exc.code, "error": "compose_parse_fail"}, sort_keys=True) + "\n",
+            )
             write("08_compose_services.txt", "UNKNOWN\n")
     else:
         fp.append("compose_sha256=UNKNOWN")
         fp.append("compose_file=MISSING")
-        write("09_compose_structure.json", json.dumps({"result": "FAIL", "error": "compose_missing"}) + "\n")
+        write(
+            "09_compose_structure.json",
+            json.dumps({"result": "FAIL", "error": "compose_missing"}, sort_keys=True) + "\n",
+        )
         write("08_compose_services.txt", "UNKNOWN\n")
     req = app / "backend" / "requirements.txt"
     if req.is_file():
         r, o, e = run(["sha256sum", str(req)])
-        fp.append(f"requirements_sha256={o.split()[0] if r == 0 and o else 'UNKNOWN'}")
+        fp.append(f"requirements_sha256={v_sha256(o.split()[0] if r == 0 and o else '')}")
     write("05_fingerprints.txt", "\n".join(fp) + "\n")
 
-    # Images — only verified project services
-    image_lines = ["scope=verified_project_services_only", f"project={expected_project}"]
+    # Images — only verified project services; typed fields only
+    image_lines = ["scope=verified_project_services_only", f"project={expected_project_v}"]
     for logical, cname in verified_containers.items():
         r, o, e = run(
             [
@@ -692,42 +1104,43 @@ def run_inventory(
             ]
         )
         if r != 0:
-            image_lines.append(f"{logical} container={cname} image_id=UNKNOWN repo_tags=UNKNOWN result=FAIL")
+            image_lines.append(
+                f"{logical} container={cname} image_id=UNKNOWN config_image=UNKNOWN "
+                f"RepoDigests=UNKNOWN RepoTags=UNKNOWN result=FAIL"
+            )
             summary[f"{logical}_image_id"] = "UNKNOWN"
             if logical in ("backend", "frontend"):
                 summary[f"{logical}_repo_digest"] = "UNKNOWN"
             continue
         parts = o.strip().split()
-        image_id = parts[0] if parts else "UNKNOWN"
-        config_image = parts[1] if len(parts) > 1 else "UNKNOWN"
-        # Repo digests from image id
-        r2, o2, e2 = run(
-            [
-                "docker",
-                "image",
-                "inspect",
-                image_id,
-                "--format",
-                "{{json .RepoDigests}} {{json .RepoTags}} {{.Created}} {{.Id}}",
-            ]
+        image_id = v_image_id(parts[0] if parts else "")
+        config_image = v_image_ref(parts[1] if len(parts) > 1 else "")
+        digests = "UNKNOWN"
+        tags = "UNKNOWN"
+        result = "FAIL"
+        if image_id != "UNKNOWN":
+            r2, o2, e2 = run(
+                [
+                    "docker",
+                    "image",
+                    "inspect",
+                    image_id,
+                    "--format",
+                    "{{json .RepoDigests}}|||{{json .RepoTags}}",
+                ]
+            )
+            if r2 == 0 and "|||" in o2:
+                d_raw, t_raw = o2.strip().split("|||", 1)
+                digests = v_repo_digests(d_raw)
+                tags = v_repo_tags(t_raw)
+                result = "PASS" if digests != "UNKNOWN" or tags != "UNKNOWN" or image_id != "UNKNOWN" else "FAIL"
+        image_lines.append(
+            f"{logical} container={cname} image_id={image_id} config_image={config_image} "
+            f"RepoDigests={digests} RepoTags={tags} result={result}"
         )
-        if r2 != 0:
-            image_lines.append(
-                f"{logical} container={cname} image_id={image_id} config_image={config_image} "
-                f"RepoDigests=UNKNOWN RepoTags=UNKNOWN result=FAIL"
-            )
-            summary[f"{logical}_image_id"] = image_id
-            if logical in ("backend", "frontend"):
-                summary[f"{logical}_repo_digest"] = "UNKNOWN"
-        else:
-            image_lines.append(
-                f"{logical} container={cname} image_id={image_id} config_image={config_image} inspect={o2.strip()} result=PASS"
-            )
-            summary[f"{logical}_image_id"] = image_id
-            # extract digests JSON first token
-            digest_m = re.search(r"(\[[^\]]*\])", o2)
-            if logical in ("backend", "frontend"):
-                summary[f"{logical}_repo_digest"] = digest_m.group(1) if digest_m else "UNKNOWN"
+        summary[f"{logical}_image_id"] = image_id
+        if logical in ("backend", "frontend"):
+            summary[f"{logical}_repo_digest"] = digests
     write("06_images.txt", "\n".join(image_lines) + "\n")
 
     # Volumes/mounts — only verified containers
@@ -749,29 +1162,38 @@ def run_inventory(
         for line in o.splitlines():
             parts = line.split()
             if len(parts) >= 4:
-                mtype, name, source, dest = parts[0], parts[1], parts[2], parts[3]
-                # Do not recurse into source; for binds record path but not contents
+                mtype = v_mount_type(parts[0])
+                name = v_docker_name(parts[1]) if parts[1] not in {"", "<none>"} else "n/a"
+                dest = v_mount_dest(parts[3])
                 src_out = name if mtype == "volume" else "<bind_path>"
-                mount_lines.append(f"  type={mtype} volume_name={name or 'n/a'} source={src_out} destination={dest}")
+                mount_lines.append(
+                    f"  type={mtype} volume_name={name} source={src_out} destination={dest}"
+                )
             elif line.strip():
                 mount_lines.append("  mount=UNKNOWN")
-    # Named volumes filtered by project prefix when possible
     r, o, e = run(["docker", "volume", "ls", "--format", "{{.Name}}\t{{.Driver}}"])
-    vol_lines = ["=== named_volumes (project-scoped filter) ==="]
+    vol_lines = ["named_volumes_project_scoped=begin"]
     if r != 0:
         vol_lines.append("volume_ls=FAIL")
     else:
         matched = 0
         for line in o.splitlines():
-            name = line.split("\t", 1)[0]
-            if expected_project in name or name.endswith("_pgdata") or "pgdata" in name:
-                vol_lines.append(line)
+            name = v_docker_name(line.split("\t", 1)[0])
+            if name == "UNKNOWN":
+                continue
+            if expected_project_v in name or name.endswith("_pgdata") or "pgdata" in name:
+                driver = line.split("\t", 1)[1] if "\t" in line else "UNKNOWN"
+                driver_v = validate_or_unknown(
+                    driver, kind="driver", max_len=32, pattern=re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+                )
+                vol_lines.append(f"{name}\t{driver_v}")
                 matched += 1
         if matched == 0:
             vol_lines.append("project_volumes=UNKNOWN")
+    vol_lines.append("named_volumes_project_scoped=end")
     write("10_volumes_mounts.txt", "\n".join(mount_lines + vol_lines) + "\n")
 
-    # Env NAMES only from verified backend container (docker inspect Config.Env → names)
+    # Env NAMES only from verified backend container
     env_lines = ["scope=verified_backend_only", "values=REDACTED"]
     backend_c = verified_containers["backend"]
     r, o, e = run(["docker", "inspect", backend_c, "--format", "{{range .Config.Env}}{{println .}}{{end}}"])
@@ -784,7 +1206,9 @@ def run_inventory(
         for line in o.splitlines():
             if not line.strip():
                 continue
-            name = line.split("=", 1)[0]
+            name = v_env_name(line.split("=", 1)[0])
+            if name == "UNKNOWN":
+                continue
             names.append(name)
             env_lines.append(f"{name}=<redacted>")
         if any(n.startswith(("EV_PACK_", "EV_TOOL_", "EV_RUNTIME_", "EV_ARTIFACTS_")) for n in names):
@@ -792,29 +1216,36 @@ def run_inventory(
         summary["ev_pack_env_names_present"] = ev_pack
     write("12_env_names.txt", "\n".join(env_lines) + "\n")
 
-    # Health — no body files on disk; parse in memory
-    health_urls = health_urls or [
+    # Health — in-memory parse; validated URL labels only (fixed allowlist)
+    default_health = [
         "http://127.0.0.1:8080/health",
         "http://127.0.0.1:8000/health",
         "https://sateye.xdgen.com/health",
     ]
+    health_urls = health_urls or default_health
+    allowed_health = set(default_health)
     health_lines = []
     for url in health_urls:
-        # Use curl writing body to stdout only; captured by subprocess memory
+        if url not in allowed_health:
+            health_lines.append("url=UNKNOWN http=UNKNOWN fields={\"parse\":\"FAIL\",\"status\":\"UNKNOWN\"}")
+            continue
         r, o, e = run(["curl", "-sS", "-m", "8", "-w", "\n__HTTP__%{http_code}", url])
         if r != 0:
-            health_lines.append(f"{url} http=ERR fields={{\"parse\":\"FAIL\",\"status\":\"UNKNOWN\"}}")
+            health_lines.append(
+                f"{url} http=ERR fields={{\"parse\":\"FAIL\",\"status\":\"UNKNOWN\"}}"
+            )
             continue
         if "__HTTP__" in o:
             body, _, code = o.rpartition("__HTTP__")
-            code = code.strip()
+            code = v_http_code(code.strip())
         else:
             body, code = o, "UNKNOWN"
         fields = allowlisted_health_fields(body.strip())
-        health_lines.append(f"{url} http={code} fields={json.dumps(fields, separators=(',', ':'))}")
+        health_lines.append(
+            f"{url} http={code} fields={json.dumps(fields, separators=(',', ':'), sort_keys=True)}"
+        )
     write("11_health.txt", "\n".join(health_lines) + "\n")
 
-    # Baseline / endpoint probes (status codes only)
     probe_lines = [f"commit={summary['live_commit']}"]
     probe_lines.append(f"baseline_ancestor={summary['baseline_1e71b7a_ancestor']}")
     for label, url in [
@@ -823,7 +1254,7 @@ def run_inventory(
         ("public_composites", "https://sateye.xdgen.com/api/v1/analytics/composites"),
     ]:
         r, o, e = run(["curl", "-sS", "-m", "8", "-o", "/dev/null", "-w", "%{http_code}", url])
-        code = o.strip() if r == 0 and o.strip() else "UNKNOWN"
+        code = v_http_code(o.strip() if r == 0 and o.strip() else "UNKNOWN")
         if r != 0:
             code = "ERR"
         probe_lines.append(f"{label}_http={code}")
@@ -833,41 +1264,48 @@ def run_inventory(
             summary["composites_http"] = code
     write("14_baseline_and_config.txt", "\n".join(probe_lines) + "\n")
 
-    # Runner checks — allowlisted only
     if include_runner_checks:
         runner_lines = [f"hostname={summary['hostname']}", "gh_auth_status=omitted"]
         r, o, e = run(["gh", "api", "repos/techadv50-boop/EarthVision_Enterprise/actions/runners"])
         perm = scrub_gh_error(e, r)
+        perm["permission"] = v_enum(perm.get("permission"), PERM_ALLOW)
+        perm["http"] = v_http_code(perm.get("http", "UNKNOWN"))
         if r == 0:
             filtered = filter_runner_json(o)
-            runner_lines.append(f"runners_api={json.dumps({'permission': perm, 'data': filtered}, separators=(',',':'))}")
-            # derive status for expected label
+            runner_lines.append(
+                f"runners_api={json.dumps({'permission': perm, 'data': filtered}, separators=(',',':'), sort_keys=True)}"
+            )
             statuses = []
             for rr in filtered.get("runners") or []:
                 if "sateye-live" in (rr.get("labels") or []):
-                    statuses.append(str(rr.get("status")))
+                    st = v_runner_status(rr.get("status"))
+                    if st != "UNKNOWN":
+                        statuses.append(st)
             summary["runner_status"] = ",".join(statuses) if statuses else "UNKNOWN"
         else:
-            runner_lines.append(f"runners_api={json.dumps(perm, separators=(',',':'))}")
+            runner_lines.append(f"runners_api={json.dumps(perm, separators=(',',':'), sort_keys=True)}")
             summary["runner_status"] = "UNKNOWN"
             summary["actions_runs_api"] = perm.get("permission", "error")
 
+        tip_for_api = approved_tip_v if approved_tip_v != "UNKNOWN" else approved_tip
         r2, o2, e2 = run(
             [
                 "gh",
                 "api",
-                f"repos/techadv50-boop/EarthVision_Enterprise/actions/runs?head_sha={approved_tip}&per_page=20",
+                f"repos/techadv50-boop/EarthVision_Enterprise/actions/runs?head_sha={tip_for_api}&per_page=20",
             ]
         )
         perm2 = scrub_gh_error(e2, r2)
+        perm2["permission"] = v_enum(perm2.get("permission"), PERM_ALLOW)
+        perm2["http"] = v_http_code(perm2.get("http", "UNKNOWN"))
         if r2 == 0:
-            filtered_runs = filter_actions_runs(o2, approved_tip)
+            filtered_runs = filter_actions_runs(o2, tip_for_api)
             runner_lines.append(
-                f"actions_runs={json.dumps({'permission': perm2, 'data': filtered_runs}, separators=(',',':'))}"
+                f"actions_runs={json.dumps({'permission': perm2, 'data': filtered_runs}, separators=(',',':'), sort_keys=True)}"
             )
             summary["actions_runs_api"] = "ok"
         else:
-            runner_lines.append(f"actions_runs={json.dumps(perm2, separators=(',',':'))}")
+            runner_lines.append(f"actions_runs={json.dumps(perm2, separators=(',',':'), sort_keys=True)}")
             summary["actions_runs_api"] = perm2.get("permission", "error")
         runner_lines.append("forbidden_not_run=workflow_dispatch")
         write("13_runner.txt", "\n".join(runner_lines) + "\n")
@@ -876,7 +1314,6 @@ def run_inventory(
         summary["runner_status"] = "skipped"
         summary["actions_runs_api"] = "skipped"
 
-    # Rollback note (no full image dump)
     write(
         "07_rollback.txt",
         "\n".join(
@@ -892,19 +1329,23 @@ def run_inventory(
         + "\n",
     )
 
-    # Secret scan across outputs — required for share_safe
-    combined = "\n".join(files.values())
+    # Finalize summary + manifest BEFORE archive; both required for share_safe archive
+    combined = "\n".join(v for k, v in files.items() if k in APPROVED_ARCHIVE_FILES or k.startswith("0"))
+    # include all current approved content
+    combined = "\n".join(files[k] for k in sorted(files) if k in APPROVED_ARCHIVE_FILES or k in files)
     try:
         hits = scan_for_secrets(combined)
         scanner_ok = True
     except Exception as exc:  # pragma: no cover
-        hits = [f"scanner_exception:{exc}"]
+        hits = ["scanner_exception"]
         scanner_ok = False
 
-    share_safe = scanner_ok and not hits
+    share_safe = scanner_ok and not hits and summary["identity_result"] == "PASS"
     summary["share_safe"] = "yes" if share_safe else "no"
+    summary["identity_result"] = v_enum(summary["identity_result"], IDENTITY_ALLOW)
     write("00_return_summary.txt", _format_summary(summary))
 
+    approved_count = sum(1 for k in files if k in APPROVED_ARCHIVE_FILES)
     manifest = [
         f"e19c_inventory_complete={'1' if summary['identity_result']=='PASS' else '0'}",
         f"identity_result={summary['identity_result']}",
@@ -912,33 +1353,54 @@ def run_inventory(
         f"secret_scanner={'OK' if scanner_ok else 'FAIL'}",
         f"secret_hits={','.join(hits) if hits else 'none'}",
         f"archive_allowed={'yes' if share_safe else 'no'}",
-        f"file_count={len(files)}",
+        f"approved_file_count={approved_count}",
+        f"approved_files={','.join(sorted(k for k in files if k in APPROVED_ARCHIVE_FILES))}",
     ]
     write("15_manifest.txt", "\n".join(manifest) + "\n")
 
     if not share_safe:
         write(
             "STOP_SECRETS.txt",
-            "SHARE_BLOCKED: secret scanner failed or detected sensitive content; "
-            "do not archive or share this bundle\n"
-            f"hits={hits}\n",
+            "SHARE_BLOCKED: secret scanner failed or detected sensitive content, "
+            "or identity not PASS; do not archive or share this bundle\n"
+            f"hits={hits if hits else 'none'}\n",
         )
 
-    # Archive only when share_safe
     archive_path = None
     if share_safe:
-        archive_path = out_path.parent / f"{out_path.name}.tar.gz"
-        r, o, e = run(["tar", "-C", str(out_path.parent), "-czf", str(archive_path), out_path.name])
-        if r != 0:
-            write("15_manifest.txt", files["15_manifest.txt"] + "archive=FAIL\n")
-            summary["share_safe"] = "no"
+        # Re-scan after summary/manifest finalized
+        combined2 = "\n".join(files[k] for k in sorted(files) if k in APPROVED_ARCHIVE_FILES)
+        hits2 = scan_for_secrets(combined2)
+        if hits2:
             share_safe = False
+            summary["share_safe"] = "no"
+            write("00_return_summary.txt", _format_summary(summary))
+            write(
+                "15_manifest.txt",
+                files["15_manifest.txt"].rstrip() + "\narchive_allowed=no\narchive=blocked_rescan\n",
+            )
             write(
                 "STOP_SECRETS.txt",
-                "SHARE_BLOCKED: archive creation failed\n",
+                "SHARE_BLOCKED: post-summary secret rescan failed\n",
             )
         else:
-            write("15_manifest.txt", files["15_manifest.txt"] + f"archive={archive_path}\n")
+            archive_path, arch_result = build_allowlisted_archive(out_path, files)
+            if arch_result != "OK" or not archive_path:
+                share_safe = False
+                summary["share_safe"] = "no"
+                write("00_return_summary.txt", _format_summary(summary))
+                write(
+                    "15_manifest.txt",
+                    files["15_manifest.txt"].rstrip() + "\narchive=FAIL\narchive_allowed=no\n",
+                )
+                write("STOP_SECRETS.txt", "SHARE_BLOCKED: archive creation or member verification failed\n")
+                archive_path = None
+            else:
+                write(
+                    "15_manifest.txt",
+                    files["15_manifest.txt"].rstrip()
+                    + f"\narchive={archive_path}\narchive_mode=0600\narchive_members_verified=yes\n",
+                )
 
     return InventoryResult(
         status="OK" if summary["identity_result"] == "PASS" else "STOP",
@@ -946,6 +1408,7 @@ def run_inventory(
         summary=summary,
         share_safe=share_safe,
         stop_reason=None,
+        archive_path=archive_path,
     )
 
 
