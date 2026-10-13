@@ -9,6 +9,7 @@ interface Volume {
   article_count: number;
   issue_count: number;
   missing: boolean;
+  unfiled?: boolean;
 }
 
 type InventoryRow = {
@@ -44,7 +45,7 @@ type CrawlJob = Record<string, unknown> & {
 };
 
 function issueLabel(row: { volume?: number | null; issue_number?: number | null; year?: number | null; title?: string; url?: string; month?: string }) {
-  if (row.volume && row.issue_number) {
+  if (Number(row.volume) > 0 && Number(row.issue_number) > 0) {
     const when = row.month || row.year ? ` (${[row.month, row.year].filter(Boolean).join(' ')})` : '';
     return `Vol. ${row.volume} No. ${row.issue_number}${when}`;
   }
@@ -101,6 +102,7 @@ export default function JournalVolumesPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [refiling, setRefiling] = useState(false);
 
   const inventory = useMemo(
     () => (Array.isArray(crawl?.inventory) ? (crawl?.inventory as InventoryRow[]) : []),
@@ -136,8 +138,14 @@ export default function JournalVolumesPage() {
     }> = [];
     const seen = new Set<string>();
     for (const row of inventory) {
-      const key = row.volume && row.issue_number ? `${row.volume}-${row.issue_number}` : row.url;
-      const local = row.volume && row.issue_number ? localByKey.get(`${row.volume}-${row.issue_number}`) : undefined;
+      const key =
+        Number(row.volume) > 0 && Number(row.issue_number) > 0
+          ? `${row.volume}-${row.issue_number}`
+          : row.url;
+      const local =
+        Number(row.volume) > 0 && Number(row.issue_number) > 0
+          ? localByKey.get(`${row.volume}-${row.issue_number}`)
+          : undefined;
       rows.push({
         key,
         url: row.url,
@@ -204,28 +212,42 @@ export default function JournalVolumesPage() {
   };
 
   const refreshCitations = async () => {
-    if (syncing) return;
+    if (syncing || scanning || downloading) return;
     setSyncing(true);
-    setMsg('Looking up Crossref and Google Scholar cited-by counts…');
+    setMsg('Looking up Crossref and Google Scholar cited-by counts in the background…');
     try {
       await citationApi.journals.syncCitations(id);
-      await load();
+      for (let i = 0; i < 8; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const issues = await load();
+        const pending = issues.filter((iss) => iss.article_count > 0 && !iss.citations_synced && iss.volume > 0);
+        if (!pending.length) break;
+      }
       setMsg('Citation counts updated from Crossref and Google Scholar.');
     } catch {
-      setMsg('Could not refresh citation counts. Try again in a moment.');
+      setMsg('Could not refresh citation counts. Try again after the archive job finishes.');
     } finally {
       setSyncing(false);
     }
   };
 
+  const refileUnfiled = async () => {
+    if (refiling) return;
+    setRefiling(true);
+    setMsg('Placing unfiled papers into volume and issue racks…');
+    try {
+      const { data } = await citationApi.journals.refile(id);
+      await load();
+      setMsg(`Moved ${data.moved || 0} papers into volume/issue racks. ${data.remaining || 0} still unfiled.`);
+    } catch {
+      setMsg('Could not refile unfiled papers.');
+    } finally {
+      setRefiling(false);
+    }
+  };
+
   useEffect(() => {
-    void (async () => {
-      const issues = await load();
-      const needsSync = issues.some((iss) => iss.article_count > 0 && !iss.citations_synced);
-      if (needsSync) {
-        await refreshCitations();
-      }
-    })();
+    void load();
   }, [id]);
 
   const pollJob = async (jobId: number) => {
@@ -243,7 +265,7 @@ export default function JournalVolumesPage() {
       setSelected(next);
     }
     if (job.status === 'awaiting_selection') {
-      setMsg('Choose which issues to download. Unchecked issues are left on the site.');
+      setMsg('Scan finished. Download all issues, or tick only the ones that still need a retry.');
       await load();
       return;
     }
@@ -255,28 +277,27 @@ export default function JournalVolumesPage() {
     if (!files?.length) return;
     setMsg('Uploading…');
     await citationApi.journals.uploadPapers(id, Array.from(files));
-    setMsg('Papers filed into the archive.');
-    const issues = await load();
-    if (issues.some((iss) => iss.article_count > 0 && !iss.citations_synced)) {
-      await refreshCitations();
-    }
+    setMsg('Papers filed into volume and issue racks.');
+    await load();
   };
 
   const startCrawl = async () => {
-    setMsg('Scanning issues…');
+    setMsg('Scanning every archive page, then downloading all issues…');
     setSelected({});
-    const { data } = await citationApi.journals.crawl(id, archiveUrl);
+    const { data } = await citationApi.journals.crawl(id, archiveUrl, true);
     setCrawl(data);
     void pollJob(data.id);
   };
 
-  const startDownload = async () => {
+  const startDownload = async (urls?: string[]) => {
     if (!crawl?.id) return;
-    const issueUrls = Object.entries(selected)
-      .filter(([, on]) => on)
-      .map(([url]) => url);
+    const issueUrls =
+      urls ??
+      Object.entries(selected)
+        .filter(([, on]) => on)
+        .map(([url]) => url);
     if (!issueUrls.length) {
-      setMsg('Select at least one issue to download, or leave them all unchecked.');
+      setMsg('Select at least one issue to retry, or use Scan & download all to fetch the whole archive.');
       return;
     }
     setMsg('Downloading selected issue PDFs…');
@@ -297,6 +318,8 @@ export default function JournalVolumesPage() {
   const selectedArticles = inventory
     .filter((row) => selected[row.url])
     .reduce((sum, row) => sum + Number(row.article_count || 0), 0);
+  const missingRemote = inventory.filter((row) => !row.downloaded).length;
+  const unfiledVolume = volumes.find((v) => v.unfiled || v.volume === 0);
 
   return (
     <div>
@@ -322,9 +345,9 @@ export default function JournalVolumesPage() {
         <div className="panel p-4 space-y-3">
           <h3 className="font-medium">2. Scan archive issues</h3>
           <p className="text-xs text-gray-400">
-            Lists every issue and how many articles it contains. Article pages are opened when the
-            PDF is not on the issue table of contents. PDFs are not downloaded until you choose which
-            issues to fetch. Citation counts come from the DOI (Crossref) and Google Scholar.
+            Reads every archive page (not just the first), lists each volume and issue, then
+            downloads every PDF in one pass. Tick issues below only to retry ones that were missed.
+            Works the same way for every journal in this archive.
           </p>
           <input
             className="input-field"
@@ -339,7 +362,7 @@ export default function JournalVolumesPage() {
               disabled={scanning || downloading || !archiveUrl}
               onClick={() => void startCrawl()}
             >
-              Scan issues
+              Scan & download all
             </button>
             {(scanning || downloading) && crawl?.id ? (
               <button
@@ -351,8 +374,23 @@ export default function JournalVolumesPage() {
               </button>
             ) : null}
             {localIssues.length > 0 && (
-              <button className="btn-secondary" type="button" disabled={syncing} onClick={() => void refreshCitations()}>
+              <button
+                className="btn-secondary"
+                type="button"
+                disabled={syncing || scanning || downloading}
+                onClick={() => void refreshCitations()}
+              >
                 {syncing ? 'Refreshing citations…' : 'Refresh citation counts'}
+              </button>
+            )}
+            {unfiledVolume && unfiledVolume.article_count > 0 && (
+              <button
+                className="btn-secondary"
+                type="button"
+                disabled={refiling || scanning || downloading}
+                onClick={() => void refileUnfiled()}
+              >
+                {refiling ? 'Filing unfiled papers…' : 'File unfiled papers'}
               </button>
             )}
           </div>
@@ -369,7 +407,8 @@ export default function JournalVolumesPage() {
               <p className="text-sm text-gray-400">
                 {issueRows.length} issues ·{' '}
                 {issueRows.reduce((n, row) => n + Number(row.article_count || 0), 0)} articles.
-                Tick remote issues to download; leave the rest on the site.
+                Tick remote issues to retry a download. Scan & download all already fetches every
+                issue, including older archive pages.
               </p>
             </div>
             {inventory.length > 0 && (
@@ -450,10 +489,29 @@ export default function JournalVolumesPage() {
             </table>
           </div>
           {inventory.length > 0 && (
-            <button className="btn-primary" type="button" onClick={() => void startDownload()}>
-              Download {selectedCount} selected issue{selectedCount === 1 ? '' : 's'}
-              {selectedArticles ? ` (${selectedArticles} articles)` : ''}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="btn-primary"
+                type="button"
+                disabled={scanning || downloading}
+                onClick={() => void startDownload()}
+              >
+                Download {selectedCount} selected issue{selectedCount === 1 ? '' : 's'}
+                {selectedArticles ? ` (${selectedArticles} articles)` : ''}
+              </button>
+              {missingRemote > 0 && (
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  disabled={scanning || downloading}
+                  onClick={() =>
+                    void startDownload(inventory.filter((row) => !row.downloaded).map((row) => row.url))
+                  }
+                >
+                  Download all missing ({missingRemote})
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -468,12 +526,17 @@ export default function JournalVolumesPage() {
             <Link
               key={v.volume}
               to={`/journals/${id}/volumes/${v.volume}`}
-              className="panel p-4 flex justify-between hover:border-earth-500 block"
+              className={`panel p-4 flex justify-between hover:border-earth-500 block ${
+                v.unfiled || v.volume === 0 ? 'border-amber-800' : ''
+              }`}
             >
-              <span className="font-medium">Volume {v.volume}</span>
+              <span className="font-medium">
+                {v.unfiled || v.volume === 0 ? 'Unfiled papers' : `Volume ${v.volume}`}
+              </span>
               <span className="text-gray-400">
                 {v.article_count} articles · {v.issue_count} issues
                 {v.year_start ? ` · ${v.year_start}` : ''}
+                {v.unfiled || v.volume === 0 ? ' · needs filing' : ''}
               </span>
             </Link>
           )

@@ -135,7 +135,8 @@ export default function IssueArticlesPage() {
   useEffect(() => {
     void (async () => {
       const payload = await load();
-      if (!payload.issue.id) return;
+      if (!payload.issue.id || vol === 0) return;
+      if ((payload.articles || []).length > 40) return;
       const marker = `citing-works-v2-${payload.issue.id}`;
       const needCounts = (payload.articles || []).some((a) => !a.citation_synced_at);
       const needLists =
@@ -160,8 +161,8 @@ export default function IssueArticlesPage() {
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
     setMsg('Uploading…');
-    await citationApi.journals.uploadPapers(id, Array.from(files));
-    setMsg('Papers filed into this issue when headers match.');
+    await citationApi.journals.uploadPapers(id, Array.from(files), { volume: vol, issue: iss });
+    setMsg('Papers filed into this volume and issue.');
     await load();
   };
 

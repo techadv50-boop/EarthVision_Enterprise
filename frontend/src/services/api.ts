@@ -182,19 +182,26 @@ export const citationApi = {
     issues: (id: number, volume: number) => api.get(`/journals/${id}/volumes/${volume}/issues`),
     articles: (id: number, volume: number, issue: number) =>
       api.get(`/journals/${id}/volumes/${volume}/issues/${issue}/articles`),
-    uploadPapers: (id: number, files: File[]) => {
+    uploadPapers: (id: number, files: File[], placement?: { volume?: number; issue?: number }) => {
       const form = new FormData();
       files.forEach((f) => form.append('files', f));
+      const params: Record<string, number> = {};
+      if (placement?.volume && placement.volume > 0) params.volume = placement.volume;
+      if (placement?.issue && placement.issue > 0) params.issue = placement.issue;
       return api.post(`/journals/${id}/papers`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        params,
       });
     },
     uploadText: (id: number, data: Record<string, unknown>) =>
       api.post(`/journals/${id}/papers-text`, data),
-    crawl: (id: number, archive_url: string) => api.post(`/journals/${id}/crawl`, { archive_url }),
+    crawl: (id: number, archive_url: string, auto_download = true) =>
+      api.post(`/journals/${id}/crawl`, { archive_url, auto_download }),
     latestCrawl: (id: number) => api.get(`/journals/${id}/latest-crawl`),
     allIssues: (id: number) => api.get(`/journals/${id}/issues`),
-    syncCitations: (id: number) => api.post(`/journals/${id}/sync-citations`),
+    syncCitations: (id: number, force = false) =>
+      api.post(`/journals/${id}/sync-citations`, null, { params: { force } }),
+    refile: (id: number) => api.post(`/journals/${id}/refile`),
   },
   crawlJob: (id: number) => api.get(`/crawl-jobs/${id}`),
   cancelCrawl: (id: number) => api.post(`/crawl-jobs/${id}/cancel`),

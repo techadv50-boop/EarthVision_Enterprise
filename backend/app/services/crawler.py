@@ -1,4 +1,4 @@
-"""Fast OJS archive inventory, then download PDFs only for issues the operator selects."""
+"""Fast OJS archive inventory, then download PDFs for every issue (retries stay selectable)."""
 
 from __future__ import annotations
 
@@ -14,18 +14,29 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.database.session import AsyncSessionLocal
 from app.models.citation import CrawlJob, Journal
+from app.services.citation_parser import parse_volume_issue
 from app.services.ingest import ingest_pdf_bytes
 
 USER_AGENT = "CitationAssistant/1.0 (journal archive ingest)"
 MAX_ARCHIVE_PAGES = 80
 ISSUE_CONCURRENCY = 12
+FETCH_TIMEOUT = httpx.Timeout(90.0, connect=20.0)
+FETCH_RETRIES = 3
 
-ISSUE_VIEW_HREF = re.compile(r"/issue/view/\d+", re.I)
-ARCHIVE_HREF = re.compile(r"/issue/archive(?:/\d+)?/?$", re.I)
+ISSUE_VIEW_HREF = re.compile(r"/issue/view/(\d+)", re.I)
+ARCHIVE_HREF = re.compile(r"/issue/archive", re.I)
 ARTICLE_VIEW_HREF = re.compile(r"/article/view/(\d+)(?:/(\d+))?", re.I)
 ARTICLE_DOWNLOAD_HREF = re.compile(r"/article/download/", re.I)
 VOL_ISSUE_HREF = re.compile(
     r"Vol\.?\s*(\d+)\s*(?:No\.?|Issue)\s*(\d+)(?:\s*\((\d{4})\))?",
+    re.I,
+)
+CITATION_VOL_META = re.compile(
+    r'<meta\b[^>]*\bname=["\']citation_volume["\'][^>]*\bcontent=["\'](\d+)["\']',
+    re.I,
+)
+CITATION_ISSUE_META = re.compile(
+    r'<meta\b[^>]*\bname=["\']citation_issue["\'][^>]*\bcontent=["\'](\d+)["\']',
     re.I,
 )
 
@@ -46,12 +57,43 @@ PDF_LINK_TEXT = re.compile(
 )
 
 
+def _host(url: str) -> str:
+    hostname = (urlparse(url).hostname or "").lower()
+    return hostname[4:] if hostname.startswith("www.") else hostname
+
+
 def _same_host(root: str, url: str) -> bool:
-    return (urlparse(root).hostname or "").lower() == (urlparse(url).hostname or "").lower()
+    return bool(_host(root) and _host(root) == _host(url))
 
 
 def _clean(url: str) -> str:
-    return urldefrag(url)[0].strip()
+    parsed = urlparse(urldefrag(url)[0].strip())
+    path = re.sub(r"/{2,}", "/", parsed.path or "")
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    return urlunparse(parsed._replace(path=path, fragment=""))
+
+
+def _issue_key(url: str) -> str:
+    parsed = urlparse(_clean(url))
+    match = ISSUE_VIEW_HREF.search(parsed.path or "")
+    if not match:
+        return _clean(url)
+    path = re.sub(r"/issue/view/\d+.*", f"/issue/view/{match.group(1)}", parsed.path or "", flags=re.I)
+    return urlunparse(parsed._replace(path=path, query="", fragment=""))
+
+
+def _next_archive_page(url: str) -> str | None:
+    parsed = urlparse(_clean(url))
+    path = parsed.path or ""
+    match = re.search(r"^(?P<prefix>/.*/issue/archive)(?:/(?P<n>\d+))?$", path, re.I)
+    if not match:
+        if re.search(r"/issue/archive$", path, re.I):
+            return urlunparse(parsed._replace(path=f"{path}/2", query=""))
+        return None
+    prefix = match.group("prefix")
+    number = int(match.group("n") or 1)
+    return urlunparse(parsed._replace(path=f"{prefix}/{number + 1}", query=""))
 
 
 def is_pdf_url(url: str, link_text: str = "") -> bool:
@@ -173,11 +215,28 @@ def extract_links(html: str, base: str) -> list[str]:
 
 
 async def default_fetch(url: str) -> tuple[int, bytes, str]:
-    async with httpx.AsyncClient(
-        timeout=30.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}
-    ) as client:
-        resp = await client.get(url)
-        return resp.status_code, resp.content, resp.headers.get("content-type") or ""
+    last_error: Exception | None = None
+    for attempt in range(FETCH_RETRIES):
+        try:
+            async with httpx.AsyncClient(
+                timeout=FETCH_TIMEOUT,
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code in {429, 502, 503, 504} and attempt + 1 < FETCH_RETRIES:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                return resp.status_code, resp.content, resp.headers.get("content-type") or ""
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < FETCH_RETRIES:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+    if last_error:
+        raise last_error
+    return 599, b"", ""
 
 
 def _is_pdf_payload(content: bytes, content_type: str) -> bool:
@@ -193,11 +252,25 @@ def _is_html_payload(content: bytes, content_type: str) -> bool:
 
 
 def _parse_vol_issue(text: str) -> tuple[int | None, int | None, int | None]:
+    volume, number, year = parse_volume_issue(text or "")
+    if volume and number:
+        return volume, number, year
     match = VOL_ISSUE_HREF.search(text or "")
     if not match:
-        return None, None, None
-    year = int(match.group(3)) if match.group(3) else None
-    return int(match.group(1)), int(match.group(2)), year
+        return volume, number, year
+    parsed_year = int(match.group(3)) if match.group(3) else year
+    return int(match.group(1)), int(match.group(2)), parsed_year
+
+
+def _heading_from_html(html: str) -> tuple[int | None, int | None, int | None]:
+    volume, number, year = _parse_vol_issue(html)
+    if volume and number:
+        return volume, number, year
+    meta_vol = CITATION_VOL_META.search(html or "")
+    meta_iss = CITATION_ISSUE_META.search(html or "")
+    if meta_vol and meta_iss:
+        return int(meta_vol.group(1)), int(meta_iss.group(1)), year
+    return volume, number, year
 
 
 def _unique(urls: list[str]) -> list[str]:
@@ -221,8 +294,13 @@ def _inventory_message(job: CrawlJob) -> str:
     return f"Found {issues} issues · {articles} articles. Choose which issues to download."
 
 
-async def run_crawl_job(job_id: int, fetch=default_fetch, delay: float = 0.0) -> None:
-    """Scan the archive for issues and article counts. Does not download PDFs."""
+async def run_crawl_job(
+    job_id: int,
+    fetch=default_fetch,
+    delay: float = 0.0,
+    auto_download: bool = False,
+) -> None:
+    """Scan every archive page. Optionally download every discovered issue in the same job."""
     async with AsyncSessionLocal() as db:
         job = await db.get(CrawlJob, job_id)
         if job is None:
@@ -248,6 +326,19 @@ async def run_crawl_job(job_id: int, fetch=default_fetch, delay: float = 0.0) ->
                 job.phase = "cancelled"
                 job.message = "Issue scan cancelled."
                 job.finished_at = datetime.now(timezone.utc)
+            elif auto_download:
+                issue_urls = [
+                    str(row.get("url") or "")
+                    for row in (job.inventory or [])
+                    if row.get("url")
+                ]
+                if issue_urls:
+                    await _download_selected(db, job, journal, issue_urls, fetch, delay)
+                else:
+                    job.status = "completed"
+                    job.phase = "completed"
+                    job.message = "Scan finished. No issues were listed."
+                    job.finished_at = datetime.now(timezone.utc)
             else:
                 job.status = "awaiting_selection"
                 job.phase = "awaiting_selection"
@@ -278,72 +369,101 @@ async def run_download_job(
             job.message = "Journal not found"
             await db.commit()
             return
-        inventory = list(job.inventory or [])
-        selected = {_clean(url) for url in issue_urls}
-        chosen = [row for row in inventory if _clean(str(row.get("url") or "")) in selected]
-        pdf_urls: list[str] = []
-        for row in chosen:
-            pdfs = list(row.get("pdf_urls") or [])
-            article_urls = list(row.get("article_urls") or [])
-            if len(pdfs) < max(int(row.get("article_count") or 0), len(article_urls)):
-                for art_url in article_urls:
-                    aid = _article_id(art_url)
-                    if not aid or any(_pdf_covers_article(url, aid) for url in pdfs):
-                        continue
-                    pdfs.extend(await _pdfs_from_article_page(fetch, art_url, aid, delay))
-            pdf_urls.extend(pdfs)
-        pdf_urls = _unique(pdf_urls)
-        job.status = "running"
-        job.phase = "downloading"
-        job.articles_found = len(pdf_urls)
-        job.articles_saved = 0
-        job.articles_skipped = 0
-        job.cancel_requested = False
-        job.finished_at = None
-        job.message = (
-            f"Downloading {len(pdf_urls)} PDFs from {len(chosen)} selected issue(s)…"
-        )
-        await db.commit()
         try:
-            await _download_pdfs(db, job, journal, pdf_urls, fetch, delay)
-            if job.cancel_requested:
-                job.status = "cancelled"
-                job.phase = "cancelled"
-                job.message = (
-                    f"Download cancelled. Loaded {job.articles_saved}, "
-                    f"{max(0, job.articles_found - job.articles_saved - job.articles_skipped)} left."
-                )
-            else:
-                job.status = "completed"
-                job.phase = "completed"
-                job.message = (
-                    f"Done. Loaded {job.articles_saved} PDFs from {len(chosen)} issue(s), "
-                    f"skipped {job.articles_skipped}."
-                )
-                for row in inventory:
-                    if _clean(str(row.get("url") or "")) in selected:
-                        row["downloaded"] = True
-                job.inventory = inventory
-                flag_modified(job, "inventory")
+            await _download_selected(db, job, journal, issue_urls, fetch, delay)
         except Exception as exc:
             job.status = "failed"
             job.phase = "failed"
             job.message = f"Download failed: {exc}"
             job.error_log = (job.error_log or []) + [str(exc)]
-        job.finished_at = datetime.now(timezone.utc)
+            job.finished_at = datetime.now(timezone.utc)
         await db.commit()
 
 
+async def _download_selected(
+    db: AsyncSession,
+    job: CrawlJob,
+    journal: Journal,
+    issue_urls: list[str],
+    fetch,
+    delay: float,
+) -> None:
+    inventory = list(job.inventory or [])
+    selected = {_issue_key(url) for url in issue_urls if url}
+    chosen = [row for row in inventory if _issue_key(str(row.get("url") or "")) in selected]
+    items: list[dict] = []
+    seen_pdfs: set[str] = set()
+    for row in chosen:
+        pdfs = list(row.get("pdf_urls") or [])
+        article_urls = list(row.get("article_urls") or [])
+        if len(pdfs) < max(int(row.get("article_count") or 0), len(article_urls)):
+            for art_url in article_urls:
+                aid = _article_id(art_url)
+                if not aid or any(_pdf_covers_article(url, aid) for url in pdfs):
+                    continue
+                pdfs.extend(await _pdfs_from_article_page(fetch, art_url, aid, delay))
+        pdfs = _unique(pdfs)
+        row["pdf_urls"] = pdfs
+        for pdf_url in pdfs:
+            key = _clean(pdf_url)
+            if key in seen_pdfs:
+                continue
+            seen_pdfs.add(key)
+            items.append(
+                {
+                    "url": pdf_url,
+                    "volume": row.get("volume"),
+                    "issue_number": row.get("issue_number"),
+                    "year": row.get("year"),
+                }
+            )
+    job.status = "running"
+    job.phase = "downloading"
+    job.articles_found = len(items)
+    job.articles_saved = 0
+    job.articles_skipped = 0
+    job.cancel_requested = False
+    job.finished_at = None
+    job.message = f"Downloading {len(items)} PDFs from {len(chosen)} issue(s)…"
+    flag_modified(job, "inventory")
+    await db.commit()
+    await _download_pdfs(db, job, journal, items, fetch, delay)
+    if job.cancel_requested:
+        job.status = "cancelled"
+        job.phase = "cancelled"
+        job.message = (
+            f"Download cancelled. Loaded {job.articles_saved}, "
+            f"{max(0, job.articles_found - job.articles_saved - job.articles_skipped)} left."
+        )
+    else:
+        job.status = "completed"
+        job.phase = "completed"
+        job.message = (
+            f"Done. Loaded {job.articles_saved} PDFs from {len(chosen)} issue(s), "
+            f"skipped {job.articles_skipped}."
+        )
+        for row in inventory:
+            if _issue_key(str(row.get("url") or "")) in selected:
+                row["downloaded"] = True
+        job.inventory = inventory
+        flag_modified(job, "inventory")
+    job.finished_at = datetime.now(timezone.utc)
+
+
 async def _scan_issues(db: AsyncSession, job: CrawlJob, fetch, delay: float) -> None:
-    archive = job.archive_url
-    queue: deque[str] = deque([_clean(archive)])
+    archive = _clean(job.archive_url)
+    queue: deque[str] = deque([archive])
+    next_page = _next_archive_page(archive)
+    if next_page:
+        queue.append(next_page)
     seen_pages: set[str] = set()
     issues: dict[str, dict] = {}
+    empty_archive_pages = 0
 
     while queue and len(seen_pages) < MAX_ARCHIVE_PAGES:
         if job.cancel_requested:
             return
-        page_url = queue.popleft()
+        page_url = _clean(queue.popleft())
         if page_url in seen_pages:
             continue
         seen_pages.add(page_url)
@@ -358,18 +478,23 @@ async def _scan_issues(db: AsyncSession, job: CrawlJob, fetch, delay: float) -> 
             job.error_log = (job.error_log or []) + [f"{page_url}: {exc}"]
             continue
         if status >= 400 or not _is_html_payload(body, ctype):
+            job.error_log = (job.error_log or []) + [
+                f"{page_url}: HTTP {status}" if status >= 400 else f"{page_url}: not HTML"
+            ]
             continue
         html = body.decode("utf-8", errors="ignore")
+        new_issues = 0
         for href, text in extract_anchors(html, page_url):
             if not href or not _same_host(archive, href):
                 continue
+            href = _clean(href)
             path = urlparse(href).path or ""
             if SKIP_PATH.search(path) or SKIP_EXT.search(path):
                 continue
-            if ARCHIVE_HREF.search(href) and href not in seen_pages:
+            if ARCHIVE_HREF.search(path) and href not in seen_pages:
                 queue.append(href)
             if ISSUE_VIEW_HREF.search(href):
-                key = _clean(href)
+                key = _issue_key(href)
                 title = text or key
                 volume, number, year = _parse_vol_issue(title)
                 if key not in issues:
@@ -383,12 +508,25 @@ async def _scan_issues(db: AsyncSession, job: CrawlJob, fetch, delay: float) -> 
                         "pdf_urls": [],
                         "downloaded": False,
                     }
+                    new_issues += 1
                 elif title and len(title) > len(str(issues[key].get("title") or "")):
                     issues[key]["title"] = title
                     if volume:
                         issues[key]["volume"] = volume
                         issues[key]["issue_number"] = number
                         issues[key]["year"] = year
+        if ARCHIVE_HREF.search(urlparse(page_url).path or ""):
+            if new_issues == 0 and page_url != archive:
+                empty_archive_pages += 1
+            else:
+                empty_archive_pages = 0
+                nxt = _next_archive_page(page_url)
+                if nxt and nxt not in seen_pages and empty_archive_pages < 2:
+                    queue.append(nxt)
+        if empty_archive_pages >= 2:
+            queue = deque(
+                url for url in queue if not ARCHIVE_HREF.search(urlparse(url).path or "") or url in seen_pages
+            )
 
     issue_list = list(issues.values())
     job.issues_found = len(issue_list)
@@ -409,9 +547,11 @@ async def _scan_issues(db: AsyncSession, job: CrawlJob, fetch, delay: float) -> 
             if status >= 400 or not _is_html_payload(body, ctype):
                 return row
             html = body.decode("utf-8", errors="ignore")
-            heading = _parse_vol_issue(html)
-            if heading[0] and not row.get("volume"):
-                row["volume"], row["issue_number"], row["year"] = heading
+            heading = _heading_from_html(html)
+            if heading[0] and (not row.get("volume") or not row.get("issue_number")):
+                row["volume"] = heading[0] or row.get("volume")
+                row["issue_number"] = heading[1] or row.get("issue_number")
+                row["year"] = heading[2] or row.get("year")
             article_ids: list[str] = []
             seen_ids: set[str] = set()
             article_urls: dict[str, str] = {}
@@ -464,17 +604,19 @@ async def _download_pdfs(
     db: AsyncSession,
     job: CrawlJob,
     journal: Journal,
-    pdf_urls: list[str],
+    items: list[dict],
     fetch,
     delay: float,
 ) -> None:
-    for index, pdf_url in enumerate(pdf_urls):
+    inventory = list(job.inventory or [])
+    for index, item in enumerate(items):
         if job.cancel_requested:
             return
-        left = max(0, len(pdf_urls) - index)
+        pdf_url = str(item.get("url") or "")
+        left = max(0, len(items) - index)
         job.message = (
             f"Downloading PDFs… loaded {job.articles_saved}, {left} left "
-            f"of {len(pdf_urls)}."
+            f"of {len(items)}."
         )
         if index == 0 or index % 2 == 0:
             await _commit_progress(db, job)
@@ -504,15 +646,25 @@ async def _download_pdfs(
                         break
                 if not fetched:
                     job.articles_skipped += 1
+                    job.error_log = (job.error_log or []) + [f"{item.get('url')}: no PDF on article page"]
                     continue
             if not _is_pdf_payload(content, ctype):
                 job.articles_skipped += 1
+                job.error_log = (job.error_log or []) + [f"{pdf_url}: not a PDF"]
                 continue
             name = pdf_url.rstrip("/").split("/")[-1] or f"article_{index + 1}.pdf"
             if not name.lower().endswith(".pdf"):
                 name = f"{name}.pdf" if "." not in name else f"article_{index + 1}.pdf"
             _article, created = await ingest_pdf_bytes(
-                db, journal, content, name, source_url=pdf_url
+                db,
+                journal,
+                content,
+                name,
+                source_url=pdf_url,
+                volume=item.get("volume"),
+                issue_number=item.get("issue_number"),
+                year=item.get("year"),
+                inventory=inventory,
             )
             if created:
                 job.articles_saved += 1
