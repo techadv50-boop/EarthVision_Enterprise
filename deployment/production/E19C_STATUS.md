@@ -1,4 +1,4 @@
-# Stage E1.9C / E1.9C-R1 Status
+# Stage E1.9C / E1.9C-R1 / E1.9C-R2 Status
 
 **Date:** 2026-10-13  
 **Scope:** Operator inventory **preparation + safety corrections** only.  
@@ -14,18 +14,14 @@
 
 Do **not** merge this branch into the approved deploy tip unless the owner explicitly re-stamps a new tip.
 
-## E1.9C-R1 corrections
+## E1.9C-R2 final safety check
 
-1. Service-scoped identity: backend + frontend + proxy must belong to `sateye-fz2ic4`
-2. Removed `SKIP_HOST_CHECK` (rejected if set)
-3. Replaced `docker compose config` + regex redaction with allowlisted compose **file** structure
-4. Scoped image/volume/container inspect to verified services
-5. No shared temp health body files
-6. Missing evidence → `UNKNOWN` / `FAIL` / `STOP`
-7. Allowlisted gh runner/runs fields; no `gh auth status` dump
-8. Secret scanner gates archive + `share_safe`
-9. Symlink-resolved private `OUT_DIR` under `/tmp`, `/var/tmp`, or `$HOME`
-10. Adversarial tests: `scripts/tests/test_e19c_inventory_safety.py`
+1. Type-validate / allowlist every externally sourced field before disk write
+2. Hostname, container/service names, git IDs, image IDs/digests, mounts, runners, health fields constrained
+3. Malformed / credential-like metadata → `UNKNOWN` or `FAIL` (never raw literal)
+4. Summary + manifest finalized before archive; archive members verified == approved set
+5. Directory `0700`, evidence files + archive `0600`
+6. Adversarial tests for credential-like metadata + archive consistency (`pass=66`)
 
 ## GO / NO-GO
 
