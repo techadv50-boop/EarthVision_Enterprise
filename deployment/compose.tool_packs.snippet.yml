@@ -1,0 +1,21 @@
+# ADDITIVE snippet for Host Shell Tool Packs (preview already inlined in
+# docker-compose.preview.yml). DO NOT apply to production without explicit approval.
+#
+# Live production compose is a server overlay preserved by deploy_sateye_live.sh.
+# Merge these keys carefully into that overlay when authorized — never replace
+# pgdata / imagery / uploads / cache / logs mounts.
+
+services:
+  backend:
+    environment:
+      EV_TOOL_PACKS_ROOT: /data/tool_packs
+      EV_RUNTIME_PINS: /data/tool_packs/runtime_pins.json
+      EV_ARTIFACTS_ROOT: /data/tool_packs/artifacts
+      EV_PACK_PUBLISHERS: /app/pack_publishers/approved_publishers.json
+      EV_PACK_REQUIRE_SIGNATURE: "1"
+      EV_PACK_AUDIT_LOG: /data/tool_packs/audit/promotions.jsonl
+    volumes:
+      - tool_packs_data:/data/tool_packs
+
+volumes:
+  tool_packs_data:

@@ -9,26 +9,28 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.tools.pack_paths import pins_path, repo_root
+
 _LOCK = threading.RLock()
 _CACHE: dict[str, Any] = {"mtime": None, "data": None}
 
 # Host SDK semver declared for pack compatibility checks
 HOST_SDK_VERSION = "1.0.0"
 
+# Re-export for callers that imported pins_path/repo_root from here
+__all__ = [
+    "HOST_SDK_VERSION",
+    "PinError",
+    "get_pin",
+    "load_pins",
+    "pins_path",
+    "repo_root",
+    "write_pins",
+]
+
 
 class PinError(Exception):
     """Invalid or unrecoverable runtime pin state."""
-
-
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
-def pins_path() -> Path:
-    override = os.environ.get("EV_RUNTIME_PINS")
-    if override:
-        return Path(override)
-    return repo_root() / "tools" / "runtime_pins.json"
 
 
 def _validate_pins_doc(data: Any) -> dict[str, Any]:

@@ -62,6 +62,13 @@ services:
       IMAGERY_DIR: /data/imagery
       UPLOADS_DIR: /data/uploads
       LOGS_DIR: /data/logs
+      # Dedicated Tool Pack volume (NOT shared with pgdata/imagery/uploads/cache/logs)
+      EV_TOOL_PACKS_ROOT: /data/tool_packs
+      EV_RUNTIME_PINS: /data/tool_packs/runtime_pins.json
+      EV_ARTIFACTS_ROOT: /data/tool_packs/artifacts
+      EV_PACK_PUBLISHERS: /app/pack_publishers/approved_publishers.json
+      EV_PACK_REQUIRE_SIGNATURE: "1"
+      EV_PACK_AUDIT_LOG: /data/tool_packs/audit/promotions.jsonl
       COPERNICUS_USERNAME: ${COPERNICUS_USERNAME:-}
       COPERNICUS_PASSWORD: ${COPERNICUS_PASSWORD:-}
       CESIUM_ION_TOKEN: ${CESIUM_ION_TOKEN:-}
@@ -70,6 +77,10 @@ services:
       - sateye_preview_imagery:/data/imagery
       - sateye_preview_uploads:/data/uploads
       - sateye_preview_logs:/data/logs
+      - sateye_preview_tool_packs:/data/tool_packs
+      # Read-only seed of signed repo artifacts for install rehearsals (not the runtime store)
+      - ./tools/artifacts:/seed/artifacts:ro
+      - ./tools/publishers/approved_publishers.json:/seed/publishers/approved_publishers.json:ro
     ports:
       - "127.0.0.1:8200:8000"
     depends_on:
@@ -121,6 +132,8 @@ volumes:
   sateye_preview_imagery:
   sateye_preview_uploads:
   sateye_preview_logs:
+  # Independent Tool Pack store — never reuse production or other preview app volumes
+  sateye_preview_tool_packs:
 
 networks:
   sateye_preview_net:

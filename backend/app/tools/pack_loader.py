@@ -11,11 +11,24 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from app.tools.runtime_pins import HOST_SDK_VERSION, get_pin, repo_root
+from app.tools import pack_paths as _pack_paths
+from app.tools.runtime_pins import HOST_SDK_VERSION, get_pin
 
 _LOCK = threading.RLock()
 # Cache by (tool_id, version, digest) → module
 _MODULES: dict[tuple[str, str, str], ModuleType] = {}
+
+# Re-export path helpers for existing imports
+__all__ = [
+    "PackIntegrityError",
+    "assert_artifact_immutable",
+    "artifacts_root",
+    "host_sdk_compatible",
+    "load_pack_module",
+    "pack_dir",
+    "resolve_true_color_render",
+    "verify_pack",
+]
 
 
 class PackIntegrityError(Exception):
@@ -23,7 +36,8 @@ class PackIntegrityError(Exception):
 
 
 def artifacts_root() -> Path:
-    return repo_root() / "tools" / "artifacts"
+    """Indirection so tests can monkeypatch ``pack_loader.artifacts_root``."""
+    return _pack_paths.artifacts_root()
 
 
 def pack_dir(tool_id: str, version: str) -> Path:

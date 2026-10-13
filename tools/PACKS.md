@@ -34,3 +34,10 @@ python3 scripts/tools/pack_rollback_dev.py --to builtin
 
 - `docs/TOOL_PACK_FRONTEND_LOADING.md`
 - `docs/TOOL_PACK_BACKEND_ACTIVATION.md`
+
+## E1.7 production-integration (preview)
+
+- Pins/artifacts: `EV_RUNTIME_PINS` + `EV_ARTIFACTS_ROOT` on dedicated `tool_packs` volume
+- Signatures: Ed25519 `SIGNATURE.json` + `tools/publishers/approved_publishers.json`
+- Ops: `pack_install.py` (confirm=install) → `pack_activate.py` (confirm=activate) → `pack_rollback.py` (confirm=rollback)
+- Preview validate: `scripts/tools/e17_preview_validate.sh` (refuses production hosts/projects)

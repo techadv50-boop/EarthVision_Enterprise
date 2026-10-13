@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from app.core.deps import CurrentUser
 from app.tools.pack_loader import PackIntegrityError, artifacts_root, verify_pack
-from app.tools.runtime_pins import get_pin, load_pins, repo_root
+from app.tools.pack_ops import ensure_default_pins
+from app.tools.pack_paths import pins_path
+from app.tools.runtime_pins import HOST_SDK_VERSION, get_pin, load_pins
 
 router = APIRouter(prefix="/tools", tags=["ToolRuntime"])
 
@@ -17,10 +20,17 @@ router = APIRouter(prefix="/tools", tags=["ToolRuntime"])
 @router.get("/runtime")
 async def tool_runtime(user: CurrentUser) -> dict:
     """Return runtime pins and deployment model honesty flag."""
+    ensure_default_pins()
     data = load_pins(force=True)
     return {
         "deployment_model": "tool_packs_for_pinned_tools_else_full_app",
         "shell_deploy": "full_app Deploy SATEYE unchanged",
+        "host_sdk_version": HOST_SDK_VERSION,
+        "paths": {
+            "EV_RUNTIME_PINS": str(pins_path()),
+            "EV_ARTIFACTS_ROOT": str(artifacts_root()),
+            "require_signature": os.environ.get("EV_PACK_REQUIRE_SIGNATURE", "1") != "0",
+        },
         "pins": data.get("pins") or {},
         "true_color": get_pin("true_color"),
     }

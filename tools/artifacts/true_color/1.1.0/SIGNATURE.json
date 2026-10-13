@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "digest": "sha256:7e6ae07e6ec267d9f704d1384a93e8051d4791b5620ab2dd68dcc32643800f87",
+  "algorithm": "ed25519",
+  "publisher_id": "preview-dev",
+  "signature": "73lZhfRSlozEKRxZUAxK821AExPpwCM6qZArUBph1_zwECDdRsWkJvU07Y3yPn5FDEsVvsA9QPv9lLgVBWABBA"
+}

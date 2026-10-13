@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,9 @@ def repo_root() -> Path:
 
 
 def manifest_path() -> Path:
+    override = os.environ.get("EV_TOOLS_MANIFEST")
+    if override:
+        return Path(override)
     return repo_root() / "tools" / "manifest.json"
 
 
