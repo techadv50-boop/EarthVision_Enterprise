@@ -20,7 +20,7 @@ export interface PlaceSelection {
 
 export interface MapOverlay {
   id: string;
-  kind: 'scene' | 'index' | 'change' | 'terrain' | 'buffer' | 'detection';
+  kind: 'scene' | 'index' | 'change' | 'terrain' | 'buffer' | 'detection' | 'classify' | 'composite';
   sceneId?: string;
   /** Static image URL (indices / change / terrain). Empty when using tileUrl or geojson-only. */
   url: string;
@@ -224,9 +224,15 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         overlay.kind === 'index' ||
         overlay.kind === 'change' ||
         overlay.kind === 'terrain' ||
-        overlay.kind === 'detection'
+        overlay.kind === 'detection' ||
+        overlay.kind === 'classify' ||
+        overlay.kind === 'composite'
       ) {
         next = next.filter((o) => o.kind !== overlay.kind);
+      }
+      // Legacy composite-* ids used kind 'index' — drop them when adding a composite
+      if (overlay.kind === 'composite' || overlay.id.startsWith('composite-')) {
+        next = next.filter((o) => !o.id.startsWith('composite-') || o.id === overlay.id);
       }
       if (overlay.kind === 'buffer') {
         next = next.filter((o) => o.kind !== 'buffer');
@@ -323,9 +329,11 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   setLayerOpacity: (layerOpacity) =>
     set((state) => ({
       layerOpacity,
-      overlays: state.overlays.map((o) =>
-        o.kind === 'scene' ? o : { ...o, opacity: layerOpacity },
-      ),
+      overlays: state.overlays.map((o) => {
+        // Opacity slider drives the imagery stack (scene + True/False Color + analysis).
+        if (o.kind === 'buffer' || o.kind === 'detection') return o;
+        return { ...o, opacity: layerOpacity };
+      }),
     })),
 
   showScene: (sceneId) =>

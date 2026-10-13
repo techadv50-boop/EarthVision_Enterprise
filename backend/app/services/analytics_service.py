@@ -34,6 +34,8 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDVI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        # QGIS / ArcGIS Pro practice: vegetated scenes display ~0…0.8
+        "viz_range": (0.0, 0.8),
         "cmap": "rdylgn",
         "ref": "Rouse et al. 1974 / Tucker 1979",
     },
@@ -42,6 +44,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDWI (McFeeters)",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.2, 0.5),
         "cmap": "blues",
         "ref": "McFeeters 1996",
     },
@@ -50,6 +53,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDBI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.25, 0.45),
         "cmap": "ylorbr",
         "ref": "Zha, Gao & Ni 2003",
     },
@@ -58,6 +62,7 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "SAVI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (0.0, 0.8),
         "cmap": "rdylgn",
         "ref": "Huete 1988",
     },
@@ -66,22 +71,25 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "BSI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.2, 0.5),
         "cmap": "soil",
         "ref": "Rikimaru et al. / bare-soil index",
     },
     "LST": {
-        "formula": "BT = K2 / ln(K1/Lλ + 1) − 273.15  (Landsat TIRS)",
+        "formula": "LST(°C) = DN×0.00341802 + 149 − 273.15  (Landsat C2 L2 ST_B10)",
         "label": "LST",
         "unit": "°C",
-        "range": (-10.0, 55.0),
+        "range": (-40.0, 80.0),
+        "viz_range": (-10.0, 55.0),
         "cmap": "thermal",
-        "ref": "Planck / Landsat Collection 2 TIRS",
+        "ref": "USGS Landsat Collection 2 Level-2 Surface Temperature",
     },
     "EVI": {
-        "formula": "2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*GREEN + 1)",
+        "formula": "2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1)",
         "label": "EVI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (0.0, 0.8),
         "cmap": "rdylgn",
         "ref": "Huete et al. 2002 / MODIS EVI",
     },
@@ -90,7 +98,8 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NDMI",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
-        "cmap": "blues",
+        "viz_range": (-0.4, 0.5),
+        "cmap": "brbg",
         "ref": "Gao 1996 / moisture index",
     },
     "NBR": {
@@ -98,10 +107,15 @@ INDEX_META: dict[str, dict[str, Any]] = {
         "label": "NBR",
         "unit": "index (−1…1)",
         "range": (-1.0, 1.0),
+        "viz_range": (-0.5, 0.8),
         "cmap": "rdbu",
         "ref": "Key & Benson / burn ratio",
     },
 }
+
+# Landsat-8 OLI/TIRS and Landsat-9 OLI-2/TIRS-2 (Collection-2 Level-2)
+# share band numbers and USGS scale factors (SR + ST_B10).
+# B2 blue, B3 green, B4 red, B5 nir, B6 swir1, B7 swir2, ST_B10 thermal (°C after scale)
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -155,16 +169,16 @@ class AnalyticsService:
         return np.clip(self._safe_divide(num, den), -1.0, 1.0)
 
     def compute_evi(
-        self, red: np.ndarray, nir: np.ndarray, green: np.ndarray
+        self, red: np.ndarray, nir: np.ndarray, blue: np.ndarray
     ) -> np.ndarray:
-        """EVI = 2.5 * (NIR − RED) / (NIR + 6*RED − 7.5*GREEN + 1)."""
-        r, n, g = (
+        """EVI = 2.5 * (NIR − RED) / (NIR + 6*RED − 7.5*BLUE + 1) (Huete 2002)."""
+        r, n, b = (
             red.astype(np.float64),
             nir.astype(np.float64),
-            green.astype(np.float64),
+            blue.astype(np.float64),
         )
         return np.clip(
-            2.5 * self._safe_divide(n - r, n + 6.0 * r - 7.5 * g + 1.0),
+            2.5 * self._safe_divide(n - r, n + 6.0 * r - 7.5 * b + 1.0),
             -1.0,
             1.0,
         )
@@ -183,24 +197,34 @@ class AnalyticsService:
         self,
         thermal: np.ndarray,
         *,
-        ml: float = 0.00341802,
-        al: float = 149.0,
-        k1: float = 774.8853,
-        k2: float = 1321.0789,
+        scale: float = 0.00341802,
+        offset: float = 149.0,
     ) -> np.ndarray:
         """
-        Land Surface Temperature (°C) from Landsat TIRS Band 10 radiance.
+        Land Surface Temperature (°C) from Landsat Collection-2 Level-2 ST_B10.
 
-        Lλ = ML * Qcal + AL
-        BT(K) = K2 / ln(K1/Lλ + 1)
-        LST(°C) = BT − 273.15
+        Planetary Computer ``lwir11`` / USGS ``ST_B10`` is atmospherically
+        corrected surface temperature stored as scaled Kelvin integers:
+
+            Kelvin = DN × 0.00341802 + 149.0
+            LST(°C) = Kelvin − 273.15
+
+        Also accepts arrays already in Kelvin (~200–400) or °C (< ~100),
+        including pre-scaled Celsius from ``load_analysis_bands``.
         """
-        radiance = thermal.astype(np.float64) * ml + al
-        with np.errstate(divide="ignore", invalid="ignore"):
-            bt_k = k2 / np.log((k1 / np.clip(radiance, 1e-6, None)) + 1.0)
-            lst_c = bt_k - 273.15
-            lst_c[~np.isfinite(lst_c)] = np.nan
-        return lst_c
+        t = thermal.astype(np.float64)
+        if not np.isfinite(t).any():
+            return t
+        tmax = float(np.nanmax(t))
+        if tmax > 400:
+            # Scaled integer DN (typical ST_B10 range ~20k–50k)
+            kelvin = t * scale + offset
+            lst_c = kelvin - 273.15
+            lst_c[(t < 293) | ~np.isfinite(t)] = np.nan
+            return lst_c
+        if tmax > 200:
+            return t - 273.15  # already Kelvin
+        return t  # already Celsius
 
     def _synthetic_bands(self, size: int = 256, seed: int = 42) -> dict[str, np.ndarray]:
         rng = np.random.default_rng(seed)
@@ -253,12 +277,12 @@ class AnalyticsService:
             0,
             1,
         )
-        # Thermal as radiance-ish DN range used by compute_lst
+        # Landsat C2 L2 ST_B10-like scaled Kelvin DN (USGS scale → ~280–320 K)
         thermal = np.clip(
-            28000 + 2500 * urban - 1800 * water - 900 * veg + 800 * soil
+            38000 + 2500 * urban - 1800 * water - 900 * veg + 800 * soil
             + rng.normal(0, 120, (size, size)),
-            20000,
-            45000,
+            25000,
+            52000,
         )
         return {
             "blue": blue,
@@ -313,14 +337,52 @@ class AnalyticsService:
             "min": float(np.min(valid)),
             "max": float(np.max(valid)),
             "median": float(np.median(valid)),
+            "percentile_2": float(np.percentile(valid, 2)),
             "percentile_25": float(np.percentile(valid, 25)),
             "percentile_75": float(np.percentile(valid, 75)),
+            "percentile_98": float(np.percentile(valid, 98)),
             "valid_pixels": int(valid.size),
             "histogram": {
                 "counts": hist_counts.astype(float).tolist(),
                 "edges": hist_edges.astype(float).tolist(),
             },
         }
+
+    def _display_range(
+        self,
+        array: np.ndarray,
+        fixed_min: float,
+        fixed_max: float,
+        *,
+        p_low: float = 2.0,
+        p_high: float = 98.0,
+        mask: np.ndarray | None = None,
+        viz_min: float | None = None,
+        viz_max: float | None = None,
+    ) -> tuple[float, float]:
+        """Professional display window: prefer viz_range, refine with percentiles."""
+        # Start from industry viz window (e.g. NDVI 0…0.8) when provided
+        win_lo = float(viz_min) if viz_min is not None else float(fixed_min)
+        win_hi = float(viz_max) if viz_max is not None else float(fixed_max)
+        valid = array[np.isfinite(array)]
+        if mask is not None:
+            valid = array[np.isfinite(array) & mask]
+        if valid.size == 0:
+            return win_lo, win_hi
+        lo = float(np.percentile(valid, p_low))
+        hi = float(np.percentile(valid, p_high))
+        # Soft-clip into professional viz window (never force full ±1)
+        lo = max(win_lo, min(lo, win_hi - 1e-3))
+        hi = min(win_hi, max(hi, win_lo + 1e-3))
+        if hi <= lo:
+            mid = 0.5 * (win_lo + win_hi)
+            span = max(0.05, 0.08 * (win_hi - win_lo))
+            lo, hi = mid - span, mid + span
+        if (hi - lo) < 0.06 * max(1e-6, win_hi - win_lo):
+            mid = 0.5 * (lo + hi)
+            pad = 0.06 * max(1e-6, win_hi - win_lo)
+            lo, hi = mid - pad, mid + pad
+        return float(lo), float(hi)
 
     def _colormap_rgb(self, name: str, t: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Map normalized t∈[0,1] to RGB channels."""
@@ -410,7 +472,7 @@ class AnalyticsService:
         vmin: float,
         vmax: float,
         *,
-        alpha: int = 200,
+        alpha: int = 240,
         mask: np.ndarray | None = None,
     ) -> bytes:
         valid = np.isfinite(array)
@@ -418,31 +480,57 @@ class AnalyticsService:
             valid = valid & mask
         norm = np.zeros_like(array, dtype=float)
         norm[valid] = (array[valid] - vmin) / (vmax - vmin + 1e-12)
+        # Soft contrast curve keeps midtones readable after percentile stretch
+        norm[valid] = np.clip(norm[valid], 0, 1)
         r, g, b = self._colormap_rgb(cmap, norm)
         rgba = np.zeros((*array.shape, 4), dtype=np.uint8)
-        rgba[..., 0] = (r * 255).astype(np.uint8)
-        rgba[..., 1] = (g * 255).astype(np.uint8)
-        rgba[..., 2] = (b * 255).astype(np.uint8)
+        rgba[..., 0] = (np.clip(r, 0, 1) * 255).astype(np.uint8)
+        rgba[..., 1] = (np.clip(g, 0, 1) * 255).astype(np.uint8)
+        rgba[..., 2] = (np.clip(b, 0, 1) * 255).astype(np.uint8)
         rgba[..., 3] = np.where(valid, alpha, 0).astype(np.uint8)
-        img = Image.fromarray(rgba, mode="RGBA")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
-        return buf.getvalue()
+        from app.services.overlay_encode import encode_rgba_overlay
+
+        data, _mime = encode_rgba_overlay(rgba, prefer="webp", quality=70)
+        return data
 
     def _footprint_mask_grid(
         self, footprint: dict[str, Any] | None, bounds: list[float], shape: tuple[int, int]
     ) -> np.ndarray | None:
         if not footprint:
             return None
+        h, w = shape
+        west, south, east, north = bounds
+        try:
+            from affine import Affine
+            from rasterio.features import geometry_mask
+
+            transform = Affine(
+                (east - west) / w,
+                0.0,
+                west,
+                0.0,
+                (south - north) / h,
+                north,
+            )
+            # geometry_mask True = outside; invert for inside footprint
+            outside = geometry_mask(
+                [footprint],
+                out_shape=(h, w),
+                transform=transform,
+                all_touched=True,
+                invert=False,
+            )
+            return ~outside
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from shapely.geometry import Point, shape as shp_shape
 
             geom = shp_shape(footprint)
         except Exception:  # noqa: BLE001
             return None
-        h, w = shape
-        west, south, east, north = bounds
-        step = max(1, min(h, w) // 128)
+        # Finer fallback sampling than before (was //128)
+        step = max(1, min(h, w) // 256)
         ys = np.linspace(north, south, h, endpoint=False) + (south - north) / (2 * h)
         xs = np.linspace(west, east, w, endpoint=False) + (east - west) / (2 * w)
         mask = np.zeros((h, w), dtype=bool)
@@ -477,22 +565,53 @@ class AnalyticsService:
         )
 
     def _compute_array(
-        self, index: str, scene_id: str | None, L: float = 0.5, size: int = 512
+        self, index: str, scene_id: str | None, L: float = 0.5, size: int = 1024
     ) -> np.ndarray:
         if scene_id:
             try:
                 from app.services.scene_imagery_service import SceneImageryService
 
                 imagery = SceneImageryService()
-                real, _bounds, _fp, _layer = imagery.load_analysis_bands(scene_id, size=size)
+                needed = self.INDEX_REQUIRED_BANDS.get(index, ())
+                real, _bounds, _fp, _layer = imagery.load_analysis_bands(
+                    scene_id, size=size, band_names=needed or None
+                )
                 if real:
-                    return self._index_from_bands(index, real, L=L, scene_id=scene_id, size=size)
+                    return self._index_from_bands(
+                        index,
+                        real,
+                        L=L,
+                        scene_id=scene_id,
+                        size=size,
+                        require_real=True,
+                    )
+                raise ValidationError(
+                    "No optical bands available for this scene — "
+                    "turn the eye on first, then retry the index."
+                )
             except ValidationError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Real-band index fallback for {}: {}", scene_id, exc)
+                logger.warning("Real-band index load failed for {}: {}", scene_id, exc)
+                raise ValidationError(
+                    "Failed to load satellite bands for this index — "
+                    "turn the eye off/on and retry."
+                ) from exc
         bands = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
         return self._index_from_bands(index, bands, L=L, scene_id=scene_id, size=size)
+
+    # Required physical bands per index (L8/L9: B2 blue…B7 swir2, ST_B10 thermal)
+    INDEX_REQUIRED_BANDS: dict[str, tuple[str, ...]] = {
+        "NDVI": ("red", "nir"),
+        "NDWI": ("green", "nir"),
+        "NDBI": ("swir", "nir"),
+        "SAVI": ("red", "nir"),
+        "BSI": ("red", "green", "nir", "swir"),
+        "EVI": ("red", "nir", "blue"),
+        "NDMI": ("nir", "swir"),
+        "NBR": ("nir", "swir2"),
+        "LST": ("thermal",),
+    }
 
     def _index_from_bands(
         self,
@@ -501,21 +620,65 @@ class AnalyticsService:
         *,
         L: float = 0.5,
         scene_id: str | None = None,
-        size: int = 512,
+        size: int = 1024,
+        require_real: bool = False,
     ) -> np.ndarray:
-        synth = self._synthetic_bands(size=size, seed=hash(scene_id or "default") % (2**31))
+        # Prefer the native loaded band shape (aspect-aware). Only resize if mismatched.
+        sample = next((a for a in bands.values() if a is not None and a.size), None)
+        target_h = int(sample.shape[0]) if sample is not None else size
+        target_w = int(sample.shape[1]) if sample is not None else size
+        synth = self._synthetic_bands(
+            size=max(target_h, target_w),
+            seed=hash(scene_id or "default") % (2**31),
+        )
+
+        required = self.INDEX_REQUIRED_BANDS.get(index, ())
+        if require_real:
+            missing = [
+                name
+                for name in required
+                if bands.get(name) is None or not np.isfinite(bands[name]).any()
+            ]
+            if missing:
+                raise ValidationError(
+                    f"{index} needs band(s) {', '.join(missing)} on this scene. "
+                    "For Landsat-8/9 use OLI/OLI-2 Collection-2 Level-2 "
+                    "(B2–B7 / ST_B10)."
+                )
 
         def band(name: str) -> np.ndarray:
             arr = bands.get(name)
             if arr is None or not np.isfinite(arr).any():
+                if require_real:
+                    raise ValidationError(
+                        f"{index} is missing required band '{name}'."
+                    )
                 if name == "swir2":
-                    return synth.get("swir2", synth["swir"])
-                key = "swir" if name == "swir" else name
-                return synth[key if key in synth else "red"]
-            if arr.shape != (size, size):
-                img = Image.fromarray(np.nan_to_num(arr).astype(np.float32), mode="F")
-                arr = np.array(img.resize((size, size), Image.Resampling.BILINEAR), dtype=float)
-            return arr
+                    arr = synth.get("swir2", synth["swir"])
+                else:
+                    key = "swir" if name == "swir" else name
+                    arr = synth[key if key in synth else "red"]
+            if arr.shape != (target_h, target_w):
+                # Preserve nodata (NaN) through resize — avoid smearing zeros into data.
+                finite = np.isfinite(arr)
+                fill = float(np.nanmedian(arr[finite])) if finite.any() else 0.0
+                work = np.where(finite, arr, fill).astype(np.float32)
+                img = Image.fromarray(work, mode="F")
+                resized = np.array(
+                    img.resize((target_w, target_h), Image.Resampling.BILINEAR),
+                    dtype=float,
+                )
+                mask_img = Image.fromarray((finite.astype(np.uint8) * 255), mode="L")
+                mask_r = (
+                    np.array(
+                        mask_img.resize((target_w, target_h), Image.Resampling.NEAREST),
+                        dtype=np.uint8,
+                    )
+                    > 127
+                )
+                resized[~mask_r] = np.nan
+                return resized
+            return arr.astype(float, copy=False)
 
         if index == "NDVI":
             return self.compute_ndvi(band("red"), band("nir"))
@@ -528,7 +691,7 @@ class AnalyticsService:
         if index == "BSI":
             return self.compute_bsi(band("red"), band("green"), band("nir"), band("swir"))
         if index == "EVI":
-            return self.compute_evi(band("red"), band("nir"), band("green"))
+            return self.compute_evi(band("red"), band("nir"), band("blue"))
         if index == "NDMI":
             return self.compute_ndmi(band("nir"), band("swir"))
         if index == "NBR":
@@ -536,22 +699,18 @@ class AnalyticsService:
         if index == "LST":
             thermal = bands.get("thermal")
             if thermal is not None and np.isfinite(thermal).any():
-                t = thermal.astype(np.float64)
-                # Landsat Collection-2 surface temperature may already be Kelvin or °C.
-                # DN radiance path: values typically 20k–45k → use Planck conversion.
-                tmax = float(np.nanmax(t))
-                if tmax > 400:
-                    return self.compute_lst(t)
-                if tmax > 200:  # Kelvin
-                    return t - 273.15
-                return t  # already °C
+                return self.compute_lst(thermal)
+            if require_real:
+                raise ValidationError(
+                    "LST needs Landsat-8/9 ST_B10 (lwir11) thermal band."
+                )
             return self.compute_lst(synth["thermal"])
         raise ValidationError(f"Unsupported index: {index}")
 
     def compute_index(self, request: IndexComputeRequest) -> IndexComputeResponse:
         index = request.index
         meta = INDEX_META[index]
-        size = 512
+        size = max(64, min(int(getattr(request, "size", 512) or 512), 640))
         footprint = request.aoi if request.aoi and request.aoi.get("type") == "Polygon" else None
         bounds = self._resolve_bounds(request.bbox, request.aoi)
         real_bands: dict[str, np.ndarray] = {}
@@ -559,30 +718,68 @@ class AnalyticsService:
 
         if request.scene_id:
             from app.services.scene_imagery_service import SceneImageryService
+            from app.services.satellite_bands import (
+                family_label,
+                index_applicable,
+                normalize_satellite_family,
+            )
 
             imagery = SceneImageryService()
             layer = imagery.get_layer(request.scene_id)
-            if layer:
-                bounds = [float(x) for x in layer["bounds"]]
-                footprint = layer.get("footprint") or footprint
-                layer_meta = layer
-                if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
+            if not layer:
+                raise ValidationError(
+                    "Scene imagery is not on the map yet — turn the eye on first, then run indices"
+                )
+            bounds = [float(x) for x in layer["bounds"]]
+            footprint = layer.get("footprint") or footprint
+            layer_meta = layer
+            family = normalize_satellite_family(
+                str(layer.get("collection") or "")
+            )
+            if family != "UNKNOWN" and not index_applicable(index, family):
+                if index == "LST":
                     raise ValidationError(
-                        "Sentinel-1 SAR does not support optical indices. "
-                        "Use Sentinel-2 or Landsat."
+                        f"LST requires Landsat-8/9 thermal (TIRS); "
+                        f"not applicable to {family_label(family)}."
                     )
-                try:
-                    real_bands, bounds, footprint, layer_meta = imagery.load_analysis_bands(
-                        request.scene_id, size=size
-                    )
-                except ValidationError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Index band load failed, using synthetic: {}", exc)
+                raise ValidationError(
+                    f"{index} is not applicable to {family_label(family)}. "
+                    "Use Sentinel-2, Landsat-7/8/9, or MODIS optical scenes."
+                )
+            if layer.get("collection") == "SENTINEL-1" or layer.get("render_mode") == "grayscale":
+                raise ValidationError(
+                    "Sentinel-1 SAR does not support optical indices. "
+                    "Use Sentinel-2 or Landsat."
+                )
+            try:
+                needed = self.INDEX_REQUIRED_BANDS.get(index, ())
+                real_bands, bounds, footprint, layer_meta = imagery.load_analysis_bands(
+                    request.scene_id,
+                    size=size,
+                    band_names=needed or None,
+                )
+            except ValidationError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Index band load failed: {}", exc)
+                raise ValidationError(
+                    "Failed to load satellite bands for this index — "
+                    "turn the eye off/on and retry."
+                ) from exc
+            if not real_bands:
+                raise ValidationError(
+                    "No optical bands available for this scene — "
+                    "turn the eye on first, then retry the index."
+                )
 
         if real_bands:
             result = self._index_from_bands(
-                index, real_bands, L=request.L, scene_id=request.scene_id, size=size
+                index,
+                real_bands,
+                L=request.L,
+                scene_id=request.scene_id,
+                size=size,
+                require_real=True,
             )
             data_source = "scene_bands"
         else:
@@ -613,16 +810,23 @@ class AnalyticsService:
             )
 
         fixed_min, fixed_max = meta["range"]
-        if index == "LST":
-            valid = result[np.isfinite(result)]
-            vmin = float(np.percentile(valid, 2)) if valid.size else -20.0
-            vmax = float(np.percentile(valid, 98)) if valid.size else 50.0
-        else:
-            vmin, vmax = fixed_min, fixed_max
-
+        viz = meta.get("viz_range")
+        viz_min, viz_max = (viz[0], viz[1]) if viz else (None, None)
         fp_mask = self._footprint_mask_grid(footprint, bounds, result.shape)
+        # Professional display stretch (QGIS/ArcGIS viz windows + percentiles)
+        vmin, vmax = self._display_range(
+            result,
+            fixed_min,
+            fixed_max,
+            p_low=2.0,
+            p_high=98.0,
+            mask=fp_mask,
+            viz_min=viz_min,
+            viz_max=viz_max,
+        )
+
         cmap = request.colormap or meta["cmap"]
-        overlay_bytes = self._rgba_overlay(result, cmap, vmin, vmax, mask=fp_mask)
+        overlay_bytes = self._rgba_overlay(result, cmap, vmin, vmax, alpha=240, mask=fp_mask)
         preview_bytes = self._rgba_overlay(
             result, cmap, vmin, vmax, alpha=255, mask=fp_mask
         )
@@ -719,7 +923,7 @@ class AnalyticsService:
         )
 
     @staticmethod
-    def _percentile_stretch(band: np.ndarray, p_low: float = 2.0, p_high: float = 98.0) -> np.ndarray:
+    def _percentile_stretch(band: np.ndarray, p_low: float = 1.0, p_high: float = 99.0) -> np.ndarray:
         """Standard remote-sensing display stretch to [0, 1]."""
         valid = band[np.isfinite(band)]
         if valid.size == 0:
@@ -733,19 +937,23 @@ class AnalyticsService:
 
     @staticmethod
     def _joint_rgb_stretch(red: np.ndarray, green: np.ndarray, blue: np.ndarray) -> np.ndarray:
-        """Shared 2–98% stretch across RGB so channel balance stays natural."""
-        stacked = np.stack(
-            [red.astype(np.float64), green.astype(np.float64), blue.astype(np.float64)],
-            axis=-1,
-        )
-        valid = stacked[np.isfinite(stacked)]
-        if valid.size == 0:
-            return np.zeros((*red.shape, 3), dtype=np.float64)
-        lo = float(np.percentile(valid, 2))
-        hi = float(np.percentile(valid, 98))
-        if hi <= lo:
-            hi = lo + 1e-6
-        return np.clip((stacked - lo) / (hi - lo), 0.0, 1.0)
+        """Per-channel 1–99% stretch for clearer true-color / RGB overlays."""
+        channels = [
+            red.astype(np.float64),
+            green.astype(np.float64),
+            blue.astype(np.float64),
+        ]
+        out = np.zeros((*red.shape, 3), dtype=np.float64)
+        for i, ch in enumerate(channels):
+            valid = ch[np.isfinite(ch)]
+            if valid.size == 0:
+                continue
+            lo = float(np.percentile(valid, 1))
+            hi = float(np.percentile(valid, 99))
+            if hi <= lo:
+                hi = lo + 1e-6
+            out[:, :, i] = np.clip((ch - lo) / (hi - lo), 0.0, 1.0)
+        return out
 
     def _lonlat_to_tile(self, lon: float, lat: float, zoom: int) -> tuple[float, float]:
         """Web Mercator fractional tile coordinates."""
@@ -840,7 +1048,7 @@ class AnalyticsService:
         scene_id: str,
         bbox: list[float] | None = None,
         footprint: dict[str, Any] | None = None,
-        size: int = 512,
+        size: int = 1024,
         red_band_path: str | None = None,
         green_band_path: str | None = None,
         blue_band_path: str | None = None,
@@ -887,7 +1095,7 @@ class AnalyticsService:
                 img = self._natural_rgb_fallback(scene_id, size)
 
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
+        img.save(buf, format="PNG", optimize=False, compress_level=3)
         png = buf.getvalue()
         out = self.settings.imagery_dir / "overlays"
         out.mkdir(parents=True, exist_ok=True)
@@ -961,7 +1169,7 @@ class AnalyticsService:
                     ]
                 ),
                 "EVI": float(
-                    self.compute_evi(bands["red"], bands["nir"], bands["green"])[py, px]
+                    self.compute_evi(bands["red"], bands["nir"], bands["blue"])[py, px]
                 ),
                 "NDMI": float(self.compute_ndmi(bands["nir"], bands["swir"])[py, px]),
                 "NBR": float(self.compute_nbr(bands["nir"], bands["swir2"])[py, px]),

@@ -1,0 +1,126 @@
+name: Deploy SATEYE
+
+# Manual-only live deploy for online SAT EYE (Eye In Sky) at sateye.xdgen.com.
+# Does NOT run on push or pull_request.
+# E1.9A: fail-closed CI/Tool Protection gate for the exact deploy SHA;
+# administrator password reset is DISABLED by default.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type deploy to run the live /opt/earthvision update"
+        required: true
+        default: ""
+        type: string
+      admin_reset_confirm:
+        description: "OPTIONAL maintenance only — type reset-admin to sync admin password (leave empty for normal deploys)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: deploy-sateye
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to sateye.xdgen.com
+    runs-on: [self-hosted, Linux, X64, sateye-live]
+    steps:
+      - name: Confirm intentional live deploy
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.confirm }}" != "deploy" ]; then
+            echo "Refusing to run. Set input confirm=deploy to proceed."
+            exit 1
+          fi
+
+      - name: Show runner context (no secrets)
+        run: |
+          set -euo pipefail
+          echo "runner=$(hostname)"
+          echo "user=$(whoami)"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "target_branch=cursor/scene-download-eye-5d6d"
+          echo "app_dir=/opt/earthvision"
+          docker --version
+          docker compose version
+
+      # Checkout workflow source into a side directory. Never write into
+      # /opt/earthvision from this step (keeps live dirty-tree allowlist clean).
+      - name: Checkout workflow scripts (side directory)
+        uses: actions/checkout@v4
+        with:
+          path: workflow-src
+          fetch-depth: 1
+          ref: cursor/scene-download-eye-5d6d
+
+      - name: Resolve deploy SHA + fail-closed CI gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          chmod +x workflow-src/scripts/deploy_verify_ci_gate.sh
+          # Exact tip that live deploy will ff-merge to
+          DEPLOY_SHA="$(gh api repos/${{ github.repository }}/commits/cursor/scene-download-eye-5d6d --jq .sha)"
+          echo "deploy_sha=$DEPLOY_SHA"
+          echo "deploy_sha=$DEPLOY_SHA" >> "$GITHUB_OUTPUT"
+          # workflow_dispatch cannot skip this step
+          DEPLOY_CI_GATE_SHA="$DEPLOY_SHA" \
+          DEPLOY_CI_GATE_REPO="${{ github.repository }}" \
+          DEPLOY_CI_GATE_WORKFLOWS="ci.yml,tool-protection.yml" \
+            workflow-src/scripts/deploy_verify_ci_gate.sh
+
+      - name: Resolve admin-reset flag (default disabled)
+        id: admin
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.admin_reset_confirm }}" = "reset-admin" ]; then
+            echo "WARNING: admin password reset explicitly authorized for this run"
+            echo "reset=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "admin password reset disabled (ordinary deploy)"
+            echo "reset=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy live SAT EYE
+        env:
+          APP_DIR: /opt/earthvision
+          DEPLOY_BRANCH: cursor/scene-download-eye-5d6d
+          DEPLOY_EXPECTED_SHA: ${{ steps.gate.outputs.deploy_sha }}
+          REMOTE: origin
+          HEALTH_URL_LOCAL: http://127.0.0.1:8080/health
+          HEALTH_URL_BACKEND: http://127.0.0.1:8000/health
+          HEALTH_URL_FRONTEND: http://127.0.0.1:8081/
+          HEALTH_URL_EDGE_ROOT: http://127.0.0.1:8080/
+          HEALTH_URL_PUBLIC: https://sateye.xdgen.com/health
+          HEALTH_URL_PUBLIC_ROOT: https://sateye.xdgen.com/
+          # E1.9A: password reset OFF unless dual confirm reset-admin
+          RESET_ADMIN_PASSWORD: ${{ steps.admin.outputs.reset }}
+          ADMIN_EMAIL_RESET: admin@xdgen.com
+          ADMIN_PASSWORD_RESET: pak123
+          FORCE_REBUILD: "1"
+        run: |
+          set -euo pipefail
+          test -f workflow-src/scripts/deploy_sateye_live.sh
+          test -f /opt/earthvision/.env
+          chmod +x workflow-src/scripts/deploy_sateye_live.sh
+          # Run from the Actions workspace — do NOT copy into /opt/earthvision.
+          workflow-src/scripts/deploy_sateye_live.sh
+
+      - name: Post-deploy summary (no secrets)
+        if: always()
+        run: |
+          set -euo pipefail
+          cd /opt/earthvision
+          echo "branch=$(git branch --show-current || true)"
+          echo "commit=$(git rev-parse HEAD || true)"
+          echo "short=$(git rev-parse --short HEAD || true)"
+          echo "expected_sha=${{ steps.gate.outputs.deploy_sha }}"
+          if [ -f .env ]; then
+            echo ".env=present size=$(wc -c < .env | tr -d ' ') sha256=$(sha256sum .env | awk '{print $1}')"
+          else
+            echo ".env=MISSING"
+          fi
+          docker compose ps || true

@@ -1,4 +1,4 @@
-"""Object / domain detection schemas for Light Explorer toolbox tools."""
+"""Object / domain detection schemas for Eye In Sky toolbox tools."""
 
 from __future__ import annotations
 
@@ -57,3 +57,5 @@ class DetectionRunResponse(BaseModel):
     legend: LegendInfo | None = None
     message: str
     formula: str = "spectral-index–guided EO detector"
+    shapefile_ready: bool = False
+    geometry_types: list[str] = Field(default_factory=list)

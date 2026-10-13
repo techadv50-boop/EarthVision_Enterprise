@@ -8,13 +8,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-CollectionName = Literal[
-    "SENTINEL-1",
-    "SENTINEL-2",
-    "LANDSAT-8",
-    "LANDSAT-9",
-    "MODIS",
-]
+# Built-in names plus any admin-registered satellite keys / collection ids
+CollectionName = str
 
 
 class AOIFilter(BaseModel):

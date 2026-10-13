@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "notes": "E0/E1 dev pins. mode=builtin uses in-tree CompositeService true_color. Pack pins require verified artifacts under tools/artifacts/.",
+  "pins": {
+    "true_color": {
+      "mode": "builtin",
+      "version": null,
+      "digest": null,
+      "updated_at": null,
+      "note": "Default: verified builtin fallback (not an independent artifact)"
+    }
+  }
+}

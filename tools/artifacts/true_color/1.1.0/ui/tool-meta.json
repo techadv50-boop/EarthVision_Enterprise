@@ -1,0 +1,15 @@
+{
+  "tool_id": "true_color",
+  "label": "True Color",
+  "ui_strategy": "shell_facade",
+  "notes": "E1: React/Leaflet remain in the host shell; this file is pack metadata only.",
+  "facade": {
+    "action": { "type": "process", "op": "true_color" },
+    "api": "POST /api/v1/analytics/composite",
+    "preset": "true_color"
+  },
+  "host_sdk": {
+    "react": "shell",
+    "leaflet": "shell"
+  }
+}

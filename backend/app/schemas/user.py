@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models.user import TOOLBOX_IDS, UserRole
+from app.models.user import TOOLBOX_IDS, AccountStatus, UserRole
 
 _VALID_TOOLS = set(TOOLBOX_IDS)
 
@@ -18,6 +18,9 @@ class UserCreate(BaseModel):
     role: UserRole = UserRole.VIEWER
     organization: str | None = None
     allowed_tools: list[str] | None = None
+    allowed_satellites: list[str] | None = None
+    account_status: AccountStatus = AccountStatus.APPROVED
+    is_active: bool = True
 
     @field_validator("allowed_tools")
     @classmethod
@@ -28,6 +31,14 @@ class UserCreate(BaseModel):
         if unknown:
             raise ValueError(f"Unknown toolbox ids: {', '.join(unknown)}")
         return list(dict.fromkeys(value))
+
+    @field_validator("allowed_satellites")
+    @classmethod
+    def validate_satellites(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [str(v).strip() for v in value if str(v).strip()]
+        return list(dict.fromkeys(cleaned))
 
 
 class UserUpdate(BaseModel):
@@ -37,7 +48,10 @@ class UserUpdate(BaseModel):
     avatar_url: str | None = None
     role: UserRole | None = None
     is_active: bool | None = None
+    is_verified: bool | None = None
     allowed_tools: list[str] | None = None
+    allowed_satellites: list[str] | None = None
+    account_status: AccountStatus | None = None
 
     @field_validator("allowed_tools")
     @classmethod
@@ -48,6 +62,14 @@ class UserUpdate(BaseModel):
         if unknown:
             raise ValueError(f"Unknown toolbox ids: {', '.join(unknown)}")
         return list(dict.fromkeys(value))
+
+    @field_validator("allowed_satellites")
+    @classmethod
+    def validate_satellites(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [str(v).strip() for v in value if str(v).strip()]
+        return list(dict.fromkeys(cleaned))
 
 
 class UserDetail(BaseModel):
@@ -61,6 +83,8 @@ class UserDetail(BaseModel):
     bio: str | None = None
     avatar_url: str | None = None
     allowed_tools: list[str] | None = None
+    allowed_satellites: list[str] | None = None
+    account_status: AccountStatus = AccountStatus.APPROVED
     created_at: datetime
     updated_at: datetime
 
@@ -74,9 +98,29 @@ class UserListResponse(BaseModel):
     page_size: int
 
 
+class AccountDecisionRequest(BaseModel):
+    """Admin approve / decline / restrict action."""
 
-class UserListResponse(BaseModel):
-    items: list[UserDetail]
-    total: int
-    page: int
-    page_size: int
+    status: AccountStatus
+    role: UserRole | None = None
+    allowed_tools: list[str] | None = None
+    allowed_satellites: list[str] | None = None
+    notes: str | None = None
+
+    @field_validator("allowed_tools")
+    @classmethod
+    def validate_tools(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        unknown = [t for t in value if t not in _VALID_TOOLS]
+        if unknown:
+            raise ValueError(f"Unknown toolbox ids: {', '.join(unknown)}")
+        return list(dict.fromkeys(value))
+
+    @field_validator("allowed_satellites")
+    @classmethod
+    def validate_satellites(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [str(v).strip() for v in value if str(v).strip()]
+        return list(dict.fromkeys(cleaned))

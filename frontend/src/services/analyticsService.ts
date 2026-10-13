@@ -1,4 +1,5 @@
 import { api } from './api';
+import { INTERACTIVE_PREVIEW_SIZE, toOverlayDataUrl } from '../utils/overlayDataUrl';
 
 export type IndexName =
   | 'NDVI'
@@ -97,7 +98,7 @@ export interface SceneOverlay {
 }
 
 function toDataUrl(b64: string): string {
-  return `data:image/png;base64,${b64}`;
+  return toOverlayDataUrl(b64);
 }
 
 export const analyticsService = {
@@ -130,6 +131,7 @@ export const analyticsService = {
       scene_id: sceneId,
       bbox,
       colormap: colormap || undefined,
+      size: INTERACTIVE_PREVIEW_SIZE,
     });
     return data;
   },

@@ -34,7 +34,7 @@ class GISService:
             "limit": request.limit,
             "addressdetails": 1,
         }
-        headers = {"User-Agent": "EarthVisionEnterprise/1.0 (commercial-eo-platform)"}
+        headers = {"User-Agent": "SAT-EYE/1.0 (commercial-eo-platform)"}
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 response = await client.get(url, params=params, headers=headers)
@@ -135,7 +135,7 @@ class GISService:
     async def reverse_geocode(self, longitude: float, latitude: float) -> GeocodeResult:
         url = f"{self.settings.nominatim_url}/reverse"
         params = {"lon": longitude, "lat": latitude, "format": "json"}
-        headers = {"User-Agent": "EarthVisionEnterprise/1.0"}
+        headers = {"User-Agent": "SAT-EYE/1.0"}
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(url, params=params, headers=headers)
@@ -260,7 +260,11 @@ class GISService:
 
 
     def geojson_to_shapefile_zip(self, geojson: dict[str, Any]) -> bytes:
-        """Export GeoJSON features to a zipped Shapefile."""
+        """Export GeoJSON features to a zipped Shapefile.
+
+        Mixed geometry collections write separate layers
+        (``export_points`` / ``export_polygons`` / ``export_lines``).
+        """
         import io
         import zipfile
         import tempfile
@@ -268,40 +272,90 @@ class GISService:
 
         import shapefile
 
-        features = geojson.get("features", [geojson] if geojson.get("type") == "Feature" else [])
+        features = geojson.get(
+            "features", [geojson] if geojson.get("type") == "Feature" else []
+        )
+        buckets: dict[str, list[dict[str, Any]]] = {
+            "Point": [],
+            "LineString": [],
+            "Polygon": [],
+        }
+        for feat in features:
+            gtype = (feat.get("geometry") or {}).get("type")
+            if gtype in buckets:
+                buckets[gtype].append(feat)
+
+        prj = (
+            'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+            'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
+        )
+
         with tempfile.TemporaryDirectory() as tmp:
-            base = P(tmp) / "export"
-            # Detect geometry type from first feature
-            gtype = (features[0].get("geometry") or {}).get("type", "Polygon") if features else "Polygon"
-            shape_type = {
-                "Point": shapefile.POINT,
-                "LineString": shapefile.POLYLINE,
-                "Polygon": shapefile.POLYGON,
-            }.get(gtype, shapefile.POLYGON)
-            with shapefile.Writer(str(base), shapeType=shape_type) as w:
-                w.field("name", "C", size=100)
-                for feat in features:
-                    props = feat.get("properties") or {}
-                    geom = feat.get("geometry") or {}
-                    coords = geom.get("coordinates")
-                    name = str(props.get("name", "feature"))[:100]
-                    if geom.get("type") == "Point":
-                        w.point(coords[0], coords[1])
-                    elif geom.get("type") == "LineString":
-                        w.line([coords])
-                    elif geom.get("type") == "Polygon":
-                        w.poly(coords)
-                    else:
-                        continue
-                    w.record(name)
-            # Write .prj
-            (P(tmp) / "export.prj").write_text(
-                'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
-                'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
-            )
+            tmp_p = P(tmp)
+            wrote = False
+            for gtype, feats in buckets.items():
+                if not feats:
+                    continue
+                wrote = True
+                suffix = {
+                    "Point": "points",
+                    "LineString": "lines",
+                    "Polygon": "polygons",
+                }[gtype]
+                # Single-type collections keep classic "export.*" names
+                active_types = sum(1 for v in buckets.values() if v)
+                base_name = "export" if active_types == 1 else f"export_{suffix}"
+                base = tmp_p / base_name
+                shape_type = {
+                    "Point": shapefile.POINT,
+                    "LineString": shapefile.POLYLINE,
+                    "Polygon": shapefile.POLYGON,
+                }[gtype]
+                with shapefile.Writer(str(base), shapeType=shape_type) as w:
+                    w.field("name", "C", size=80)
+                    w.field("label", "C", size=80)
+                    w.field("class", "C", size=40)
+                    w.field("conf", "F", 12, 4)
+                    w.field("nir", "F", 12, 6)
+                    w.field("cue", "C", size=40)
+                    w.field("role", "C", size=20)
+                    for feat in feats:
+                        props = feat.get("properties") or {}
+                        geom = feat.get("geometry") or {}
+                        coords = geom.get("coordinates")
+                        name = str(
+                            props.get("name")
+                            or props.get("label")
+                            or props.get("class")
+                            or "feature"
+                        )[:80]
+                        if gtype == "Point":
+                            w.point(coords[0], coords[1])
+                        elif gtype == "LineString":
+                            w.line([coords])
+                        else:
+                            w.poly(coords)
+                        w.record(
+                            name,
+                            str(props.get("label", ""))[:80],
+                            str(props.get("class", ""))[:40],
+                            float(props.get("confidence") or 0),
+                            float(props.get("nir_mean") or 0),
+                            str(props.get("cue", ""))[:40],
+                            str(props.get("geom_role", ""))[:20],
+                        )
+                (tmp_p / f"{base_name}.prj").write_text(prj)
+
+            if not wrote:
+                # Empty placeholder point layer so clients still get a zip
+                base = tmp_p / "export"
+                with shapefile.Writer(str(base), shapeType=shapefile.POINT) as w:
+                    w.field("name", "C", size=80)
+                (tmp_p / "export.prj").write_text(prj)
+
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in P(tmp).iterdir():
+                for f in tmp_p.iterdir():
                     zf.write(f, f.name)
             return buf.getvalue()
 
