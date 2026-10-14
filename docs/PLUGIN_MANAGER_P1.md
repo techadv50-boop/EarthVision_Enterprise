@@ -20,15 +20,25 @@ Convert Earth Vision into a protected Host Shell that can accept independently m
 | F Demo plugin `demo_hello` | Done — synthetic data; artifacts `1.0.0` + `1.1.0` |
 | G Automated tests | Done — `backend/app/tests/plugins/test_plugin_manager_p1.py` |
 
-## Not in P1 (still requiring development)
+## P1.1 hardenings
+
+- Auditable `CORE_RELEASE_APPROVAL` (rejects standalone `CORE_RELEASE=approved`)
+- Fail-closed missing git base; self-protected checker/policy/workflow
+- Opaque staging IDs; no production `source_path`; zip limits + digest-bound install
+- No process-wide env mutation during verify; cross-worker registry lock
+- Plugin Python not executed in FastAPI; static `ui/synthetic.json` only
+- Permissions documented as declarations, not a sandbox
+
+## Not in P1 / remaining P2 requirements
 
 - Production publisher key provisioning + live `EV_PACK_PUBLISHERS` volume allowlist
 - Merging Tool Pack / plugin compose overlay on production
-- Independent frontend bundle loading (Module Federation) — boundary documented only
+- Reviewed restricted worker/container execution for nontrivial plugin Python
+- Independent frontend loading per secure contract (not unrestricted Module Federation)
 - Migrating legacy tools (true_color, etc.) into the plugin registry
 - Stage E2 production Tool Pack activation
-- Per-plugin CSP / process sandbox beyond permission allowlist
-- Left toolbar / map overlay / results panel host components beyond slot plumbing (demo uses right analysis panel)
+- Left toolbar / map overlay / results panel host components beyond slot plumbing
+- Production deploy of Plugin Manager Host Shell image
 
 ## Repository & storage layout
 

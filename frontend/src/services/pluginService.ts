@@ -55,39 +55,10 @@ export const pluginService = {
     return data;
   },
 
-  async validatePath(sourcePath: string): Promise<Record<string, unknown>> {
-    const { data } = await api.post('/admin/plugins/validate-path', {
-      source_path: sourcePath,
-    });
-    return data;
-  },
-
-  async registerPath(sourcePath: string): Promise<Record<string, unknown>> {
-    const { data } = await api.post('/admin/plugins/register', {
-      source_path: sourcePath,
-    });
-    return data;
-  },
-
-  async installPath(
-    sourcePath: string,
-    pluginId: string,
-    version: string,
-  ): Promise<Record<string, unknown>> {
-    const body = new FormData();
-    body.append('source_path', sourcePath);
-    body.append('plugin_id', pluginId);
-    body.append('version', version);
-    body.append('confirm', 'install');
-    const { data } = await api.post('/admin/plugins/install', body);
-    return data;
-  },
-
-  async uploadInstall(file: File): Promise<Record<string, unknown>> {
+  async upload(file: File): Promise<{ ok?: boolean; staging_id?: string; error?: string }> {
     const body = new FormData();
     body.append('file', file);
-    body.append('confirm', 'install');
-    const { data } = await api.post('/admin/plugins/upload-install', body);
+    const { data } = await api.post('/admin/plugins/upload', body);
     return data;
   },
 
@@ -95,6 +66,23 @@ export const pluginService = {
     const body = new FormData();
     body.append('file', file);
     const { data } = await api.post('/admin/plugins/validate-upload', body);
+    return data;
+  },
+
+  async validateStaging(stagingId: string): Promise<Record<string, unknown>> {
+    const { data } = await api.post(`/admin/plugins/staging/${stagingId}/validate`);
+    return data;
+  },
+
+  async installStaging(
+    stagingId: string,
+    expectedDigest: string,
+  ): Promise<Record<string, unknown>> {
+    const { data } = await api.post('/admin/plugins/install', {
+      staging_id: stagingId,
+      expected_digest: expectedDigest,
+      confirm: 'install',
+    });
     return data;
   },
 

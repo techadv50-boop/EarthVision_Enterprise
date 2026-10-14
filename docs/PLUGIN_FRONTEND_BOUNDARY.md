@@ -1,32 +1,38 @@
-# Plugin Frontend Boundary (P1 prototype)
+# Plugin Frontend Boundary (P1 / P1.1)
 
-## Decision
+## P1 limitation (explicit)
 
-P1 does **not** load arbitrary frontend scripts or remote React bundles into the Host Shell.
+The Host Shell uses **static first-party component mappings** only
+(`frontend/src/plugins/slotRegistry.ts`).
 
-| Slot | Mechanism |
+| Slot | P1 status |
 |------|-----------|
-| `left_toolbar` | Declared in pack meta; shell may map to a registered host control |
-| `right_analysis_panel` | Host component (`DemoHelloPanel`) via `PluginSlotHost` |
-| `map_overlay` | Reserved — future host overlay factory only |
-| `results_panel` | Reserved — future host results chrome only |
+| `left_toolbar` | Declared; no dynamic remote UI |
+| `right_analysis_panel` | Host `DemoHelloPanel` only |
+| `map_overlay` | Reserved — host factory later |
+| `results_panel` | Reserved — host chrome later |
 
-Plugins ship `ui/tool-meta.json` (signed, integrity-covered). The shell reads metadata and renders **first-party** React components from `frontend/src/plugins/slotRegistry.ts`.
+`P1_STATIC_HOST_MAPPINGS_ONLY = true`. This is a deliberate limitation, not a
+full plugin UI loader.
 
-## Why not arbitrary scripts
+## Secure independent frontend plugin loading contract (not enabled)
 
-1. React duplication / Module Federation not frozen for this Host Shell  
-2. Leaflet must remain single-instance in the shell  
-3. CSP: production should keep `script-src 'self'`  
-4. Uploaded JS would bypass the permission model
+Independent UI may be enabled only after all of the following are implemented
+and reviewed:
 
-## Future isolation path (not implemented)
+1. **Same-origin only** pack UI URLs under the Host Shell origin (no third-party script hosts).
+2. **Integrity**: UI assets covered by pack `SHA256SUMS` / digest; pin must match.
+3. **Host SDK externals**: React / react-dom / Leaflet provided solely by the shell; packs must not bundle duplicates.
+4. **CSP**: `script-src 'self'` (plus explicit same-origin pack path if needed); no `unsafe-eval` for packs.
+5. **No unrestricted Module Federation**: shared scopes limited to an allowlisted Host SDK surface; remote entry must be digest-pinned.
+6. **Capability gate**: pack may only call documented Host SDK slot/overlay APIs.
+7. **Fail closed**: unknown slot or missing host mapping → render nothing (no `eval`, no arbitrary `import(url)`).
 
-Documented prototype only (same direction as `docs/TOOL_PACK_FRONTEND_LOADING.md`):
+## Explicitly forbidden in P1.1
 
-1. Host exposes stable SDK externals (`window.__EV_HOST_SDK__` / import map)  
-2. Plugin UI built as `build.lib` with `react` / `react-dom` external  
-3. Same-origin pack URL under `/api/v1/plugins/...`  
-4. Contract tests: plugin UI may only call Host SDK overlay/slot APIs  
+- Arbitrary remote JavaScript URLs
+- Unrestricted Module Federation remotes
+- Loading unsigned or digest-mismatched UI bundles
+- Injecting `<script>` tags from pack metadata
 
-Until that contract ships, remote bundles remain blocked.
+See also `docs/TOOL_PACK_FRONTEND_LOADING.md` (legacy Tool Pack façade notes).

@@ -18,7 +18,7 @@ def render(_request: Any = None) -> dict[str, Any]:
         "kind": "synthetic_demo",
         "plugin_id": PLUGIN_ID,
         "version": PACK_VERSION,
-        "message": "Hello from Demo Hello 1.1.0 (rollback target test).",
+        "message": "Hello from the SATEYE Plugin Manager demonstration pack.",
         "tag": MESSAGE_TAG,
         "points": [
             {"label": "Alpha", "value": 42},

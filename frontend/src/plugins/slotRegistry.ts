@@ -1,12 +1,12 @@
 /**
- * Host Shell plugin slot registry (Stage P1).
+ * Host Shell plugin slot registry (Stage P1 / P1.1).
  *
- * Independent frontend bundles are NOT loaded into the shell.
- * Plugins declare a slot + host_component id in ui/tool-meta.json;
- * the shell maps that id to a first-party React component.
+ * P1 LIMITATION: only static first-party Host Shell component mappings are
+ * supported. Independent frontend plugin bundles are NOT loaded.
  *
- * Future isolation (Module Federation / import maps) is documented in
- * docs/PLUGIN_FRONTEND_BOUNDARY.md — prototype boundary only.
+ * Do NOT enable arbitrary remote JavaScript or unrestricted Module Federation.
+ * The secure loading contract is defined in docs/PLUGIN_FRONTEND_BOUNDARY.md
+ * and is not activated in this stage.
  */
 
 import type { ComponentType } from 'react';
@@ -19,6 +19,9 @@ export const SUPPORTED_SLOTS: PluginSlot[] = [
   'map_overlay',
   'results_panel',
 ];
+
+/** @deprecated P1 limitation — static host maps only; not a plugin loader. */
+export const P1_STATIC_HOST_MAPPINGS_ONLY = true as const;
 
 export type HostPluginComponentProps = {
   pluginId: string;

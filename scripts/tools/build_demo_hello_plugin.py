@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "tools" / "plugins" / "demo_hello" / "src"
 OUT_ROOT = ROOT / "tools" / "plugins" / "demo_hello" / "artifacts"
 
-HASHED_RELS = ("backend/plugin.py", "ui/tool-meta.json")
+HASHED_RELS = ("backend/plugin.py", "ui/tool-meta.json", "ui/synthetic.json")
 
 
 def sha256_file(path: Path) -> str:
@@ -29,6 +29,7 @@ def sha256_file(path: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default="1.0.0")
+    ap.add_argument("--force", action="store_true", help="Replace artifact (dev only)")
     args = ap.parse_args()
     version = args.version
 
@@ -37,9 +38,11 @@ def main() -> int:
         return 2
 
     dest = OUT_ROOT / version
-    if dest.exists() and any(dest.iterdir()):
+    if dest.exists() and any(dest.iterdir()) and not args.force:
         print(f"ERROR: artifact immutable — refusing overwrite: {dest}", file=sys.stderr)
         return 1
+    if dest.exists() and args.force:
+        shutil.rmtree(dest)
 
     dest.mkdir(parents=True, exist_ok=True)
     for rel in HASHED_RELS:
@@ -55,6 +58,13 @@ def main() -> int:
     text = plugin.read_text(encoding="utf-8")
     text = text.replace('PACK_VERSION = "1.0.0"', f'PACK_VERSION = "{version}"')
     plugin.write_text(text, encoding="utf-8")
+
+    syn = dest / "ui" / "synthetic.json"
+    syn_obj = json.loads(syn.read_text(encoding="utf-8"))
+    syn_obj["version"] = version
+    if version != "1.0.0":
+        syn_obj["message"] = f"Hello from Demo Hello {version} (rollback target test)."
+    syn.write_text(json.dumps(syn_obj, indent=2) + "\n", encoding="utf-8")
 
     lines = [f"{sha256_file(dest / rel)}  {rel}" for rel in HASHED_RELS]
     sums_path = dest / "SHA256SUMS"
@@ -79,7 +89,8 @@ def main() -> int:
             "host.sdk.read_meta",
         ],
         "entry": {"backend": "backend/plugin.py", "ui_meta": "ui/tool-meta.json"},
-        "rollback_targets": ["inactive"],
+        "rollback_targets": ["inactive"] if version == "1.0.0" else ["inactive", "1.0.0"],
+        "execution_model": "static_synthetic_only",
     }
     (dest / "pack.json").write_text(json.dumps(pack_meta, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"plugin_id": "demo_hello", "version": version, "digest": pack_digest, "path": str(dest)}))

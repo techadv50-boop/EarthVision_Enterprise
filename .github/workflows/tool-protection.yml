@@ -28,11 +28,15 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: python scripts/tools/check_approved_guard.py
-      - name: Guard Host Shell core modules (P1)
+      - name: Guard Host Shell core modules (P1.1)
         env:
+          # Fail closed if base cannot be resolved — do not invent HEAD~1.
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          CORE_RELEASE: ${{ vars.CORE_RELEASE || '' }}
+          # Auditable approval id only (CORE_RELEASE=approved alone is rejected).
+          CORE_RELEASE_APPROVAL: ${{ vars.CORE_RELEASE_APPROVAL || '' }}
         run: python scripts/tools/check_core_protection.py
+      - name: Core protection adversarial suite
+        run: python scripts/tests/test_core_protection_p11.py
 
   approved-and-canary-tests:
     name: true_color PoC + ship_detection canary

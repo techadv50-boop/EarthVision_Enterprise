@@ -1,9 +1,18 @@
 {
-  "schema_version": 1,
-  "notes": "Stage P1 Host Shell core protection. Changes to these paths require CORE_RELEASE=approved on the PR (or an explicit core release branch approval). Plugin work must not touch frozen legacy tools.",
+  "schema_version": 2,
+  "notes": "Stage P1.1 Host Shell core protection. CORE_RELEASE=approved alone is NEVER sufficient. Core changes require CORE_RELEASE_APPROVAL=<id> referencing tools/core_releases/<id>.json bound to the comparison base_sha. Protection machinery is self-protected and cannot be weakened by an approval introduced in the same PR.",
   "host_api_version": "1.0.0",
-  "core_release_env": "CORE_RELEASE",
-  "core_release_token": "approved",
+  "approval": {
+    "env": "CORE_RELEASE_APPROVAL",
+    "directory": "tools/core_releases/",
+    "rejects_standalone_env": ["CORE_RELEASE"]
+  },
+  "self_protected_paths": [
+    "tools/core_protection.json",
+    "scripts/tools/check_core_protection.py",
+    ".github/workflows/tool-protection.yml",
+    "tools/core_releases/"
+  ],
   "modules": [
     {
       "id": "authentication",
@@ -83,8 +92,8 @@
     "tools/plugin_registry.schema.json",
     "docs/PLUGIN_",
     "docs/HOST_SHELL_CORE_",
-    "scripts/tools/check_core_protection.py",
     "scripts/tools/build_demo_hello_plugin.py",
-    "backend/app/tests/plugins/"
+    "backend/app/tests/plugins/",
+    "scripts/tests/test_core_protection_p11.py"
   ]
 }

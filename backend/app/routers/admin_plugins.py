@@ -1,4 +1,7 @@
-"""Admin-only Plugin Manager API (Stage P1)."""
+"""Admin-only Plugin Manager API (Stage P1.1).
+
+Upload/install uses opaque staging IDs only — no client ``source_path``.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,6 @@ from app.models.user import User, UserRole
 from app.plugins import engine
 from app.plugins.registry import list_plugins
 from app.tools.pack_ops import PackOpsError
-from app.tools.pack_paths import staging_root
 
 router = APIRouter(prefix="/admin/plugins", tags=["AdminPlugins"])
 
@@ -25,10 +27,10 @@ class ConfirmBody(BaseModel):
     to: str | None = None
 
 
-class ValidatePathBody(BaseModel):
-    """Dev/preview: validate an already-extracted directory (local preview only)."""
-
-    source_path: str = Field(..., description="Absolute path to pack directory")
+class InstallStagingBody(BaseModel):
+    staging_id: str = Field(..., min_length=32, max_length=32)
+    expected_digest: str = Field(..., pattern=r"^sha256:[0-9a-f]{64}$")
+    confirm: str = "install"
 
 
 def _err(exc: Exception) -> dict:
@@ -50,64 +52,49 @@ async def plugin_versions(plugin_id: str, admin: AdminUser) -> dict:
     return {"ok": True, "plugin_id": plugin_id, "versions": engine.version_history(plugin_id)}
 
 
+@router.post("/upload")
+async def upload_plugin(
+    admin: AdminUser,
+    file: UploadFile = File(...),
+) -> dict:
+    """Stream zip into opaque staging. Does not validate or install."""
+    try:
+        staging_id = engine.upload_stream(file.file)
+        return {"ok": True, "staging_id": staging_id}
+    except (PackOpsError, ValueError, OSError) as exc:
+        return _err(exc)
+
+
 @router.post("/validate-upload")
 async def validate_upload(
     admin: AdminUser,
     file: UploadFile = File(...),
 ) -> dict:
+    """Upload + validate in one step; returns staging_id + digest (not installed)."""
     try:
-        raw = await file.read()
-        if len(raw) > 20 * 1024 * 1024:
-            raise PackOpsError("upload too large (max 20MB)")
-        pack_root = engine.extract_upload_zip(raw, staging_root() / "uploads")
-        result = engine.validate_plugin_package(pack_root)
-        # Keep extracted path for subsequent install in same session via returned staging hint
-        result["staging_path"] = str(pack_root)
-        return result
+        staging_id = engine.upload_stream(file.file)
+        return engine.validate_staging(staging_id)
     except (PackOpsError, ValueError, OSError) as exc:
         return _err(exc)
 
 
-@router.post("/validate-path")
-async def validate_path(admin: AdminUser, body: ValidatePathBody) -> dict:
-    """Validate a local pack directory (preview / tests)."""
-    from pathlib import Path
-
+@router.post("/staging/{staging_id}/validate")
+async def validate_staged(staging_id: str, admin: AdminUser) -> dict:
     try:
-        return engine.validate_plugin_package(Path(body.source_path))
-    except (PackOpsError, ValueError, OSError) as exc:
-        return _err(exc)
-
-
-@router.post("/register")
-async def register_plugin(admin: AdminUser, body: ValidatePathBody) -> dict:
-    from pathlib import Path
-
-    try:
-        validated = engine.validate_plugin_package(Path(body.source_path))
-        record = engine.register_from_validation(validated)
-        return {"ok": True, "plugin": record}
+        return engine.validate_staging(staging_id)
     except (PackOpsError, ValueError, OSError) as exc:
         return _err(exc)
 
 
 @router.post("/install")
-async def install_plugin(
-    admin: AdminUser,
-    source_path: Annotated[str, Form()],
-    plugin_id: Annotated[str, Form()],
-    version: Annotated[str, Form()],
-    confirm: Annotated[str, Form()] = "install",
-) -> dict:
-    from pathlib import Path
-
+async def install_plugin(admin: AdminUser, body: InstallStagingBody) -> dict:
+    """Install only a validated staging artifact whose digest matches."""
     try:
-        return engine.install_plugin_from_dir(
-            Path(source_path),
-            plugin_id=plugin_id,
-            version=version,
+        return engine.install_from_staging(
+            staging_id=body.staging_id,
+            expected_digest=body.expected_digest,
             actor=admin.email or str(admin.id),
-            confirm=confirm,
+            confirm=body.confirm,
         )
     except (PackOpsError, ValueError, OSError) as exc:
         return _err(exc)
@@ -152,30 +139,4 @@ async def rollback(plugin_id: str, admin: AdminUser, body: ConfirmBody) -> dict:
             confirm=body.confirm,
         )
     except (PackOpsError, ValueError) as exc:
-        return _err(exc)
-
-
-@router.post("/upload-install")
-async def upload_and_install(
-    admin: AdminUser,
-    file: UploadFile = File(...),
-    confirm: Annotated[str, Form()] = "install",
-) -> dict:
-    """Validate uploaded zip then install (still inactive)."""
-    try:
-        if confirm != "install":
-            raise PackOpsError("confirm must be install")
-        raw = await file.read()
-        if len(raw) > 20 * 1024 * 1024:
-            raise PackOpsError("upload too large (max 20MB)")
-        pack_root = engine.extract_upload_zip(raw, staging_root() / "uploads")
-        validated = engine.validate_plugin_package(pack_root)
-        return engine.install_plugin_from_dir(
-            pack_root,
-            plugin_id=validated["plugin_id"],
-            version=validated["version"],
-            actor=admin.email or str(admin.id),
-            confirm="install",
-        )
-    except (PackOpsError, ValueError, OSError) as exc:
         return _err(exc)

@@ -1,10 +1,13 @@
-"""Plugin engine — reuse Tool Pack integrity / signature / immutable storage.
+"""Plugin engine — integrity / signature / immutable storage (Stage P1.1).
 
-Does **not** modify frozen ``pack_ops.ALLOWED_TOOLS`` (true_color).
-Plugins are separate IDs with install ≠ activate and default inactive registry state.
-
-Does not grant filesystem / network / database permissions to plugins.
-Backend entrypoints may only expose synthetic helpers declared in the pack.
+Trust boundary (see docs/PLUGIN_TRUST_BOUNDARY.md):
+  - A permissions manifest is an *declaration allowlist*, NOT a sandbox.
+  - Uploaded ``backend/plugin.py`` is NEVER imported or exec'd inside the
+    privileged FastAPI / Uvicorn process.
+  - Synthetic demo output is served only from integrity-covered static JSON.
+  - Nontrivial plugin Python requires a separately reviewed worker/container
+    isolation design (proposed in the trust-boundary doc) before in-process
+    or out-of-process execution is enabled.
 """
 
 from __future__ import annotations
@@ -13,7 +16,6 @@ import json
 import os
 import shutil
 import time
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,27 +27,29 @@ from app.plugins.registry import (
     list_plugins,
     load_registry,
     make_record,
+    mutate_registry,
     registry_path,
     upsert_plugin,
     validate_plugin_id,
-    write_registry,
 )
 from app.plugins.slots import validate_slot
-from app.tools.pack_loader import (
-    PackIntegrityError,
-    assert_artifact_immutable,
-    host_sdk_compatible,
-    load_pack_module,
-    verify_pack,
+from app.plugins.staging import (
+    load_staging_manifest,
+    pack_root_path,
+    require_validated_staging,
+    stream_upload_to_staging,
+    write_staging_manifest,
 )
+from app.tools.pack_loader import PackIntegrityError, assert_artifact_immutable, host_sdk_compatible, verify_pack, verify_pack_at
 from app.tools.pack_ops import PackOpsError, assert_production_trust_ready
-from app.tools.pack_paths import artifacts_root, audit_log_path, pack_dir, staging_root
+from app.tools.pack_paths import artifacts_root, audit_log_path, pack_dir
 from app.tools.pack_signatures import (
     PackSignatureError,
     read_signature_file,
     verify_digest_signature,
 )
 from app.tools.runtime_pins import HOST_SDK_VERSION
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -76,7 +80,7 @@ def _fsync_tree(root: Path) -> None:
                 pass
 
 
-def _read_pack_meta(source_dir: Path) -> dict[str, Any]:
+def _normalize_pack_json(source_dir: Path) -> dict[str, Any]:
     pack_json = source_dir / "pack.json"
     if not pack_json.is_file():
         raise PackOpsError("pack.json missing")
@@ -85,20 +89,23 @@ def _read_pack_meta(source_dir: Path) -> dict[str, Any]:
     validate_plugin_id(plugin_id)
     if meta.get("tool_id") and str(meta["tool_id"]) != plugin_id:
         raise PackOpsError("pack.json tool_id must match plugin_id")
-    # verify_pack expects tool_id field
-    if meta.get("tool_id") != plugin_id:
-        meta["tool_id"] = plugin_id
-        pack_json.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    meta["tool_id"] = plugin_id
+    meta["plugin_id"] = plugin_id
+    pack_json.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta
 
 
 def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
-    """Validate package layout, ID, host API, slot, permissions, integrity, signature."""
+    """Validate package layout, ID, host API, slot, permissions, integrity, signature.
+
+    Does **not** mutate process-wide environment variables.
+    Does **not** execute plugin Python.
+    """
     if not source_dir.is_dir():
         raise PackOpsError(f"source missing: {source_dir}")
     try:
-        meta = _read_pack_meta(source_dir)
-        plugin_id = str(meta.get("plugin_id") or meta["tool_id"])
+        meta = _normalize_pack_json(source_dir)
+        plugin_id = str(meta["plugin_id"])
         version = str(meta["version"])
         validate_plugin_id(plugin_id)
 
@@ -117,29 +124,20 @@ def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
             raise PackOpsError(
                 f"incompatible plugin host API: requires {req!r}, host is {HOST_SDK_VERSION}"
             )
-    except (PluginRegistryError, ValueError) as exc:
-        raise PackOpsError(str(exc)) from exc
 
-    # Integrity via temporary artifacts layout (same as pack_ops)
-    tmp_root = staging_root() / f"_plugin_validate_{time.time_ns()}"
-    dest = tmp_root / plugin_id / version
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source_dir, dest)
-    # Ensure tool_id in copied pack.json
-    pj = dest / "pack.json"
-    m2 = json.loads(pj.read_text(encoding="utf-8"))
-    m2["tool_id"] = plugin_id
-    m2["plugin_id"] = plugin_id
-    pj.write_text(json.dumps(m2, indent=2) + "\n", encoding="utf-8")
+        # Static synthetic payload required for P1 demo-style plugins (no code exec).
+        syn_path = source_dir / "ui" / "synthetic.json"
+        if "synthetic_data" in perms and not syn_path.is_file():
+            raise PackOpsError(
+                "synthetic_data permission requires integrity-covered ui/synthetic.json "
+                "(plugin Python is not executed in the API process)"
+            )
 
-    prev = os.environ.get("EV_ARTIFACTS_ROOT")
-    os.environ["EV_ARTIFACTS_ROOT"] = str(tmp_root)
-    try:
-        verified = verify_pack(plugin_id, version)
+        verified = verify_pack_at(source_dir, plugin_id, version)
         publisher_id = None
         if _require_signature():
             assert_production_trust_ready()
-            sig = read_signature_file(dest)
+            sig = read_signature_file(source_dir)
             if sig["digest"] != verified["digest"]:
                 raise PackSignatureError("SIGNATURE.json digest mismatch vs artifact")
             pub = verify_digest_signature(
@@ -148,14 +146,8 @@ def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
                 publisher_id=str(sig["publisher_id"]),
             )
             publisher_id = pub.get("id")
-    except (PackIntegrityError, PackSignatureError, PackOpsError, PluginRegistryError, ValueError) as exc:
+    except (PackIntegrityError, PackSignatureError, PluginRegistryError, ValueError) as exc:
         raise PackOpsError(str(exc)) from exc
-    finally:
-        if prev is None:
-            os.environ.pop("EV_ARTIFACTS_ROOT", None)
-        else:
-            os.environ["EV_ARTIFACTS_ROOT"] = prev
-        shutil.rmtree(tmp_root, ignore_errors=True)
 
     result = {
         "ok": True,
@@ -171,19 +163,47 @@ def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
         "digest": verified["digest"],
         "publisher_id": publisher_id,
         "host_api_version": HOST_SDK_VERSION,
+        "execution_model": "static_synthetic_only",
     }
     _audit(result)
     return result
+
+
+def validate_staging(staging_id: str) -> dict[str, Any]:
+    """Validate a server-side staging pack and bind the digest to the staging ID."""
+    meta = load_staging_manifest(staging_id)
+    root = pack_root_path(staging_id)
+    validated = validate_plugin_package(root)
+    meta.update(
+        {
+            "validated": True,
+            "digest": validated["digest"],
+            "plugin_id": validated["plugin_id"],
+            "version": validated["version"],
+            "validated_at": _now(),
+            "name": validated.get("name"),
+            "frontend_slot": validated.get("frontend_slot"),
+            "permissions": validated.get("permissions"),
+            "compatible_host_api": validated.get("compatible_host_api"),
+            "backend_entrypoint": validated.get("backend_entrypoint"),
+            "description": validated.get("description"),
+        }
+    )
+    write_staging_manifest(staging_id, meta)
+    out = {**validated, "staging_id": staging_id}
+    return out
 
 
 def register_from_validation(validated: dict[str, Any]) -> dict[str, Any]:
     """Register plugin metadata; remains inactive / not_installed until install."""
     existing = get_plugin(validated["plugin_id"])
     if existing and existing.get("installation_status") == "installed":
-        if existing.get("version") == validated["version"]:
+        if validated["digest"] in {
+            *(existing.get("installed_digests") or []),
+            existing.get("digest"),
+        }:
             raise PackOpsError(
-                f"duplicate plugin version already installed: "
-                f"{validated['plugin_id']}@{validated['version']}"
+                f"duplicate plugin digest already installed: {validated['digest']}"
             )
     record = make_record(
         plugin_id=validated["plugin_id"],
@@ -197,7 +217,6 @@ def register_from_validation(validated: dict[str, Any]) -> dict[str, Any]:
         digest=validated.get("digest"),
         previous_version=(existing or {}).get("version") if existing else None,
     )
-    # Explicit default inactive
     record["activation_status"] = "inactive"
     record["installation_status"] = "not_installed"
     if existing and existing.get("installed_versions"):
@@ -205,97 +224,108 @@ def register_from_validation(validated: dict[str, Any]) -> dict[str, Any]:
     return upsert_plugin(record)
 
 
-def install_plugin_from_dir(
-    source_dir: Path,
+def install_from_staging(
     *,
-    plugin_id: str,
-    version: str,
+    staging_id: str,
+    expected_digest: str,
     actor: str,
     confirm: str,
 ) -> dict[str, Any]:
+    """Install only the previously validated staging artifact matching expected_digest."""
     if confirm != "install":
         raise PackOpsError("refusing install: confirm must be exactly 'install'")
+    source_dir, stage_meta = require_validated_staging(
+        staging_id, expected_digest=expected_digest
+    )
+    plugin_id = str(stage_meta["plugin_id"])
+    version = str(stage_meta["version"])
     validate_plugin_id(plugin_id)
-    validated = validate_plugin_package(source_dir)
-    if validated["plugin_id"] != plugin_id or validated["version"] != version:
-        raise PackOpsError("plugin_id/version mismatch vs package")
 
-    # Register if missing
+    # Re-validate at install time (TOCTOU) without env mutation.
+    validated = validate_plugin_package(source_dir)
+    if validated["digest"] != expected_digest:
+        raise PackOpsError("digest changed since validation — refusing install")
+    if validated["plugin_id"] != plugin_id or validated["version"] != version:
+        raise PackOpsError("plugin_id/version mismatch vs staging")
+
     if not get_plugin(plugin_id):
         register_from_validation(validated)
-
-    stage = staging_root() / f"plugin-{plugin_id}-{version}-{time.time_ns()}"
-    if stage.exists():
-        shutil.rmtree(stage)
-    stage.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source_dir, stage)
-    # Normalize pack.json tool_id
-    pj = stage / "pack.json"
-    m = json.loads(pj.read_text(encoding="utf-8"))
-    m["tool_id"] = plugin_id
-    m["plugin_id"] = plugin_id
-    pj.write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
 
     try:
         assert_artifact_immutable(plugin_id, version)
         final = pack_dir(plugin_id, version)
         final.parent.mkdir(parents=True, exist_ok=True)
-        tmp_final = final.with_name(final.name + f".installing.{os.getpid()}")
+        tmp_final = final.with_name(final.name + f".installing.{os.getpid()}.{time.time_ns()}")
         if tmp_final.exists():
             shutil.rmtree(tmp_final)
-        shutil.copytree(stage, tmp_final)
+        shutil.copytree(source_dir, tmp_final, symlinks=False)
         _fsync_tree(tmp_final)
-        os.replace(tmp_final, final)
+        try:
+            os.replace(tmp_final, final)
+        except OSError as exc:
+            shutil.rmtree(tmp_final, ignore_errors=True)
+            # Concurrent install won the race — treat as immutable collision.
+            if final.is_dir() and any(final.iterdir()):
+                raise PackOpsError(
+                    f"artifact is immutable and already exists: {plugin_id}@{version}"
+                ) from exc
+            raise PackOpsError(f"install replace failed: {exc}") from exc
         _fsync_tree(final.parent)
 
-        # Re-verify at final location
-        verify_pack(plugin_id, version)
+        # Verify at final artifacts location (uses EV_ARTIFACTS_ROOT paths, no mutation)
+        verify_pack(plugin_id, version, expected_digest=expected_digest)
 
-        data = load_registry(force=True)
-        rec = data.setdefault("plugins", {}).get(plugin_id) or make_record(
-            plugin_id=plugin_id,
-            name=str(validated["name"]),
-            description=str(validated["description"]),
-            version=version,
-            compatible_host_api=str(validated["compatible_host_api"]),
-            backend_entrypoint=str(validated["backend_entrypoint"]),
-            frontend_slot=str(validated["frontend_slot"]),
-            permissions=list(validated["permissions"]),
-            digest=validated["digest"],
-        )
-        versions = list(rec.get("installed_versions") or [])
-        if version not in versions:
-            versions.append(version)
-        # Preserve an already-active pin on a *different* version; never auto-activate.
-        prior_status = rec.get("activation_status") or "inactive"
-        prior_version = rec.get("version")
-        keep_active = prior_status == "active" and prior_version and prior_version != version
-        rec.update(
-            {
-                "name": validated["name"],
-                "description": validated["description"],
-                "compatible_host_api": validated["compatible_host_api"],
-                "backend_entrypoint": validated["backend_entrypoint"],
-                "frontend_slot": validated["frontend_slot"],
-                "permissions": validated["permissions"],
-                "installation_status": "installed",
-                "installed_versions": versions,
-                "updated_at": _now(),
-                "installed_by": actor,
-                "latest_installed_version": version,
-                "latest_installed_digest": validated["digest"],
-            }
-        )
-        if keep_active:
-            # Active version unchanged; new artifact is installed but inactive
-            rec["activation_status"] = "active"
-            rec["version"] = prior_version
-        else:
-            rec["version"] = version
-            rec["digest"] = validated["digest"]
-            rec["activation_status"] = "inactive"
-        data["plugins"][plugin_id] = rec
-        write_registry(data)
+        def _mut(data: dict[str, Any]) -> dict[str, Any]:
+            rec = data.setdefault("plugins", {}).get(plugin_id) or make_record(
+                plugin_id=plugin_id,
+                name=str(validated["name"]),
+                description=str(validated["description"]),
+                version=version,
+                compatible_host_api=str(validated["compatible_host_api"]),
+                backend_entrypoint=str(validated["backend_entrypoint"]),
+                frontend_slot=str(validated["frontend_slot"]),
+                permissions=list(validated["permissions"]),
+                digest=validated["digest"],
+            )
+            versions = list(rec.get("installed_versions") or [])
+            if version not in versions:
+                versions.append(version)
+            digests = list(rec.get("installed_digests") or [])
+            if validated["digest"] not in digests:
+                digests.append(validated["digest"])
+            prior_status = rec.get("activation_status") or "inactive"
+            prior_version = rec.get("version")
+            keep_active = (
+                prior_status == "active" and prior_version and prior_version != version
+            )
+            rec.update(
+                {
+                    "name": validated["name"],
+                    "description": validated["description"],
+                    "compatible_host_api": validated["compatible_host_api"],
+                    "backend_entrypoint": validated["backend_entrypoint"],
+                    "frontend_slot": validated["frontend_slot"],
+                    "permissions": validated["permissions"],
+                    "installation_status": "installed",
+                    "installed_versions": versions,
+                    "installed_digests": digests,
+                    "updated_at": _now(),
+                    "installed_by": actor,
+                    "latest_installed_version": version,
+                    "latest_installed_digest": validated["digest"],
+                }
+            )
+            if keep_active:
+                rec["activation_status"] = "active"
+                rec["version"] = prior_version
+            else:
+                rec["version"] = version
+                rec["digest"] = validated["digest"]
+                rec["activation_status"] = "inactive"
+            data["plugins"][plugin_id] = rec
+            return rec
+
+        rec = mutate_registry(_mut)
 
         result = {
             "action": "install",
@@ -307,6 +337,7 @@ def install_plugin_from_dir(
             "actor": actor,
             "activation_status": rec["activation_status"],
             "installation_status": "installed",
+            "staging_id": staging_id,
         }
         _audit(result)
         return result
@@ -322,8 +353,6 @@ def install_plugin_from_dir(
             }
         )
         raise PackOpsError(str(exc)) from exc
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
 
 
 def activate_plugin(
@@ -343,7 +372,6 @@ def activate_plugin(
     if not rec or rec.get("installation_status") != "installed":
         raise PackOpsError(f"plugin not installed: {plugin_id}")
     if version not in (rec.get("installed_versions") or []) and version != rec.get("version"):
-        # Allow if artifact exists
         if not (pack_dir(plugin_id, version) / "pack.json").is_file():
             raise PackOpsError(f"version not installed: {plugin_id}@{version}")
 
@@ -359,30 +387,31 @@ def activate_plugin(
                 publisher_id=str(sig["publisher_id"]),
             )
 
-        data = load_registry(force=True)
-        cur = data["plugins"][plugin_id]
-        previous_version = cur.get("version") if cur.get("activation_status") == "active" else cur.get(
-            "previous_version"
-        )
-        if cur.get("activation_status") == "active" and cur.get("version") != version:
-            previous_version = cur.get("version")
-        cur["previous_version"] = previous_version
-        cur["version"] = version
-        cur["digest"] = meta["digest"]
-        cur["activation_status"] = "active"
-        cur["installation_status"] = "installed"
-        cur["activated_by"] = actor
-        cur["updated_at"] = _now()
-        data["plugins"][plugin_id] = cur
-        write_registry(data)
+        def _mut(data: dict[str, Any]) -> dict[str, Any]:
+            cur = data["plugins"][plugin_id]
+            previous_version = cur.get("previous_version")
+            if cur.get("activation_status") == "active" and cur.get("version") != version:
+                previous_version = cur.get("version")
+            elif cur.get("activation_status") == "active":
+                previous_version = cur.get("previous_version")
+            cur["previous_version"] = previous_version
+            cur["version"] = version
+            cur["digest"] = meta["digest"]
+            cur["activation_status"] = "active"
+            cur["installation_status"] = "installed"
+            cur["activated_by"] = actor
+            cur["updated_at"] = _now()
+            data["plugins"][plugin_id] = cur
+            return cur
 
+        cur = mutate_registry(_mut)
         result = {
             "action": "activate",
             "ok": True,
             "plugin_id": plugin_id,
             "version": version,
             "digest": meta["digest"],
-            "previous_version": previous_version,
+            "previous_version": cur.get("previous_version"),
             "actor": actor,
             "frontend_slot": cur.get("frontend_slot"),
         }
@@ -406,15 +435,21 @@ def disable_plugin(*, plugin_id: str, actor: str, confirm: str) -> dict[str, Any
     if confirm != "disable":
         raise PackOpsError("refusing disable: confirm must be exactly 'disable'")
     validate_plugin_id(plugin_id)
-    data = load_registry(force=True)
-    cur = data.get("plugins", {}).get(plugin_id)
-    if not cur:
-        raise PackOpsError(f"unknown plugin: {plugin_id}")
-    cur["activation_status"] = "disabled"
-    cur["updated_at"] = _now()
-    cur["disabled_by"] = actor
-    data["plugins"][plugin_id] = cur
-    write_registry(data)
+
+    def _mut(data: dict[str, Any]) -> dict[str, Any]:
+        cur = data.get("plugins", {}).get(plugin_id)
+        if not cur:
+            raise PackOpsError(f"unknown plugin: {plugin_id}")
+        cur["activation_status"] = "disabled"
+        cur["updated_at"] = _now()
+        cur["disabled_by"] = actor
+        data["plugins"][plugin_id] = cur
+        return cur
+
+    try:
+        mutate_registry(_mut)
+    except PackOpsError:
+        raise
     result = {
         "action": "disable",
         "ok": True,
@@ -436,77 +471,50 @@ def rollback_plugin(
     if confirm != "rollback":
         raise PackOpsError("refusing rollback: confirm must be exactly 'rollback'")
     validate_plugin_id(plugin_id)
-    data = load_registry(force=True)
-    cur = data.get("plugins", {}).get(plugin_id)
-    if not cur:
-        raise PackOpsError(f"unknown plugin: {plugin_id}")
 
-    previous = cur.get("version")
-    if to == "inactive" or to == "builtin":
-        cur["activation_status"] = "inactive"
+    def _mut(data: dict[str, Any]) -> dict[str, Any]:
+        cur = data.get("plugins", {}).get(plugin_id)
+        if not cur:
+            raise PackOpsError(f"unknown plugin: {plugin_id}")
+        previous = cur.get("version")
+        if to in {"inactive", "builtin"}:
+            cur["activation_status"] = "inactive"
+            cur["previous_version"] = previous
+            cur["updated_at"] = _now()
+            cur["rolled_back_by"] = actor
+            data["plugins"][plugin_id] = cur
+            return {
+                "action": "rollback",
+                "ok": True,
+                "plugin_id": plugin_id,
+                "to": "inactive",
+                "previous_version": previous,
+                "actor": actor,
+            }
+
+        if not (pack_dir(plugin_id, to) / "pack.json").is_file():
+            raise PackOpsError(f"rollback target missing: {plugin_id}@{to}")
+        meta = verify_pack(plugin_id, to)
         cur["previous_version"] = previous
+        cur["version"] = to
+        cur["digest"] = meta["digest"]
+        cur["activation_status"] = "active"
         cur["updated_at"] = _now()
         cur["rolled_back_by"] = actor
         data["plugins"][plugin_id] = cur
-        write_registry(data)
-        result = {
+        return {
             "action": "rollback",
             "ok": True,
             "plugin_id": plugin_id,
-            "to": "inactive",
+            "to": to,
+            "digest": meta["digest"],
             "previous_version": previous,
             "actor": actor,
         }
-        _audit(result)
-        return result
 
-    # Rollback to a prior installed version and activate it
-    if not (pack_dir(plugin_id, to) / "pack.json").is_file():
-        raise PackOpsError(f"rollback target missing: {plugin_id}@{to}")
-    meta = verify_pack(plugin_id, to)
-    cur["previous_version"] = previous
-    cur["version"] = to
-    cur["digest"] = meta["digest"]
-    cur["activation_status"] = "active"
-    cur["updated_at"] = _now()
-    cur["rolled_back_by"] = actor
-    data["plugins"][plugin_id] = cur
-    write_registry(data)
-    result = {
-        "action": "rollback",
-        "ok": True,
-        "plugin_id": plugin_id,
-        "to": to,
-        "digest": meta["digest"],
-        "previous_version": previous,
-        "actor": actor,
-    }
+    result = mutate_registry(_mut)
     _audit(result)
     return result
-
-
-def extract_upload_zip(upload_bytes: bytes, dest_parent: Path) -> Path:
-    """Extract a plugin zip safely (no path traversal). Returns pack root."""
-    dest_parent.mkdir(parents=True, exist_ok=True)
-    raw = dest_parent / f"upload-{time.time_ns()}"
-    raw.mkdir()
-    zip_path = raw / "plugin.zip"
-    zip_path.write_bytes(upload_bytes)
-    extract_to = raw / "extracted"
-    extract_to.mkdir()
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        for info in zf.infolist():
-            name = info.filename
-            if name.startswith("/") or ".." in Path(name).parts:
-                raise PackOpsError(f"unsafe zip path: {name}")
-            zf.extract(info, extract_to)
-    # Find pack.json
-    candidates = list(extract_to.rglob("pack.json"))
-    if not candidates:
-        raise PackOpsError("zip missing pack.json")
-    # Prefer shallowest
-    candidates.sort(key=lambda p: len(p.parts))
-    return candidates[0].parent
 
 
 def read_audit_history(limit: int = 100) -> list[dict[str, Any]]:
@@ -531,7 +539,7 @@ def read_audit_history(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def run_synthetic(plugin_id: str) -> dict[str, Any]:
-    """Invoke active plugin render() for synthetic/demo data only."""
+    """Serve integrity-covered static synthetic JSON — never exec plugin.py."""
     rec = get_plugin(plugin_id)
     if not rec or rec.get("activation_status") != "active":
         raise PackOpsError(f"plugin not active: {plugin_id}")
@@ -539,19 +547,23 @@ def run_synthetic(plugin_id: str) -> dict[str, Any]:
         raise PackOpsError("plugin lacks synthetic_data permission")
     version = str(rec["version"])
     digest = rec.get("digest")
-    mod = load_pack_module(plugin_id, version, digest=digest)
-    if not hasattr(mod, "render"):
-        raise PackOpsError("plugin missing render()")
-    # No host imagery — synthetic only
-    out = mod.render(None)
-    if not isinstance(out, dict):
-        raise PackOpsError("plugin render() must return a dict")
-    # Strip anything that looks like a path escape
+    root = pack_dir(plugin_id, version)
+    # Re-verify artifact; do not import backend/plugin.py
+    verify_pack(plugin_id, version, expected_digest=digest)
+    syn_path = root / "ui" / "synthetic.json"
+    if not syn_path.is_file():
+        raise PackOpsError("ui/synthetic.json missing (in-process plugin exec is disabled)")
+    if syn_path.is_symlink():
+        raise PackOpsError("symlinks not allowed")
+    payload = json.loads(syn_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise PackOpsError("synthetic.json must be a JSON object")
     return {
         "plugin_id": plugin_id,
         "version": version,
         "frontend_slot": rec.get("frontend_slot"),
-        "payload": out,
+        "execution_model": "static_synthetic_only",
+        "payload": payload,
     }
 
 
@@ -580,11 +592,19 @@ def version_history(plugin_id: str) -> list[dict[str, Any]]:
 
 def registry_snapshot() -> dict[str, Any]:
     data = load_registry(force=True)
+    from app.plugins.slots import SUPPORTED_SLOTS
+
     return {
         "schema_version": data.get("schema_version"),
         "host_api_version": data.get("host_api_version", HOST_SDK_VERSION),
         "registry_path": str(registry_path()),
         "artifacts_root": str(artifacts_root()),
         "plugins": list_plugins(),
-        "supported_slots": sorted(__import__("app.plugins.slots", fromlist=["SUPPORTED_SLOTS"]).SUPPORTED_SLOTS),
+        "supported_slots": sorted(SUPPORTED_SLOTS),
+        "execution_model": "static_synthetic_only",
+        "in_process_plugin_exec": False,
     }
+
+
+# Re-export for admin router
+upload_stream = stream_upload_to_staging

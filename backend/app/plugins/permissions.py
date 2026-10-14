@@ -1,8 +1,14 @@
-"""Plugin permission allowlist — deny unrestricted host access."""
+"""Plugin permission *declarations* — NOT a sandbox.
+
+These tokens are an allowlist of declared capabilities checked at validate/install
+time. They do **not** isolate process memory, filesystem, network, or database
+access. Uploaded plugin Python is not executed in the FastAPI process (P1.1);
+see docs/PLUGIN_TRUST_BOUNDARY.md.
+"""
 
 from __future__ import annotations
 
-# Explicitly allowed capability tokens for P1 plugins.
+# Explicitly allowed capability tokens for P1 plugins (declarative only).
 ALLOWED_PERMISSIONS = frozenset(
     {
         "synthetic_data",

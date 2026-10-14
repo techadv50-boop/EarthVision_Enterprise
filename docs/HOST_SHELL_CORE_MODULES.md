@@ -1,7 +1,25 @@
-# Host Shell Core Modules (Stage P1)
+# Host Shell Core Modules (Stage P1.1)
 
 Protected Host Shell modules. Unauthorized edits are rejected by
-`scripts/tools/check_core_protection.py` unless `CORE_RELEASE=approved`.
+`scripts/tools/check_core_protection.py`.
+
+## Authorization (auditable)
+
+`CORE_RELEASE=approved` **alone is rejected**.
+
+Core changes require:
+
+1. `CORE_RELEASE_APPROVAL=<id>`
+2. File `tools/core_releases/<id>.json` with `base_sha` equal to the CI comparison base
+3. `allowed_modules` / `allowed_paths` covering each core path touched
+
+Protection machinery (`tools/core_protection.json`, the checker, Tool Protection
+workflow, `tools/core_releases/`) is **self-protected**. Once the checker exists
+on the comparison base, modifications require an approval that **already exists
+on that base** (cannot introduce the approval in the same PR that weakens
+protection).
+
+Missing / unresolvable `BASE_SHA` → **fail closed**.
 
 Canonical path list: `tools/core_protection.json`.
 
@@ -15,13 +33,7 @@ Canonical path list: `tools/core_protection.json`.
 | `database_infrastructure` | DB session, models, alembic |
 | `legacy_tool_implementations` | Frozen true_color packs, `pack_ops`, toolbox catalog |
 | `existing_tool_catalog` | `tools/manifest.json` (148 unique tools) + guard scripts |
-
-## Rules
-
-1. Plugin Manager and plugin packs live under **plugin-safe** prefixes and do not require a core release.
-2. True Color, Ship Detection, and all other legacy tools are **frozen** — treat them as core.
-3. Core changes need a separately approved core release (`CORE_RELEASE=approved` in CI).
-4. Full-app Deploy SATEYE remains the Host Shell deploy path; plugins install/activate separately.
+| `core_protection_machinery` | Self-protected checker / policy / workflow / approvals |
 
 ## Baseline
 

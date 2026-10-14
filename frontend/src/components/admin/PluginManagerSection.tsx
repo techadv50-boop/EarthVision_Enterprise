@@ -33,9 +33,8 @@ export function PluginManagerSection() {
   const [versions, setVersions] = useState<
     Array<{ version: string; digest?: string; active?: boolean }>
   >([]);
-  const [pathInput, setPathInput] = useState(
-    'tools/plugins/demo_hello/artifacts/1.0.0',
-  );
+  const [stagingId, setStagingId] = useState<string | null>(null);
+  const [stagingDigest, setStagingDigest] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -95,8 +94,9 @@ export function PluginManagerSection() {
           Plugin Manager
         </h3>
         <p className="mt-1 text-xs text-[var(--muted)]">
-          Admin only. Install does not activate. Legacy tools stay frozen. Plugins
-          cannot request filesystem, network, or database permissions.
+          Admin only. Uploads use opaque staging IDs (no server path input).
+          Install does not activate. Permissions are declarations, not a sandbox.
+          Plugin Python is not executed in the API process.
         </p>
       </div>
 
@@ -113,79 +113,49 @@ export function PluginManagerSection() {
       <section className="space-y-2 rounded border border-[var(--line)] p-3">
         <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
           <Upload className="h-3.5 w-3.5" />
-          Upload / validate / install
+          Upload → validate → install (staging ID)
         </h4>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <input
-            type="file"
-            accept=".zip,application/zip"
-            disabled={busy}
-            className="text-xs"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              void run('Validate upload', () => pluginService.validateUpload(file));
-            }}
-          />
-          <input
-            type="file"
-            accept=".zip,application/zip"
-            disabled={busy}
-            className="text-xs"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              void run('Upload install', () => pluginService.uploadInstall(file));
-            }}
-          />
+          <label className="text-xs text-[var(--muted)]">
+            Validate zip
+            <input
+              type="file"
+              accept=".zip,application/zip"
+              disabled={busy}
+              className="mt-1 block text-xs"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                void run('Validate upload', async () => {
+                  const res = await pluginService.validateUpload(file);
+                  if (res.ok !== false && res.staging_id && res.digest) {
+                    setStagingId(String(res.staging_id));
+                    setStagingDigest(String(res.digest));
+                  }
+                  return res;
+                });
+              }}
+            />
+          </label>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <input
-            className="ev-input flex-1 font-mono text-xs"
-            value={pathInput}
-            onChange={(e) => setPathInput(e.target.value)}
-            placeholder="Local pack directory (preview)"
-            disabled={busy}
-          />
-          <button
-            type="button"
-            className="ev-btn-ghost text-xs"
-            disabled={busy || !pathInput}
-            onClick={() =>
-              void run('Validate', () => pluginService.validatePath(pathInput))
-            }
-          >
-            Validate
-          </button>
-          <button
-            type="button"
-            className="ev-btn-ghost text-xs"
-            disabled={busy || !pathInput}
-            onClick={() =>
-              void run('Register', () => pluginService.registerPath(pathInput))
-            }
-          >
-            Register
-          </button>
-          <button
-            type="button"
-            className="ev-btn text-xs"
-            disabled={busy || !pathInput}
-            onClick={() =>
-              void run('Install', async () => {
-                const v = await pluginService.validatePath(pathInput);
-                if (v.ok === false) return v;
-                return pluginService.installPath(
-                  pathInput,
-                  String(v.plugin_id),
-                  String(v.version),
-                );
-              })
-            }
-          >
-            Install (inactive)
-          </button>
-        </div>
+        {stagingId && (
+          <p className="font-mono text-[10px] text-[var(--muted)]">
+            staging_id={stagingId}
+            {stagingDigest ? ` · digest=${stagingDigest.slice(0, 18)}…` : ''}
+          </p>
+        )}
+        <button
+          type="button"
+          className="ev-btn text-xs"
+          disabled={busy || !stagingId || !stagingDigest}
+          onClick={() =>
+            void run('Install staging', () =>
+              pluginService.installStaging(stagingId!, stagingDigest!),
+            )
+          }
+        >
+          Install validated staging (inactive)
+        </button>
       </section>
 
       <section className="space-y-2">
