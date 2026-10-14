@@ -10,7 +10,7 @@ integrity-covered pack assets (`ui/panel.html`, `ui/plugin.js`, …).
 | No privileged React execution | Uploaded JS never `import()`’d / `eval`’d in Host Shell |
 | Opaque origin | `sandbox="allow-scripts"` **without** `allow-same-origin` + `srcdoc` |
 | Digest binding | FE manifest + assets require active registry `version` + `digest` |
-| Host SDK | Versioned postMessage protocol `v=1` (`PLUGIN_HOST_SDK_VERSION=1.0.0`) |
+| Host SDK | Versioned postMessage protocol `v=1` (`PLUGIN_HOST_SDK_VERSION=1.1.0`) |
 | Permissions | Methods gated by pack permission declarations |
 | Secrets | Never injected into iframe boot; audit redacts token/secret fields |
 
@@ -56,6 +56,9 @@ the frame. Privileged API calls go through the Host Shell bridge only.
 | `host.meta` | `host.sdk.read_meta` | Returns pin identity — no secrets |
 | `host.getSynthetic` | `synthetic_data` | Host calls worker/static synthetic |
 | `host.resize` | *(none beyond active plugin)* | Chrome height only |
+| `host.getAoiBounds` | `host.sdk.read_aoi` | Host-provided AOI bbox only — no Leaflet |
+| `host.setAnalysisResult` | `host.sdk.set_analysis_result` | Typed results for Host results chrome |
+| `host.getAnalysisResult` | `host.sdk.read_analysis_result` | Read back published results |
 
 Forbidden methods (`host.getAuthToken`, `host.leaflet`, `host.fetch`, …) are
 rejected client-side and server-side.

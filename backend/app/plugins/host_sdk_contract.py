@@ -1,4 +1,4 @@
-"""Versioned Host SDK contract for sandboxed frontend plugins (P2B).
+"""Versioned Host SDK contract for sandboxed frontend plugins (RC).
 
 Plugins in iframes must not import Host Shell modules. They may only call
 allowlisted methods via a validated postMessage bridge. Method availability is
@@ -7,21 +7,21 @@ gated by pack ``permissions`` declarations (still not an OS sandbox).
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
-# Semver for the *plugin frontend* Host SDK (postMessage). Independent of
-# Tool Pack ``HOST_SDK_VERSION`` but kept compatible with pack host_sdk ranges.
-PLUGIN_HOST_SDK_VERSION = "1.0.0"
+# Semver for the plugin frontend Host SDK (postMessage).
+PLUGIN_HOST_SDK_VERSION = "1.1.0"
 PLUGIN_HOST_SDK_PROTOCOL = 1
 
-# Methods the privileged Host Shell may honor for iframe plugins.
 HOST_SDK_METHODS: dict[str, str] = {
-    # Returns plugin_id / version / digest / slot / sdk version — no secrets.
     "host.meta": "host.sdk.read_meta",
-    # Integrity-covered synthetic payload (or worker render) via Host Shell.
     "host.getSynthetic": "synthetic_data",
-    # Request iframe chrome height (always allowed when plugin is active).
     "host.resize": "",
+    "host.getAoiBounds": "host.sdk.read_aoi",
+    "host.setAnalysisResult": "host.sdk.set_analysis_result",
+    "host.getAnalysisResult": "host.sdk.read_analysis_result",
 }
 
 FORBIDDEN_HOST_SDK_METHODS = frozenset(
@@ -38,6 +38,10 @@ FORBIDDEN_HOST_SDK_METHODS = frozenset(
     }
 )
 
+_ANALYSIS_LOCK = threading.Lock()
+# plugin_id → {result, updated_at, version, digest}
+_ANALYSIS_RESULTS: dict[str, dict[str, Any]] = {}
+
 
 class HostSdkError(ValueError):
     """Invalid Host SDK request from a plugin frame."""
@@ -51,6 +55,39 @@ def assert_method_allowed(method: str, permissions: list[str] | None) -> None:
     need = HOST_SDK_METHODS[method]
     if need and need not in (permissions or []):
         raise HostSdkError(f"permission denied for {method}: requires {need}")
+
+
+def store_analysis_result(
+    *,
+    plugin_id: str,
+    version: str,
+    digest: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise HostSdkError("analysis result must be an object")
+    # Cap payload size / shape
+    raw = str(result)
+    if len(raw) > 50_000:
+        raise HostSdkError("analysis result too large")
+    for bad in ("token", "password", "authorization", "cookie", "secret"):
+        if bad in raw.lower():
+            raise HostSdkError("analysis result must not include secrets")
+    entry = {
+        "plugin_id": plugin_id,
+        "version": version,
+        "digest": digest,
+        "result": result,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with _ANALYSIS_LOCK:
+        _ANALYSIS_RESULTS[plugin_id] = entry
+    return {"stored": True, "updated_at": entry["updated_at"]}
+
+
+def load_analysis_result(plugin_id: str) -> dict[str, Any] | None:
+    with _ANALYSIS_LOCK:
+        return _ANALYSIS_RESULTS.get(plugin_id)
 
 
 def validate_plugin_message(data: Any) -> dict[str, Any]:
@@ -90,9 +127,9 @@ def validate_plugin_message(data: Any) -> dict[str, Any]:
             params = {}
         if not isinstance(params, dict):
             raise HostSdkError("params must be an object")
-        # Strip any attempt to smuggle secrets / tokens
-        for bad in ("token", "authorization", "password", "cookie", "secret"):
-            if bad in params or bad in {k.lower() for k in params}:
+        for k in params:
+            lk = str(k).lower()
+            if any(s in lk for s in ("token", "authorization", "password", "cookie", "secret")):
                 raise HostSdkError("params must not include secrets")
         out["id"] = req_id
         out["method"] = method

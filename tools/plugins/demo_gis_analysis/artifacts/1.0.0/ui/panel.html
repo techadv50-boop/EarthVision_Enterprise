@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Demo GIS Analysis</title>
+  <style>
+    body { margin: 0; font: 12px/1.45 system-ui, sans-serif; color: #0f172a; background: #f8fafc; }
+    .wrap { padding: 10px 12px; }
+    h1 { margin: 0; font-size: 13px; }
+    .meta { color: #64748b; font-size: 10px; margin-top: 2px; }
+    button {
+      margin-top: 8px; border: 1px solid #cbd5e1; background: #fff; border-radius: 4px;
+      padding: 6px 10px; font-size: 12px; cursor: pointer;
+    }
+    button:hover { background: #e2e8f0; }
+    .box { margin-top: 8px; padding: 8px; border: 1px solid #e2e8f0; border-radius: 4px; background: #fff; }
+    .err { color: #b91c1c; margin-top: 8px; font-size: 11px; }
+    code { font-size: 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Demo GIS Analysis</h1>
+    <div class="meta" id="meta">sandboxed · Host SDK only</div>
+    <button type="button" id="run">Analyze current AOI</button>
+    <div class="box" id="aoi">AOI: (none)</div>
+    <div class="box" id="out">Result: —</div>
+    <div class="err" id="err" hidden></div>
+  </div>
+  <script src="./plugin.js"></script>
+</body>
+</html>

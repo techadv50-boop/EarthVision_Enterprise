@@ -32,3 +32,8 @@ logs/
 tools/publishers/*.priv
 tools/publishers/*.ed25519.priv
 .env.preview
+
+# Preview plugin worker mTLS materials (never commit keys)
+tools/plugins/worker/certs/
+*.key
+

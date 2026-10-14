@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { pluginService, type PluginFrontendManifest } from '../services/pluginService';
+import { usePluginHost } from './PluginHostContext';
 import {
   assertIdentityMatch,
   HostSdkValidationError,
@@ -33,6 +34,9 @@ export function SandboxedPluginFrame({
   className,
 }: SandboxedPluginFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const host = usePluginHost();
+  const hostRef = useRef(host);
+  hostRef.current = host;
   const [height, setHeight] = useState(160);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -149,28 +153,78 @@ ${pluginJs}
           return;
         }
 
-        // Resize can be handled locally without a round-trip when safe
+        const replyOk = (result: unknown): HostToPluginMessage => ({
+          v: 1,
+          type: 'response',
+          id: msg.id,
+          plugin_id: msg.plugin_id,
+          version: msg.version,
+          digest: msg.digest,
+          ok: true,
+          result,
+        });
+
+        // Local chrome + GIS Host APIs (no Leaflet / no tokens)
         if (msg.method === 'host.resize') {
           const h = msg.params.height;
           if (typeof h === 'number' && h >= 40 && h <= 4000) {
             setHeight(Math.round(h));
           }
-          const reply: HostToPluginMessage = {
+          frame.contentWindow?.postMessage(
+            replyOk({ height: typeof h === 'number' ? Math.round(h) : 160 }),
+            '*',
+          );
+          return;
+        }
+        if (msg.method === 'host.getAoiBounds') {
+          frame.contentWindow?.postMessage(
+            replyOk({ aoi: hostRef.current.aoiBounds, source: 'host' }),
+            '*',
+          );
+          return;
+        }
+        if (msg.method === 'host.setAnalysisResult') {
+          const payload = msg.params.result;
+          if (!payload || typeof payload !== 'object') {
+            throw new HostSdkValidationError('result object required');
+          }
+          const r = payload as Record<string, unknown>;
+          hostRef.current.setAnalysisResult({
+            pluginId: msg.plugin_id,
+            version: msg.version,
+            title: typeof r.title === 'string' ? r.title : msg.plugin_id,
+            summary: typeof r.summary === 'string' ? r.summary : undefined,
+            metrics: Array.isArray(r.metrics)
+              ? (r.metrics as Array<{ label: string; value: string | number }>)
+              : undefined,
+            updatedAt: new Date().toISOString(),
+          });
+          // Persist via authenticated Host bridge (also enforces permissions)
+          void pluginService.hostSdk(pluginId, {
             v: 1,
-            type: 'response',
+            type: 'request',
             id: msg.id,
             plugin_id: msg.plugin_id,
             version: msg.version,
             digest: msg.digest,
-            ok: true,
-            result: { height: typeof h === 'number' ? Math.round(h) : 160 },
-          };
-          frame.contentWindow?.postMessage(reply, '*');
+            method: msg.method,
+            params: msg.params,
+          });
+          frame.contentWindow?.postMessage(replyOk({ stored: true }), '*');
+          return;
+        }
+        if (msg.method === 'host.getAnalysisResult') {
+          const local = hostRef.current.getAnalysisResult(msg.plugin_id);
+          frame.contentWindow?.postMessage(replyOk(local || { result: null }), '*');
           return;
         }
 
         void (async () => {
           try {
+            const params =
+              msg.method === 'host.getAoiBounds'
+                ? { ...msg.params, aoi: hostRef.current.aoiBounds }
+                : msg.params;
             const res = await pluginService.hostSdk(pluginId, {
               v: 1,
               type: 'request',
@@ -179,7 +233,7 @@ ${pluginJs}
               version: msg.version,
               digest: msg.digest,
               method: msg.method,
-              params: msg.params,
+              params,
             });
             const reply: HostToPluginMessage =
               res && res.ok === false

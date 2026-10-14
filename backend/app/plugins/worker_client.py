@@ -1,6 +1,9 @@
-"""Host Shell client for the restricted plugin worker (P2A.1).
+"""Host Shell client for the restricted plugin worker (RC).
 
-Authenticated Host→worker communication via shared Bearer token + HMAC grant.
+Authenticated Host→worker communication:
+  - Optional mTLS (EV_PLUGIN_WORKER_TLS=1 + client cert/key/CA)
+  - Bearer shared secret + replay-resistant HMAC grant (nonce + single-use MAC)
+
 Plugin id/version/digest are never treated as authentication.
 """
 
@@ -11,6 +14,7 @@ import hmac
 import json
 import os
 import secrets
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -36,6 +40,12 @@ def _auth_token() -> str:
         raise PackOpsError(
             "EV_PLUGIN_WORKER_AUTH_TOKEN unset or too short — cannot authenticate to worker"
         )
+    banned = {
+        "preview-plugin-worker-auth-token-32b!!",
+        "changeme-plugin-worker-auth-token!!!!",
+    }
+    if (os.environ.get("EV_PACK_TRUST_PROFILE") or "").lower() == "production" and token in banned:
+        raise PackOpsError("default/preview worker auth token forbidden in production")
     return token
 
 
@@ -49,9 +59,30 @@ def _mint_grant(
 ) -> dict[str, Any]:
     secret = _auth_token()
     exp = int(time.time()) + ttl_sec
-    msg = f"v1|{request_id}|{plugin_id}|{version}|{digest}|{exp}".encode("utf-8")
+    nonce = secrets.token_hex(16)
+    msg = f"v2|{request_id}|{plugin_id}|{version}|{digest}|{exp}|{nonce}".encode("utf-8")
     mac = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
-    return {"grant_exp": exp, "grant_mac": mac}
+    return {"grant_exp": exp, "grant_mac": mac, "grant_nonce": nonce}
+
+
+def _ssl_context() -> ssl.SSLContext | None:
+    if os.environ.get("EV_PLUGIN_WORKER_TLS", "0") != "1":
+        return None
+    ca = os.environ.get("EV_PLUGIN_WORKER_TLS_CA")
+    cert = os.environ.get("EV_PLUGIN_WORKER_TLS_CLIENT_CERT")
+    key = os.environ.get("EV_PLUGIN_WORKER_TLS_CLIENT_KEY")
+    if not ca or not cert or not key:
+        raise PackOpsError(
+            "EV_PLUGIN_WORKER_TLS=1 requires EV_PLUGIN_WORKER_TLS_CA, "
+            "EV_PLUGIN_WORKER_TLS_CLIENT_CERT, EV_PLUGIN_WORKER_TLS_CLIENT_KEY"
+        )
+    ctx = ssl.create_default_context(cafile=ca)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(certfile=cert, keyfile=key)
+    ctx.check_hostname = False  # preview/internal CN; production should set check_hostname
+    if os.environ.get("EV_PLUGIN_WORKER_TLS_CHECK_HOSTNAME", "0") == "1":
+        ctx.check_hostname = True
+    return ctx
 
 
 def _http_json(
@@ -67,8 +98,9 @@ def _http_json(
     if auth:
         headers["Authorization"] = f"Bearer {_auth_token()}"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    ctx = _ssl_context()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -91,6 +123,8 @@ def check_isolation(*, require: bool | None = None) -> dict[str, Any]:
                 "plugin worker isolation cannot be established: EV_PLUGIN_WORKER_URL unset"
             )
         return {"ok": False, "skipped": True, "reason": "worker_url_unset"}
+    if os.environ.get("EV_PLUGIN_WORKER_TLS", "0") == "1" and not url.startswith("https://"):
+        raise PackOpsError("EV_PLUGIN_WORKER_TLS=1 requires https:// EV_PLUGIN_WORKER_URL")
     report = _http_json("GET", f"{url}/health", timeout=3.0, auth=False)
     isolation = report.get("isolation") or {}
     if not report.get("ok") or not isolation.get("isolated"):

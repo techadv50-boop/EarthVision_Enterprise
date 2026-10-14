@@ -789,7 +789,8 @@ def test_p2a1_auth_and_active_pin_gate(plugin_volume, tmp_path, monkeypatch):
 
         rid = "a" * 32
         exp = int(time.time()) + 60
-        msg = f"v1|{rid}|demo_hello|1.0.0|{d1}|{exp}".encode()
+        nonce = "n" * 32
+        msg = f"v2|{rid}|demo_hello|1.0.0|{d1}|{exp}|{nonce}".encode()
         mac = hm.new(token.encode(), msg, hashlib.sha256).hexdigest()
         body = {
             "schema_version": 1,
@@ -801,6 +802,7 @@ def test_p2a1_auth_and_active_pin_gate(plugin_volume, tmp_path, monkeypatch):
             "payload": {},
             "grant_exp": exp,
             "grant_mac": mac,
+            "grant_nonce": nonce,
         }
         # Unauthorized: no bearer
         code, _ = post(body, auth=False)
@@ -817,7 +819,8 @@ def test_p2a1_auth_and_active_pin_gate(plugin_volume, tmp_path, monkeypatch):
         )
         rid2 = "b" * 32
         exp2 = int(time.time()) + 60
-        msg2 = f"v1|{rid2}|demo_hello|1.1.0|{d11}|{exp2}".encode()
+        nonce2 = "o" * 32
+        msg2 = f"v2|{rid2}|demo_hello|1.1.0|{d11}|{exp2}|{nonce2}".encode()
         mac2 = hm.new(token.encode(), msg2, hashlib.sha256).hexdigest()
         body2 = {
             **body,
@@ -826,6 +829,7 @@ def test_p2a1_auth_and_active_pin_gate(plugin_volume, tmp_path, monkeypatch):
             "digest": d11,
             "grant_exp": exp2,
             "grant_mac": mac2,
+            "grant_nonce": nonce2,
         }
         code, resp = post(body2, auth=True)
         assert code == 403
@@ -833,9 +837,16 @@ def test_p2a1_auth_and_active_pin_gate(plugin_volume, tmp_path, monkeypatch):
         engine.disable_plugin(plugin_id="demo_hello", actor="t", confirm="disable")
         rid3 = "c" * 32
         exp3 = int(time.time()) + 60
-        msg3 = f"v1|{rid3}|demo_hello|1.0.0|{d1}|{exp3}".encode()
+        nonce3 = "p" * 32
+        msg3 = f"v2|{rid3}|demo_hello|1.0.0|{d1}|{exp3}|{nonce3}".encode()
         mac3 = hm.new(token.encode(), msg3, hashlib.sha256).hexdigest()
-        body3 = {**body, "request_id": rid3, "grant_exp": exp3, "grant_mac": mac3}
+        body3 = {
+            **body,
+            "request_id": rid3,
+            "grant_exp": exp3,
+            "grant_mac": mac3,
+            "grant_nonce": nonce3,
+        }
         code, resp = post(body3, auth=True)
         assert code == 403
     finally:
@@ -1011,6 +1022,7 @@ def test_p2a1_signature_bypass_and_bad_grant_rejected(plugin_volume, tmp_path, m
             "payload": {},
             "grant_exp": exp,
             "grant_mac": "0" * 64,  # forged
+            "grant_nonce": "q" * 32,
         }
         data = json_mod.dumps(body).encode()
         req = urllib.request.Request(
@@ -1026,7 +1038,11 @@ def test_p2a1_signature_bypass_and_bad_grant_rejected(plugin_volume, tmp_path, m
             urllib.request.urlopen(req, timeout=10)
         assert ei.value.code == 401
         # plugin id/version/digest alone are not auth — even with bearer, grant required
-        body2 = {k: v for k, v in body.items() if k not in {"grant_exp", "grant_mac"}}
+        body2 = {
+            k: v
+            for k, v in body.items()
+            if k not in {"grant_exp", "grant_mac", "grant_nonce"}
+        }
         data2 = json_mod.dumps(body2).encode()
         req2 = urllib.request.Request(
             "http://127.0.0.1:18093/v1/execute",
@@ -1281,7 +1297,7 @@ def test_p2b_audit_redacts_secrets_and_health_has_no_tokens(plugin_volume, tmp_p
     assert "password" not in blob.lower() or health.get("ok")
     assert "EV_PLUGIN_WORKER_AUTH_TOKEN" not in blob
     assert health["loading_model"] == "sandboxed_iframe_srcdoc"
-    assert health["host_sdk_version"] == "1.0.0"
+    assert health["host_sdk_version"] == "1.1.0"
 
 
 def test_p2b_sandboxed_iframe_requires_panel_and_plugin_js(plugin_volume, tmp_path):
@@ -1302,3 +1318,187 @@ def test_p2b_true_color_pin_preserved(plugin_volume, tmp_path):
         plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
     )
     assert get_pin("true_color")["mode"] == "builtin"
+
+
+def test_rc_replay_resistant_grant(plugin_volume, tmp_path, monkeypatch):
+    import hashlib
+    import hmac as hm
+    import json as json_mod
+    import subprocess
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    token = "r" * 32
+    env = {
+        **os.environ,
+        "EV_ARTIFACTS_ROOT": str(plugin_volume["arts"]),
+        "EV_TOOL_PACKS_ROOT": str(plugin_volume["root"]),
+        "EV_PLUGIN_REGISTRY": str(plugin_volume["root"] / "plugin_registry.json"),
+        "EV_PACK_PUBLISHERS": str(
+            plugin_volume["root"] / "publishers" / "approved_publishers.json"
+        ),
+        "EV_PACK_TRUST_PROFILE": "production",
+        "EV_PACK_REQUIRE_SIGNATURE": "1",
+        "EV_PLUGIN_WORKER_AUTH_TOKEN": token,
+        "EV_PLUGIN_WORKER_ALLOW_ROOT": "1",
+        "EV_PLUGIN_WORKER_ALLOW_HOST_DOCKER_SOCK": "1",
+        "EV_PLUGIN_WORKER_HOST": "127.0.0.1",
+        "EV_PLUGIN_WORKER_PORT": "18094",
+        "EV_PLUGIN_WORKER_TLS": "0",
+    }
+    for k in (
+        "DATABASE_URL",
+        "SECRET_KEY",
+        "MASTER_PASSWORD",
+        "ADMIN_PASSWORD",
+        "DOCKER_HOST",
+        "DOCKER_SOCK",
+        "AWS_SECRET_ACCESS_KEY",
+        "OPENAI_API_KEY",
+    ):
+        env.pop(k, None)
+    proc = subprocess.Popen(
+        [sys.executable, str(REPO / "tools" / "plugins" / "worker" / "server.py")],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                raise AssertionError("worker exited")
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:18094/health", timeout=1) as r:
+                    if r.status == 200:
+                        break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.2)
+        else:
+            raise AssertionError("worker unhealthy")
+        rid = "e" * 32
+        exp = int(time.time()) + 60
+        nonce = "s" * 32
+        msg = f"v2|{rid}|demo_hello|1.0.0|{d1}|{exp}|{nonce}".encode()
+        mac = hm.new(token.encode(), msg, hashlib.sha256).hexdigest()
+        body = {
+            "schema_version": 1,
+            "request_id": rid,
+            "plugin_id": "demo_hello",
+            "version": "1.0.0",
+            "digest": d1,
+            "operation": "ping",
+            "payload": {},
+            "grant_exp": exp,
+            "grant_mac": mac,
+            "grant_nonce": nonce,
+        }
+        data = json_mod.dumps(body).encode()
+
+        def post_once():
+            req = urllib.request.Request(
+                "http://127.0.0.1:18094/v1/execute",
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json_mod.loads(resp.read().decode())
+
+        code, resp = post_once()
+        assert code == 200 and resp.get("ok") is True
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            post_once()
+        assert ei.value.code == 401
+        assert b"replay" in ei.value.read().lower()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+
+
+def test_rc_demo_gis_analysis_lifecycle(plugin_volume, tmp_path):
+    from app.plugins.frontend_assets import active_frontend_manifest
+    from app.plugins.host_sdk_contract import (
+        assert_method_allowed,
+        store_analysis_result,
+        load_analysis_result,
+    )
+
+    gis_art = REPO / "tools" / "plugins" / "demo_gis_analysis" / "artifacts" / "1.0.0"
+    if not (gis_art / "pack.json").is_file():
+        pytest.skip("demo_gis_analysis artifact missing — build first")
+
+    dest = tmp_path / "gis"
+    shutil.copytree(gis_art, dest)
+    meta = verify_pack_at(dest, "demo_gis_analysis", "1.0.0")
+    sig = sign_digest(meta["digest"], plugin_volume["priv"])
+    write_signature_file(
+        dest, digest=meta["digest"], signature=sig, publisher_id="test-pub"
+    )
+    zpath = tmp_path / "gis.zip"
+    _zip_pack(dest, zpath)
+    with zpath.open("rb") as fh:
+        staging_id = stream_upload_to_staging(fh)
+    validated = engine.validate_staging(staging_id)
+    assert validated["ok"] is True
+    assert "host.sdk.read_aoi" in validated["permissions"]
+    engine.install_from_staging(
+        staging_id=staging_id,
+        expected_digest=validated["digest"],
+        actor="t",
+        confirm="install",
+    )
+    assert get_plugin("demo_gis_analysis")["activation_status"] == "inactive"
+    engine.activate_plugin(
+        plugin_id="demo_gis_analysis",
+        version="1.0.0",
+        actor="t",
+        confirm="activate",
+    )
+    man = active_frontend_manifest("demo_gis_analysis")
+    assert man["frontend_slot"] == "right_analysis_panel"
+    assert man["ui_strategy"] == "sandboxed_iframe"
+    syn = engine.run_synthetic("demo_gis_analysis")
+    assert syn["payload"]["plugin_id"] == "demo_gis_analysis"
+    assert_method_allowed(
+        "host.setAnalysisResult",
+        list(get_plugin("demo_gis_analysis")["permissions"]),
+    )
+    store_analysis_result(
+        plugin_id="demo_gis_analysis",
+        version="1.0.0",
+        digest=validated["digest"],
+        result={"title": "t", "summary": "ok", "metrics": []},
+    )
+    assert load_analysis_result("demo_gis_analysis")["result"]["summary"] == "ok"
+    engine.disable_plugin(
+        plugin_id="demo_gis_analysis", actor="t", confirm="disable"
+    )
+    assert get_plugin("demo_gis_analysis")["activation_status"] == "disabled"
+    assert get_pin("true_color")["mode"] == "builtin"
+
+
+def test_rc_no_default_worker_token_in_production_profile(monkeypatch):
+    from app.plugins import worker_client
+
+    monkeypatch.setenv("EV_PACK_TRUST_PROFILE", "production")
+    monkeypatch.setenv(
+        "EV_PLUGIN_WORKER_AUTH_TOKEN", "preview-plugin-worker-auth-token-32b!!"
+    )
+    with pytest.raises(PackOpsError, match="forbidden|default|preview"):
+        worker_client._auth_token()

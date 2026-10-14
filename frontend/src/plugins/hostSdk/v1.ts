@@ -1,16 +1,29 @@
 /**
- * Versioned Host SDK contract for sandboxed plugin iframes (P2B).
+ * Versioned Host SDK contract for sandboxed plugin iframes (RC).
  *
  * Plugins must NOT import Host Shell modules, read auth tokens, call
  * unrestricted APIs, or touch Leaflet. Communication is postMessage only.
  */
 
 export const PLUGIN_HOST_SDK_PROTOCOL = 1 as const;
-export const PLUGIN_HOST_SDK_VERSION = '1.0.0';
+export const PLUGIN_HOST_SDK_VERSION = '1.1.0';
 
-export type HostSdkMethod = 'host.meta' | 'host.getSynthetic' | 'host.resize';
+export type HostSdkMethod =
+  | 'host.meta'
+  | 'host.getSynthetic'
+  | 'host.resize'
+  | 'host.getAoiBounds'
+  | 'host.setAnalysisResult'
+  | 'host.getAnalysisResult';
 
-const ALLOWED_METHODS = new Set<string>(['host.meta', 'host.getSynthetic', 'host.resize']);
+const ALLOWED_METHODS = new Set<string>([
+  'host.meta',
+  'host.getSynthetic',
+  'host.resize',
+  'host.getAoiBounds',
+  'host.setAnalysisResult',
+  'host.getAnalysisResult',
+]);
 
 const FORBIDDEN_METHODS = new Set<string>([
   'host.getAuthToken',
@@ -84,9 +97,6 @@ function hasSecretKey(obj: Record<string, unknown>): boolean {
   });
 }
 
-/**
- * Validate a plugin→host message. Fail closed on anything unexpected.
- */
 export function validatePluginMessage(data: unknown): PluginToHostMessage {
   if (!data || typeof data !== 'object') {
     throw new HostSdkValidationError('message must be an object');
