@@ -58,7 +58,18 @@ def _empty_doc() -> dict[str, Any]:
 
 @contextmanager
 def registry_lock() -> Iterator[None]:
-    """Process-wide + cross-process lock for registry RMW."""
+    """Process-wide + cross-process lock for registry RMW.
+
+    Fail closed if ``fcntl`` is unavailable or ``flock`` cannot be acquired —
+    thread-only locking is insufficient across Uvicorn workers.
+    """
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise PluginRegistryError(
+            "cross-process registry locking unavailable: fcntl module missing"
+        ) from exc
+
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = _lock_path()
@@ -66,19 +77,16 @@ def registry_lock() -> Iterator[None]:
         fh = open(lock_file, "a+", encoding="utf-8")
         try:
             try:
-                import fcntl
-
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            except (ImportError, OSError):
-                # Best-effort on platforms without fcntl; thread lock still held.
-                pass
+            except OSError as exc:
+                raise PluginRegistryError(
+                    f"cross-process registry locking unavailable: flock failed ({exc})"
+                ) from exc
             yield
         finally:
             try:
-                import fcntl
-
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            except (ImportError, OSError):
+            except OSError:
                 pass
             fh.close()
 

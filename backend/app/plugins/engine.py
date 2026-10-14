@@ -539,20 +539,43 @@ def read_audit_history(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def run_synthetic(plugin_id: str) -> dict[str, Any]:
-    """Serve integrity-covered static synthetic JSON — never exec plugin.py."""
+    """Run an active plugin via restricted worker when configured; else static JSON.
+
+    Never imports ``backend/plugin.py`` inside the FastAPI process.
+    When ``EV_PLUGIN_WORKER_REQUIRED=1``, fails closed unless the worker is
+    isolated and reachable.
+    """
+    from app.plugins import worker_client
+
     rec = get_plugin(plugin_id)
     if not rec or rec.get("activation_status") != "active":
         raise PackOpsError(f"plugin not active: {plugin_id}")
     if "synthetic_data" not in (rec.get("permissions") or []):
         raise PackOpsError("plugin lacks synthetic_data permission")
     version = str(rec["version"])
-    digest = rec.get("digest")
-    root = pack_dir(plugin_id, version)
-    # Re-verify artifact; do not import backend/plugin.py
+    digest = str(rec.get("digest") or "")
+    # Re-verify artifact integrity in the Host Shell before asking the worker
     verify_pack(plugin_id, version, expected_digest=digest)
+
+    if worker_client.worker_url() or worker_client.worker_required():
+        out = worker_client.execute_plugin(
+            plugin_id=plugin_id,
+            version=version,
+            digest=digest,
+            operation="render",
+            payload={},
+        )
+        out["frontend_slot"] = rec.get("frontend_slot")
+        return out
+
+    # Dev/unit fallback without worker: integrity-covered static JSON only
+    root = pack_dir(plugin_id, version)
     syn_path = root / "ui" / "synthetic.json"
     if not syn_path.is_file():
-        raise PackOpsError("ui/synthetic.json missing (in-process plugin exec is disabled)")
+        raise PackOpsError(
+            "ui/synthetic.json missing and plugin worker not configured "
+            "(in-process plugin exec remains disabled)"
+        )
     if syn_path.is_symlink():
         raise PackOpsError("symlinks not allowed")
     payload = json.loads(syn_path.read_text(encoding="utf-8"))
@@ -601,8 +624,11 @@ def registry_snapshot() -> dict[str, Any]:
         "artifacts_root": str(artifacts_root()),
         "plugins": list_plugins(),
         "supported_slots": sorted(SUPPORTED_SLOTS),
-        "execution_model": "static_synthetic_only",
+        "execution_model": "restricted_worker_or_static_synthetic",
         "in_process_plugin_exec": False,
+        "plugin_worker_url_set": bool(
+            __import__("os").environ.get("EV_PLUGIN_WORKER_URL")
+        ),
     }
 
 

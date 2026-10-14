@@ -1,0 +1,19 @@
+# Stage P2A — Host Shell core protection owners.
+# Required review from owners below for self-protected / core machinery paths.
+# Branch protection must require this CODEOWNERS review + Tool Protection checks
+# (see docs/PLUGIN_WORKER_P2A.md and scripts/tools/check_core_github_enforcement.py).
+
+# Core protection machinery (self-protected)
+/tools/core_protection.json @techadv50-boop
+/scripts/tools/check_core_protection.py @techadv50-boop
+/scripts/tools/check_core_github_enforcement.py @techadv50-boop
+/.github/workflows/tool-protection.yml @techadv50-boop
+/.github/workflows/deploy-sateye.yml @techadv50-boop
+/tools/core_releases/ @techadv50-boop
+
+# Legacy frozen catalog & approved-tool guards
+/tools/manifest.json @techadv50-boop
+/scripts/tools/check_manifest.py @techadv50-boop
+/scripts/tools/check_approved_guard.py @techadv50-boop
+/backend/app/tools/pack_ops.py @techadv50-boop
+/frontend/src/toolbox/catalog.ts @techadv50-boop

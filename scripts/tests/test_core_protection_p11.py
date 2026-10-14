@@ -102,6 +102,32 @@ def test_dirty_self_protect_fails_against_live_base():
     assert code2 == 1, out2
 
 
+def test_github_enforcement_script():
+    script = ROOT / "scripts" / "tools" / "check_core_github_enforcement.py"
+    assert script.is_file()
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+    assert "CORE GITHUB ENFORCEMENT OK" in (proc.stdout or "")
+
+
+def test_codeowners_covers_core_machinery():
+    path = ROOT / ".github" / "CODEOWNERS"
+    assert path.is_file()
+    text = path.read_text(encoding="utf-8")
+    for needle in (
+        "/tools/core_protection.json",
+        "/scripts/tools/check_core_protection.py",
+        "/.github/workflows/tool-protection.yml",
+        "/tools/core_releases/",
+    ):
+        assert needle in text
+
+
 def main() -> int:
     failures = 0
     for name, fn in list(globals().items()):

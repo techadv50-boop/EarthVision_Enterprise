@@ -362,3 +362,170 @@ def test_core_protection_script_exists():
     data = json.loads(core.read_text())
     assert data.get("schema_version") == 2
     assert "rejects_standalone_env" in (data.get("approval") or {})
+
+
+def test_registry_flock_fail_closed(plugin_volume, monkeypatch):
+    import fcntl
+
+    from app.plugins import registry as reg
+
+    def boom_flock(*_a, **_k):
+        raise OSError("flock denied")
+
+    monkeypatch.setattr(fcntl, "flock", boom_flock)
+    with pytest.raises(reg.PluginRegistryError, match="locking unavailable"):
+        with reg.registry_lock():
+            pass
+
+
+def test_concurrent_activate_and_rollback(plugin_volume, tmp_path):
+    s10, d10, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    s11, d11, _ = _stage_signed(tmp_path / "b", "1.1.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s10, expected_digest=d10, actor="t", confirm="install"
+    )
+    engine.install_from_staging(
+        staging_id=s11, expected_digest=d11, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    errors: list[BaseException] = []
+
+    def activate_11() -> None:
+        try:
+            engine.activate_plugin(
+                plugin_id="demo_hello", version="1.1.0", actor="a11", confirm="activate"
+            )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def rollback_10() -> None:
+        try:
+            engine.rollback_plugin(
+                plugin_id="demo_hello", to="1.0.0", actor="r10", confirm="rollback"
+            )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=activate_11),
+        threading.Thread(target=rollback_10),
+        threading.Thread(target=activate_11),
+        threading.Thread(target=rollback_10),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    rec = get_plugin("demo_hello")
+    assert rec["activation_status"] == "active"
+    assert rec["version"] in {"1.0.0", "1.1.0"}
+    assert get_pin("true_color")["mode"] == "builtin"
+
+
+def test_worker_required_fail_closed(plugin_volume, tmp_path, monkeypatch):
+    from app.plugins import worker_client
+
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    monkeypatch.setenv("EV_PLUGIN_WORKER_REQUIRED", "1")
+    monkeypatch.delenv("EV_PLUGIN_WORKER_URL", raising=False)
+    with pytest.raises(PackOpsError, match="isolation cannot be established|WORKER_URL"):
+        worker_client.check_isolation(require=True)
+    with pytest.raises(PackOpsError, match="worker"):
+        engine.run_synthetic("demo_hello")
+
+
+def test_worker_executor_digest_and_lifecycle(plugin_volume, tmp_path):
+    """Restricted worker executor (no FastAPI) — demo_hello 1.0.0 → 1.1.0 → rollback."""
+    import importlib.util
+
+    worker_dir = REPO / "tools" / "plugins" / "worker"
+    spec = importlib.util.spec_from_file_location(
+        "ev_p2a_executor", worker_dir / "executor.py"
+    )
+    assert spec and spec.loader
+    ex = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ex)
+
+    s10, d10, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    s11, d11, _ = _stage_signed(tmp_path / "c", "1.1.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s10, expected_digest=d10, actor="t", confirm="install"
+    )
+    engine.install_from_staging(
+        staging_id=s11, expected_digest=d11, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+
+    out10 = ex.execute(
+        plugin_id="demo_hello",
+        version="1.0.0",
+        digest=d10,
+        operation="render",
+        payload={},
+    )
+    assert out10["plugin_id"] == "demo_hello"
+    assert "1.0.0" in str(out10.get("version")) or "Hello" in out10.get("message", "")
+
+    with pytest.raises(ex.ExecError, match="digest"):
+        ex.execute(
+            plugin_id="demo_hello",
+            version="1.0.0",
+            digest="sha256:" + ("00" * 32),
+            operation="render",
+            payload={},
+        )
+
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.1.0", actor="t", confirm="activate"
+    )
+    out11 = ex.execute(
+        plugin_id="demo_hello",
+        version="1.1.0",
+        digest=d11,
+        operation="render",
+        payload={},
+    )
+    assert "1.1.0" in out11.get("message", "") or out11.get("version") == "1.1.0"
+
+    engine.rollback_plugin(
+        plugin_id="demo_hello", to="1.0.0", actor="t", confirm="rollback"
+    )
+    assert get_plugin("demo_hello")["version"] == "1.0.0"
+    engine.disable_plugin(plugin_id="demo_hello", actor="t", confirm="disable")
+    assert get_plugin("demo_hello")["activation_status"] == "disabled"
+    assert get_pin("true_color")["mode"] == "builtin"
+
+
+def test_worker_server_isolation_refuses_secrets(tmp_path, monkeypatch):
+    """Worker server must refuse start when Host Shell secrets are present."""
+    import subprocess
+    import sys
+
+    env = {
+        **os.environ,
+        "EV_ARTIFACTS_ROOT": str(tmp_path),
+        "DATABASE_URL": "postgresql://should-not-exist",
+        "SECRET_KEY": "",
+        # Allow root in CI sandboxes; still must fail on DATABASE_URL
+        "EV_PLUGIN_WORKER_ALLOW_ROOT": "1",
+    }
+    proc = subprocess.run(
+        [sys.executable, str(REPO / "tools" / "plugins" / "worker" / "server.py")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert proc.returncode == 2
+    assert "ISOLATION FAILED" in (proc.stderr or "") or "DATABASE_URL" in (proc.stderr or "")
