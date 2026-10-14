@@ -51,28 +51,41 @@ function normTitle(title?: string) {
     .trim();
 }
 
+function doiQuality(doi?: string) {
+  const value = (doi || '').toLowerCase();
+  const preprint = /10\.21203\/|\/rs\.3\.rs-/.test(value) ? 1 : 0;
+  const doubled = /^(10\.\d+)\/\1\//.test(value) ? 1 : 0;
+  return preprint + doubled;
+}
+
+function preferWork(existing: CitingWork, incoming: CitingWork) {
+  const better = doiQuality(incoming.doi) < doiQuality(existing.doi) ? incoming : existing;
+  const other = better === incoming ? existing : incoming;
+  return {
+    ...other,
+    ...Object.fromEntries(Object.entries(better).filter(([, value]) => value !== undefined && value !== '')),
+  } as CitingWork;
+}
+
 function uniqueWorks(works: CitingWork[]) {
-  const byDoi = new Map<string, CitingWork>();
-  const noDoi: CitingWork[] = [];
+  const byTitle = new Map<string, CitingWork>();
+  const untitled: CitingWork[] = [];
+  const seenDoi = new Set<string>();
   for (const work of works) {
     const doi = (work.doi || '').trim().toLowerCase();
     if (doi) {
-      if (!byDoi.has(doi)) byDoi.set(doi, work);
+      if (seenDoi.has(doi)) continue;
+      seenDoi.add(doi);
+    }
+    const title = normTitle(work.title);
+    if (!title) {
+      untitled.push(work);
       continue;
     }
-    noDoi.push(work);
+    const existing = byTitle.get(title);
+    byTitle.set(title, existing ? preferWork(existing, work) : work);
   }
-  const seenTitle = new Set(
-    [...byDoi.values()].map((work) => normTitle(work.title)).filter(Boolean),
-  );
-  const leftover: CitingWork[] = [];
-  for (const work of noDoi) {
-    const title = normTitle(work.title);
-    if (title && seenTitle.has(title)) continue;
-    if (title) seenTitle.add(title);
-    leftover.push(work);
-  }
-  return [...byDoi.values(), ...leftover];
+  return [...byTitle.values(), ...untitled];
 }
 
 function worksForSource(works: CitingWork[], source: 'crossref' | 'scholar') {
@@ -124,8 +137,9 @@ export default function IssueArticlesPage() {
   useEffect(() => {
     void (async () => {
       const payload = await load();
-      if (!payload.issue.id) return;
+      if (!payload.issue.id || vol === 0) return;
       if (!admin) return;
+      if ((payload.articles || []).length > 40) return;
       const marker = `citing-works-v2-${payload.issue.id}`;
       const needCounts = (payload.articles || []).some((a) => !a.citation_synced_at);
       const needLists =
@@ -150,8 +164,20 @@ export default function IssueArticlesPage() {
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
     setMsg('Uploading…');
-    await citationApi.journals.uploadPapers(id, Array.from(files));
-    setMsg('Papers filed into this issue when headers match.');
+    const { data } = await citationApi.journals.uploadPapers(id, Array.from(files), {
+      volume: vol,
+      issue: iss,
+    });
+    const rows = Array.isArray(data?.articles) ? data.articles : [];
+    const here = rows.filter(
+      (row: { article?: { volume?: number; issue_number?: number } }) =>
+        Number(row.article?.volume) === vol && Number(row.article?.issue_number) === iss
+    ).length;
+    setMsg(
+      here
+        ? `Filed ${here} paper${here === 1 ? '' : 's'} into Volume ${vol} Issue ${iss}.`
+        : 'Upload finished, but the papers did not land in this issue.'
+    );
     await load();
   };
 
@@ -169,11 +195,12 @@ export default function IssueArticlesPage() {
     <div>
       <p className="text-sm text-gray-500 mb-2">
         <Link to="/journals">Journals</Link> / <Link to={`/journals/${id}`}>Journal</Link> /{' '}
-        <Link to={`/journals/${id}/volumes/${vol}`}>Vol. {vol}</Link> / Issue {iss}
+        <Link to={`/journals/${id}/volumes/${vol}`}>{vol === 0 ? 'Unfiled' : `Vol. ${vol}`}</Link>
+        {vol === 0 ? '' : ` / Issue ${iss}`}
       </p>
       <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
         <div>
-          <h2 className="text-2xl font-semibold">Issue {iss}</h2>
+          <h2 className="text-2xl font-semibold">{vol === 0 ? 'Unfiled papers' : `Issue ${iss}`}</h2>
           <p className="text-gray-400 text-sm">
             {data.issue.article_count} articles · {data.issue.cited_count} cited (Scholar{' '}
             {data.issue.scholar_total} / Crossref {data.issue.crossref_total}) ·{' '}
@@ -323,14 +350,32 @@ function CitingWorksList({ article }: { article: Article }) {
 
   return (
     <div className="mt-4 space-y-4">
-      <section>
-        <p className="text-sm font-medium mb-1">
+      <div className="space-y-1">
+        <p className="text-sm font-medium">
           Cite by Crossref{' '}
           <span className="text-gray-400 font-normal">
             ({crossrefWorks.length}
             {crossrefCount > 0 && crossrefWorks.length !== crossrefCount ? ` of ${crossrefCount}` : ''})
           </span>
         </p>
+        <p className="text-sm font-medium">
+          Cite by Google Scholar{' '}
+          <span className="text-gray-400 font-normal">
+            ({scholarWorks.length}
+            {scholarCount > 0 && scholarWorks.length !== scholarCount ? ` of ${scholarCount}` : ''})
+          </span>
+        </p>
+        {scholarCount === 0 && scholarWorks.length === 0 && (
+          <p className="text-xs text-gray-500">No Google Scholar citing articles for this paper.</p>
+        )}
+        {scholarCount > 0 && scholarWorks.length === 0 && (
+          <p className="text-xs text-gray-500">
+            Google Scholar reports {scholarCount} citation{scholarCount === 1 ? '' : 's'}
+            {article.scholar_url ? ', but the cited-by list could not be loaded here. Open the Scholar link above.' : '.'}
+          </p>
+        )}
+      </div>
+      <section>
         {crossrefCount > 0 && crossrefWorks.length === 0 && (
           <p className="text-xs text-gray-500 mb-2">
             Crossref reports {crossrefCount} citation{crossrefCount === 1 ? '' : 's'}, but no citing-article
@@ -342,25 +387,11 @@ function CitingWorksList({ article }: { article: Article }) {
         )}
         <CitingWorkItems source="crossref" works={crossrefWorks} />
       </section>
-      <section>
-        <p className="text-sm font-medium mb-1">
-          Cite by Google Scholar{' '}
-          <span className="text-gray-400 font-normal">
-            ({scholarWorks.length}
-            {scholarCount > 0 && scholarWorks.length !== scholarCount ? ` of ${scholarCount}` : ''})
-          </span>
-        </p>
-        {scholarCount > 0 && scholarWorks.length === 0 && (
-          <p className="text-xs text-gray-500 mb-2">
-            Google Scholar reports {scholarCount} citation{scholarCount === 1 ? '' : 's'}
-            {article.scholar_url ? ', but the cited-by list could not be loaded here. Open the Scholar link above.' : '.'}
-          </p>
-        )}
-        {scholarCount === 0 && scholarWorks.length === 0 && (
-          <p className="text-xs text-gray-500">No Google Scholar citing articles for this paper.</p>
-        )}
-        <CitingWorkItems source="scholar" works={scholarWorks} />
-      </section>
+      {scholarWorks.length > 0 && (
+        <section>
+          <CitingWorkItems source="scholar" works={scholarWorks} />
+        </section>
+      )}
     </div>
   );
 }

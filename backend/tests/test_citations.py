@@ -816,11 +816,10 @@ async def test_archive_state_update_adds_and_removes_live_articles(client: Async
     )
     assert sync.status_code == 200, sync.text
     sync_id = sync.json()["id"]
-    await crawler_mod.run_state_update_job(sync_id, fetch=fake_fetch)
+    await crawler_mod.run_crawl_job(sync_id, fetch=fake_fetch, auto_download=True)
     result = (await client.get(f"/api/v1/crawl-jobs/{sync_id}", headers=headers)).json()
     assert result["status"] == "completed", result
     assert result["articles_saved"] >= 1
-    assert result["articles_removed"] >= 1
     arts = await client.get(f"/api/v1/journals/{jid}/issues", headers=headers)
     assert arts.status_code == 200
     titles = []
@@ -834,8 +833,217 @@ async def test_archive_state_update_adds_and_removes_live_articles(client: Async
         titles.extend(a["title"] for a in payload.json()["articles"])
     blob = " ".join(titles)
     assert "State Update Extra Paper" in blob
-    assert not any("Digital Signature Scheme" in t for t in titles)
     assert any("Drinking Water" in t or "Water" in t for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_archive_crawler_files_volume_one_from_later_pages(client: AsyncClient, monkeypatch):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Early Issues Journal", "abbreviation": "EIJ"},
+    )
+    jid = created.json()["id"]
+    bare_pdf = _pdf_from_text("Body text with no running header or citation line at all.")
+
+    async def fake_fetch(url: str):
+        pages = {
+            "https://example.test/issue/archive": (
+                b"<html>"
+                b'<a href="https://example.test/issue/view/80">Vol. 8 No. 8 (2026)</a>'
+                b'<a href="https://example.test/issue/archive/2">Next</a>'
+                b"</html>"
+            ),
+            "https://example.test/issue/archive/2": (
+                b"<html>"
+                b'<a href="https://example.test/issue/view/11">Vol. 1 No. 1 (2019)</a>'
+                b'<a href="https://example.test/issue/view/12">Vol. 1 No. 2 (2019)</a>'
+                b'<a href="https://example.test/issue/view/13">Vol. 1 No. 3 (2019)</a>'
+                b'<a href="https://example.test/issue/view/14">Vol. 1 No. 4 (2019)</a>'
+                b"</html>"
+            ),
+            "https://example.test/issue/view/11": (
+                b"<html><h1>Vol. 1 No. 1 (2019)</h1>"
+                b'<a href="https://example.test/article/view/101">Paper</a>'
+                b'<a href="https://example.test/article/download/101/201">PDF</a></html>'
+            ),
+            "https://example.test/issue/view/12": (
+                b"<html><h1>Vol. 1 No. 2 (2019)</h1>"
+                b'<a href="https://example.test/article/view/102">Paper</a>'
+                b'<a href="https://example.test/article/download/102/202">PDF</a></html>'
+            ),
+            "https://example.test/issue/view/13": (
+                b"<html><a href='https://example.test/article/download/103/203'>PDF</a></html>"
+            ),
+            "https://example.test/issue/view/14": (
+                b"<html><a href='https://example.test/article/download/104/204'>PDF</a></html>"
+            ),
+            "https://example.test/issue/view/80": (
+                b"<html><a href='https://example.test/article/download/800/800'>PDF</a></html>"
+            ),
+        }
+        if url in pages:
+            return 200, pages[url], "text/html"
+        if url.endswith(".pdf") or "/download/" in url or re.search(r"/article/view/\d+/\d+", url):
+            return 200, bare_pdf, "application/pdf"
+        return 404, b"", "text/plain"
+
+    from app.services import crawler as crawler_mod
+
+    monkeypatch.setattr(crawler_mod, "default_fetch", fake_fetch)
+    start = await client.post(
+        f"/api/v1/journals/{jid}/crawl",
+        headers=headers,
+        json={"archive_url": "https://example.test/issue/archive", "auto_download": False},
+    )
+    assert start.status_code == 200, start.text
+    job_id = start.json()["id"]
+    await crawler_mod.run_crawl_job(job_id, fetch=fake_fetch, auto_download=True)
+
+    job = (await client.get(f"/api/v1/crawl-jobs/{job_id}", headers=headers)).json()
+    assert job["status"] == "completed", job
+    titles = {row["title"] for row in job["inventory"]}
+    assert any("Vol. 1 No. 1" in (title or "") for title in titles)
+    assert any("Vol. 1 No. 2" in (title or "") for title in titles)
+
+    vols = (await client.get(f"/api/v1/journals/{jid}/volumes", headers=headers)).json()
+    assert all(row["volume"] != 0 for row in vols) or all(
+        not row.get("unfiled") or row["article_count"] == 0 for row in vols
+    )
+    vol1 = next(row for row in vols if row["volume"] == 1)
+    assert vol1["article_count"] >= 2
+    issues = (await client.get(f"/api/v1/journals/{jid}/volumes/1/issues", headers=headers)).json()
+    by_num = {row["issue_number"]: row for row in issues}
+    assert 1 in by_num and 2 in by_num
+    assert by_num[1]["article_count"] >= 1
+    assert by_num[2]["article_count"] >= 1
+    missing = (await client.get(
+        f"/api/v1/journals/{jid}/volumes/1/issues/1/articles", headers=headers
+    )).json()
+    assert missing["articles"]
+    assert all(a["volume"] == 1 for a in missing["articles"])
+
+
+@pytest.mark.asyncio
+async def test_upload_files_into_issue_rack_and_filename(client: AsyncClient):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Upload Rack Journal", "abbreviation": "URJ"},
+    )
+    jid = created.json()["id"]
+    named = _pdf_from_text("No bibliographic header in this PDF.")
+    placed = _pdf_from_text("Another PDF without a volume line.")
+
+    by_name = await client.post(
+        f"/api/v1/journals/{jid}/papers",
+        headers=headers,
+        files=[("files", ("IJIST_vol1_issue2_paper.pdf", named, "application/pdf"))],
+    )
+    assert by_name.status_code == 200, by_name.text
+    article = by_name.json()["articles"][0]["article"]
+    assert article["volume"] == 1
+    assert article["issue_number"] == 2
+
+    by_query = await client.post(
+        f"/api/v1/journals/{jid}/papers",
+        headers=headers,
+        params={"volume": 1, "issue": 1},
+        files=[("files", ("mystery.pdf", placed, "application/pdf"))],
+    )
+    assert by_query.status_code == 200, by_query.text
+    placed_article = by_query.json()["articles"][0]["article"]
+    assert placed_article["volume"] == 1
+    assert placed_article["issue_number"] == 1
+
+    dumped = await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={"filename": "lost.txt", "text": "Still no volume at all."},
+    )
+    assert dumped.status_code == 200
+    assert dumped.json()["article"]["volume"] in (0, None)
+
+    refile = await client.post(f"/api/v1/journals/{jid}/refile", headers=headers)
+    assert refile.status_code == 200, refile.text
+
+    issues = (await client.get(f"/api/v1/journals/{jid}/volumes/1/issues", headers=headers)).json()
+    by_num = {row["issue_number"]: row for row in issues}
+    assert by_num[1]["article_count"] >= 1
+    assert by_num[2]["article_count"] >= 1
+    empty_rack = await client.get(
+        f"/api/v1/journals/{jid}/volumes/1/issues/3/articles", headers=headers
+    )
+    assert empty_rack.status_code == 200
+    assert empty_rack.json()["articles"] == []
+    assert empty_rack.json()["issue"]["issue_number"] == 3
+
+
+@pytest.mark.asyncio
+async def test_issue_page_upload_stays_on_that_rack(client: AsyncClient):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Forced Rack Journal", "abbreviation": "FRJ"},
+    )
+    jid = created.json()["id"]
+    pdf = _pdf_from_text(GALLEY_WATER)
+
+    pinned = await client.post(
+        f"/api/v1/journals/{jid}/volumes/8/issues/1/papers",
+        headers=headers,
+        files=[("files", ("water-on-issue-1.pdf", pdf, "application/pdf"))],
+    )
+    assert pinned.status_code == 200, pinned.text
+    article = pinned.json()["articles"][0]["article"]
+    assert article["volume"] == 8
+    assert article["issue_number"] == 1
+    assert "Water" in (article["title"] or "") or article["page_start"] == 2211
+
+    listing = await client.get(
+        f"/api/v1/journals/{jid}/volumes/8/issues/1/articles", headers=headers
+    )
+    assert listing.status_code == 200
+    assert listing.json()["issue"]["article_count"] >= 1
+    assert listing.json()["articles"]
+    assert all(row["issue_number"] == 1 for row in listing.json()["articles"])
+
+    elsewhere = await client.get(
+        f"/api/v1/journals/{jid}/volumes/8/issues/5/articles", headers=headers
+    )
+    assert elsewhere.json()["issue"]["article_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unfiled_volume_is_flagged_not_mixed_into_volume_one(client: AsyncClient):
+    headers = await _auth(client)
+    created = await client.post(
+        "/api/v1/journals",
+        headers=headers,
+        json={"name": "Unfiled Mix Journal", "abbreviation": "UMJ"},
+    )
+    jid = created.json()["id"]
+    await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={"filename": "ok.txt", "text": GALLEY_WATER},
+    )
+    await client.post(
+        f"/api/v1/journals/{jid}/papers-text",
+        headers=headers,
+        json={"filename": "lost.txt", "text": "Untitled blob with no header"},
+    )
+    vols = (await client.get(f"/api/v1/journals/{jid}/volumes", headers=headers)).json()
+    numbered = [row for row in vols if row["volume"] > 0]
+    unfiled = [row for row in vols if row["volume"] == 0 or row.get("unfiled")]
+    assert any(row["volume"] == 8 for row in numbered)
+    assert unfiled
+    assert unfiled[0]["unfiled"] is True
+    vol8_issues = (await client.get(f"/api/v1/journals/{jid}/volumes/8/issues", headers=headers)).json()
+    assert all(row["issue_number"] != 0 for row in vol8_issues if row["article_count"])
 
 
 @pytest.mark.asyncio

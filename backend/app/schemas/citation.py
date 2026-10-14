@@ -46,6 +46,7 @@ class VolumeOut(BaseModel):
     article_count: int = 0
     issue_count: int = 0
     missing: bool = False
+    unfiled: bool = False
 
 
 class IssueStatsOut(BaseModel):
@@ -130,6 +131,7 @@ class ArticlePatch(BaseModel):
 
 class CrawlStart(BaseModel):
     archive_url: str
+    auto_download: bool = False
 
 
 class CrawlJobOut(BaseModel):
@@ -165,13 +167,15 @@ class CrawlJobOut(BaseModel):
 
 
 class CrawlDownloadIn(BaseModel):
-    issue_urls: list[str] = Field(..., min_length=1, max_length=400)
+    issue_urls: list[str] = Field(..., min_length=1, max_length=800)
 
 
 class TextPaperIn(BaseModel):
     filename: str = "article.txt"
     text: str
     source_url: Optional[str] = None
+    volume: Optional[int] = None
+    issue: Optional[int] = None
 
 
 class ManuscriptOut(BaseModel):

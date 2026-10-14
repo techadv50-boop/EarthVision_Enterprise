@@ -1,6 +1,6 @@
 """IJIST header fixtures and parser tests."""
 
-from app.services.citation_parser import parse_ijist_header, format_house_citation
+from app.services.citation_parser import parse_ijist_header, parse_volume_issue, format_house_citation
 
 GALLEY_EDDSA = """
 International Journal of Innovations in Science & Technology
@@ -50,6 +50,27 @@ def test_parse_water_galley():
     assert "Drinking Water" in (meta["title"] or "")
     assert meta["published_date"] and "23" in meta["published_date"]
     assert meta["keywords"]
+
+
+def test_parse_volume_issue_from_ojs_titles_and_filenames():
+    assert parse_volume_issue("Vol. 1 No. 1 (2019)") == (1, 1, 2019)
+    assert parse_volume_issue("Vol. 1 No. 2 (2019)")[:2] == (1, 2)
+    assert parse_volume_issue("paper_vol1_issue2.pdf")[:2] == (1, 2)
+    assert parse_volume_issue("Volume 3, Issue 4")[:2] == (3, 4)
+    assert parse_volume_issue("https://example.test/archive/vol-1-no-3-2019")[:2] == (1, 3)
+
+
+def test_parse_generic_citation_line_not_only_ijist():
+    text = (
+        'January 2019 | Vol. 1 | Issue 2 Page | 15\n'
+        'A Generic Paper Title\n'
+        'Citation| Doe. J, “A Generic Paper Title”, OTHER, Vol. 1 Issue. 2 pp 15-22, January 2019\n'
+    )
+    meta = parse_ijist_header(text)
+    assert meta["volume"] == 1
+    assert meta["issue"] == 2
+    assert meta["page_start"] == 15
+    assert meta["page_end"] == 22
 
 
 def test_house_citation_format():
