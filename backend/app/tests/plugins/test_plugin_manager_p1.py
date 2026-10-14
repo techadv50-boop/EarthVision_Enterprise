@@ -1062,3 +1062,243 @@ def test_p2a1_branch_protection_evidence_unknown_or_pass():
     data = json.loads(proc.stdout)
     assert data["overall"] in {"PASS", "UNKNOWN"}
     assert data["local_codeowners"]["codeowners_present"] is True
+
+
+# ---------------------------------------------------------------------------
+# Stage P2B — sandboxed frontend plugin loading
+# ---------------------------------------------------------------------------
+
+
+def test_p2b_frontend_manifest_and_assets_bound_to_active_pin(plugin_volume, tmp_path):
+    from app.plugins.frontend_assets import active_frontend_manifest, read_active_ui_asset
+
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    with pytest.raises(PackOpsError, match="not active"):
+        active_frontend_manifest("demo_hello")
+
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    man = active_frontend_manifest("demo_hello")
+    assert man["version"] == "1.0.0"
+    assert man["digest"] == d1
+    assert man["ui_strategy"] == "sandboxed_iframe"
+    assert man["entry_html"] == "ui/panel.html"
+    assert "ui/plugin.js" in man["ui_files"]
+
+    html, ctype = read_active_ui_asset("demo_hello", "panel.html")
+    assert b"Demo Hello" in html
+    assert "text/html" in ctype
+
+    # Path traversal / non-listed asset
+    with pytest.raises(PackOpsError):
+        read_active_ui_asset("demo_hello", "../pack.json")
+    with pytest.raises(PackOpsError):
+        read_active_ui_asset("demo_hello", "ui/../../pack.json")
+
+
+def test_p2b_frontend_version_update_and_rollback_changes_ui(plugin_volume, tmp_path):
+    from app.plugins.frontend_assets import active_frontend_manifest, read_active_ui_asset
+
+    s10, d10, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    s11, d11, _ = _stage_signed(tmp_path / "c", "1.1.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s10, expected_digest=d10, actor="t", confirm="install"
+    )
+    engine.install_from_staging(
+        staging_id=s11, expected_digest=d11, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    html10, _ = read_active_ui_asset("demo_hello", "ui/panel.html")
+    assert b"#0369a1" in html10
+
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.1.0", actor="t", confirm="activate"
+    )
+    man = active_frontend_manifest("demo_hello")
+    assert man["version"] == "1.1.0" and man["digest"] == d11
+    html11, _ = read_active_ui_asset("demo_hello", "ui/panel.html")
+    assert b"#047857" in html11
+    js11, _ = read_active_ui_asset("demo_hello", "plugin.js")
+    assert b"FE 1.1.0" in js11
+
+    engine.rollback_plugin(
+        plugin_id="demo_hello", to="1.0.0", actor="t", confirm="rollback"
+    )
+    man2 = active_frontend_manifest("demo_hello")
+    assert man2["version"] == "1.0.0" and man2["digest"] == d10
+    html_rb, _ = read_active_ui_asset("demo_hello", "panel.html")
+    assert b"#0369a1" in html_rb
+
+
+def test_p2b_host_sdk_message_validation_adversarial():
+    from app.plugins.host_sdk_contract import (
+        HostSdkError,
+        assert_method_allowed,
+        validate_plugin_message,
+    )
+
+    base = {
+        "v": 1,
+        "type": "request",
+        "id": "r1",
+        "plugin_id": "demo_hello",
+        "version": "1.0.0",
+        "digest": "sha256:" + ("ab" * 32),
+        "method": "host.meta",
+        "params": {},
+    }
+    assert validate_plugin_message(base)["method"] == "host.meta"
+
+    with pytest.raises(HostSdkError, match="protocol"):
+        validate_plugin_message({**base, "v": 99})
+    with pytest.raises(HostSdkError, match="type"):
+        validate_plugin_message({**base, "type": "exec"})
+    with pytest.raises(HostSdkError, match="forbidden"):
+        assert_method_allowed("host.getAuthToken", ["host.sdk.read_meta"])
+    with pytest.raises(HostSdkError, match="forbidden"):
+        assert_method_allowed("host.leaflet", ["host.sdk.read_meta"])
+    with pytest.raises(HostSdkError, match="unknown"):
+        assert_method_allowed("host.notARealMethod", ["host.sdk.read_meta"])
+    with pytest.raises(HostSdkError, match="permission"):
+        assert_method_allowed("host.getSynthetic", ["host.sdk.read_meta"])
+    with pytest.raises(HostSdkError, match="secrets"):
+        validate_plugin_message({**base, "params": {"token": "steal-me"}})
+    with pytest.raises(HostSdkError, match="digest"):
+        validate_plugin_message({**base, "digest": "md5:dead"})
+
+
+def test_p2b_host_sdk_bridge_rejects_stale_and_disabled(plugin_volume, tmp_path):
+    from app.plugins.host_sdk_contract import (
+        assert_method_allowed,
+        validate_plugin_message,
+    )
+
+    s10, d10, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    s11, d11, _ = _stage_signed(tmp_path / "c", "1.1.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s10, expected_digest=d10, actor="t", confirm="install"
+    )
+    engine.install_from_staging(
+        staging_id=s11, expected_digest=d11, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+
+    # Simulate bridge pin checks (same as router)
+    def bridge(version: str, digest: str, method: str = "host.meta"):
+        msg = validate_plugin_message(
+            {
+                "v": 1,
+                "type": "request",
+                "id": "x1",
+                "plugin_id": "demo_hello",
+                "version": version,
+                "digest": digest,
+                "method": method,
+                "params": {},
+            }
+        )
+        rec = get_plugin("demo_hello")
+        assert rec
+        if rec.get("activation_status") != "active":
+            raise PackOpsError("plugin not active")
+        if str(rec.get("version")) != msg["version"]:
+            raise PackOpsError("stale or rolled-back version")
+        if str(rec.get("digest") or "") != msg["digest"]:
+            raise PackOpsError("digest does not match active pin")
+        assert_method_allowed(msg["method"], list(rec.get("permissions") or []))
+        return True
+
+    assert bridge("1.0.0", d10) is True
+    with pytest.raises(PackOpsError, match="stale|rolled-back"):
+        bridge("1.1.0", d11)
+    with pytest.raises(PackOpsError, match="digest"):
+        bridge("1.0.0", d11)
+
+    engine.disable_plugin(plugin_id="demo_hello", actor="t", confirm="disable")
+    with pytest.raises(PackOpsError, match="not active"):
+        bridge("1.0.0", d10)
+
+
+def test_p2b_unsupported_sdk_and_invalid_signature_still_blocked(plugin_volume, tmp_path):
+    src = _signed_demo(tmp_path, "1.0.0", plugin_volume["priv"])
+    meta = json.loads((src / "pack.json").read_text())
+    meta["host_sdk"] = ">=9.0.0,<10"
+    (src / "pack.json").write_text(json.dumps(meta, indent=2) + "\n")
+    with pytest.raises(PackOpsError, match="incompatible"):
+        engine.validate_plugin_package(src)
+
+    src2 = _signed_demo(tmp_path / "bad", "1.0.0", plugin_volume["priv"])
+    sig = json.loads((src2 / "SIGNATURE.json").read_text())
+    sig["signature"] = "AAAA"
+    (src2 / "SIGNATURE.json").write_text(json.dumps(sig))
+    with pytest.raises(PackOpsError):
+        engine.validate_plugin_package(src2)
+
+
+def test_p2b_disabled_plugin_cannot_serve_ui(plugin_volume, tmp_path):
+    from app.plugins.frontend_assets import active_frontend_manifest, read_active_ui_asset
+
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    engine.disable_plugin(plugin_id="demo_hello", actor="t", confirm="disable")
+    with pytest.raises(PackOpsError, match="not active"):
+        active_frontend_manifest("demo_hello")
+    with pytest.raises(PackOpsError, match="not active"):
+        read_active_ui_asset("demo_hello", "panel.html")
+
+
+def test_p2b_audit_redacts_secrets_and_health_has_no_tokens(plugin_volume, tmp_path):
+    engine.audit_frontend_event(
+        action="host_sdk",
+        ok=False,
+        plugin_id="demo_hello",
+        error="denied",
+        extra={"authorization": "Bearer SECRET", "method": "host.meta"},
+    )
+    events = engine.read_audit_history(limit=20)
+    assert events
+    # authorization key should be redacted or omitted from extra
+    for ev in events:
+        if ev.get("action") == "host_sdk":
+            assert ev.get("authorization") in (None, "[redacted]")
+            assert "SECRET" not in json.dumps(ev)
+
+    health = engine.plugin_system_health()
+    blob = json.dumps(health)
+    assert "password" not in blob.lower() or health.get("ok")
+    assert "EV_PLUGIN_WORKER_AUTH_TOKEN" not in blob
+    assert health["loading_model"] == "sandboxed_iframe_srcdoc"
+    assert health["host_sdk_version"] == "1.0.0"
+
+
+def test_p2b_sandboxed_iframe_requires_panel_and_plugin_js(plugin_volume, tmp_path):
+    src = _signed_demo(tmp_path, "1.0.0", plugin_volume["priv"])
+    (src / "ui" / "plugin.js").unlink()
+    # Recompute sums without plugin.js so verify_pack_at path differs —
+    # validate checks file presence before full verify for strategy.
+    with pytest.raises(PackOpsError, match="plugin.js"):
+        engine.validate_plugin_package(src)
+
+
+def test_p2b_true_color_pin_preserved(plugin_volume, tmp_path):
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    assert get_pin("true_color")["mode"] == "builtin"

@@ -42,6 +42,12 @@ async def list_installed(admin: AdminUser) -> dict:
     return {"ok": True, "plugins": list_plugins(), "registry": engine.registry_snapshot()}
 
 
+@router.get("/health")
+async def plugins_health(admin: AdminUser) -> dict:
+    """Plugin subsystem health for admin indicators (no secrets)."""
+    return engine.plugin_system_health()
+
+
 @router.get("/audit")
 async def audit_history(admin: AdminUser, limit: int = 100) -> dict:
     return {"ok": True, "events": engine.read_audit_history(limit=min(limit, 500))}

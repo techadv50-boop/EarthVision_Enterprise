@@ -1,38 +1,83 @@
-# Plugin Frontend Boundary (P1 / P1.1)
+# Plugin Frontend Boundary (P2B)
 
-## P1 limitation (explicit)
+## Loading model
 
-The Host Shell uses **static first-party component mappings** only
-(`frontend/src/plugins/slotRegistry.ts`).
+Independent plugin UI is loaded **only** inside a **sandboxed iframe** built from
+integrity-covered pack assets (`ui/panel.html`, `ui/plugin.js`, …).
 
-| Slot | P1 status |
-|------|-----------|
-| `left_toolbar` | Declared; no dynamic remote UI |
-| `right_analysis_panel` | Host `DemoHelloPanel` only |
-| `map_overlay` | Reserved — host factory later |
-| `results_panel` | Reserved — host chrome later |
+| Property | Enforcement |
+|----------|-------------|
+| No privileged React execution | Uploaded JS never `import()`’d / `eval`’d in Host Shell |
+| Opaque origin | `sandbox="allow-scripts"` **without** `allow-same-origin` + `srcdoc` |
+| Digest binding | FE manifest + assets require active registry `version` + `digest` |
+| Host SDK | Versioned postMessage protocol `v=1` (`PLUGIN_HOST_SDK_VERSION=1.0.0`) |
+| Permissions | Methods gated by pack permission declarations |
+| Secrets | Never injected into iframe boot; audit redacts token/secret fields |
 
-`P1_STATIC_HOST_MAPPINGS_ONLY = true`. This is a deliberate limitation, not a
-full plugin UI loader.
+## Approved placement slots
 
-## Secure independent frontend plugin loading contract (not enabled)
+| Slot | Host mount |
+|------|------------|
+| `left_toolbar` | Workspace map chrome (adjacent to MapToolbar; MapToolbar itself unchanged) |
+| `right_analysis_panel` | Right toolbox column |
+| `map_overlay` | Map stage overlay layer |
+| `results_panel` | Below right analysis column |
 
-Independent UI may be enabled only after all of the following are implemented
-and reviewed:
+## iframe origin strategy
 
-1. **Same-origin only** pack UI URLs under the Host Shell origin (no third-party script hosts).
-2. **Integrity**: UI assets covered by pack `SHA256SUMS` / digest; pin must match.
-3. **Host SDK externals**: React / react-dom / Leaflet provided solely by the shell; packs must not bundle duplicates.
-4. **CSP**: `script-src 'self'` (plus explicit same-origin pack path if needed); no `unsafe-eval` for packs.
-5. **No unrestricted Module Federation**: shared scopes limited to an allowlisted Host SDK surface; remote entry must be digest-pinned.
-6. **Capability gate**: pack may only call documented Host SDK slot/overlay APIs.
-7. **Fail closed**: unknown slot or missing host mapping → render nothing (no `eval`, no arbitrary `import(url)`).
+1. Host Shell (authenticated) fetches `GET /plugins/{id}/frontend` then UI assets.
+2. Host inlines HTML + `plugin.js` into **`srcdoc`** with `window.__EV_PLUGIN_BOOT__`
+   containing only `{pluginId, version, digest, slot, name, hostSdkVersion, parentOrigin}`.
+3. iframe `sandbox="allow-scripts"` → **opaque origin** (no Host cookies, no DOM access).
+4. Plugin talks to Host via `postMessage`; Host accepts only
+   `event.source === iframe.contentWindow` and identity matching the active pin.
 
-## Explicitly forbidden in P1.1
+## CSP
 
-- Arbitrary remote JavaScript URLs
-- Unrestricted Module Federation remotes
+**Inside srcdoc:**
+
+```
+default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src data:; font-src data:; base-uri 'none'; form-action 'none';
+connect-src 'none'; frame-ancestors 'none'
+```
+
+**On direct asset responses** (`GET /plugins/{id}/ui/...`): similar CSP +
+`X-Content-Type-Options: nosniff`, `Cache-Control: no-store`.
+
+`unsafe-inline` is required for srcdoc bootstrapping; there is **no** `unsafe-eval`,
+no remote `script-src`, and `connect-src 'none'` blocks plugin network exfil from
+the frame. Privileged API calls go through the Host Shell bridge only.
+
+## Host SDK permission enforcement
+
+| Method | Required permission | Notes |
+|--------|---------------------|-------|
+| `host.meta` | `host.sdk.read_meta` | Returns pin identity — no secrets |
+| `host.getSynthetic` | `synthetic_data` | Host calls worker/static synthetic |
+| `host.resize` | *(none beyond active plugin)* | Chrome height only |
+
+Forbidden methods (`host.getAuthToken`, `host.leaflet`, `host.fetch`, …) are
+rejected client-side and server-side.
+
+Backend bridge: `POST /plugins/{id}/host-sdk` re-checks active pin + permissions.
+
+## Explicitly forbidden
+
+- Arbitrary remote JavaScript URLs / Module Federation remotes
 - Loading unsigned or digest-mismatched UI bundles
-- Injecting `<script>` tags from pack metadata
+- Injecting `<script src=…>` from unlisted pack metadata into the Host Shell
+- Plugin access to auth tokens, unrestricted APIs, or Leaflet objects
+- Fallback production credentials in source
 
-See also `docs/TOOL_PACK_FRONTEND_LOADING.md` (legacy Tool Pack façade notes).
+## P1 compatibility
+
+`ui_strategy: shell_facade` packs without `panel.html` are rejected when declaring
+`sandboxed_iframe`. Static host component maps remain in-tree only as legacy
+reference (`DemoHelloPanel`); **P2B slot rendering uses sandboxed iframes**.
+
+## Related
+
+- `docs/PLUGIN_WORKER_P2A.md` — worker isolation (still required for Python exec)
+- `docs/PLUGIN_TRUST_BOUNDARY.md`
+- `docs/PLUGIN_FRONTEND_P2B.md` — stage summary + production readiness gaps

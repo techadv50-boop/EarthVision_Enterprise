@@ -133,6 +133,27 @@ def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
                 "(plugin Python is not executed in the API process)"
             )
 
+        ui_strategy = str(ui_meta.get("ui_strategy") or meta.get("ui_strategy") or "shell_facade")
+        if ui_strategy == "sandboxed_iframe":
+            entry = str(ui_meta.get("entry_html") or "ui/panel.html").lstrip("/")
+            if not entry.startswith("ui/"):
+                entry = f"ui/{entry}"
+            entry_path = source_dir / entry
+            if (
+                ".." in Path(entry).parts
+                or not entry_path.is_file()
+                or entry_path.is_symlink()
+            ):
+                raise PackOpsError(
+                    "sandboxed_iframe strategy requires integrity-covered entry HTML "
+                    f"(expected {entry})"
+                )
+            plugin_js = source_dir / "ui" / "plugin.js"
+            if not plugin_js.is_file() or plugin_js.is_symlink():
+                raise PackOpsError(
+                    "sandboxed_iframe strategy requires integrity-covered ui/plugin.js"
+                )
+
         verified = verify_pack_at(source_dir, plugin_id, version)
         publisher_id = None
         if _require_signature():
@@ -163,6 +184,7 @@ def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
         "digest": verified["digest"],
         "publisher_id": publisher_id,
         "host_api_version": HOST_SDK_VERSION,
+        "ui_strategy": ui_strategy,
         "execution_model": "static_synthetic_only",
     }
     _audit(result)
@@ -532,10 +554,92 @@ def read_audit_history(limit: int = 100) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
         if ev.get("subsystem") == "plugin_manager" or ev.get("plugin_id"):
+            # Never echo secret-like fields if a buggy caller stuffed them in
+            for k in list(ev.keys()):
+                lk = str(k).lower()
+                if any(s in lk for s in ("password", "token", "secret", "authorization", "cookie")):
+                    ev[k] = "[redacted]"
             events.append(ev)
         if len(events) >= limit:
             break
     return events
+
+
+def audit_frontend_event(
+    *,
+    action: str,
+    ok: bool,
+    plugin_id: str | None = None,
+    version: str | None = None,
+    digest: str | None = None,
+    error: str | None = None,
+    actor: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Structured audit for FE load / Host SDK failures (no secrets)."""
+    ev: dict[str, Any] = {
+        "action": action,
+        "ok": ok,
+        "plugin_id": plugin_id,
+        "version": version,
+        "digest": digest,
+        "actor": actor or "host_shell",
+    }
+    if error:
+        ev["error"] = str(error)[:500]
+    if extra:
+        for k, v in extra.items():
+            lk = str(k).lower()
+            if any(s in lk for s in ("password", "token", "secret", "authorization", "cookie")):
+                continue
+            ev[k] = v
+    _audit(ev)
+
+
+def plugin_system_health() -> dict[str, Any]:
+    """Admin health: worker, trust profile, host SDK, active pins (no secrets)."""
+    from app.plugins import worker_client
+    from app.plugins.host_sdk_contract import PLUGIN_HOST_SDK_PROTOCOL, PLUGIN_HOST_SDK_VERSION
+    from app.tools.pack_signatures import trust_profile
+
+    worker: dict[str, Any] = {"configured": bool(worker_client.worker_url())}
+    if worker_client.worker_url():
+        try:
+            report = worker_client.check_isolation(require=False)
+            worker["available"] = bool(report.get("ok"))
+            isolation = report.get("isolation") or {}
+            worker["isolated"] = bool(isolation.get("isolated"))
+            worker["process_isolation"] = isolation.get("process_isolation")
+            worker["auth_configured"] = bool(isolation.get("auth_configured"))
+        except PackOpsError as exc:
+            worker["available"] = False
+            worker["error"] = str(exc)[:300]
+    else:
+        worker["available"] = False
+        worker["skipped"] = True
+
+    active = [p for p in list_plugins() if p.get("activation_status") == "active"]
+    return {
+        "ok": True,
+        "host_sdk_version": PLUGIN_HOST_SDK_VERSION,
+        "host_sdk_protocol": PLUGIN_HOST_SDK_PROTOCOL,
+        "pack_host_api_version": HOST_SDK_VERSION,
+        "trust_profile": trust_profile(),
+        "require_signature": _require_signature(),
+        "worker": worker,
+        "active_count": len(active),
+        "active_plugins": [
+            {
+                "plugin_id": p.get("plugin_id"),
+                "version": p.get("version"),
+                "digest": p.get("digest"),
+                "frontend_slot": p.get("frontend_slot"),
+                "compatible_host_api": p.get("compatible_host_api"),
+            }
+            for p in active
+        ],
+        "loading_model": "sandboxed_iframe_srcdoc",
+    }
 
 
 def run_synthetic(plugin_id: str) -> dict[str, Any]:

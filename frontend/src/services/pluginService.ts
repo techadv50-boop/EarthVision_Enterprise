@@ -37,9 +37,59 @@ export interface PluginAuditEvent {
   [key: string]: unknown;
 }
 
+export interface PluginFrontendManifest {
+  ok?: boolean;
+  plugin_id: string;
+  name?: string;
+  version: string;
+  digest: string;
+  frontend_slot: PluginSlot;
+  ui_strategy?: string;
+  entry_html?: string;
+  permissions?: string[];
+  compatible_host_api?: string;
+  host_sdk_version?: string;
+  host_sdk_protocol?: number;
+  loading_model?: string;
+  signature_status?: string;
+  ui_files?: string[];
+}
+
+export interface PluginSystemHealth {
+  ok?: boolean;
+  host_sdk_version?: string;
+  host_sdk_protocol?: number;
+  pack_host_api_version?: string;
+  trust_profile?: string;
+  require_signature?: boolean;
+  worker?: {
+    configured?: boolean;
+    available?: boolean;
+    isolated?: boolean;
+    process_isolation?: string;
+    auth_configured?: boolean;
+    skipped?: boolean;
+    error?: string;
+  };
+  active_count?: number;
+  active_plugins?: Array<{
+    plugin_id?: string;
+    version?: string;
+    digest?: string;
+    frontend_slot?: string;
+    compatible_host_api?: string;
+  }>;
+  loading_model?: string;
+}
+
 export const pluginService = {
   async listAdmin(): Promise<{ ok: boolean; plugins: PluginRecord[] }> {
     const { data } = await api.get('/admin/plugins');
+    return data;
+  },
+
+  async health(): Promise<PluginSystemHealth> {
+    const { data } = await api.get('/admin/plugins/health');
     return data;
   },
 
@@ -50,8 +100,43 @@ export const pluginService = {
     return data;
   },
 
-  async listSlots(): Promise<{ supported_slots: PluginSlot[]; notes: string }> {
+  async listSlots(): Promise<{
+    supported_slots: PluginSlot[];
+    notes: string;
+    loading_model?: string;
+    plugin_host_sdk_version?: string;
+  }> {
     const { data } = await api.get('/plugins/slots');
+    return data;
+  },
+
+  async frontendManifest(pluginId: string): Promise<PluginFrontendManifest> {
+    const { data } = await api.get(`/plugins/${pluginId}/frontend`);
+    return data;
+  },
+
+  async uiAssetText(pluginId: string, assetPath: string): Promise<string> {
+    const { data } = await api.get(`/plugins/${pluginId}/ui/${assetPath}`, {
+      responseType: 'text',
+      transformResponse: [(d) => d],
+    });
+    return typeof data === 'string' ? data : String(data ?? '');
+  },
+
+  async hostSdk(
+    pluginId: string,
+    body: {
+      v: number;
+      type: string;
+      id: string;
+      plugin_id: string;
+      version: string;
+      digest: string;
+      method: string;
+      params: Record<string, unknown>;
+    },
+  ): Promise<Record<string, unknown>> {
+    const { data } = await api.post(`/plugins/${pluginId}/host-sdk`, body);
     return data;
   },
 

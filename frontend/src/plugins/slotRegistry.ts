@@ -1,12 +1,10 @@
 /**
- * Host Shell plugin slot registry (Stage P1 / P1.1).
+ * Host Shell plugin slot registry (Stage P2B).
  *
- * P1 LIMITATION: only static first-party Host Shell component mappings are
- * supported. Independent frontend plugin bundles are NOT loaded.
+ * Independent plugin UI loads only via sandboxed iframe (srcdoc) + Host SDK.
+ * Uploaded JavaScript never executes in the privileged React Host Shell.
  *
- * Do NOT enable arbitrary remote JavaScript or unrestricted Module Federation.
- * The secure loading contract is defined in docs/PLUGIN_FRONTEND_BOUNDARY.md
- * and is not activated in this stage.
+ * See docs/PLUGIN_FRONTEND_BOUNDARY.md.
  */
 
 import type { ComponentType } from 'react';
@@ -20,13 +18,16 @@ export const SUPPORTED_SLOTS: PluginSlot[] = [
   'results_panel',
 ];
 
-/** @deprecated P1 limitation — static host maps only; not a plugin loader. */
-export const P1_STATIC_HOST_MAPPINGS_ONLY = true as const;
+/** P1 static maps remain as a last-resort fallback when ui_strategy is shell_facade. */
+export const P1_STATIC_HOST_MAPPINGS_ONLY = false as const;
+
+export const P2B_SANDBOXED_IFRAME_LOADING = true as const;
 
 export type HostPluginComponentProps = {
   pluginId: string;
   version: string | null;
   name: string;
+  digest?: string | null;
 };
 
 const HOST_COMPONENTS: Record<string, ComponentType<HostPluginComponentProps>> = {
