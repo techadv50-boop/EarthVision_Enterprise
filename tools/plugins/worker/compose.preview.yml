@@ -35,7 +35,7 @@ services:
       - seccomp=./tools/plugins/worker/seccomp.allowlist.json
     cap_drop:
       - ALL
-    pids_limit: 64
+    pids_limit: 128
     tmpfs:
       - /tmp:size=16m,mode=1777
     environment:
@@ -73,8 +73,10 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "python3 -c \"import os,ssl,urllib.request; ctx=None;\nurl='http://127.0.0.1:8091/health';\n(urllib.request.urlopen(url, timeout=2).read())\"",
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=2).read()",
         ]
       interval: 10s
       timeout: 3s
