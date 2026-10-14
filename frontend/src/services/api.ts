@@ -169,6 +169,19 @@ export const adminApi = {
   },
 };
 
+export const pluginApi = {
+  list: () => api.get('/plugins'),
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post('/plugins/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  toggle: (id: string, enabled: boolean) => api.patch(`/plugins/${id}`, { enabled }),
+  remove: (id: string) => api.delete(`/plugins/${id}`),
+};
+
 export const configApi = {
   health: () => axios.get('/api/health'),
   config: () => axios.get('/api/config'),

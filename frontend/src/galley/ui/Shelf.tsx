@@ -37,7 +37,7 @@ export function Shelf({
       <header className="bar">
         <div>
           <h1>Galley composition</h1>
-          <p className="muted">citation.drxdhr.com · one login for the desk and the citation tools</p>
+          <p className="muted">Galley composition plugin · one login for every tool</p>
         </div>
         <div className="bar-actions">
           <span className="muted">{accountName}</span>

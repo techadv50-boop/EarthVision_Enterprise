@@ -36,3 +36,4 @@ from app.models.citation import (  # noqa: E402, F401
     AuthorDbJournal,
 )
 from app.models.galley import GalleyJournal, GalleyProof, GalleySetting  # noqa: E402, F401
+from app.models.plugin import PluginInstall  # noqa: E402, F401

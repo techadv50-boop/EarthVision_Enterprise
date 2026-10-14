@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { CheckSquare, ClipboardList } from 'lucide-react';
+import ToolBanner from '@/plugins/ToolBanner';
 import { hasAuthorWing, useAuthStore } from '@/store/authStore';
 
 export default function AuthorHubPage() {
@@ -8,6 +9,7 @@ export default function AuthorHubPage() {
   const published = hasAuthorWing(user, 'published');
   return (
     <div>
+      <ToolBanner path="/authors" />
       <h2 className="text-2xl font-semibold mb-2">Author database management system</h2>
       <p className="text-gray-400 mb-6 max-w-3xl">
         Two wings. Under process is the working list of articles still in the editorial pipeline.

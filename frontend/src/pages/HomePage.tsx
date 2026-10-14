@@ -1,84 +1,103 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, ClipboardList, FilePenLine, GitCompare, Shield } from 'lucide-react';
-import { canManageUsers, hasService, useAuthStore } from '@/store/authStore';
+import { Puzzle, Shield, Upload } from 'lucide-react';
+import { pluginApi } from '@/services/api';
+import { BUILTIN_PLUGINS, type ToolPlugin } from '@/plugins/catalog';
+import { pluginIcon } from '@/plugins/icons';
+import { canManageUsers, hasService, isFullAdmin, useAuthStore, type ServiceId } from '@/store/authStore';
+
+function canOpen(plugin: ToolPlugin, services: string[], admin: boolean): boolean {
+  if (!plugin.enabled && !admin) return false;
+  const service = plugin.service || 'open';
+  if (service === 'open' || service === 'everyone') return true;
+  if (service === 'admin' || service === 'operator') return admin;
+  return services.includes(service);
+}
 
 export default function HomePage() {
   const user = useAuthStore((s) => s.user);
   const admin = canManageUsers(user);
-  const citation = hasService(user, 'citation');
-  const review = hasService(user, 'review');
-  const authors = hasService(user, 'authors');
-  const galley = hasService(user, 'galley');
-  const anyService = citation || review || authors || galley;
+  const operator = isFullAdmin(user);
+  const services = (['citation', 'review', 'authors', 'galley'] as ServiceId[]).filter((id) =>
+    hasService(user, id),
+  );
+  const [plugins, setPlugins] = useState<ToolPlugin[]>(BUILTIN_PLUGINS);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { data } = await pluginApi.list();
+        if (Array.isArray(data?.plugins)) setPlugins(data.plugins);
+      } catch {
+        setPlugins(BUILTIN_PLUGINS);
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  const tools = plugins.filter((plugin) => canOpen(plugin, services, operator));
+  const anyTool = tools.some((plugin) => plugin.enabled);
 
   return (
     <div className="max-w-5xl mx-auto">
-      <h2 className="text-3xl font-semibold mb-2">Choose a workspace</h2>
-      <p className="text-gray-400 mb-8">
-        Only the services granted to this account are listed.
-        {admin ? ' Open Admin to add a user and tick the privileges they may use.' : ''}
+      <p className="text-xs uppercase tracking-[0.2em] text-earth-400 mb-2">XDGEN</p>
+      <h2 className="text-3xl font-semibold mb-2">Tools</h2>
+      <p className="text-gray-400 mb-8 max-w-3xl">
+        Each card is a separate plugin. Open one tool, update one tool, or upload a new plugin
+        without rebuilding the others.
+        {admin ? ' Admins manage users. Operators can upload and replace plugins.' : ''}
       </p>
-      {!anyService && !admin && (
+      {!anyTool && !admin && loaded && (
         <p className="panel p-6 text-gray-400 mb-6">
-          No services have been granted yet. Ask an admin to approve this account and tick Citation
-          project, Article review, Galley composition, or Author database.
+          No tools have been granted yet. Ask an admin to approve this account and tick the plugins
+          this person may use.
         </p>
       )}
       <div className="grid gap-6 md:grid-cols-2">
-        {citation && (
+        {tools.map((plugin) => {
+          const Icon = pluginIcon(plugin.icon);
+          const muted = !plugin.enabled;
+          return (
+            <Link
+              key={plugin.id}
+              to={plugin.enabled ? plugin.route : '/admin/plugins'}
+              className={`panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem] ${
+                muted ? 'opacity-60' : ''
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <Icon className="w-10 h-10 text-earth-400 mb-4" />
+                <span className="text-[11px] uppercase tracking-wide text-gray-500 border border-gray-800 rounded px-2 py-1">
+                  {plugin.kind === 'uploaded' ? 'Uploaded plugin' : 'Built-in plugin'}
+                </span>
+              </div>
+              <h3 className="text-2xl font-semibold">{plugin.name}</h3>
+              <p className="text-gray-400 mt-3 leading-relaxed">{plugin.description}</p>
+              <p className="text-xs text-gray-500 mt-4">
+                {plugin.id} · v{plugin.version}
+                {muted ? ' · disabled' : ''}
+                {plugin.overridden ? ' · frontend replaced' : ''}
+              </p>
+              <p className="text-earth-400 text-sm mt-6">
+                {muted ? 'Enable in plugin manager →' : `Open ${plugin.name} →`}
+              </p>
+            </Link>
+          );
+        })}
+        {operator && (
           <Link
-            to="/journals"
-            className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
+            to="/admin/plugins"
+            className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem] border-dashed"
           >
-            <BookOpen className="w-10 h-10 text-earth-400 mb-4" />
-            <h3 className="text-2xl font-semibold">Citation Assistant</h3>
+            <Upload className="w-10 h-10 text-earth-400 mb-4" />
+            <h3 className="text-2xl font-semibold">Upload a plugin</h3>
             <p className="text-gray-400 mt-3 leading-relaxed">
-              Journals assigned to this account, archive search, and new-manuscript house citations
-              from papers already stored on this shelf.
+              Operator only. Install a new tool as a zip (manifest.json + index.html), or replace
+              one built-in tool by uploading a package with the same plugin id.
             </p>
-            <p className="text-earth-400 text-sm mt-6">Open Citation Assistant →</p>
-          </Link>
-        )}
-        {review && (
-          <Link
-            to="/review"
-            className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
-          >
-            <GitCompare className="w-10 h-10 text-earth-400 mb-4" />
-            <h3 className="text-2xl font-semibold">Article Review / Comparison</h3>
-            <p className="text-gray-400 mt-3 leading-relaxed">
-              Compare the References section of the file you sent to staff with the file they
-              returned. Review English with in-depth AI tools before publish.
-            </p>
-            <p className="text-earth-400 text-sm mt-6">Open Article Review / Comparison →</p>
-          </Link>
-        )}
-        {authors && (
-          <Link
-            to="/authors"
-            className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
-          >
-            <ClipboardList className="w-10 h-10 text-earth-400 mb-4" />
-            <h3 className="text-2xl font-semibold">Author database</h3>
-            <p className="text-gray-400 mt-3 leading-relaxed">
-              Two wings: under process articles and published articles. Add OJS number, title,
-              authors, emails, plagiarism, ORCID, review rounds, and galley dates.
-            </p>
-            <p className="text-earth-400 text-sm mt-6">Open author database →</p>
-          </Link>
-        )}
-        {galley && (
-          <Link
-            to="/galley"
-            className="panel p-8 hover:border-earth-500 transition-colors block min-h-[16rem]"
-          >
-            <FilePenLine className="w-10 h-10 text-earth-400 mb-4" />
-            <h3 className="text-2xl font-semibold">Galley composition</h3>
-            <p className="text-gray-400 mt-3 leading-relaxed">
-              Choose a journal, fill the first page and body, and save a Word proof. The same
-              account used for citations opens this desk — no second username or password.
-            </p>
-            <p className="text-earth-400 text-sm mt-6">Open galley composition →</p>
+            <p className="text-earth-400 text-sm mt-6">Open plugin manager →</p>
           </Link>
         )}
         {admin && (
@@ -89,12 +108,15 @@ export default function HomePage() {
             <Shield className="w-10 h-10 text-earth-400 mb-4" />
             <h3 className="text-2xl font-semibold">Admin</h3>
             <p className="text-gray-400 mt-3 leading-relaxed">
-              Add users, approve or restrict accounts, and tick the services each person may use —
-              citation journals, article-review branches, galley composition, and author-database
-              wings.
+              Add users, approve or restrict accounts, and tick which plugins each person may use.
             </p>
-            <p className="text-earth-400 text-sm mt-6">Add user →</p>
+            <p className="text-earth-400 text-sm mt-6">Manage users →</p>
           </Link>
+        )}
+        {!tools.length && !admin && !loaded && (
+          <div className="panel p-8 text-gray-500 md:col-span-2 inline-flex items-center gap-2">
+            <Puzzle className="w-5 h-5" /> Loading tools…
+          </div>
         )}
       </div>
     </div>

@@ -24,7 +24,6 @@ export default function AppLayout() {
   const review = hasService(user, 'review');
   const authors = hasService(user, 'authors');
   const galley = hasService(user, 'galley');
-  const inAdmin = location.pathname.startsWith('/admin') || location.pathname.startsWith('/users');
   const inReview = location.pathname.startsWith('/review');
   const inAuthors = location.pathname.startsWith('/authors');
   const inGalley = location.pathname.startsWith('/galley');
@@ -40,23 +39,13 @@ export default function AppLayout() {
           <BookOpen className="w-6 h-6 text-earth-400" />
           <div>
             <h1 className="text-sm font-bold tracking-wide">Citation Assistant</h1>
-            <p className="text-xs text-gray-500">Home · workspaces</p>
+            <p className="text-xs text-gray-500">Home · tools / plugins</p>
           </div>
         </Link>
         <nav className="flex items-center gap-3 text-sm flex-wrap justify-end">
           <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
-            Home
+            Tools
           </NavLink>
-          {authors && (
-            <NavLink to="/authors" className={({ isActive }) => navClass(isActive)}>
-              Author DB
-            </NavLink>
-          )}
-          {galley && (
-            <NavLink to="/galley" className={({ isActive }) => navClass(isActive)}>
-              Galley composition
-            </NavLink>
-          )}
           {inCitation && citation && (
             <>
               <NavLink to="/journals" className={({ isActive }) => navClass(isActive)}>
@@ -119,10 +108,15 @@ export default function AppLayout() {
             </span>
           )}
           {usersAdmin && (
-            <NavLink to="/admin" className={({ isActive }) => navClass(isActive) + (inAdmin ? '' : '')}>
+            <NavLink to="/admin" className={({ isActive }) => navClass(isActive)}>
               <span className="inline-flex items-center gap-1">
                 <Shield className="w-4 h-4" /> Admin
               </span>
+            </NavLink>
+          )}
+          {isFullAdmin(user) && (
+            <NavLink to="/admin/plugins" className={({ isActive }) => navClass(isActive)}>
+              Plugins
             </NavLink>
           )}
           {user && (

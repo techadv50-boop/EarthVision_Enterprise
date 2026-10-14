@@ -6,6 +6,7 @@ import {
   hasReviewBranch,
   hasService,
   isCitationAdmin,
+  isFullAdmin,
   useAuthStore,
   type AuthorWingId,
   type ReviewBranchId,
@@ -29,6 +30,8 @@ import LanguageReviewPage from '@/pages/LanguageReviewPage';
 import AuthorHubPage from '@/pages/AuthorHubPage';
 import AuthorArticlesPage from '@/pages/AuthorArticlesPage';
 import GalleyPage from '@/pages/GalleyPage';
+import PluginHostPage from '@/pages/PluginHostPage';
+import PluginsAdminPage from '@/pages/PluginsAdminPage';
 import CopernicusCallbackPage from '@/pages/CopernicusCallbackPage';
 import BillingSuccessPage from '@/pages/BillingSuccessPage';
 import BillingCancelPage from '@/pages/BillingCancelPage';
@@ -66,6 +69,14 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 function UsersAdminRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
   if (!canManageUsers(user)) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
+function OperatorRoute({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (!isFullAdmin(user)) {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;
@@ -124,6 +135,18 @@ export default function App() {
               <UsersPage />
             </UsersAdminRoute>
           }
+        />
+        <Route
+          path="/admin/plugins"
+          element={
+            <OperatorRoute>
+              <PluginsAdminPage />
+            </OperatorRoute>
+          }
+        />
+        <Route
+          path="/tools/:pluginId"
+          element={<PluginHostPage />}
         />
         <Route path="/users" element={<Navigate to="/admin" replace />} />
         <Route
