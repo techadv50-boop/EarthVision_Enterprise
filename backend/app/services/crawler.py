@@ -113,7 +113,11 @@ def is_pdf_url(url: str, link_text: str = "") -> bool:
 
 
 def _article_id(url: str) -> str | None:
-    match = ARTICLE_VIEW_HREF.search(urlparse(url).path or "")
+    path = urlparse(url).path or ""
+    match = ARTICLE_VIEW_HREF.search(path)
+    if match:
+        return match.group(1)
+    match = re.search(r"/article/download/(\d+)", path, re.I)
     return match.group(1) if match else None
 
 
@@ -707,6 +711,7 @@ async def _download_pdfs(
             if created:
                 job.articles_saved += 1
             else:
+                job.articles_already = int(job.articles_already or 0) + 1
                 job.articles_skipped += 1
         except Exception as exc:
             job.articles_skipped += 1
