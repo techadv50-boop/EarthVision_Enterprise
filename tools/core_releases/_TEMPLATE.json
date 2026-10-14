@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "approval_id": "REPLACE_WITH_ID",
+  "base_sha": "REPLACE_WITH_FULL_BASE_COMMIT_SHA",
+  "allowed_modules": ["authentication"],
+  "allowed_paths": [],
+  "approver": "name-or-gh-handle",
+  "ticket": "LINK_OR_TICKET_ID",
+  "rationale": "Why this core change is authorized",
+  "issued_at": "2026-01-01T00:00:00Z",
+  "expires_at": "2026-12-31T23:59:59Z"
+}

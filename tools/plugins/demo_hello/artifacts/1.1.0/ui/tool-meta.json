@@ -1,0 +1,23 @@
+{
+  "plugin_id": "demo_hello",
+  "tool_id": "demo_hello",
+  "label": "Demo Hello",
+  "description": "Harmless synthetic demonstration plugin for Plugin Manager Stage P1.",
+  "ui_strategy": "shell_facade",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta"
+  ],
+  "facade": {
+    "host_component": "DemoHelloPanel",
+    "api": "POST /api/v1/plugins/demo_hello/synthetic"
+  },
+  "host_sdk": {
+    "react": "shell",
+    "leaflet": "shell",
+    "remote_bundle": false
+  },
+  "notes": "P1: no independent frontend bundle. Shell maps slot → DemoHelloPanel."
+}

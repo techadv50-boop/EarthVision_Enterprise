@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sateye.xdgen.com/schemas/plugin_registry.json",
+  "title": "SATEYE Plugin Registry",
+  "type": "object",
+  "required": ["schema_version", "host_api_version", "plugins"],
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "host_api_version": { "type": "string" },
+    "notes": { "type": "string" },
+    "plugins": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "plugin_id",
+          "name",
+          "description",
+          "version",
+          "compatible_host_api",
+          "backend_entrypoint",
+          "frontend_slot",
+          "permissions",
+          "installation_status",
+          "activation_status"
+        ],
+        "properties": {
+          "plugin_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "version": { "type": ["string", "null"] },
+          "compatible_host_api": { "type": "string" },
+          "backend_entrypoint": { "type": "string" },
+          "frontend_slot": {
+            "type": "string",
+            "enum": [
+              "left_toolbar",
+              "right_analysis_panel",
+              "map_overlay",
+              "results_panel"
+            ]
+          },
+          "permissions": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "installation_status": {
+            "type": "string",
+            "enum": ["not_installed", "installed"]
+          },
+          "activation_status": {
+            "type": "string",
+            "enum": ["inactive", "active", "disabled"]
+          },
+          "previous_version": { "type": ["string", "null"] },
+          "digest": { "type": ["string", "null"] },
+          "installed_versions": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

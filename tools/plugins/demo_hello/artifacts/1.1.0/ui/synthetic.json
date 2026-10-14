@@ -1,0 +1,22 @@
+{
+  "kind": "synthetic_demo",
+  "plugin_id": "demo_hello",
+  "version": "1.1.0",
+  "message": "Hello from Demo Hello 1.1.0 (rollback target test).",
+  "tag": "demo_plugin",
+  "points": [
+    {
+      "label": "Alpha",
+      "value": 42
+    },
+    {
+      "label": "Beta",
+      "value": 17
+    },
+    {
+      "label": "Gamma",
+      "value": 3
+    }
+  ],
+  "note": "Static integrity-covered payload. Plugin Python is not executed in the API process."
+}
