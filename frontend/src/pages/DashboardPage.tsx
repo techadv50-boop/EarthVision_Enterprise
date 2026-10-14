@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Trash2 } from 'lucide-react';
 import { citationApi } from '@/services/api';
+import ToolBanner from '@/plugins/ToolBanner';
 import { isCitationAdmin, useAuthStore } from '@/store/authStore';
 
 interface Journal {
@@ -65,6 +66,7 @@ export default function DashboardPage() {
 
   return (
     <div>
+      <ToolBanner path="/journals" />
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-semibold">Journals</h2>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { adminApi, citationApi } from '@/services/api';
 import {
@@ -7,6 +8,7 @@ import {
   SERVICES,
   emptyPrivileges,
   fullPrivileges,
+  isFullAdmin,
   useAuthStore,
   type ServicePrivileges,
 } from '@/store/authStore';
@@ -374,6 +376,14 @@ export default function UsersPage() {
 
   return (
     <div>
+      <div className="flex flex-wrap gap-3 text-sm mb-4">
+        <span className="text-earth-400">Users</span>
+        {isFullAdmin(current) ? (
+          <Link to="/admin/plugins" className="text-gray-400 hover:text-white">
+            Plugins
+          </Link>
+        ) : null}
+      </div>
       <h2 className="text-2xl font-semibold mb-2">Admin</h2>
       <p className="text-gray-400 text-sm mb-4 max-w-3xl">
         Add a user, then tick the services they may use. Citation project asks which journals stay

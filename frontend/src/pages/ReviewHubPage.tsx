@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { GitCompare, Languages } from 'lucide-react';
+import ToolBanner from '@/plugins/ToolBanner';
 import { hasReviewBranch, useAuthStore } from '@/store/authStore';
 
 export default function ReviewHubPage() {
@@ -8,6 +9,7 @@ export default function ReviewHubPage() {
   const language = hasReviewBranch(user, 'language');
   return (
     <div>
+      <ToolBanner path="/review" />
       <h2 className="text-2xl font-semibold mb-2">Article Review / Comparison</h2>
       <p className="text-gray-400 mb-6 max-w-3xl">
         Tools for the file you gave to staff and the manuscript that will be published. They do
