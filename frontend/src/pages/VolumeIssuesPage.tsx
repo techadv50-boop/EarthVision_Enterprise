@@ -35,7 +35,10 @@ export default function VolumeIssuesPage() {
   useEffect(() => {
     void (async () => {
       const data = await load();
-      const need = admin ? data.filter((iss) => iss.id && iss.article_count && !iss.citations_synced) : [];
+      const need =
+        admin && vol > 0
+          ? data.filter((iss) => iss.id && iss.article_count && !iss.citations_synced)
+          : [];
       if (!need.length) return;
       setMsg('Fetching Crossref and Google Scholar cited-by counts…');
       for (const iss of need) {
@@ -49,12 +52,14 @@ export default function VolumeIssuesPage() {
   return (
     <div>
       <p className="text-sm text-gray-500 mb-2">
-        <Link to="/journals">Journals</Link> / <Link to={`/journals/${id}`}>Journal</Link> / Vol. {vol}
+        <Link to="/journals">Journals</Link> / <Link to={`/journals/${id}`}>Journal</Link> /{' '}
+        {vol === 0 ? 'Unfiled' : `Vol. ${vol}`}
       </p>
-      <h2 className="text-2xl font-semibold mb-2">Volume {vol}</h2>
+      <h2 className="text-2xl font-semibold mb-2">{vol === 0 ? 'Unfiled papers' : `Volume ${vol}`}</h2>
       <p className="text-gray-400 mb-6">
-        Each issue shows how many articles live there, and how many have been cited in Crossref vs
-        Google Scholar.
+        {vol === 0
+          ? 'These PDFs could not be placed in a volume. Open an issue rack and upload, or use File unfiled papers on the journal page.'
+          : 'Each issue shows how many articles live there. Empty racks are listed so missing issues can be uploaded into place.'}
       </p>
       {msg && <p className="text-earth-400 text-sm mb-4">{msg}</p>}
       <div className="grid md:grid-cols-2 gap-4">
@@ -72,18 +77,20 @@ export default function VolumeIssuesPage() {
           return (
             <Link
               key={`${iss.issue_number}-${iss.id}`}
-              to={empty ? '#' : `/journals/${id}/volumes/${vol}/issues/${iss.issue_number}`}
+              to={`/journals/${id}/volumes/${vol}/issues/${iss.issue_number}`}
               className="panel p-4 block"
             >
               <div className="flex justify-between">
                 <h3 className="font-medium">
-                  Issue {iss.issue_number}
+                  {vol === 0 ? 'Unfiled' : `Issue ${iss.issue_number}`}
                   {iss.month ? ` · ${iss.month} ${iss.year ?? ''}` : ''}
                 </h3>
                 <span className="text-gray-400 text-sm">{articles} articles</span>
               </div>
-              {iss.id === 0 ? (
-                <p className="text-amber-300 text-sm mt-3">Issue missing from archive</p>
+              {iss.id === 0 || empty ? (
+                <p className="text-amber-300 text-sm mt-3">
+                  Issue missing from archive — open this rack and upload the PDFs.
+                </p>
               ) : (
                 <>
                   <p className="text-sm text-gray-400 mt-2">
