@@ -11,6 +11,7 @@ import {
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
 import { AdminPanel } from '../components/admin/AdminPanel';
+import { PluginSlotHost } from '../plugins/PluginSlotHost';
 import { useAuthStore } from '../store/authStore';
 import {
   useWorkflowStore,
@@ -1876,6 +1877,7 @@ export function WorkspacePage() {
 
         {toolboxOpen ? (
           <div className="flex w-[min(24rem,100%)] shrink-0 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-y-auto">
             <ToolboxPanel
               expanded={(expandedToolbox as ToolboxId | null) ?? 'image'}
               activeToolId={activeToolId}
@@ -2110,6 +2112,8 @@ export function WorkspacePage() {
               geotiffBusy={geotiffBusy}
               geotiffLayerId={geotiffLayerId}
             />
+            <PluginSlotHost slot="right_analysis_panel" />
+            </div>
           </div>
         ) : (
           <div className="flex w-12 shrink-0 flex-col items-center gap-1 border-l border-[var(--line)] bg-white py-2">

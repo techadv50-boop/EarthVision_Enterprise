@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "notes": "Stage P1 Host Shell core protection. Changes to these paths require CORE_RELEASE=approved on the PR (or an explicit core release branch approval). Plugin work must not touch frozen legacy tools.",
+  "host_api_version": "1.0.0",
+  "core_release_env": "CORE_RELEASE",
+  "core_release_token": "approved",
+  "modules": [
+    {
+      "id": "authentication",
+      "description": "Auth, security tokens, role gates",
+      "paths": [
+        "backend/app/routers/auth.py",
+        "backend/app/core/security.py",
+        "backend/app/core/deps.py",
+        "backend/app/services/user_service.py",
+        "backend/app/models/user.py",
+        "frontend/src/services/authService.ts",
+        "frontend/src/pages/LoginPage.tsx",
+        "frontend/src/pages/RegisterPage.tsx"
+      ]
+    },
+    {
+      "id": "map_canvas_layers",
+      "description": "Map canvas, overlays, layer management",
+      "paths": [
+        "frontend/src/map/LightMap.tsx",
+        "frontend/src/map/MapDecorations.tsx",
+        "frontend/src/map/MapLegend.tsx",
+        "frontend/src/components/map/MapToolbar.tsx",
+        "frontend/src/store/workflowStore.ts"
+      ]
+    },
+    {
+      "id": "shared_backend_services",
+      "description": "Shared analytics / composite / detection services used by legacy tools",
+      "paths": [
+        "backend/app/services/composite_service.py",
+        "backend/app/services/detection_service.py",
+        "backend/app/services/analytics_service.py",
+        "backend/app/routers/analytics.py",
+        "backend/app/routers/composite.py",
+        "backend/app/routers/detection.py"
+      ]
+    },
+    {
+      "id": "database_infrastructure",
+      "description": "Database models, session, migrations",
+      "paths": [
+        "backend/app/database/",
+        "backend/app/models/",
+        "backend/alembic/",
+        "backend/alembic.ini"
+      ]
+    },
+    {
+      "id": "legacy_tool_implementations",
+      "description": "Frozen legacy tool packs and in-tree true_color / ship_detection",
+      "paths": [
+        "tools/packs/true_color/",
+        "tools/artifacts/true_color/",
+        "backend/app/tools/pack_ops.py",
+        "frontend/src/toolbox/catalog.ts"
+      ]
+    },
+    {
+      "id": "existing_tool_catalog",
+      "description": "Canonical 148-tool catalog and manifest integrity",
+      "paths": [
+        "tools/manifest.json",
+        "scripts/tools/check_manifest.py",
+        "scripts/tools/check_approved_guard.py"
+      ]
+    }
+  ],
+  "plugin_safe_paths_prefix": [
+    "backend/app/plugins/",
+    "backend/app/routers/plugins.py",
+    "backend/app/routers/admin_plugins.py",
+    "frontend/src/plugins/",
+    "frontend/src/components/admin/PluginManagerSection.tsx",
+    "frontend/src/services/pluginService.ts",
+    "tools/plugins/",
+    "tools/plugin_registry.schema.json",
+    "docs/PLUGIN_",
+    "docs/HOST_SHELL_CORE_",
+    "scripts/tools/check_core_protection.py",
+    "scripts/tools/build_demo_hello_plugin.py",
+    "backend/app/tests/plugins/"
+  ]
+}

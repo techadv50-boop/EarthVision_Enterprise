@@ -1,0 +1,26 @@
+{
+  "plugin_id": "demo_hello",
+  "tool_id": "demo_hello",
+  "name": "Demo Hello",
+  "description": "Harmless synthetic demonstration plugin for Plugin Manager Stage P1.",
+  "version": "1.1.0",
+  "digest": "sha256:0c122916c7f2646b39231ec84f32cf14a07591683b198c049825beb7c005dad4",
+  "created_at": "2026-10-14T05:08:49Z",
+  "host_sdk": ">=1.0.0,<2",
+  "compatible_host_api": ">=1.0.0,<2",
+  "ui_strategy": "shell_facade",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta"
+  ],
+  "entry": {
+    "backend": "backend/plugin.py",
+    "ui_meta": "ui/tool-meta.json"
+  },
+  "rollback_targets": [
+    "inactive",
+    "1.0.0"
+  ]
+}

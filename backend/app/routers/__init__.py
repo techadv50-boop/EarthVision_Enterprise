@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.routers import (
+    admin_plugins,
     analytics,
     auth,
     bookmarks,
@@ -13,6 +14,7 @@ from app.routers import (
     gis,
     health,
     ml,
+    plugins,
     projects,
     raster,
     reports,
@@ -44,4 +46,6 @@ def build_api_router() -> APIRouter:
     api.include_router(subscriptions.router)
     api.include_router(reports.router)
     api.include_router(tools_runtime.router)
+    api.include_router(plugins.router)
+    api.include_router(admin_plugins.router)
     return api
