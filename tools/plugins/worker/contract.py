@@ -1,8 +1,4 @@
-"""Typed request/response contract for the restricted plugin worker (P2A).
-
-Shared shape documented for Host Shell client and worker. The worker process
-must not import ``app.*`` from the Host Shell.
-"""
+"""Typed request/response contract for the restricted plugin worker (P2A.1)."""
 
 from __future__ import annotations
 
@@ -49,6 +45,8 @@ def validate_request(data: Any) -> dict[str, Any]:
         "digest": digest,
         "operation": operation,
         "payload": payload,
+        "grant_exp": data.get("grant_exp"),
+        "grant_mac": data.get("grant_mac"),
     }
 
 

@@ -443,17 +443,29 @@ def test_worker_required_fail_closed(plugin_volume, tmp_path, monkeypatch):
         engine.run_synthetic("demo_hello")
 
 
+def _load_worker_executor():
+    import importlib
+    import sys
+
+    worker_dir = str(REPO / "tools" / "plugins" / "worker")
+    if worker_dir not in sys.path:
+        sys.path.insert(0, worker_dir)
+    # Fresh import of sibling modules
+    for name in (
+        "executor",
+        "executor_core",
+        "signatures",
+        "auth",
+        "registry_gate",
+        "child_runner",
+    ):
+        sys.modules.pop(name, None)
+    return importlib.import_module("executor")
+
+
 def test_worker_executor_digest_and_lifecycle(plugin_volume, tmp_path):
     """Restricted worker executor (no FastAPI) — demo_hello 1.0.0 → 1.1.0 → rollback."""
-    import importlib.util
-
-    worker_dir = REPO / "tools" / "plugins" / "worker"
-    spec = importlib.util.spec_from_file_location(
-        "ev_p2a_executor", worker_dir / "executor.py"
-    )
-    assert spec and spec.loader
-    ex = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ex)
+    ex = _load_worker_executor()
 
     s10, d10, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
     s11, d11, _ = _stage_signed(tmp_path / "c", "1.1.0", plugin_volume["priv"])
@@ -515,6 +527,7 @@ def test_worker_server_isolation_refuses_secrets(tmp_path, monkeypatch):
     env = {
         **os.environ,
         "EV_ARTIFACTS_ROOT": str(tmp_path),
+        "EV_PLUGIN_WORKER_AUTH_TOKEN": "x" * 32,
         "DATABASE_URL": "postgresql://should-not-exist",
         "SECRET_KEY": "",
         # Allow root in CI sandboxes; still must fail on DATABASE_URL
@@ -529,3 +542,523 @@ def test_worker_server_isolation_refuses_secrets(tmp_path, monkeypatch):
     )
     assert proc.returncode == 2
     assert "ISOLATION FAILED" in (proc.stderr or "") or "DATABASE_URL" in (proc.stderr or "")
+
+
+def _sign_pack_dir(pack_dir: Path, priv: str, publisher_id: str = "test-pub") -> str:
+    """Compute digest + write SIGNATURE.json; return digest."""
+    import hashlib
+
+    from app.tools.pack_signatures import sign_digest, write_signature_file
+
+    sums = pack_dir / "SHA256SUMS"
+    digest = "sha256:" + hashlib.sha256(sums.read_bytes()).hexdigest()
+    meta = json.loads((pack_dir / "pack.json").read_text())
+    meta["digest"] = digest
+    (pack_dir / "pack.json").write_text(json.dumps(meta, indent=2) + "\n")
+    sig = sign_digest(digest, priv)
+    write_signature_file(pack_dir, digest=digest, signature=sig, publisher_id=publisher_id)
+    return digest
+
+
+def _evil_plugin_pack(
+    tmp_path: Path,
+    plugin_volume: dict,
+    *,
+    plugin_id: str,
+    code: str,
+) -> tuple[str, str]:
+    """Build a minimal signed evil pack under artifacts root; return (version, digest)."""
+    import hashlib
+
+    version = "9.9.9"
+    root = plugin_volume["arts"] / plugin_id / version
+    if root.exists():
+        shutil.rmtree(root)
+    (root / "backend").mkdir(parents=True)
+    (root / "ui").mkdir(parents=True)
+    (root / "backend" / "plugin.py").write_text(code, encoding="utf-8")
+    (root / "ui" / "tool-meta.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": plugin_id,
+                "frontend_slot": "results_panel",
+                "permissions": ["synthetic_data", "ui.slot.results_panel", "host.sdk.read_meta"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "ui" / "synthetic.json").write_text("{}\n", encoding="utf-8")
+    rels = ["backend/plugin.py", "ui/tool-meta.json", "ui/synthetic.json"]
+    lines = []
+    for rel in rels:
+        h = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+        lines.append(f"{h}  {rel}")
+    (root / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    pack_digest = "sha256:" + hashlib.sha256((root / "SHA256SUMS").read_bytes()).hexdigest()
+    (root / "pack.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": plugin_id,
+                "tool_id": plugin_id,
+                "version": version,
+                "digest": pack_digest,
+                "host_sdk": ">=1.0.0,<2",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    digest = _sign_pack_dir(root, plugin_volume["priv"])
+    return version, digest
+
+
+def test_p2a1_process_timeout_kills_infinite_loop(plugin_volume, tmp_path, monkeypatch):
+    monkeypatch.setenv("EV_ARTIFACTS_ROOT", str(plugin_volume["arts"]))
+    monkeypatch.setenv("EV_PACK_PUBLISHERS", str(plugin_volume["root"] / "publishers" / "approved_publishers.json"))
+    monkeypatch.setenv("EV_PACK_TRUST_PROFILE", "production")
+    monkeypatch.setenv("EV_PACK_REQUIRE_SIGNATURE", "1")
+    ex = _load_worker_executor()
+    code = (
+        "def render(_p=None):\n"
+        "    while True:\n"
+        "        pass\n"
+    )
+    version, digest = _evil_plugin_pack(
+        tmp_path, plugin_volume, plugin_id="evil_loop", code=code
+    )
+    with pytest.raises(ex.ExecError, match="timed out"):
+        ex.execute(
+            plugin_id="evil_loop",
+            version=version,
+            digest=digest,
+            operation="render",
+            payload={},
+            timeout_sec=1.0,
+        )
+
+
+def test_p2a1_process_crash_and_memory(plugin_volume, tmp_path, monkeypatch):
+    monkeypatch.setenv("EV_ARTIFACTS_ROOT", str(plugin_volume["arts"]))
+    monkeypatch.setenv("EV_PACK_PUBLISHERS", str(plugin_volume["root"] / "publishers" / "approved_publishers.json"))
+    monkeypatch.setenv("EV_PACK_TRUST_PROFILE", "production")
+    monkeypatch.setenv("EV_PACK_REQUIRE_SIGNATURE", "1")
+    monkeypatch.setenv("EV_PLUGIN_CHILD_AS_BYTES", str(32 * 1024 * 1024))
+    ex = _load_worker_executor()
+
+    crash_code = "def render(_p=None):\n    raise SystemExit('boom')\n"
+    v, d = _evil_plugin_pack(tmp_path, plugin_volume, plugin_id="evil_crash", code=crash_code)
+    with pytest.raises(ex.ExecError):
+        ex.execute(plugin_id="evil_crash", version=v, digest=d, operation="render", payload={})
+
+    mem_code = (
+        "def render(_p=None):\n"
+        "    x = []\n"
+        "    while True:\n"
+        "        x.append(bytearray(1024 * 1024))\n"
+    )
+    v2, d2 = _evil_plugin_pack(tmp_path / "m", plugin_volume, plugin_id="evil_mem", code=mem_code)
+    with pytest.raises(ex.ExecError):
+        ex.execute(
+            plugin_id="evil_mem",
+            version=v2,
+            digest=d2,
+            operation="render",
+            payload={},
+            timeout_sec=3.0,
+        )
+
+
+def test_p2a1_child_network_denied(plugin_volume, tmp_path, monkeypatch):
+    monkeypatch.setenv("EV_ARTIFACTS_ROOT", str(plugin_volume["arts"]))
+    monkeypatch.setenv("EV_PACK_PUBLISHERS", str(plugin_volume["root"] / "publishers" / "approved_publishers.json"))
+    monkeypatch.setenv("EV_PACK_TRUST_PROFILE", "production")
+    monkeypatch.setenv("EV_PACK_REQUIRE_SIGNATURE", "1")
+    ex = _load_worker_executor()
+    code = (
+        "def render(_p=None):\n"
+        "    import socket\n"
+        "    socket.create_connection(('1.1.1.1', 53), timeout=1)\n"
+        "    return {'ok': True}\n"
+    )
+    v, d = _evil_plugin_pack(tmp_path, plugin_volume, plugin_id="evil_net", code=code)
+    with pytest.raises(ex.ExecError, match="network disabled|Network|connection|OSError|Failed"):
+        ex.execute(plugin_id="evil_net", version=v, digest=d, operation="render", payload={})
+
+
+def test_p2a1_auth_and_active_pin_gate(plugin_volume, tmp_path, monkeypatch):
+    """HTTP worker rejects unauthenticated / disabled / stale versions."""
+    import hashlib
+    import hmac as hm
+    import json as json_mod
+    import subprocess
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+
+    token = "t" * 32
+    env = {
+        **os.environ,
+        "EV_ARTIFACTS_ROOT": str(plugin_volume["arts"]),
+        "EV_TOOL_PACKS_ROOT": str(plugin_volume["root"]),
+        "EV_PLUGIN_REGISTRY": str(plugin_volume["root"] / "plugin_registry.json"),
+        "EV_PACK_PUBLISHERS": str(plugin_volume["root"] / "publishers" / "approved_publishers.json"),
+        "EV_PACK_TRUST_PROFILE": "production",
+        "EV_PACK_REQUIRE_SIGNATURE": "1",
+        "EV_PLUGIN_WORKER_AUTH_TOKEN": token,
+        "EV_PLUGIN_WORKER_ALLOW_ROOT": "1",
+        # Host-unit-test only: cloud agents may have docker.sock on the host FS
+        "EV_PLUGIN_WORKER_ALLOW_HOST_DOCKER_SOCK": "1",
+        "EV_PLUGIN_WORKER_HOST": "127.0.0.1",
+        "EV_PLUGIN_WORKER_PORT": "18091",
+        # Strip Host Shell secrets — worker fail-closes if these leak in
+        "DATABASE_URL": "",
+        "SECRET_KEY": "",
+        "MASTER_PASSWORD": "",
+        "ADMIN_PASSWORD": "",
+        "DOCKER_HOST": "",
+        "AWS_SECRET_ACCESS_KEY": "",
+        "OPENAI_API_KEY": "",
+    }
+    # Empty string still trips "forbidden env present" — remove keys entirely
+    for k in (
+        "DATABASE_URL",
+        "SECRET_KEY",
+        "MASTER_PASSWORD",
+        "ADMIN_PASSWORD",
+        "DOCKER_HOST",
+        "DOCKER_SOCK",
+        "AWS_SECRET_ACCESS_KEY",
+        "OPENAI_API_KEY",
+    ):
+        env.pop(k, None)
+    proc = subprocess.Popen(
+        [sys.executable, str(REPO / "tools" / "plugins" / "worker" / "server.py")],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # Wait for health
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                err = (proc.stderr.read() if proc.stderr else b"") or b""
+                raise AssertionError(
+                    f"worker exited early rc={proc.returncode}: {err.decode('utf-8', 'replace')[:800]}"
+                )
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:18091/health", timeout=1) as r:
+                    if r.status == 200:
+                        break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.2)
+        else:
+            err = b""
+            if proc.stderr:
+                try:
+                    err = proc.stderr.read()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise AssertionError(
+                f"worker did not become healthy: {err.decode('utf-8', 'replace')[:800]}"
+            )
+
+        def post(body: dict, *, auth: bool = True) -> tuple[int, dict]:
+            data = json_mod.dumps(body).encode()
+            headers = {"Content-Type": "application/json"}
+            if auth:
+                headers["Authorization"] = f"Bearer {token}"
+            req = urllib.request.Request(
+                "http://127.0.0.1:18091/v1/execute", data=data, headers=headers, method="POST"
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return resp.status, json_mod.loads(resp.read().decode())
+            except urllib.error.HTTPError as exc:
+                return exc.code, json_mod.loads(exc.read().decode())
+
+        rid = "a" * 32
+        exp = int(time.time()) + 60
+        msg = f"v1|{rid}|demo_hello|1.0.0|{d1}|{exp}".encode()
+        mac = hm.new(token.encode(), msg, hashlib.sha256).hexdigest()
+        body = {
+            "schema_version": 1,
+            "request_id": rid,
+            "plugin_id": "demo_hello",
+            "version": "1.0.0",
+            "digest": d1,
+            "operation": "render",
+            "payload": {},
+            "grant_exp": exp,
+            "grant_mac": mac,
+        }
+        # Unauthorized: no bearer
+        code, _ = post(body, auth=False)
+        assert code == 401
+
+        # Authorized active
+        code, resp = post(body, auth=True)
+        assert code == 200 and resp.get("ok") is True
+
+        # Stale version after activate stays 1.0.0 — request fake 1.1.0 not active
+        s11, d11, _ = _stage_signed(tmp_path / "stale", "1.1.0", plugin_volume["priv"])
+        engine.install_from_staging(
+            staging_id=s11, expected_digest=d11, actor="t", confirm="install"
+        )
+        rid2 = "b" * 32
+        exp2 = int(time.time()) + 60
+        msg2 = f"v1|{rid2}|demo_hello|1.1.0|{d11}|{exp2}".encode()
+        mac2 = hm.new(token.encode(), msg2, hashlib.sha256).hexdigest()
+        body2 = {
+            **body,
+            "request_id": rid2,
+            "version": "1.1.0",
+            "digest": d11,
+            "grant_exp": exp2,
+            "grant_mac": mac2,
+        }
+        code, resp = post(body2, auth=True)
+        assert code == 403
+
+        engine.disable_plugin(plugin_id="demo_hello", actor="t", confirm="disable")
+        rid3 = "c" * 32
+        exp3 = int(time.time()) + 60
+        msg3 = f"v1|{rid3}|demo_hello|1.0.0|{d1}|{exp3}".encode()
+        mac3 = hm.new(token.encode(), msg3, hashlib.sha256).hexdigest()
+        body3 = {**body, "request_id": rid3, "grant_exp": exp3, "grant_mac": mac3}
+        code, resp = post(body3, auth=True)
+        assert code == 403
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+
+
+def test_p2a1_concurrent_execute_and_repeated_timeouts(plugin_volume, tmp_path, monkeypatch):
+    monkeypatch.setenv("EV_ARTIFACTS_ROOT", str(plugin_volume["arts"]))
+    monkeypatch.setenv("EV_PACK_PUBLISHERS", str(plugin_volume["root"] / "publishers" / "approved_publishers.json"))
+    monkeypatch.setenv("EV_PACK_TRUST_PROFILE", "production")
+    monkeypatch.setenv("EV_PACK_REQUIRE_SIGNATURE", "1")
+    ex = _load_worker_executor()
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    errors: list[BaseException] = []
+    ok = {"n": 0}
+
+    def run_ok() -> None:
+        try:
+            out = ex.execute(
+                plugin_id="demo_hello",
+                version="1.0.0",
+                digest=d1,
+                operation="render",
+                payload={},
+            )
+            assert isinstance(out, dict)
+            ok["n"] += 1
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_ok) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert ok["n"] == 6
+
+    loop_code = "def render(_p=None):\n    while True:\n        pass\n"
+    v, d = _evil_plugin_pack(tmp_path / "loop2", plugin_volume, plugin_id="evil_loop2", code=loop_code)
+    for _ in range(3):
+        with pytest.raises(ex.ExecError, match="timed out"):
+            ex.execute(
+                plugin_id="evil_loop2",
+                version=v,
+                digest=d,
+                operation="render",
+                payload={},
+                timeout_sec=0.8,
+            )
+
+
+def test_p2a1_signature_bypass_and_bad_grant_rejected(plugin_volume, tmp_path, monkeypatch):
+    """Worker cannot bypass publisher signatures; forged grants are rejected."""
+    import importlib
+    import json as json_mod
+    import subprocess
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    worker_dir = str(REPO / "tools" / "plugins" / "worker")
+    if worker_dir not in sys.path:
+        sys.path.insert(0, worker_dir)
+    sys.modules.pop("signatures", None)
+    sig_mod = importlib.import_module("signatures")
+
+    monkeypatch.setenv("EV_ARTIFACTS_ROOT", str(plugin_volume["arts"]))
+    monkeypatch.setenv(
+        "EV_PACK_PUBLISHERS",
+        str(plugin_volume["root"] / "publishers" / "approved_publishers.json"),
+    )
+    monkeypatch.setenv("EV_PACK_TRUST_PROFILE", "production")
+    monkeypatch.setenv("EV_PACK_REQUIRE_SIGNATURE", "0")  # attacker tries to disable
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="t", confirm="install"
+    )
+    root = plugin_volume["arts"] / "demo_hello" / "1.0.0"
+    with pytest.raises(sig_mod.SignatureError, match="refuses EV_PACK_REQUIRE_SIGNATURE=0"):
+        sig_mod.verify_pack_signature(root, d1)
+
+    monkeypatch.setenv("EV_PACK_REQUIRE_SIGNATURE", "1")
+    ex = _load_worker_executor()
+    # After timeout kill, worker parent must still serve new requests (restart surface)
+    loop_code = "def render(_p=None):\n    while True:\n        pass\n"
+    v, d = _evil_plugin_pack(tmp_path / "rst", plugin_volume, plugin_id="evil_rst", code=loop_code)
+    with pytest.raises(ex.ExecError, match="timed out"):
+        ex.execute(
+            plugin_id="evil_rst",
+            version=v,
+            digest=d,
+            operation="render",
+            payload={},
+            timeout_sec=0.6,
+        )
+    ok = ex.execute(
+        plugin_id="demo_hello",
+        version="1.0.0",
+        digest=d1,
+        operation="render",
+        payload={},
+    )
+    assert isinstance(ok, dict)
+
+    # Forged grant MAC rejected by live worker
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="t", confirm="activate"
+    )
+    token = "u" * 32
+    env = {
+        **os.environ,
+        "EV_ARTIFACTS_ROOT": str(plugin_volume["arts"]),
+        "EV_TOOL_PACKS_ROOT": str(plugin_volume["root"]),
+        "EV_PLUGIN_REGISTRY": str(plugin_volume["root"] / "plugin_registry.json"),
+        "EV_PACK_PUBLISHERS": str(plugin_volume["root"] / "publishers" / "approved_publishers.json"),
+        "EV_PACK_TRUST_PROFILE": "production",
+        "EV_PACK_REQUIRE_SIGNATURE": "1",
+        "EV_PLUGIN_WORKER_AUTH_TOKEN": token,
+        "EV_PLUGIN_WORKER_ALLOW_ROOT": "1",
+        "EV_PLUGIN_WORKER_ALLOW_HOST_DOCKER_SOCK": "1",
+        "EV_PLUGIN_WORKER_HOST": "127.0.0.1",
+        "EV_PLUGIN_WORKER_PORT": "18093",
+    }
+    for k in (
+        "DATABASE_URL",
+        "SECRET_KEY",
+        "MASTER_PASSWORD",
+        "ADMIN_PASSWORD",
+        "DOCKER_HOST",
+        "DOCKER_SOCK",
+        "AWS_SECRET_ACCESS_KEY",
+        "OPENAI_API_KEY",
+    ):
+        env.pop(k, None)
+    proc = subprocess.Popen(
+        [sys.executable, str(REPO / "tools" / "plugins" / "worker" / "server.py")],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                err = (proc.stderr.read() if proc.stderr else b"") or b""
+                raise AssertionError(err.decode("utf-8", "replace")[:500])
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:18093/health", timeout=1) as r:
+                    if r.status == 200:
+                        break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.2)
+        else:
+            raise AssertionError("worker unhealthy")
+        rid = "d" * 32
+        exp = int(time.time()) + 60
+        body = {
+            "schema_version": 1,
+            "request_id": rid,
+            "plugin_id": "demo_hello",
+            "version": "1.0.0",
+            "digest": d1,
+            "operation": "render",
+            "payload": {},
+            "grant_exp": exp,
+            "grant_mac": "0" * 64,  # forged
+        }
+        data = json_mod.dumps(body).encode()
+        req = urllib.request.Request(
+            "http://127.0.0.1:18093/v1/execute",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(req, timeout=10)
+        assert ei.value.code == 401
+        # plugin id/version/digest alone are not auth — even with bearer, grant required
+        body2 = {k: v for k, v in body.items() if k not in {"grant_exp", "grant_mac"}}
+        data2 = json_mod.dumps(body2).encode()
+        req2 = urllib.request.Request(
+            "http://127.0.0.1:18093/v1/execute",
+            data=data2,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei2:
+            urllib.request.urlopen(req2, timeout=10)
+        assert ei2.value.code == 401
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+
+
+def test_p2a1_branch_protection_evidence_unknown_or_pass():
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "tools" / "check_branch_protection_evidence.py")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["overall"] in {"PASS", "UNKNOWN"}
+    assert data["local_codeowners"]["codeowners_present"] is True

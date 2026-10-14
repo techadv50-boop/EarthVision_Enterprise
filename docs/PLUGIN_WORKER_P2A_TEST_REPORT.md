@@ -1,18 +1,33 @@
-# Stage P2A Test Report
+# Stage P2A / P2A.1 Test Report
 
 **Branch:** `cursor/sateye-plugin-worker-p2a-5d6d`  
-**Foundation:** `e93c100` (PR #81 P1.1)  
-**Date:** 2026-10-14
+**Foundation:** `e93c100` (PR #81 P1.1) → P2A `5273052` → P2A.1 (this revision)  
+**Date:** 2026-10-14  
+**Production:** no deploy / no merge
 
 ## Results
 
 | Suite | Result |
 |-------|--------|
-| Plugin manager + P2A worker/security tests | **22 PASS** (in `test_plugin_manager_p1.py`) |
-| Manifest + true_color + ship_detection canary | **PASS** (42 combined) |
-| Core protection adversarial + GitHub enforcement | **7 PASS** |
-| Core protection vs `e93c100` | **PASS** (no core machinery weakened) |
-| Manifest 151/148 | **PASS** |
+| Plugin manager + P2A.1 adversarial worker tests | **29 PASS** (`test_plugin_manager_p1.py`) |
+| Manifest integrity | **4 PASS** |
+| true_color + ship_detection canary | **16 PASS** |
+| Branch protection evidence script | **UNKNOWN** (gh API HTTP 403 — not claimed PASS) |
+| Local CODEOWNERS present + covers core paths | **PASS** |
+
+## P2A.1 adversarial coverage
+
+| Case | Test | Result |
+|------|------|--------|
+| Infinite loop → timeout kill/reap | `test_p2a1_process_timeout_kills_infinite_loop` | PASS |
+| Crash (`SystemExit`) + memory exhaustion | `test_p2a1_process_crash_and_memory` | PASS |
+| Child outbound network denied | `test_p2a1_child_network_denied` | PASS |
+| No Bearer → 401; active OK; stale version → 403; disabled → 403 | `test_p2a1_auth_and_active_pin_gate` | PASS |
+| Concurrent executes + repeated timeouts | `test_p2a1_concurrent_execute_and_repeated_timeouts` | PASS |
+| Signature bypass refuse; post-timeout restart; forged/missing grant → 401 | `test_p2a1_signature_bypass_and_bad_grant_rejected` | PASS |
+| Branch protection evidence UNKNOWN\|PASS | `test_p2a1_branch_protection_evidence_unknown_or_pass` | PASS (verdict UNKNOWN) |
+| Worker refuses secrets at start | `test_worker_server_isolation_refuses_secrets` | PASS |
+| Digest mismatch / lifecycle / Host fail-closed | existing P2A tests | PASS |
 
 ## P1.1 close-outs covered
 
@@ -21,13 +36,23 @@
 - CODEOWNERS + `check_core_github_enforcement.py` + operator docs
 - Core protection not weakened
 
-## Worker coverage
+## Preserved Host Shell behavior
 
-- Isolation refuses `DATABASE_URL` at worker start
-- Executor digest mismatch rejected
-- demo_hello 1.0.0 → 1.1.0 → rollback → disable lifecycle
-- Host Shell fail-closed when `EV_PLUGIN_WORKER_REQUIRED=1` without worker
-- No in-process `load_pack_module` for plugin execution path
+- Manifest / 148-tool catalog integrity tests pass
+- `true_color` builtin pin remains (`get_pin("true_color")["mode"] == "builtin"` in lifecycle tests)
+- Ship Detection canary suite passes
+- No production Compose / Dokploy changes
+
+## Branch protection evidence (item 7)
+
+```text
+overall: UNKNOWN
+reason: gh api repos/.../protection → HTTP 403 Resource not accessible by integration
+local_codeowners: present + covers core paths
+```
+
+Operator action required to enable required checks + CODEOWNERS reviews; re-run
+`scripts/tools/check_branch_protection_evidence.py`.
 
 ## Production
 
