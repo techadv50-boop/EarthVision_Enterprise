@@ -46,11 +46,17 @@ Host Shell default for unconfigured worker remains fail-closed when
 `EV_PLUGIN_WORKER_REQUIRED=1`. Static `ui/synthetic.json` path remains available
 for P1 demos without worker execution.
 
-## Residual (P2B)
+## Frontend isolation (P2B)
 
-Frontend independent loading, mTLS, production keys/overlay, seccomp allowlist,
-and operator-confirmed branch protection — see Remaining P2B in
-`docs/PLUGIN_WORKER_P2A.md`.
+Independent plugin UI loads in a **sandboxed iframe (srcdoc)** with a versioned
+postMessage Host SDK. Uploaded JS never runs in the privileged React Host Shell.
+See `docs/PLUGIN_FRONTEND_BOUNDARY.md` and `docs/PLUGIN_FRONTEND_P2B.md`.
+
+## Residual (post-P2B)
+
+mTLS, production keys/overlay, seccomp allowlist, kernel egress, SPA-wide CSP,
+and operator-confirmed branch protection — see production readiness gaps in
+`docs/PLUGIN_FRONTEND_P2B.md`.
 
 ## Threat notes
 

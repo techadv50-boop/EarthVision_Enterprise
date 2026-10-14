@@ -2,12 +2,21 @@
   "kind": "synthetic_demo",
   "plugin_id": "demo_hello",
   "version": "1.0.0",
-  "message": "Hello from the SATEYE Plugin Manager demonstration pack.",
+  "message": "Hello from the SATEYE Plugin Manager demonstration pack (P2B iframe).",
   "tag": "demo_plugin",
   "points": [
-    {"label": "Alpha", "value": 42},
-    {"label": "Beta", "value": 17},
-    {"label": "Gamma", "value": 3}
+    {
+      "label": "Alpha",
+      "value": 42
+    },
+    {
+      "label": "Beta",
+      "value": 17
+    },
+    {
+      "label": "Gamma",
+      "value": 3
+    }
   ],
-  "note": "Static integrity-covered payload. Plugin Python is not executed in the API process."
+  "note": "Integrity-covered payload served via Host SDK host.getSynthetic. Plugin JS runs only in a sandboxed iframe."
 }

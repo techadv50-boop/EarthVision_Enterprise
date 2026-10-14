@@ -1846,6 +1846,13 @@ export function WorkspacePage() {
             hasAoi={Boolean(aoiGeoJson || drawnFeature || bufferGeoJson)}
             exporting={exporting}
           />
+          {/* P2B plugin slots — empty when no active plugins; legacy map chrome unchanged */}
+          <div className="pointer-events-auto absolute left-3 top-14 z-[1000] max-w-[12rem]">
+            <PluginSlotHost slot="left_toolbar" />
+          </div>
+          <div className="pointer-events-none absolute inset-0 z-[450] overflow-hidden">
+            <PluginSlotHost slot="map_overlay" className="pointer-events-auto h-full w-full" />
+          </div>
           <MapLegend legend={legend} />
           {mapChrome.splitView && hasVisibleScene && (
             <div className="pointer-events-none absolute inset-y-0 left-1/2 z-[400] w-px bg-[var(--accent)]/70" />
@@ -2113,6 +2120,7 @@ export function WorkspacePage() {
               geotiffLayerId={geotiffLayerId}
             />
             <PluginSlotHost slot="right_analysis_panel" />
+            <PluginSlotHost slot="results_panel" />
             </div>
           </div>
         ) : (

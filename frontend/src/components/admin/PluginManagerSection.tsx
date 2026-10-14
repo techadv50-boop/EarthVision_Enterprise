@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  Activity,
   History,
   Package,
   RotateCcw,
@@ -10,15 +11,18 @@ import {
   pluginService,
   type PluginAuditEvent,
   type PluginRecord,
+  type PluginSystemHealth,
 } from '../../services/pluginService';
 
-function statusBadge(text: string, tone: 'ok' | 'warn' | 'muted') {
+function statusBadge(text: string, tone: 'ok' | 'warn' | 'muted' | 'bad') {
   const cls =
     tone === 'ok'
       ? 'bg-emerald-100 text-emerald-800'
       : tone === 'warn'
         ? 'bg-amber-100 text-amber-900'
-        : 'bg-[var(--bg)] text-[var(--muted)]';
+        : tone === 'bad'
+          ? 'bg-red-100 text-red-800'
+          : 'bg-[var(--bg)] text-[var(--muted)]';
   return (
     <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${cls}`}>
       {text}
@@ -29,6 +33,7 @@ function statusBadge(text: string, tone: 'ok' | 'warn' | 'muted') {
 export function PluginManagerSection() {
   const [plugins, setPlugins] = useState<PluginRecord[]>([]);
   const [audit, setAudit] = useState<PluginAuditEvent[]>([]);
+  const [health, setHealth] = useState<PluginSystemHealth | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [versions, setVersions] = useState<
     Array<{ version: string; digest?: string; active?: boolean }>
@@ -40,12 +45,14 @@ export function PluginManagerSection() {
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [list, hist] = await Promise.all([
+    const [list, hist, h] = await Promise.all([
       pluginService.listAdmin(),
       pluginService.audit(40),
+      pluginService.health().catch(() => null),
     ]);
     setPlugins(list.plugins || []);
     setAudit(hist.events || []);
+    setHealth(h);
   }, []);
 
   useEffect(() => {
@@ -85,6 +92,7 @@ export function PluginManagerSection() {
   }
 
   const selectedPlugin = plugins.find((p) => p.plugin_id === selected) || null;
+  const worker = health?.worker;
 
   return (
     <div className="space-y-4">
@@ -94,11 +102,51 @@ export function PluginManagerSection() {
           Plugin Manager
         </h3>
         <p className="mt-1 text-xs text-[var(--muted)]">
-          Admin only. Uploads use opaque staging IDs (no server path input).
-          Install does not activate. Permissions are declarations, not a sandbox.
-          Plugin Python is not executed in the API process.
+          Admin only. Uploads use opaque staging IDs. Install does not activate.
+          Independent UI loads in a sandboxed iframe via Host SDK — never in the
+          privileged React Host Shell. No production secrets in this panel.
         </p>
       </div>
+
+      <section className="space-y-2 rounded border border-[var(--line)] p-3">
+        <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+          <Activity className="h-3.5 w-3.5" />
+          Subsystem health
+        </h4>
+        <div className="flex flex-wrap gap-1.5">
+          {statusBadge(
+            `host sdk ${health?.host_sdk_version || '—'}`,
+            health?.host_sdk_version ? 'ok' : 'muted',
+          )}
+          {statusBadge(
+            health?.require_signature ? 'signatures required' : 'signatures off',
+            health?.require_signature ? 'ok' : 'warn',
+          )}
+          {statusBadge(
+            `trust ${health?.trust_profile || '—'}`,
+            health?.trust_profile ? 'ok' : 'muted',
+          )}
+          {statusBadge(
+            worker?.available
+              ? `worker ok${worker.process_isolation ? ` · ${worker.process_isolation}` : ''}`
+              : worker?.skipped
+                ? 'worker not configured'
+                : 'worker unavailable',
+            worker?.available ? 'ok' : worker?.skipped ? 'muted' : 'warn',
+          )}
+          {statusBadge(
+            `${health?.active_count ?? 0} active`,
+            (health?.active_count || 0) > 0 ? 'ok' : 'muted',
+          )}
+          {statusBadge(
+            health?.loading_model || 'loading model —',
+            health?.loading_model ? 'ok' : 'muted',
+          )}
+        </div>
+        {worker?.error && (
+          <p className="text-[10px] text-amber-800">Worker: {worker.error}</p>
+        )}
+      </section>
 
       {(message || error) && (
         <div
@@ -184,13 +232,21 @@ export function PluginManagerSection() {
                   </div>
                   <div className="mt-0.5 text-[10px] text-[var(--muted)]">
                     slot={p.frontend_slot} · host_api={p.compatible_host_api}
+                    {p.digest ? ` · ${p.digest.slice(0, 18)}…` : ''}
                   </div>
                 </div>
-                <div className="flex gap-1">
-                  {statusBadge(p.installation_status, p.installation_status === 'installed' ? 'ok' : 'muted')}
+                <div className="flex flex-wrap gap-1">
+                  {statusBadge(
+                    p.installation_status,
+                    p.installation_status === 'installed' ? 'ok' : 'muted',
+                  )}
                   {statusBadge(
                     p.activation_status,
                     p.activation_status === 'active' ? 'ok' : 'warn',
+                  )}
+                  {statusBadge(
+                    p.compatible_host_api ? 'compat ok' : 'compat ?',
+                    p.compatible_host_api ? 'ok' : 'muted',
                   )}
                 </div>
               </div>
@@ -206,6 +262,17 @@ export function PluginManagerSection() {
             Controls · {selectedPlugin.plugin_id}
           </h4>
           <p className="text-[10px] text-[var(--muted)]">{selectedPlugin.description}</p>
+          <div className="flex flex-wrap gap-1.5 text-[10px]">
+            {statusBadge(
+              `active ${selectedPlugin.version || '—'}`,
+              selectedPlugin.activation_status === 'active' ? 'ok' : 'muted',
+            )}
+            {statusBadge(
+              selectedPlugin.digest ? 'digest pinned' : 'no digest',
+              selectedPlugin.digest ? 'ok' : 'bad',
+            )}
+            {statusBadge('signature gate on activate', 'ok')}
+          </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -274,6 +341,7 @@ export function PluginManagerSection() {
                   <span>
                     {v.version}
                     {v.active ? ' (active)' : ''}
+                    {v.digest ? ` · ${v.digest.slice(0, 14)}…` : ''}
                   </span>
                   <button
                     type="button"
