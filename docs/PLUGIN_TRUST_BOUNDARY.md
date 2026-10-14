@@ -28,17 +28,29 @@ imported by the API.
 Enabling any plugin Python execution requires a **separately reviewed isolation
 design** (below) before code is merged.
 
-## Proposed restricted worker / container model (future nontrivial plugins)
+## Restricted worker / container model (P2A / P2A.1 — preview)
+
+Implemented under `tools/plugins/worker/` (see `docs/PLUGIN_WORKER_P2A.md`,
+`docs/PLUGIN_WORKER_P2A1_THREAT_MODEL.md`):
 
 1. **Separate worker image** with no DB credentials, no `.env` secrets, no Host Shell private keys.
-2. **gRPC / HTTP localhost** contract: Host Shell sends a typed request; worker returns typed JSON.
-3. **Read-only pack mount** of the verified artifact digest only.
-4. **Network egress deny** by default; allowlist only if a declared permission + review grants it.
-5. **seccomp / non-root / read-only rootfs**; no Docker socket.
-6. **Resource limits** (CPU, memory, time); kill on timeout.
-7. **No shared Python import path** with the API process (prevents accidental `import app.*`).
+2. **Authenticated HTTP** contract: Host Shell sends Bearer + HMAC grant + typed JSON; worker returns typed JSON.
+3. **Read-only pack mount** of verified artifacts; worker re-checks digest + Ed25519 signature.
+4. **Active-pin gate** on the worker — disabled / rolled-back / stale versions rejected.
+5. **Network egress deny** by default (Compose `internal` + child socket block).
+6. **seccomp / non-root / read-only rootfs / cap_drop ALL**; no Docker socket.
+7. **Resource limits** (CPU, memory, pids, time); **per-request subprocess** with killpg/reap on timeout.
+8. **No shared Python import path** with the API process (prevents accidental `import app.*`).
 
-Until that design is reviewed and implemented, keep `execution_model=static_synthetic_only`.
+Host Shell default for unconfigured worker remains fail-closed when
+`EV_PLUGIN_WORKER_REQUIRED=1`. Static `ui/synthetic.json` path remains available
+for P1 demos without worker execution.
+
+## Residual (P2B)
+
+Frontend independent loading, mTLS, production keys/overlay, seccomp allowlist,
+and operator-confirmed branch protection — see Remaining P2B in
+`docs/PLUGIN_WORKER_P2A.md`.
 
 ## Threat notes
 

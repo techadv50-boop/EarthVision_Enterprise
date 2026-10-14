@@ -1,0 +1,82 @@
+# P2A.1 local/preview ONLY — additive overlay for sateye-preview.
+# Does NOT modify production Compose / Dokploy / sateye.xdgen.com.
+#
+# Usage:
+#   docker compose -p sateye-preview \
+#     -f docker-compose.preview.yml \
+#     -f tools/plugins/worker/compose.preview.yml \
+#     --env-file .env.preview up -d --build plugin_worker backend
+#
+# Network: plugin_worker_net is internal (no egress to internet / unrelated services).
+# Backend joins both sateye_preview_net (db/redis) and plugin_worker_net (worker only).
+
+networks:
+  plugin_worker_net:
+    name: sateye_preview_plugin_worker_net
+    internal: true
+    driver: bridge
+
+services:
+  plugin_worker:
+    build:
+      context: ./tools/plugins/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./tools/plugins/worker/seccomp.json
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      EV_ARTIFACTS_ROOT: /tool_packs/artifacts
+      EV_TOOL_PACKS_ROOT: /tool_packs
+      EV_PLUGIN_REGISTRY: /tool_packs/plugin_registry.json
+      EV_PACK_PUBLISHERS: /tool_packs/publishers/approved_publishers.json
+      EV_PACK_TRUST_PROFILE: preview
+      EV_PACK_REQUIRE_SIGNATURE: "1"
+      EV_PLUGIN_WORKER_PORT: "8091"
+      EV_PLUGIN_WORKER_TIMEOUT_SEC: "5"
+      EV_PLUGIN_WORKER_READONLY: "1"
+      EV_PLUGIN_WORKER_NETWORK_POLICY: compose_internal
+      EV_PLUGIN_WORKER_AUTH_TOKEN: ${EV_PLUGIN_WORKER_AUTH_TOKEN:-preview-plugin-worker-auth-token-32b!!}
+      EV_PLUGIN_CHILD_AS_BYTES: "268435456"
+      EV_PLUGIN_CHILD_CPU_SEC: "5"
+      DATABASE_URL: ""
+      SECRET_KEY: ""
+      MASTER_PASSWORD: ""
+      ADMIN_PASSWORD: ""
+      DOCKER_HOST: ""
+    volumes:
+      - sateye_preview_tool_packs:/tool_packs:ro
+    networks:
+      - plugin_worker_net
+    expose:
+      - "8091"
+    mem_limit: 256m
+    cpus: 0.50
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=2)\"",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  backend:
+    environment:
+      EV_PLUGIN_WORKER_URL: http://plugin_worker:8091
+      EV_PLUGIN_WORKER_REQUIRED: "1"
+      EV_PLUGIN_WORKER_AUTH_TOKEN: ${EV_PLUGIN_WORKER_AUTH_TOKEN:-preview-plugin-worker-auth-token-32b!!}
+    networks:
+      - sateye_preview_net
+      - plugin_worker_net
+    depends_on:
+      plugin_worker:
+        condition: service_healthy
