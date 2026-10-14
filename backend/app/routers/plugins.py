@@ -16,6 +16,8 @@ from app.plugins.host_sdk_contract import (
     assert_method_allowed,
     host_error,
     host_response,
+    load_analysis_result,
+    store_analysis_result,
     validate_plugin_message,
 )
 from app.plugins.registry import get_plugin, list_active_for_slot, list_plugins
@@ -170,6 +172,31 @@ async def plugin_host_sdk_bridge(
             if not isinstance(h, (int, float)) or h < 0 or h > 4000:
                 raise HostSdkError("invalid resize height")
             result = {"height": int(h)}
+        elif method == "host.getAoiBounds":
+            # Host Shell may forward the current AOI; plugins cannot invent privileged data.
+            aoi = envelope["params"].get("aoi")
+            if aoi is None:
+                result = {"aoi": None, "source": "host"}
+            elif not isinstance(aoi, dict):
+                raise HostSdkError("aoi must be an object or null")
+            else:
+                for k in ("west", "south", "east", "north"):
+                    if k not in aoi or not isinstance(aoi[k], (int, float)):
+                        raise HostSdkError(f"aoi.{k} required number")
+                result = {"aoi": aoi, "source": "host"}
+        elif method == "host.setAnalysisResult":
+            payload = envelope["params"].get("result")
+            if not isinstance(payload, dict):
+                raise HostSdkError("result object required")
+            result = store_analysis_result(
+                plugin_id=plugin_id,
+                version=envelope["version"],
+                digest=envelope["digest"],
+                result=payload,
+            )
+        elif method == "host.getAnalysisResult":
+            stored = load_analysis_result(plugin_id)
+            result = stored or {"result": None}
         else:
             raise HostSdkError(f"unhandled method: {method}")
 

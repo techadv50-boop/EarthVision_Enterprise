@@ -2,13 +2,13 @@
 
 These tokens are an allowlist of declared capabilities checked at validate/install
 time. They do **not** isolate process memory, filesystem, network, or database
-access. Uploaded plugin Python is not executed in the FastAPI process (P1.1);
+access. Uploaded plugin Python is not executed in the FastAPI process;
 see docs/PLUGIN_TRUST_BOUNDARY.md.
 """
 
 from __future__ import annotations
 
-# Explicitly allowed capability tokens for P1 plugins (declarative only).
+# Explicitly allowed capability tokens (declarative only).
 ALLOWED_PERMISSIONS = frozenset(
     {
         "synthetic_data",
@@ -17,10 +17,14 @@ ALLOWED_PERMISSIONS = frozenset(
         "ui.slot.map_overlay",
         "ui.slot.results_panel",
         "host.sdk.read_meta",
+        # P2B/RC GIS Host SDK (no Leaflet / no auth tokens)
+        "host.sdk.read_aoi",
+        "host.sdk.set_analysis_result",
+        "host.sdk.read_analysis_result",
     }
 )
 
-# Hard rejects — never grant these in P1.
+# Hard rejects — never grant these.
 FORBIDDEN_PERMISSIONS = frozenset(
     {
         "filesystem",
@@ -35,6 +39,8 @@ FORBIDDEN_PERMISSIONS = frozenset(
         "subprocess",
         "admin",
         "arbitrary_code",
+        "leaflet",
+        "auth.token",
     }
 )
 

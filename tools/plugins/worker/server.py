@@ -141,6 +141,7 @@ class Handler(BaseHTTPRequestHandler):
                 digest=req["digest"],
                 grant_exp=req.get("grant_exp"),
                 grant_mac=req.get("grant_mac"),
+                grant_nonce=req.get("grant_nonce"),
             )
             # Active pin authorization — rejects disabled / rolled-back / stale
             assert_active_pin(req["plugin_id"], req["version"], req["digest"])
@@ -175,21 +176,46 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, make_error(request_id=rid, error=str(exc), code="exec_rejected"))
 
 
+def _ssl_context():
+    """Optional mTLS: require client certificates when EV_PLUGIN_WORKER_TLS=1."""
+    import ssl
+
+    if os.environ.get("EV_PLUGIN_WORKER_TLS", "0") != "1":
+        return None
+    cert = os.environ.get("EV_PLUGIN_WORKER_TLS_CERT")
+    key = os.environ.get("EV_PLUGIN_WORKER_TLS_KEY")
+    ca = os.environ.get("EV_PLUGIN_WORKER_TLS_CA")
+    if not cert or not key or not ca:
+        raise SystemExit("EV_PLUGIN_WORKER_TLS=1 requires TLS_CERT, TLS_KEY, TLS_CA")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.load_cert_chain(certfile=cert, keyfile=key)
+    ctx.load_verify_locations(cafile=ca)
+    return ctx
+
+
 def main() -> int:
     host = os.environ.get("EV_PLUGIN_WORKER_HOST", "0.0.0.0")
     port = int(os.environ.get("EV_PLUGIN_WORKER_PORT", "8091"))
+    tls = os.environ.get("EV_PLUGIN_WORKER_TLS", "0") == "1"
     print(
         json.dumps(
             {
                 "service": "sateye-plugin-worker",
                 "host": host,
                 "port": port,
+                "tls": tls,
+                "mtls": tls,
                 "isolation": ISOLATION_REPORT,
             }
         ),
         flush=True,
     )
     server = ThreadingHTTPServer((host, port), Handler)
+    ctx = _ssl_context()
+    if ctx is not None:
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
     server.serve_forever()
     return 0
 

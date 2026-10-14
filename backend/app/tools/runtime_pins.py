@@ -14,8 +14,8 @@ from app.tools.pack_paths import pins_path, repo_root
 _LOCK = threading.RLock()
 _CACHE: dict[str, Any] = {"mtime": None, "data": None}
 
-# Host SDK semver declared for pack compatibility checks
-HOST_SDK_VERSION = "1.0.0"
+# Host SDK semver declared for pack compatibility checks (RC: GIS AOI/analysis APIs)
+HOST_SDK_VERSION = "1.1.0"
 
 # Re-export for callers that imported pins_path/repo_root from here
 __all__ = [

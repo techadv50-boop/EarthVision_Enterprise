@@ -11,6 +11,8 @@ import {
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
 import { AdminPanel } from '../components/admin/AdminPanel';
+import { PluginAnalysisResultsHost } from '../plugins/PluginAnalysisResultsHost';
+import { PluginHostProvider, usePluginHost } from '../plugins/PluginHostContext';
 import { PluginSlotHost } from '../plugins/PluginSlotHost';
 import { useAuthStore } from '../store/authStore';
 import {
@@ -151,9 +153,10 @@ const CHANGE_INDEX: Record<string, IndexName> = {
   stats: 'NDVI',
 };
 
-export function WorkspacePage() {
+function WorkspacePageInner() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const { setAoiBounds } = usePluginHost();
   const mapHostRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [toolLoading, setToolLoading] = useState(false);
@@ -334,6 +337,39 @@ export function WorkspacePage() {
       drawnFeature?.type === 'Polygon',
     [aoiGeoJson, drawnFeature],
   );
+
+  // Host SDK AOI bridge — sandboxed plugins read bounds only (never Leaflet)
+  useEffect(() => {
+    const fallback = (place?.bbox ?? [74.15, 31.35, 74.55, 31.7]) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    let feature: GeoJSON.Feature | null = aoiGeoJson;
+    if (
+      !feature &&
+      drawnFeature?.type === 'Polygon' &&
+      drawnFeature.geometry?.type === 'Polygon'
+    ) {
+      feature = {
+        type: 'Feature',
+        properties: {},
+        geometry: drawnFeature.geometry,
+      };
+    }
+    if (feature?.geometry?.type === 'Polygon') {
+      const bbox = aoiBbox(feature, fallback);
+      setAoiBounds({
+        west: bbox[0],
+        south: bbox[1],
+        east: bbox[2],
+        north: bbox[3],
+      });
+    } else {
+      setAoiBounds(null);
+    }
+  }, [aoiGeoJson, drawnFeature, place?.bbox, setAoiBounds]);
 
   const satelliteActive = Boolean(catalogFilters.satelliteId);
 
@@ -2120,6 +2156,7 @@ export function WorkspacePage() {
               geotiffLayerId={geotiffLayerId}
             />
             <PluginSlotHost slot="right_analysis_panel" />
+            <PluginAnalysisResultsHost />
             <PluginSlotHost slot="results_panel" />
             </div>
           </div>
@@ -2151,5 +2188,13 @@ export function WorkspacePage() {
         )}
       </div>
     </div>
+  );
+}
+
+export function WorkspacePage() {
+  return (
+    <PluginHostProvider>
+      <WorkspacePageInner />
+    </PluginHostProvider>
   );
 }

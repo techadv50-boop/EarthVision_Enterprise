@@ -47,6 +47,7 @@ def validate_request(data: Any) -> dict[str, Any]:
         "payload": payload,
         "grant_exp": data.get("grant_exp"),
         "grant_mac": data.get("grant_mac"),
+        "grant_nonce": data.get("grant_nonce"),
     }
 
 
