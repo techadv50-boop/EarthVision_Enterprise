@@ -6,6 +6,7 @@ from app.models.project import Project, ProjectStatus
 from app.models.satellite_provider import SatelliteProvider
 from app.models.scene import Scene
 from app.models.subscription import PlanTier, Subscription, SubscriptionStatus
+from app.models.tool_tree import ToolCategory, ToolPlacement, ToolTreeRevision
 from app.models.user import User, UserRole
 
 __all__ = [
@@ -18,6 +19,9 @@ __all__ = [
     "Scene",
     "Subscription",
     "SubscriptionStatus",
+    "ToolCategory",
+    "ToolPlacement",
+    "ToolTreeRevision",
     "User",
     "UserRole",
 ]
