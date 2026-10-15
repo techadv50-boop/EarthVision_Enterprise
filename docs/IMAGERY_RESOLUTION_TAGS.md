@@ -41,3 +41,8 @@ Each satellite has `resolution_category` (one band key). Admin UI:
 
 Built-ins are seeded (e.g. Sentinel-2 → `lte_10m`, Landsat → `lte_30m`, MODIS → `gt_30m`).
 Categories ≤5m imply `is_high_resolution` for custom (non-builtin) satellites.
+
+## Find scenes (left sidebar)
+
+Enabled satellites are **grouped by resolution category** (≤10m, ≤30m, >30m, …)
+instead of a flat grid, so operators can pick imagery by resolution class.
