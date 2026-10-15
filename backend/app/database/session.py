@@ -93,6 +93,7 @@ async def init_db() -> None:
         satellite_provider,
         scene,
         subscription,
+        tool_tree,
         user,
     )
 
