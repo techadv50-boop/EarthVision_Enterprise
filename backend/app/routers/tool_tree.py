@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, require_roles
+from app.core.imagery_resolution import resolution_band_options
 from app.database.session import get_db_session
 from app.models.user import User, UserRole
 from app.services import tool_tree_service as svc
@@ -51,6 +52,9 @@ class PlacementUpsert(BaseModel):
     sort_order: int | None = None
     visible: bool = True
     enabled: bool = True
+    # Imagery applicability: which resolution bands / satellites this tool works with.
+    applicable_resolutions: list[str] | None = None
+    applicable_satellites: list[str] | None = None
 
 
 class PlacementMove(BaseModel):
@@ -94,7 +98,15 @@ def _placement(p) -> dict[str, Any]:
         "execution_slot": p.execution_slot,
         "visible": p.visible,
         "enabled": p.enabled,
+        "applicable_resolutions": list(p.applicable_resolutions or []),
+        "applicable_satellites": list(p.applicable_satellites or []),
     }
+
+
+@router.get("/resolution-bands")
+async def list_resolution_bands(admin: AdminUser) -> dict[str, Any]:
+    """Resolution options for tool upload and satellite categorization."""
+    return {"ok": True, "bands": resolution_band_options()}
 
 
 @router.get("/tree")
@@ -201,6 +213,8 @@ async def upsert_placement(body: PlacementUpsert, admin: AdminUser, db: DbSessio
             sort_order=body.sort_order,
             visible=body.visible,
             enabled=body.enabled,
+            applicable_resolutions=body.applicable_resolutions,
+            applicable_satellites=body.applicable_satellites,
             actor=admin.email or str(admin.id),
         )
         return _placement(p)

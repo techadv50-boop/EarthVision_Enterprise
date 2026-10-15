@@ -82,6 +82,26 @@ def _ensure_sqlite_columns(sync_conn) -> None:
                 )
             )
             logger.info("Added satellite_providers.is_high_resolution column")
+        if "resolution_category" not in sat_cols:
+            sync_conn.execute(
+                text(
+                    "ALTER TABLE satellite_providers "
+                    "ADD COLUMN resolution_category VARCHAR(32)"
+                )
+            )
+            logger.info("Added satellite_providers.resolution_category column")
+    if "tool_placements" in tables:
+        place_cols = {c["name"] for c in inspector.get_columns("tool_placements")}
+        if "applicable_resolutions" not in place_cols:
+            sync_conn.execute(
+                text("ALTER TABLE tool_placements ADD COLUMN applicable_resolutions JSON")
+            )
+            logger.info("Added tool_placements.applicable_resolutions column")
+        if "applicable_satellites" not in place_cols:
+            sync_conn.execute(
+                text("ALTER TABLE tool_placements ADD COLUMN applicable_satellites JSON")
+            )
+            logger.info("Added tool_placements.applicable_satellites column")
 
 
 async def init_db() -> None:

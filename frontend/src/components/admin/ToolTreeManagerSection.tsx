@@ -7,6 +7,7 @@ import {
   Save,
   Trash2,
 } from 'lucide-react';
+import { resolutionLabel } from '../../constants/imageryResolution';
 import { pluginService } from '../../services/pluginService';
 import {
   toolTreeService,
@@ -320,6 +321,14 @@ export function ToolTreeManagerSection({ initialMode = 'tree' }: Props) {
                           <span className="ml-1 text-[10px] text-[var(--muted)]">
                             → {p.execution_slot}
                             {p.plugin_active ? ' · active' : ` · ${p.activation_status || 'off'}`}
+                            {(p.applicable_resolutions || []).length > 0
+                              ? ` · ${(p.applicable_resolutions || [])
+                                  .map((k) => resolutionLabel(k))
+                                  .join(', ')}`
+                              : ''}
+                            {(p.applicable_satellites || []).length > 0
+                              ? ` · sats: ${(p.applicable_satellites || []).join(', ')}`
+                              : ''}
                           </span>
                         </button>
                         <button

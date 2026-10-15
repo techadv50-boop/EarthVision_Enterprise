@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, Plus, Satellite, Trash2 } from 'lucide-react';
+import {
+  RESOLUTION_BANDS,
+  resolutionLabel,
+} from '../../constants/imageryResolution';
 import {
   satelliteService,
   type SatelliteAdmin,
@@ -19,6 +23,7 @@ const emptyForm: SatelliteCreatePayload = {
   notes: '',
   enabled: true,
   is_high_resolution: false,
+  resolution_category: null,
   sort_order: 100,
 };
 
@@ -31,6 +36,7 @@ export function SatelliteAdminSection() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState<'create' | 'edit'>('create');
   const [form, setForm] = useState<SatelliteCreatePayload>({ ...emptyForm });
+  const [filterCategory, setFilterCategory] = useState<string>('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -47,6 +53,23 @@ export function SatelliteAdminSection() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const filteredItems = useMemo(() => {
+    if (!filterCategory) return items;
+    if (filterCategory === '_untagged') {
+      return items.filter((row) => !row.resolution_category);
+    }
+    return items.filter((row) => row.resolution_category === filterCategory);
+  }, [items, filterCategory]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const row of items) {
+      const key = row.resolution_category || '_untagged';
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [items]);
 
   const resetForm = () => {
     setMode('create');
@@ -71,6 +94,7 @@ export function SatelliteAdminSection() {
       notes: row.notes || '',
       enabled: row.enabled,
       is_high_resolution: Boolean(row.is_high_resolution),
+      resolution_category: row.resolution_category || null,
       sort_order: row.sort_order,
     });
     setMessage(null);
@@ -92,6 +116,7 @@ export function SatelliteAdminSection() {
           auth_username: form.auth_username || undefined,
           auth_password: form.auth_password || undefined,
           notes: form.notes || undefined,
+          resolution_category: form.resolution_category || null,
         });
         setMessage(`Added satellite ${form.label}`);
         resetForm();
@@ -107,6 +132,7 @@ export function SatelliteAdminSection() {
           notes: form.notes || null,
           enabled: form.enabled,
           is_high_resolution: Boolean(form.is_high_resolution),
+          resolution_category: form.resolution_category || null,
           sort_order: form.sort_order,
         });
         setMessage(`Updated ${form.label}`);
@@ -146,7 +172,7 @@ export function SatelliteAdminSection() {
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_1.2fr]">
       <section className="rounded-lg border border-[var(--line)] p-3">
-        <div className="mb-2 flex items-center justify-between">
+        <div className="mb-2 flex items-center justify-between gap-2">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
             Satellites
           </h3>
@@ -155,13 +181,34 @@ export function SatelliteAdminSection() {
             New
           </button>
         </div>
+
+        <label className="mb-2 block text-[10px] font-medium text-[var(--muted)]">
+          Filter by resolution category
+          <select
+            className="ev-input mt-0.5 text-xs"
+            value={filterCategory}
+            onChange={(e) => setFilterCategory(e.target.value)}
+            data-testid="satellite-resolution-filter"
+          >
+            <option value="">All ({items.length})</option>
+            {RESOLUTION_BANDS.map((band) => (
+              <option key={band.key} value={band.key}>
+                {band.label}
+                {categoryCounts[band.key] ? ` (${categoryCounts[band.key]})` : ''}
+              </option>
+            ))}
+            <option value="_untagged">
+              Untagged{categoryCounts._untagged ? ` (${categoryCounts._untagged})` : ''}
+            </option>
+          </select>
+        </label>
         {loading ? (
           <div className="flex items-center gap-2 py-6 text-xs text-[var(--muted)]">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading…
           </div>
         ) : (
           <ul className="max-h-80 space-y-1 overflow-y-auto">
-            {items.map((row) => (
+            {filteredItems.map((row) => (
               <li key={row.id}>
                 <button
                   type="button"
@@ -175,6 +222,11 @@ export function SatelliteAdminSection() {
                   <div className="flex items-center gap-1.5 truncate font-medium">
                     <Satellite className="h-3.5 w-3.5 shrink-0" />
                     {row.label}
+                    {row.resolution_category ? (
+                      <span className="ml-auto shrink-0 rounded border border-[var(--line)] px-1 py-0.5 text-[10px] font-semibold text-[var(--muted)]">
+                        {resolutionLabel(row.resolution_category)}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="truncate text-[10px] text-[var(--muted)]">
                     {row.name} · {row.collection_id}
@@ -188,6 +240,11 @@ export function SatelliteAdminSection() {
             {!items.length && (
               <li className="py-4 text-center text-xs text-[var(--muted)]">No satellites yet</li>
             )}
+            {items.length > 0 && filteredItems.length === 0 && (
+              <li className="py-4 text-center text-xs text-[var(--muted)]">
+                No satellites in this resolution category
+              </li>
+            )}
           </ul>
         )}
       </section>
@@ -199,7 +256,8 @@ export function SatelliteAdminSection() {
         <p className="mb-3 rounded-md border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-2.5 py-2 text-[11px] text-[var(--ink)]">
           Enter the catalog API details below, then click <strong>Add satellite</strong>.
           This form is admin-only. Enabled satellites show for all clients under Find scenes →
-          Satellite.
+          Satellite. Assign a resolution category so tools and admin filters can segregate
+          providers.
         </p>
 
         <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
@@ -235,6 +293,27 @@ export function SatelliteAdminSection() {
           placeholder="OData / STAC collection name"
           required
         />
+
+        <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
+          Resolution category
+        </label>
+        <select
+          className="ev-input mb-2 text-xs"
+          value={form.resolution_category || ''}
+          onChange={(e) => setField('resolution_category', e.target.value || null)}
+          data-testid="satellite-resolution-category"
+        >
+          <option value="">— select resolution tag —</option>
+          {RESOLUTION_BANDS.map((band) => (
+            <option key={band.key} value={band.key}>
+              {band.label}
+            </option>
+          ))}
+        </select>
+        <p className="mb-2 text-[10px] text-[var(--muted)]">
+          Tag used to segregate satellites in admin (≤1m … ≤30m, &lt;30m, &gt;30m). Tools uploaded
+          with matching resolution bands can target this imagery class.
+        </p>
 
         <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
           Catalog API base URL
@@ -329,6 +408,7 @@ export function SatelliteAdminSection() {
             High-resolution imagery
             <span className="mt-0.5 block text-[10px] text-[var(--muted)]">
               Enables AI, Change, Maritime, and Air. Leave off for Sentinel / Landsat / MODIS.
+              Categories ≤5m imply high-res for custom satellites.
             </span>
           </span>
         </label>

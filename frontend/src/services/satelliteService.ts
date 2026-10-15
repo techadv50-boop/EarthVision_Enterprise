@@ -9,6 +9,8 @@ export interface SatellitePublic {
   is_builtin: boolean;
   /** Enables AI / Change / Maritime / Air (high-res imagery only). */
   is_high_resolution: boolean;
+  /** Admin segregation tag: lte_1m … gt_30m. */
+  resolution_category?: string | null;
   sort_order: number;
 }
 
@@ -35,6 +37,7 @@ export interface SatelliteCreatePayload {
   notes?: string;
   enabled?: boolean;
   is_high_resolution?: boolean;
+  resolution_category?: string | null;
   sort_order?: number;
 }
 
@@ -49,6 +52,7 @@ export interface SatelliteUpdatePayload {
   notes?: string | null;
   enabled?: boolean;
   is_high_resolution?: boolean;
+  resolution_category?: string | null;
   sort_order?: number;
 }
 

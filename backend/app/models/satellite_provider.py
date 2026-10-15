@@ -31,4 +31,6 @@ class SatelliteProvider(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # When true, AI / Change / Maritime / Air toolboxes are available for this satellite.
     # Current free EO sats stay false; future commercial/high-res APIs can enable this.
     is_high_resolution: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Admin segregation tag: resolution band key (lte_1m … gt_30m). See imagery_resolution.
+    resolution_category: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
