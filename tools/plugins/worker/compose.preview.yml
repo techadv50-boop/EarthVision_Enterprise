@@ -1,0 +1,101 @@
+# RC / P2A.1 local/preview ONLY — additive overlay for sateye-preview.
+# Does NOT modify production Compose / Dokploy / sateye.xdgen.com.
+#
+# Required secrets (NO defaults — fail closed):
+#   EV_PLUGIN_WORKER_AUTH_TOKEN  (≥32 chars, unique per environment)
+# Optional mTLS (recommended for RC preview):
+#   EV_PLUGIN_WORKER_TLS=1
+#   generate certs: python3 scripts/tools/generate_plugin_worker_mtls_certs.py
+#
+# Usage:
+#   export EV_PLUGIN_WORKER_AUTH_TOKEN="$(openssl rand -hex 24)"
+#   docker compose -p sateye-preview \
+#     -f docker-compose.preview.yml \
+#     -f tools/plugins/worker/compose.preview.yml \
+#     --env-file .env.preview up -d --build plugin_worker backend
+
+networks:
+  plugin_worker_net:
+    name: sateye_preview_plugin_worker_net
+    internal: true
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+
+services:
+  plugin_worker:
+    build:
+      context: ./tools/plugins/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./tools/plugins/worker/seccomp.allowlist.json
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      EV_ARTIFACTS_ROOT: /tool_packs/artifacts
+      EV_TOOL_PACKS_ROOT: /tool_packs
+      EV_PLUGIN_REGISTRY: /tool_packs/plugin_registry.json
+      EV_PACK_PUBLISHERS: /tool_packs/publishers/approved_publishers.json
+      EV_PACK_TRUST_PROFILE: preview
+      EV_PACK_REQUIRE_SIGNATURE: "1"
+      EV_PLUGIN_WORKER_PORT: "8091"
+      EV_PLUGIN_WORKER_TIMEOUT_SEC: "5"
+      EV_PLUGIN_WORKER_READONLY: "1"
+      EV_PLUGIN_WORKER_NETWORK_POLICY: compose_internal_no_masquerade
+      EV_PLUGIN_WORKER_AUTH_TOKEN: ${EV_PLUGIN_WORKER_AUTH_TOKEN:?set EV_PLUGIN_WORKER_AUTH_TOKEN}
+      EV_PLUGIN_WORKER_TLS: ${EV_PLUGIN_WORKER_TLS:-0}
+      EV_PLUGIN_WORKER_TLS_CERT: /certs/server.crt
+      EV_PLUGIN_WORKER_TLS_KEY: /certs/server.key
+      EV_PLUGIN_WORKER_TLS_CA: /certs/ca.crt
+      EV_PLUGIN_CHILD_AS_BYTES: "268435456"
+      EV_PLUGIN_CHILD_CPU_SEC: "5"
+      DATABASE_URL: ""
+      SECRET_KEY: ""
+      MASTER_PASSWORD: ""
+      ADMIN_PASSWORD: ""
+      DOCKER_HOST: ""
+    volumes:
+      - sateye_preview_tool_packs:/tool_packs:ro
+      - ./tools/plugins/worker/certs:/certs:ro
+    networks:
+      - plugin_worker_net
+    expose:
+      - "8091"
+    mem_limit: 256m
+    cpus: 0.50
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  backend:
+    environment:
+      EV_PLUGIN_WORKER_URL: ${EV_PLUGIN_WORKER_URL:-http://plugin_worker:8091}
+      EV_PLUGIN_WORKER_REQUIRED: "1"
+      EV_PLUGIN_WORKER_AUTH_TOKEN: ${EV_PLUGIN_WORKER_AUTH_TOKEN:?set EV_PLUGIN_WORKER_AUTH_TOKEN}
+      EV_PLUGIN_WORKER_TLS: ${EV_PLUGIN_WORKER_TLS:-0}
+      EV_PLUGIN_WORKER_TLS_CA: /plugin_worker_certs/ca.crt
+      EV_PLUGIN_WORKER_TLS_CLIENT_CERT: /plugin_worker_certs/client.crt
+      EV_PLUGIN_WORKER_TLS_CLIENT_KEY: /plugin_worker_certs/client.key
+    volumes:
+      - ./tools/plugins/worker/certs:/plugin_worker_certs:ro
+    networks:
+      - sateye_preview_net
+      - plugin_worker_net
+    depends_on:
+      plugin_worker:
+        condition: service_healthy

@@ -1,3 +1,11 @@
+/**
+ * LEGACY ARCHIVE — hardcoded analytical toolbox catalog (pre plugin-first).
+ *
+ * Preserved for recoverable migration into signed plugins. The workspace UI no
+ * longer renders this catalog by default (plugin-first empty tool tree).
+ * Do not delete. See docs/PLUGIN_FIRST_LEGACY_PRESERVATION.md.
+ */
+
 /** Eye In Sky toolbox catalog — maps UI tools to runnable actions. */
 
 export type ToolboxId =

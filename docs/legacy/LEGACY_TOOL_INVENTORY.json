@@ -1,0 +1,836 @@
+{
+  "schema_version": 1,
+  "note": "Legacy inventory \u2014 not shown in plugin-first UI",
+  "manifest_entry_count": 151,
+  "frontend_toolbox_count": 10,
+  "frontend_tool_count": 151,
+  "frontend_toolboxes": [
+    {
+      "toolbox_id": "navigation",
+      "title": "Map Navigation",
+      "blurb": "Pan, zoom, views, chrome & comparison",
+      "tools": [
+        {
+          "id": "pan",
+          "label": "Pan"
+        },
+        {
+          "id": "zoom_in",
+          "label": "Zoom In"
+        },
+        {
+          "id": "zoom_out",
+          "label": "Zoom Out"
+        },
+        {
+          "id": "rotate",
+          "label": "Rotate"
+        },
+        {
+          "id": "view_2d",
+          "label": "2D View"
+        },
+        {
+          "id": "view_3d",
+          "label": "3D Globe"
+        },
+        {
+          "id": "terrain_on",
+          "label": "Terrain On/Off"
+        },
+        {
+          "id": "fullscreen",
+          "label": "Full Screen"
+        },
+        {
+          "id": "split",
+          "label": "Split View"
+        },
+        {
+          "id": "swipe",
+          "label": "Swipe Comparison"
+        },
+        {
+          "id": "sync",
+          "label": "Synchronize Maps"
+        },
+        {
+          "id": "minimap",
+          "label": "Mini Map"
+        },
+        {
+          "id": "compass",
+          "label": "Compass / North Arrow"
+        },
+        {
+          "id": "scale",
+          "label": "Scale Bar"
+        },
+        {
+          "id": "coords",
+          "label": "Coordinates"
+        },
+        {
+          "id": "grid",
+          "label": "Map Grid"
+        },
+        {
+          "id": "bookmarks",
+          "label": "Bookmarks"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "layers",
+      "title": "Layer Manager",
+      "blurb": "Drag to reorder \u00b7 DEM base height \u00b7 scene & analytics layers",
+      "tools": [
+        {
+          "id": "add_layer",
+          "label": "Add Layer"
+        },
+        {
+          "id": "remove_layer",
+          "label": "Remove Layer"
+        },
+        {
+          "id": "opacity",
+          "label": "Opacity Slider"
+        },
+        {
+          "id": "ordering",
+          "label": "Layer Ordering"
+        },
+        {
+          "id": "rename",
+          "label": "Rename Layer"
+        },
+        {
+          "id": "duplicate",
+          "label": "Duplicate Layer"
+        },
+        {
+          "id": "styles",
+          "label": "Layer Styles"
+        },
+        {
+          "id": "labels",
+          "label": "Labels"
+        },
+        {
+          "id": "transparency",
+          "label": "Transparency"
+        },
+        {
+          "id": "blend",
+          "label": "Blend Modes"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "image",
+      "title": "Image Processing",
+      "blurb": "True/false color, indices & raster adjustments",
+      "tools": [
+        {
+          "id": "true_color",
+          "label": "True Color"
+        },
+        {
+          "id": "false_color",
+          "label": "False Color"
+        },
+        {
+          "id": "agriculture",
+          "label": "Agriculture"
+        },
+        {
+          "id": "swir_composite",
+          "label": "Shortwave Infrared"
+        },
+        {
+          "id": "urban_buildup",
+          "label": "Urban / Buildup"
+        },
+        {
+          "id": "unsupervised_classify",
+          "label": "Unsupervised Classify"
+        },
+        {
+          "id": "ndvi",
+          "label": "NDVI"
+        },
+        {
+          "id": "ndwi",
+          "label": "NDWI"
+        },
+        {
+          "id": "ndbi",
+          "label": "NDBI"
+        },
+        {
+          "id": "savi",
+          "label": "SAVI"
+        },
+        {
+          "id": "bsi",
+          "label": "BSI"
+        },
+        {
+          "id": "evi",
+          "label": "EVI"
+        },
+        {
+          "id": "ndmi",
+          "label": "NDMI"
+        },
+        {
+          "id": "nbr",
+          "label": "Burn Index"
+        },
+        {
+          "id": "hist",
+          "label": "Histogram Stretch"
+        },
+        {
+          "id": "brightness",
+          "label": "Brightness"
+        },
+        {
+          "id": "contrast",
+          "label": "Contrast"
+        },
+        {
+          "id": "gamma",
+          "label": "Gamma"
+        },
+        {
+          "id": "sharpen",
+          "label": "Sharpen"
+        },
+        {
+          "id": "denoise",
+          "label": "Denoise"
+        },
+        {
+          "id": "cloud_mask",
+          "label": "Cloud Mask"
+        },
+        {
+          "id": "mosaic",
+          "label": "Image Mosaic"
+        },
+        {
+          "id": "clip",
+          "label": "Clip Raster"
+        },
+        {
+          "id": "reproject",
+          "label": "Reproject"
+        },
+        {
+          "id": "resample",
+          "label": "Resample"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "ai",
+      "title": "AI Detection",
+      "blurb": "Object & land-cover detection on imagery",
+      "tools": [
+        {
+          "id": "building_detection",
+          "label": "Building Detection"
+        },
+        {
+          "id": "road_extraction",
+          "label": "Road Extraction"
+        },
+        {
+          "id": "bridge_detection",
+          "label": "Bridge Detection"
+        },
+        {
+          "id": "airport_mapping",
+          "label": "Airport Mapping"
+        },
+        {
+          "id": "runway_detection",
+          "label": "Runway Detection"
+        },
+        {
+          "id": "port_mapping",
+          "label": "Port Mapping"
+        },
+        {
+          "id": "harbor_detection",
+          "label": "Harbor Detection"
+        },
+        {
+          "id": "ship_detection",
+          "label": "Ship Detection"
+        },
+        {
+          "id": "aircraft_detection",
+          "label": "Aircraft Detection"
+        },
+        {
+          "id": "railway_detection",
+          "label": "Railway Detection"
+        },
+        {
+          "id": "powerline",
+          "label": "Powerline Corridor Mapping"
+        },
+        {
+          "id": "solar",
+          "label": "Solar Farm Detection"
+        },
+        {
+          "id": "wind",
+          "label": "Wind Farm Detection"
+        },
+        {
+          "id": "construction",
+          "label": "Construction Site Detection"
+        },
+        {
+          "id": "urban_exp",
+          "label": "Urban Expansion Detection"
+        },
+        {
+          "id": "veg_class",
+          "label": "Vegetation Classification"
+        },
+        {
+          "id": "flood",
+          "label": "Flood Detection"
+        },
+        {
+          "id": "burn",
+          "label": "Burn Scar Detection"
+        },
+        {
+          "id": "water",
+          "label": "Water Body Extraction"
+        },
+        {
+          "id": "lulc",
+          "label": "Land Cover Classification"
+        },
+        {
+          "id": "conf",
+          "label": "Confidence Heatmap"
+        },
+        {
+          "id": "manual",
+          "label": "Manual Verification Mode"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "change",
+      "title": "Change Detection",
+      "blurb": "Compare dates and thematic change on scenes",
+      "tools": [
+        {
+          "id": "compare_two",
+          "label": "Compare Two Dates"
+        },
+        {
+          "id": "compare_multi",
+          "label": "Compare Multiple Dates"
+        },
+        {
+          "id": "urban_growth",
+          "label": "Urban Growth"
+        },
+        {
+          "id": "forest_loss",
+          "label": "Forest Loss"
+        },
+        {
+          "id": "forest_gain",
+          "label": "Forest Gain"
+        },
+        {
+          "id": "ag_change",
+          "label": "Agricultural Change"
+        },
+        {
+          "id": "water_change",
+          "label": "Water Change"
+        },
+        {
+          "id": "river_change",
+          "label": "River Course Change"
+        },
+        {
+          "id": "coastal",
+          "label": "Coastal Change"
+        },
+        {
+          "id": "shoreline",
+          "label": "Shoreline Change"
+        },
+        {
+          "id": "flood_change",
+          "label": "Flood Change"
+        },
+        {
+          "id": "burn_change",
+          "label": "Burn Area Change"
+        },
+        {
+          "id": "construction_change",
+          "label": "Construction Change"
+        },
+        {
+          "id": "infra_growth",
+          "label": "Infrastructure Growth"
+        },
+        {
+          "id": "auto_report",
+          "label": "Automatic Change Report"
+        },
+        {
+          "id": "time_slider",
+          "label": "Time Slider"
+        },
+        {
+          "id": "change_stats",
+          "label": "Change Statistics"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "maritime",
+      "title": "Maritime Analytics",
+      "blurb": "Ships, ports, ocean overlays & coasts",
+      "tools": [
+        {
+          "id": "ship_sar",
+          "label": "Ship Detection (SAR)"
+        },
+        {
+          "id": "ship_opt",
+          "label": "Ship Detection (Optical)"
+        },
+        {
+          "id": "vessel_density",
+          "label": "Vessel Density Map"
+        },
+        {
+          "id": "port_act",
+          "label": "Port Activity Mapping"
+        },
+        {
+          "id": "anchorage",
+          "label": "Anchorage Detection"
+        },
+        {
+          "id": "lanes",
+          "label": "Shipping Lane Visualization"
+        },
+        {
+          "id": "oil",
+          "label": "Oil Spill Detection"
+        },
+        {
+          "id": "sst",
+          "label": "Sea Surface Temperature"
+        },
+        {
+          "id": "chl",
+          "label": "Chlorophyll Overlay"
+        },
+        {
+          "id": "wave",
+          "label": "Wave Height Overlay"
+        },
+        {
+          "id": "wind",
+          "label": "Wind Speed Overlay"
+        },
+        {
+          "id": "erosion",
+          "label": "Coastal Erosion Mapping"
+        },
+        {
+          "id": "tidal",
+          "label": "Tidal Zone Mapping"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "aviation",
+      "title": "Air Domain & Aviation",
+      "blurb": "Airports, airspace, weather & elevation",
+      "tools": [
+        {
+          "id": "airport_db",
+          "label": "Airport Database"
+        },
+        {
+          "id": "runway_inv",
+          "label": "Runway Inventory"
+        },
+        {
+          "id": "airport_exp",
+          "label": "Airport Expansion Monitoring"
+        },
+        {
+          "id": "airspace",
+          "label": "Airspace Overlay"
+        },
+        {
+          "id": "notam",
+          "label": "NOTAM Overlay"
+        },
+        {
+          "id": "wx",
+          "label": "Weather Overlay"
+        },
+        {
+          "id": "terr_aware",
+          "label": "Terrain Awareness"
+        },
+        {
+          "id": "dem_profile",
+          "label": "DEM Profile"
+        },
+        {
+          "id": "elev_xsect",
+          "label": "Elevation Cross Section"
+        },
+        {
+          "id": "visibility",
+          "label": "Visibility Analysis"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "terrain",
+      "title": "Terrain Analysis",
+      "blurb": "DEM, hydro, viewshed & surface metrics",
+      "tools": [
+        {
+          "id": "dem",
+          "label": "DEM 3D (under imagery)"
+        },
+        {
+          "id": "hillshade",
+          "label": "Hillshade"
+        },
+        {
+          "id": "slope",
+          "label": "Slope"
+        },
+        {
+          "id": "aspect",
+          "label": "Aspect"
+        },
+        {
+          "id": "contours",
+          "label": "Contours"
+        },
+        {
+          "id": "watershed",
+          "label": "Watershed"
+        },
+        {
+          "id": "flow_dir",
+          "label": "Flow Direction"
+        },
+        {
+          "id": "flow_acc",
+          "label": "Flow Accumulation"
+        },
+        {
+          "id": "tri",
+          "label": "Terrain Ruggedness"
+        },
+        {
+          "id": "profile",
+          "label": "Terrain Profile"
+        },
+        {
+          "id": "cutfill",
+          "label": "Cut/Fill Analysis"
+        },
+        {
+          "id": "viewshed",
+          "label": "Viewshed"
+        },
+        {
+          "id": "los",
+          "label": "Line of Sight"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "gis",
+      "title": "GIS Analysis",
+      "blurb": "Vector overlays & spatial operations",
+      "tools": [
+        {
+          "id": "buffer",
+          "label": "Buffer"
+        },
+        {
+          "id": "intersect",
+          "label": "Intersect"
+        },
+        {
+          "id": "union",
+          "label": "Union"
+        },
+        {
+          "id": "clip",
+          "label": "Clip"
+        },
+        {
+          "id": "dissolve",
+          "label": "Dissolve"
+        },
+        {
+          "id": "merge",
+          "label": "Merge"
+        },
+        {
+          "id": "spatial_join",
+          "label": "Spatial Join"
+        },
+        {
+          "id": "nearest",
+          "label": "Nearest Neighbor"
+        },
+        {
+          "id": "density",
+          "label": "Density Analysis"
+        },
+        {
+          "id": "hotspot",
+          "label": "Hotspot Analysis"
+        },
+        {
+          "id": "thiessen",
+          "label": "Thiessen Polygons"
+        },
+        {
+          "id": "voronoi",
+          "label": "Voronoi"
+        },
+        {
+          "id": "hull",
+          "label": "Convex Hull"
+        },
+        {
+          "id": "grid",
+          "label": "Grid Generator"
+        }
+      ]
+    },
+    {
+      "toolbox_id": "measure",
+      "title": "Measurement",
+      "blurb": "Distance, area, bearing & coordinates",
+      "tools": [
+        {
+          "id": "distance",
+          "label": "Distance"
+        },
+        {
+          "id": "area",
+          "label": "Area"
+        },
+        {
+          "id": "perimeter",
+          "label": "Perimeter"
+        },
+        {
+          "id": "bearing",
+          "label": "Bearing"
+        },
+        {
+          "id": "elevation",
+          "label": "Elevation"
+        },
+        {
+          "id": "volume",
+          "label": "Volume"
+        },
+        {
+          "id": "radius",
+          "label": "Radius"
+        },
+        {
+          "id": "coord_picker",
+          "label": "Coordinate Picker"
+        },
+        {
+          "id": "poly_meas",
+          "label": "Polygon Measurement"
+        },
+        {
+          "id": "line_meas",
+          "label": "Polyline Measurement"
+        }
+      ]
+    }
+  ],
+  "manifest_tool_ids": [
+    "pan",
+    "zoom_in",
+    "zoom_out",
+    "rotate",
+    "view_2d",
+    "view_3d",
+    "terrain_on",
+    "fullscreen",
+    "split",
+    "swipe",
+    "sync",
+    "minimap",
+    "compass",
+    "scale",
+    "coords",
+    "grid",
+    "bookmarks",
+    "add_layer",
+    "remove_layer",
+    "opacity",
+    "ordering",
+    "rename",
+    "duplicate",
+    "styles",
+    "labels",
+    "transparency",
+    "blend",
+    "true_color",
+    "false_color",
+    "agriculture",
+    "swir_composite",
+    "urban_buildup",
+    "unsupervised_classify",
+    "ndvi",
+    "ndwi",
+    "ndbi",
+    "savi",
+    "bsi",
+    "evi",
+    "ndmi",
+    "nbr",
+    "hist",
+    "brightness",
+    "contrast",
+    "gamma",
+    "sharpen",
+    "denoise",
+    "cloud_mask",
+    "mosaic",
+    "clip",
+    "reproject",
+    "resample",
+    "building_detection",
+    "road_extraction",
+    "bridge_detection",
+    "airport_mapping",
+    "runway_detection",
+    "port_mapping",
+    "harbor_detection",
+    "ship_detection",
+    "aircraft_detection",
+    "railway_detection",
+    "powerline",
+    "solar",
+    "wind",
+    "construction",
+    "urban_exp",
+    "veg_class",
+    "flood",
+    "burn",
+    "water",
+    "lulc",
+    "conf",
+    "manual",
+    "compare_two",
+    "compare_multi",
+    "urban_growth",
+    "forest_loss",
+    "forest_gain",
+    "ag_change",
+    "water_change",
+    "river_change",
+    "coastal",
+    "shoreline",
+    "flood_change",
+    "burn_change",
+    "construction_change",
+    "infra_growth",
+    "auto_report",
+    "time_slider",
+    "change_stats",
+    "ship_sar",
+    "ship_opt",
+    "vessel_density",
+    "port_act",
+    "anchorage",
+    "lanes",
+    "oil",
+    "sst",
+    "chl",
+    "wave",
+    "wind",
+    "erosion",
+    "tidal",
+    "airport_db",
+    "runway_inv",
+    "airport_exp",
+    "airspace",
+    "notam",
+    "wx",
+    "terr_aware",
+    "dem_profile",
+    "elev_xsect",
+    "visibility",
+    "dem",
+    "hillshade",
+    "slope",
+    "aspect",
+    "contours",
+    "watershed",
+    "flow_dir",
+    "flow_acc",
+    "tri",
+    "profile",
+    "cutfill",
+    "viewshed",
+    "los",
+    "buffer",
+    "intersect",
+    "union",
+    "clip",
+    "dissolve",
+    "merge",
+    "spatial_join",
+    "nearest",
+    "density",
+    "hotspot",
+    "thiessen",
+    "voronoi",
+    "hull",
+    "grid",
+    "distance",
+    "area",
+    "perimeter",
+    "bearing",
+    "elevation",
+    "volume",
+    "radius",
+    "coord_picker",
+    "poly_meas",
+    "line_meas"
+  ]
+}

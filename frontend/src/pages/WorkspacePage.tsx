@@ -9,8 +9,13 @@ import {
   type CatalogFilters,
 } from '../components/workflow/PlaceStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
-import { ToolboxPanel } from '../components/workflow/ToolboxPanel';
-import { AdminPanel } from '../components/admin/AdminPanel';
+import { PluginFirstToolsPanel } from '../components/workflow/PluginFirstToolsPanel';
+import { AdminPanel, type AdminTab } from '../components/admin/AdminPanel';
+import { PluginAnalysisResultsHost } from '../plugins/PluginAnalysisResultsHost';
+import { PluginHostProvider, usePluginHost } from '../plugins/PluginHostContext';
+import { PluginSlotHost } from '../plugins/PluginSlotHost';
+import type { ToolPlacementNode } from '../services/toolTreeService';
+import { toolTreeService } from '../services/toolTreeService';
 import { useAuthStore } from '../store/authStore';
 import {
   useWorkflowStore,
@@ -44,9 +49,9 @@ import { gisService } from '../services/gisService';
 import { getErrorMessage } from '../services/api';
 import { footprintBbox } from '../utils/geoMath';
 import { exportMapJpeg } from '../utils/exportMap';
-import type { ToolboxId, ToolboxTool } from '../toolbox/catalog';
+import type { ToolboxTool } from '../toolbox/catalog';
 import { bookmarkService } from '../services/bookmarkService';
-import { HIGH_RES_ONLY_TOOLBOXES, TOOLBOXES } from '../toolbox/catalog';
+// Legacy toolbox catalog retained under frontend/src/toolbox/catalog.ts (not rendered).
 
 function sceneBounds(
   scene: SceneSummary,
@@ -150,9 +155,10 @@ const CHANGE_INDEX: Record<string, IndexName> = {
   stats: 'NDVI',
 };
 
-export function WorkspacePage() {
+function WorkspacePageInner() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const { setAoiBounds } = usePluginHost();
   const mapHostRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [toolLoading, setToolLoading] = useState(false);
@@ -197,7 +203,12 @@ export function WorkspacePage() {
   });
   const [selectedColormap, setSelectedColormap] = useState<ColormapName | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
-  const [adminTab, setAdminTab] = useState<'satellites' | 'clients'>('clients');
+  const [adminTab, setAdminTab] = useState<AdminTab>('clients');
+  const [activePluginId, setActivePluginId] = useState<string | null>(null);
+  const [activePluginSlot, setActivePluginSlot] = useState<
+    'left_toolbar' | 'right_analysis_panel' | 'map_overlay' | 'results_panel'
+  >('right_analysis_panel');
+  const [pluginToolCount, setPluginToolCount] = useState(0);
   const [satelliteRefreshKey, setSatelliteRefreshKey] = useState(0);
   const [geotiffBusy, setGeotiffBusy] = useState(false);
   const [catalogFilters, setCatalogFilters] = useState<CatalogFilters>(() => {
@@ -334,20 +345,66 @@ export function WorkspacePage() {
     [aoiGeoJson, drawnFeature],
   );
 
+  // Host SDK AOI bridge — sandboxed plugins read bounds only (never Leaflet)
+  useEffect(() => {
+    const fallback = (place?.bbox ?? [74.15, 31.35, 74.55, 31.7]) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    let feature: GeoJSON.Feature | null = aoiGeoJson;
+    if (
+      !feature &&
+      drawnFeature?.type === 'Polygon' &&
+      drawnFeature.geometry?.type === 'Polygon'
+    ) {
+      feature = {
+        type: 'Feature',
+        properties: {},
+        geometry: drawnFeature.geometry,
+      };
+    }
+    if (feature?.geometry?.type === 'Polygon') {
+      const bbox = aoiBbox(feature, fallback);
+      setAoiBounds({
+        west: bbox[0],
+        south: bbox[1],
+        east: bbox[2],
+        north: bbox[3],
+      });
+    } else {
+      setAoiBounds(null);
+    }
+  }, [aoiGeoJson, drawnFeature, place?.bbox, setAoiBounds]);
+
   const satelliteActive = Boolean(catalogFilters.satelliteId);
 
-  const toolCount = useMemo(() => {
-    // Count includes AI / Change / Maritime / Air (visible but always inactive).
-    const boxes =
-      allowedTools == null
-        ? TOOLBOXES
-        : TOOLBOXES.filter(
-            (b) =>
-              allowedTools.includes(b.id) ||
-              HIGH_RES_ONLY_TOOLBOXES.includes(b.id),
+  // Plugin-first: visible analytical tools come from the active tool tree only.
+  // Legacy TOOLBOXES catalog is preserved in source for migration — not shown.
+  const toolCount = pluginToolCount;
+
+  useEffect(() => {
+    let cancelled = false;
+    toolTreeService
+      .getTree()
+      .then((tree) => {
+        if (cancelled) return;
+        const countPlacements = (nodes: typeof tree.roots): number =>
+          nodes.reduce(
+            (n, node) =>
+              n + (node.placements?.length || 0) + countPlacements(node.children || []),
+            0,
           );
-    return boxes.reduce((n, b) => n + b.tools.length, 0);
-  }, [allowedTools]);
+        setPluginToolCount(countPlacements(tree.roots || []));
+      })
+      .catch(() => {
+        if (!cancelled) setPluginToolCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [toolboxOpen, adminOpen]);
 
   const analysisBbox = useMemo((): [number, number, number, number] => {
     // Processed overlays must match the original scene extent on the map.
@@ -1723,7 +1780,7 @@ export function WorkspacePage() {
             onClick={() => setToolboxOpen(!toolboxOpen)}
           >
             <Wrench className="h-4 w-4" />
-            Toolboxes ({toolCount})
+            Tools ({toolCount})
           </button>
           <span className="hidden max-w-[10rem] truncate text-xs text-[var(--muted)] sm:inline">
             {user?.full_name}
@@ -1845,6 +1902,20 @@ export function WorkspacePage() {
             hasAoi={Boolean(aoiGeoJson || drawnFeature || bufferGeoJson)}
             exporting={exporting}
           />
+          {/* P2B plugin slots — empty when no active plugins; legacy map chrome unchanged */}
+          <div className="pointer-events-auto absolute left-3 top-14 z-[1000] max-w-[12rem]">
+            <PluginSlotHost
+              slot="left_toolbar"
+              focusPluginId={activePluginSlot === 'left_toolbar' ? activePluginId : null}
+            />
+          </div>
+          <div className="pointer-events-none absolute inset-0 z-[450] overflow-hidden">
+            <PluginSlotHost
+              slot="map_overlay"
+              className="pointer-events-auto h-full w-full"
+              focusPluginId={activePluginSlot === 'map_overlay' ? activePluginId : null}
+            />
+          </div>
           <MapLegend legend={legend} />
           {mapChrome.splitView && hasVisibleScene && (
             <div className="pointer-events-none absolute inset-y-0 left-1/2 z-[400] w-px bg-[var(--accent)]/70" />
@@ -1876,268 +1947,59 @@ export function WorkspacePage() {
 
         {toolboxOpen ? (
           <div className="flex w-[min(24rem,100%)] shrink-0 flex-col overflow-hidden">
-            <ToolboxPanel
-              expanded={(expandedToolbox as ToolboxId | null) ?? 'image'}
-              activeToolId={activeToolId}
-              loading={toolLoading}
-              status={toolStatus}
-              overlays={overlays}
-              layerOpacity={layerOpacity}
-              hasScene={hasVisibleScene}
-              sceneCollection={
-                focusScene?.collection ?? catalogFilters.satelliteId ?? null
-              }
-              hasDrawn={Boolean(drawnFeature)}
-              drawnType={drawnFeature?.type ?? null}
-              hasWaterAoi={hasWaterAoi}
-              bufferLoading={bufferLoading}
-              lastBufferDistance={lastBufferDistance}
-              lastBufferArea={lastBufferArea}
-              lastLegend={lastLegend}
-              lastMessage={lastMessage}
-              shipContacts={shipContacts}
-              activeContactId={activeContactId}
-              onLocateContact={(c) => {
-                setActiveContactId(c.id);
-                setFocusContact({ id: c.id, lat: c.lat, lon: c.lon });
-                setMapCommand({
-                  id: Date.now(),
-                  type: 'fly-to',
-                  lat: c.lat,
-                  lon: c.lon,
-                  zoom: 16,
-                });
-                setLastMessage(
-                  `Locating ${c.label} · ${c.lat.toFixed(5)}°, ${c.lon.toFixed(5)}°`,
-                );
-              }}
-              mapChrome={mapChrome}
-              allowedTools={allowedTools}
-              toolsEnabled={satelliteActive}
-              onExpand={(id) => setExpandedToolbox(id)}
-              onTool={onTool}
-              onClose={() => setToolboxOpen(false)}
-              onOpacity={setLayerOpacity}
-              onToggleOverlay={(id) => {
-                const layer = overlays.find((o) => o.id === id);
-                if (layer) setOverlayVisible(id, layer.visible === false);
-              }}
-              onRemoveOverlay={removeOverlay}
-              onMoveOverlay={moveOverlay}
-              onReorderOverlays={reorderOverlaysDisplay}
-              onPatchOverlay={patchOverlay}
-              onRenameOverlay={renameOverlay}
-              onApplyBuffer={onApplyBuffer}
-              onClearBuffer={() => {
-                setBufferGeoJson(null);
-                removeOverlaysByKind('buffer');
-                setLastBufferDistance(null);
-                setLastBufferArea(null);
-              }}
-              indexResult={indexResult}
-              compositeResult={compositeResult}
-              stretchResult={stretchResult}
-              classificationResult={classificationResult}
-              stretchParams={stretchParams}
-              colormap={selectedColormap}
-              onComposite={(preset) => void runComposite(preset)}
-              onIndexTool={(index) => void runIndex(index)}
-              onClassify={(opts) => void runClassification(opts)}
-              onRecolorClassify={(styles) => void recolorClassification(styles)}
-              onColormapChange={(cmap) => {
-                setSelectedColormap(cmap);
-                if (indexResult?.index) {
-                  void runIndex(indexResult.index as IndexName, cmap);
-                }
-              }}
-              onStretch={() => void runStretch()}
-              onStretchParams={(patch) =>
-                setStretchParams((s) => ({ ...s, ...patch }))
-              }
-              onEnhance={(op) => applyProcessFilter(op)}
-              onExportClassifyPng={() => {
-                if (!classificationResult?.overlay_base64 || !focusScene) {
-                  setError('Run Unsupervised Classify first');
-                  return;
-                }
-                void classificationService
-                  .downloadDecoratedPng(classificationResult, focusScene.id)
-                  .catch((err) => setError(getErrorMessage(err)));
-              }}
-              onExportClassifyCsv={() => {
-                if (!classificationResult || !focusScene) {
-                  setError('Run Unsupervised Classify first');
-                  return;
-                }
-                classificationService.downloadCsvText(
-                  classificationService.buildResultsCsv(classificationResult),
-                  `lulc4_${focusScene.id}_areas.csv`,
-                );
-              }}
-              onExportClassifyGeotiff={() => {
-                if (!classificationResult || !focusScene) {
-                  setError('Run Unsupervised Classify first');
-                  return;
-                }
-                setGeotiffBusy(true);
-                void classificationService
-                  .downloadGeotiff(classificationResult, focusScene.id)
-                  .then(() =>
-                    setLastMessage(
-                      `Downloaded GeoTIFF · LULC ${classificationResult.classes.length}-class (${Math.round(classificationResult.total_area_km2)} km²)`,
-                    ),
-                  )
-                  .catch((err) => setError(getErrorMessage(err)))
-                  .finally(() => setGeotiffBusy(false));
-              }}
-              onExportIndexPng={() => {
-                if (!indexResult || !focusScene) {
-                  setError('Compute an index first');
-                  return;
-                }
-                if (indexResult.overlay_base64) {
-                  void compositeService.downloadPngFromBase64(
-                    indexResult.overlay_base64,
-                    `${indexResult.index}_${focusScene.id}.png`,
-                  );
-                } else {
-                  void compositeService.downloadIndexPng(
-                    indexResult.index,
-                    focusScene.id,
-                    analysisBbox,
-                  );
-                }
-              }}
-              onExportIndexCsv={() => {
-                if (!indexResult || !focusScene) {
-                  setError('Compute an index first');
-                  return;
-                }
-                void compositeService.downloadIndexCsv(indexResult.index, focusScene.id);
-              }}
-              onExportCompositePng={() => {
-                if (compositeResult?.overlay_base64) {
-                  void compositeService.downloadPngFromBase64(
-                    compositeResult.overlay_base64,
-                    `${compositeResult.preset}.png`,
-                  );
-                } else {
-                  void compositeService.downloadCompositePng(
-                    compositeResult?.preset || 'false_color_infrared',
-                    focusScene?.id,
-                    analysisBbox,
-                  );
-                }
-              }}
-              onExportStretchPng={() => {
-                if (!stretchResult?.overlay_base64) {
-                  setError('Apply histogram stretch first');
-                  return;
-                }
-                void compositeService.downloadPngFromBase64(
-                  stretchResult.overlay_base64,
-                  `stretch_${focusScene?.id || 'aoi'}.png`,
-                );
-              }}
-              onExportOverlayPng={exportActiveOverlayPng}
-              onExportIndexGeotiff={() => {
-                if (!indexResult || !focusScene) {
-                  setError('Compute an index first');
-                  return;
-                }
-                setGeotiffBusy(true);
-                void compositeService
-                  .downloadGeotiff({
-                    bounds: (indexResult.bounds as number[]) || [...analysisBbox],
-                    filename: `${indexResult.index}_${focusScene.id}.tif`,
-                    overlay_base64: indexResult.overlay_base64,
-                    procedure: indexResult.overlay_base64 ? 'overlay' : 'index',
-                    scene_id: focusScene.id,
-                    index: indexResult.index,
-                    colormap: indexResult.colormap,
-                  })
-                  .then(() => setLastMessage(`Downloaded GeoTIFF · ${indexResult.index}`))
-                  .catch((err) => setError(getErrorMessage(err)))
-                  .finally(() => setGeotiffBusy(false));
-              }}
-              onExportCompositeGeotiff={() => {
-                if (!compositeResult) {
-                  setError('Render a composite (e.g. True Color) first');
-                  return;
-                }
-                setGeotiffBusy(true);
-                void compositeService
-                  .downloadGeotiff({
-                    bounds: [...compositeResult.bounds],
-                    filename: `${compositeResult.preset}.tif`,
-                    overlay_base64: compositeResult.overlay_base64,
-                    procedure: compositeResult.overlay_base64 ? 'overlay' : 'composite',
-                    scene_id: focusScene?.id,
-                    preset: compositeResult.preset,
-                  })
-                  .then(() =>
-                    setLastMessage(`Downloaded GeoTIFF · ${compositeResult.label}`),
-                  )
-                  .catch((err) => setError(getErrorMessage(err)))
-                  .finally(() => setGeotiffBusy(false));
-              }}
-              onExportStretchGeotiff={() => {
-                if (!stretchResult) {
-                  setError('Apply histogram stretch first');
-                  return;
-                }
-                setGeotiffBusy(true);
-                void compositeService
-                  .downloadGeotiff({
-                    bounds: [...stretchResult.bounds],
-                    filename: `stretch_${focusScene?.id || 'aoi'}.tif`,
-                    overlay_base64: stretchResult.overlay_base64,
-                    procedure: stretchResult.overlay_base64 ? 'overlay' : 'stretch',
-                    scene_id: focusScene?.id,
-                    p_low: stretchResult.p_low,
-                    p_high: stretchResult.p_high,
-                  })
-                  .then(() => setLastMessage('Downloaded GeoTIFF · histogram stretch'))
-                  .catch((err) => setError(getErrorMessage(err)))
-                  .finally(() => setGeotiffBusy(false));
-              }}
-              onExportOverlayGeotiff={() => {
-                void exportActiveOverlayGeotiff();
-              }}
-              onDownloadLayerGeotiff={(layer) => {
-                void downloadLayerGeotiff(layer);
-              }}
-              geotiffBusy={geotiffBusy}
-              geotiffLayerId={geotiffLayerId}
-            />
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <PluginFirstToolsPanel
+                isAdmin={isAdmin}
+                selectedPluginId={activePluginId}
+                onClose={() => setToolboxOpen(false)}
+                onOpenAdminTools={(tab) => {
+                  setAdminTab(tab);
+                  setAdminOpen(true);
+                }}
+                onOpenTool={(placement: ToolPlacementNode) => {
+                  setActivePluginId(placement.plugin_id);
+                  const slot = (placement.execution_slot || 'right_analysis_panel') as
+                    | 'left_toolbar'
+                    | 'right_analysis_panel'
+                    | 'map_overlay'
+                    | 'results_panel';
+                  setActivePluginSlot(slot);
+                  setLastMessage(`Opened ${placement.display_name} · ${slot}`);
+                }}
+              />
+              {activePluginSlot === 'right_analysis_panel' && (
+                <PluginSlotHost
+                  slot="right_analysis_panel"
+                  focusPluginId={activePluginId}
+                />
+              )}
+              <PluginAnalysisResultsHost />
+              {activePluginSlot === 'results_panel' && (
+                <PluginSlotHost slot="results_panel" focusPluginId={activePluginId} />
+              )}
+            </div>
           </div>
         ) : (
           <div className="flex w-12 shrink-0 flex-col items-center gap-1 border-l border-[var(--line)] bg-white py-2">
             <button
               type="button"
               className="rounded-lg bg-[var(--accent)] p-2 text-white"
-              title="Open toolboxes"
+              title="Open tools"
               onClick={() => setToolboxOpen(true)}
             >
               <Wrench className="h-4 w-4" />
             </button>
-            {TOOLBOXES.slice(0, 6).map((box) => (
-              <button
-                key={box.id}
-                type="button"
-                className="rounded p-1.5 text-[9px] text-[var(--muted)] hover:bg-[var(--accent-soft)]"
-                title={box.title}
-                onClick={() => {
-                  setExpandedToolbox(box.id);
-                  setToolboxOpen(true);
-                }}
-              >
-                {box.title.split(' ')[0]}
-              </button>
-            ))}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+export function WorkspacePage() {
+  return (
+    <PluginHostProvider>
+      <WorkspacePageInner />
+    </PluginHostProvider>
   );
 }

@@ -1,0 +1,28 @@
+{
+  "plugin_id": "my_custom_tool",
+  "tool_id": "my_custom_tool",
+  "name": "My Custom Tool",
+  "description": "Template SATEYE tool plugin. Replace id/name and implement ui + backend.",
+  "version": "1.0.0",
+  "digest": "sha256:REPLACE_AFTER_SHA256SUMS",
+  "compatible_host_api": ">=1.1.0,<2",
+  "host_sdk": ">=1.1.0,<2",
+  "ui_strategy": "sandboxed_iframe",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta"
+  ],
+  "entry": {
+    "backend": "backend/plugin.py",
+    "ui_meta": "ui/tool-meta.json",
+    "ui_entry": "ui/panel.html"
+  },
+  "placement_hints": {
+    "category_path": [],
+    "execution_slot": "right_analysis_panel",
+    "icon": "wrench"
+  },
+  "execution_model": "static_synthetic_only"
+}

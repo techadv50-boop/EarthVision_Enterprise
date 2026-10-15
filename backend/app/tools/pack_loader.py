@@ -28,6 +28,7 @@ __all__ = [
     "pack_dir",
     "resolve_true_color_render",
     "verify_pack",
+    "verify_pack_at",
 ]
 
 
@@ -91,8 +92,13 @@ def assert_artifact_immutable(tool_id: str, version: str) -> None:
         )
 
 
-def verify_pack(tool_id: str, version: str, expected_digest: str | None = None) -> dict[str, Any]:
-    root = pack_dir(tool_id, version)
+def verify_pack_at(
+    root: Path,
+    tool_id: str,
+    version: str,
+    expected_digest: str | None = None,
+) -> dict[str, Any]:
+    """Verify a pack directory at an explicit path (no process-wide env mutation)."""
     pack_json = root / "pack.json"
     sums = root / "SHA256SUMS"
     plugin = root / "backend" / "plugin.py"
@@ -124,9 +130,13 @@ def verify_pack(tool_id: str, version: str, expected_digest: str | None = None) 
         if len(parts) < 2:
             continue
         digest, rel = parts[0], parts[-1]
+        if ".." in Path(rel).parts or Path(rel).is_absolute():
+            raise PackIntegrityError(f"unsafe relative path in SHA256SUMS: {rel}")
         target = root / rel
         if not target.is_file():
             raise PackIntegrityError(f"listed file missing: {rel}")
+        if target.is_symlink():
+            raise PackIntegrityError(f"symlinks not allowed in pack: {rel}")
         actual = _sha256_file(target)
         if actual != digest:
             raise PackIntegrityError(f"digest mismatch for {rel}")
@@ -142,6 +152,10 @@ def verify_pack(tool_id: str, version: str, expected_digest: str | None = None) 
         )
     meta["digest"] = pack_digest
     return meta
+
+
+def verify_pack(tool_id: str, version: str, expected_digest: str | None = None) -> dict[str, Any]:
+    return verify_pack_at(pack_dir(tool_id, version), tool_id, version, expected_digest)
 
 
 def _module_name(tool_id: str, version: str) -> str:

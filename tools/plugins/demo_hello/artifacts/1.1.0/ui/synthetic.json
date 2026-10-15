@@ -1,0 +1,23 @@
+{
+  "kind": "synthetic_demo",
+  "plugin_id": "demo_hello",
+  "version": "1.1.0",
+  "message": "Hello from Demo Hello 1.1.0 \u2014 independent frontend update (P2B).",
+  "tag": "demo_plugin",
+  "points": [
+    {
+      "label": "Alpha",
+      "value": 42
+    },
+    {
+      "label": "Beta",
+      "value": 17
+    },
+    {
+      "label": "Gamma",
+      "value": 3
+    }
+  ],
+  "note": "Frontend panel.html/plugin.js differ from 1.0.0; Host Shell was not rebuilt.",
+  "fe_theme": "emerald"
+}

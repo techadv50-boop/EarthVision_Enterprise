@@ -54,7 +54,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://sateye_preview:${PREVIEW_POSTGRES_PASSWORD:-preview-only-change-me}@db:5432/sateye_preview
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${PREVIEW_SECRET_KEY:-preview-secret-key-change-me-32chars!!}
-      CORS_ORIGINS: ${PREVIEW_CORS_ORIGINS:-["https://sateye-preview.xdgen.com","http://127.0.0.1:8202"]}
+      # Literal JSON (Compose strips quotes from ${PREVIEW_CORS_ORIGINS} interpolation).
+      CORS_ORIGINS: '["https://sateye-preview.xdgen.com","http://127.0.0.1:8202"]'
       ADMIN_EMAIL: ${PREVIEW_ADMIN_EMAIL:-preview-admin@xdgen.com}
       ADMIN_PASSWORD: ${PREVIEW_ADMIN_PASSWORD:-PreviewOnly123}
       MASTER_PASSWORD: ${PREVIEW_MASTER_PASSWORD:-PreviewOnly123}

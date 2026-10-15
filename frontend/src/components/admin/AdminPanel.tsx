@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { Satellite, Shield, Users, X } from 'lucide-react';
+import { FolderTree, Package, Satellite, Shield, Users, X } from 'lucide-react';
 import { ClientAdminSection } from './ClientAdminSection';
+import { PluginManagerSection } from './PluginManagerSection';
 import { SatelliteAdminSection } from './SatelliteAdminSection';
+import { ToolTreeManagerSection } from './ToolTreeManagerSection';
 
-type AdminTab = 'clients' | 'satellites';
+export type AdminTab = 'clients' | 'satellites' | 'plugins' | 'tool-tree' | 'upload';
 
 interface Props {
   onClose: () => void;
@@ -24,8 +26,8 @@ export function AdminPanel({ onClose, initialTab = 'clients' }: Props) {
               Admin control center
             </h2>
             <p className="mt-1 text-xs text-[var(--muted)]">
-              Admin only. Approve or decline client requests, restrict tools and satellites,
-              create accounts, and register catalog APIs. Client accounts cannot add APIs.
+              Admin only. Approve clients, manage the plugin-first tool tree, upload signed tools,
+              and register catalog APIs. Analytical tools are plugins — not hardcoded in the Host.
             </p>
           </div>
           <button type="button" className="ev-btn-ghost p-2" onClick={onClose} title="Close">
@@ -33,7 +35,7 @@ export function AdminPanel({ onClose, initialTab = 'clients' }: Props) {
           </button>
         </div>
 
-        <div className="mb-4 flex gap-2 border-b border-[var(--line)] pb-2">
+        <div className="mb-4 flex flex-wrap gap-2 border-b border-[var(--line)] pb-2">
           <button
             type="button"
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
@@ -58,10 +60,38 @@ export function AdminPanel({ onClose, initialTab = 'clients' }: Props) {
             <Satellite className="h-3.5 w-3.5" />
             Satellites / APIs
           </button>
+          <button
+            type="button"
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === 'tool-tree' || tab === 'upload'
+                ? 'bg-[var(--accent)] text-white'
+                : 'text-[var(--muted)] hover:bg-[var(--bg)]'
+            }`}
+            onClick={() => setTab('tool-tree')}
+          >
+            <FolderTree className="h-3.5 w-3.5" />
+            Tool Tree
+          </button>
+          <button
+            type="button"
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === 'plugins'
+                ? 'bg-[var(--accent)] text-white'
+                : 'text-[var(--muted)] hover:bg-[var(--bg)]'
+            }`}
+            onClick={() => setTab('plugins')}
+          >
+            <Package className="h-3.5 w-3.5" />
+            Plugins
+          </button>
         </div>
 
         {tab === 'clients' && <ClientAdminSection />}
         {tab === 'satellites' && <SatelliteAdminSection />}
+        {(tab === 'tool-tree' || tab === 'upload') && (
+          <ToolTreeManagerSection initialMode={tab === 'upload' ? 'upload' : 'tree'} />
+        )}
+        {tab === 'plugins' && <PluginManagerSection />}
       </div>
     </div>
   );

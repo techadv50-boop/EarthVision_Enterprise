@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     workers: int = 1
-    cors_origins: list[str] = Field(
+    # NoDecode: Docker Compose often strips JSON quotes from list env vars;
+    # keep the raw string so parse_cors can normalize brackets/CSV forms.
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:5173",
             "http://localhost:3000",
@@ -92,7 +94,15 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            raw = value.strip()
+            if raw.startswith("[") and raw.endswith("]"):
+                raw = raw[1:-1]
+            origins: list[str] = []
+            for part in raw.split(","):
+                origin = part.strip().strip('"').strip("'")
+                if origin:
+                    origins.append(origin)
+            return origins
         return value
 
     def ensure_directories(self) -> None:

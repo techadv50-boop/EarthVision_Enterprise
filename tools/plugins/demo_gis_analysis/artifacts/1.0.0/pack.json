@@ -1,0 +1,27 @@
+{
+  "plugin_id": "demo_gis_analysis",
+  "tool_id": "demo_gis_analysis",
+  "name": "Demo GIS Analysis",
+  "description": "Practical GIS analysis demo using permitted Host SDK APIs only.",
+  "version": "1.0.0",
+  "digest": "sha256:f396e84301c97dd03a0aa41ddf54e9b59c696ef9487771b5320796539700f293",
+  "created_at": "2026-10-14T08:49:52Z",
+  "host_sdk": ">=1.1.0,<2",
+  "compatible_host_api": ">=1.1.0,<2",
+  "ui_strategy": "sandboxed_iframe",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.read_aoi",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result"
+  ],
+  "entry": {
+    "backend": "backend/plugin.py",
+    "ui_meta": "ui/tool-meta.json",
+    "ui_entry": "ui/panel.html"
+  },
+  "execution_model": "static_synthetic_only"
+}
