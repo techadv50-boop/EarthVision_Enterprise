@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, Loader2, ShieldBan, UserPlus, X } from 'lucide-react';
+import { Check, KeyRound, Loader2, ShieldBan, UserPlus, X } from 'lucide-react';
 import {
   adminService,
   type AccountDecisionPayload,
@@ -222,6 +222,27 @@ export function ClientAdminSection() {
     }
   };
 
+  const setOrChangePassword = async () => {
+    if (!selectedId) return;
+    const next = password.trim();
+    if (next.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await adminService.setPassword(selectedId, next);
+      setMessage(res.message || `Password updated for ${email}`);
+      setPassword('');
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const visibleUsers = users.filter((u) =>
     filter === 'all' ? true : (u.account_status || 'approved') === filter,
   );
@@ -380,7 +401,7 @@ export function ClientAdminSection() {
           disabled={mode === 'edit'}
         />
 
-        {mode === 'create' && (
+        {mode === 'create' ? (
           <>
             <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
               Temporary password
@@ -393,8 +414,45 @@ export function ClientAdminSection() {
               required
               minLength={8}
               autoComplete="new-password"
+              data-testid="client-password-input"
             />
           </>
+        ) : (
+          <div
+            className="mb-3 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)]/60 p-3"
+            data-testid="client-password-panel"
+          >
+            <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[var(--ink)]">
+              <KeyRound className="h-3.5 w-3.5 text-[var(--accent)]" />
+              Set / change password
+            </div>
+            <p className="mb-2 text-[10px] text-[var(--muted)]">
+              Select an account on the left, enter a new password (min 8 characters), then click
+              the button. Current password is not required.
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                className="ev-input min-w-0 flex-1 bg-white"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                minLength={8}
+                placeholder="New password (min 8 characters)"
+                autoComplete="new-password"
+                data-testid="client-password-input"
+              />
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white hover:brightness-110 disabled:opacity-50"
+                disabled={saving || password.trim().length < 8}
+                onClick={() => void setOrChangePassword()}
+                data-testid="btn-set-password"
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                Set / change password
+              </button>
+            </div>
+          </div>
         )}
 
         <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">

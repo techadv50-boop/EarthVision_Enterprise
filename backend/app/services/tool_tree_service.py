@@ -8,6 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.imagery_resolution import (
+    normalize_resolution_bands,
+    normalize_satellite_names,
+    resolution_band_options,
+)
 from app.models.tool_tree import (
     MAX_CATEGORY_DEPTH,
     ToolCategory,
@@ -243,6 +248,8 @@ async def upsert_placement(
     sort_order: int | None = None,
     visible: bool = True,
     enabled: bool = True,
+    applicable_resolutions: list[str] | None = None,
+    applicable_satellites: list[str] | None = None,
     actor: str | None = None,
 ) -> ToolPlacement:
     plugin_id = (plugin_id or "").strip()
@@ -254,6 +261,12 @@ async def upsert_placement(
     rec = get_plugin(plugin_id)
     if not rec or rec.get("installation_status") != "installed":
         raise ToolTreeError(f"plugin not installed: {plugin_id}")
+
+    try:
+        resolutions = normalize_resolution_bands(applicable_resolutions)
+        satellites = normalize_satellite_names(applicable_satellites)
+    except ValueError as exc:
+        raise ToolTreeError(str(exc)) from exc
 
     result = await session.execute(
         select(ToolPlacement).where(ToolPlacement.plugin_id == plugin_id)
@@ -280,6 +293,8 @@ async def upsert_placement(
             execution_slot=slot,
             visible=visible,
             enabled=enabled,
+            applicable_resolutions=resolutions or None,
+            applicable_satellites=satellites or None,
         )
         session.add(placement)
     else:
@@ -292,6 +307,10 @@ async def upsert_placement(
         placement.execution_slot = slot
         placement.visible = visible
         placement.enabled = enabled
+        if applicable_resolutions is not None:
+            placement.applicable_resolutions = resolutions or None
+        if applicable_satellites is not None:
+            placement.applicable_satellites = satellites or None
     await session.flush()
     _audit_append(
         "placement_upsert",
@@ -300,6 +319,8 @@ async def upsert_placement(
         category_id=category_id,
         execution_slot=slot,
         created=created,
+        applicable_resolutions=resolutions,
+        applicable_satellites=satellites,
     )
     return placement
 
@@ -368,6 +389,8 @@ async def delete_placement(
 
 def _placement_dict(p: ToolPlacement, plugin: dict[str, Any] | None) -> dict[str, Any]:
     active = bool(plugin and plugin.get("activation_status") == "active")
+    resolutions = list(p.applicable_resolutions or [])
+    satellites = list(p.applicable_satellites or [])
     return {
         "id": p.id,
         "plugin_id": p.plugin_id,
@@ -379,6 +402,8 @@ def _placement_dict(p: ToolPlacement, plugin: dict[str, Any] | None) -> dict[str
         "execution_slot": p.execution_slot,
         "visible": p.visible,
         "enabled": p.enabled,
+        "applicable_resolutions": resolutions,
+        "applicable_satellites": satellites,
         "plugin_active": active,
         "plugin_version": (plugin or {}).get("version"),
         "plugin_digest": (plugin or {}).get("digest"),
@@ -438,6 +463,7 @@ async def build_tree(
         "plugin_first": True,
         "supported_slots": sorted(SUPPORTED_SLOTS),
         "max_category_depth": MAX_CATEGORY_DEPTH,
+        "resolution_bands": resolution_band_options(),
         "empty": len(roots) == 0,
         "roots": roots,
         "message": (

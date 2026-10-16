@@ -12,6 +12,10 @@ export interface ToolPlacementNode {
   execution_slot: PluginSlot | string;
   visible: boolean;
   enabled: boolean;
+  /** Resolution bands this tool applies to (lte_1m … gt_30m). */
+  applicable_resolutions?: string[];
+  /** Optional satellite keys (e.g. SENTINEL-2); empty = any. */
+  applicable_satellites?: string[];
   plugin_active?: boolean;
   plugin_version?: string | null;
   plugin_digest?: string | null;
@@ -40,6 +44,7 @@ export interface ToolTreeResponse {
   plugin_first?: boolean;
   supported_slots?: string[];
   max_category_depth?: number;
+  resolution_bands?: Array<{ key: string; label: string }>;
   empty: boolean;
   roots: ToolCategoryNode[];
   message?: string | null;
@@ -110,6 +115,8 @@ export const toolTreeService = {
     sort_order?: number;
     visible?: boolean;
     enabled?: boolean;
+    applicable_resolutions?: string[];
+    applicable_satellites?: string[];
   }): Promise<Record<string, unknown>> {
     const { data } = await api.post('/tools/placements', body);
     return data;

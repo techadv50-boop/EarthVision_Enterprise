@@ -234,21 +234,16 @@ export function PluginFirstToolsPanel({
             {isAdmin ? (
               <>
                 <p className="mt-2 text-xs text-[var(--muted)]">
-                  Create a head category, then upload a signed plugin and place it under any
-                  subcategory. Only administrators can upload, upgrade, or rearrange tools.
+                  Use <strong>Upload Plugin</strong> above to install a signed package, or create
+                  a head category first. Only administrators can upload, upgrade, or rearrange
+                  tools.
                 </p>
                 <div className="mt-4 flex flex-col items-stretch gap-2 sm:mx-auto sm:max-w-xs">
                   <button
                     type="button"
-                    className="rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white"
-                    onClick={() => onOpenAdminTools('upload')}
-                  >
-                    + Upload Plugin
-                  </button>
-                  <button
-                    type="button"
                     className="rounded-md border border-[var(--line)] bg-white px-3 py-2 text-xs font-semibold"
                     onClick={() => onOpenAdminTools('tool-tree')}
+                    data-testid="btn-empty-create-categories"
                   >
                     + Create head / sub categories
                   </button>

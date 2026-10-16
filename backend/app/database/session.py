@@ -49,26 +49,37 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
-def _ensure_sqlite_columns(sync_conn) -> None:
-    """Add columns introduced after initial create_all (SQLite has no auto-alter)."""
+def _ensure_schema_columns(sync_conn) -> None:
+    """Add columns introduced after initial create_all (SQLite and Postgres).
+
+    ``create_all`` does not ALTER existing tables, so production Postgres must
+    receive the same additive column fixes as SQLite.
+    """
     from sqlalchemy import inspect, text
 
     inspector = inspect(sync_conn)
+    dialect = sync_conn.dialect.name
+    is_sqlite = dialect == "sqlite"
+    bool_false = "0" if is_sqlite else "false"
+    json_type = "JSON" if is_sqlite else "JSONB"
+
     tables = set(inspector.get_table_names())
     if "users" in tables:
         columns = {c["name"] for c in inspector.get_columns("users")}
         if "allowed_tools" not in columns:
-            sync_conn.execute(text("ALTER TABLE users ADD COLUMN allowed_tools JSON"))
+            sync_conn.execute(text(f"ALTER TABLE users ADD COLUMN allowed_tools {json_type}"))
             logger.info("Added users.allowed_tools column")
         if "allowed_satellites" not in columns:
-            sync_conn.execute(text("ALTER TABLE users ADD COLUMN allowed_satellites JSON"))
+            sync_conn.execute(
+                text(f"ALTER TABLE users ADD COLUMN allowed_satellites {json_type}")
+            )
             logger.info("Added users.allowed_satellites column")
         if "account_status" not in columns:
             # Existing accounts remain usable (approved). New public sign-ups use pending.
             sync_conn.execute(
                 text(
                     "ALTER TABLE users ADD COLUMN account_status VARCHAR(32) "
-                    "NOT NULL DEFAULT 'approved'"
+                    f"NOT NULL DEFAULT 'approved'"
                 )
             )
             logger.info("Added users.account_status column")
@@ -78,10 +89,40 @@ def _ensure_sqlite_columns(sync_conn) -> None:
             sync_conn.execute(
                 text(
                     "ALTER TABLE satellite_providers "
-                    "ADD COLUMN is_high_resolution BOOLEAN NOT NULL DEFAULT 0"
+                    f"ADD COLUMN is_high_resolution BOOLEAN NOT NULL DEFAULT {bool_false}"
                 )
             )
             logger.info("Added satellite_providers.is_high_resolution column")
+        if "resolution_category" not in sat_cols:
+            sync_conn.execute(
+                text(
+                    "ALTER TABLE satellite_providers "
+                    "ADD COLUMN resolution_category VARCHAR(32)"
+                )
+            )
+            logger.info("Added satellite_providers.resolution_category column")
+    if "tool_placements" in tables:
+        place_cols = {c["name"] for c in inspector.get_columns("tool_placements")}
+        if "applicable_resolutions" not in place_cols:
+            sync_conn.execute(
+                text(
+                    f"ALTER TABLE tool_placements "
+                    f"ADD COLUMN applicable_resolutions {json_type}"
+                )
+            )
+            logger.info("Added tool_placements.applicable_resolutions column")
+        if "applicable_satellites" not in place_cols:
+            sync_conn.execute(
+                text(
+                    f"ALTER TABLE tool_placements "
+                    f"ADD COLUMN applicable_satellites {json_type}"
+                )
+            )
+            logger.info("Added tool_placements.applicable_satellites column")
+
+
+# Back-compat alias for older imports / tests.
+_ensure_sqlite_columns = _ensure_schema_columns
 
 
 async def init_db() -> None:
@@ -99,8 +140,8 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        if settings.database_url.startswith("sqlite"):
-            await conn.run_sync(_ensure_sqlite_columns)
+        # Additive column fixes for both SQLite and Postgres (create_all is not ALTER).
+        await conn.run_sync(_ensure_schema_columns)
     logger.info("Database tables initialized")
 
     from app.services.bootstrap import bootstrap_admin

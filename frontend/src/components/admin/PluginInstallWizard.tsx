@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronRight, Upload } from 'lucide-react';
+import { RESOLUTION_BANDS } from '../../constants/imageryResolution';
 import { pluginService, type PluginSlot } from '../../services/pluginService';
+import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import { toolTreeService, type ToolCategoryNode } from '../../services/toolTreeService';
 
 const SLOTS: PluginSlot[] = [
@@ -41,12 +43,34 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
   const [newCategoryName, setNewCategoryName] = useState('');
   const [executionSlot, setExecutionSlot] = useState<PluginSlot>('right_analysis_panel');
   const [icon, setIcon] = useState('wrench');
+  const [applicableResolutions, setApplicableResolutions] = useState<string[]>([]);
+  const [applicableSatellites, setApplicableSatellites] = useState<string[]>([]);
+  const [satellites, setSatellites] = useState<SatellitePublic[]>([]);
   const [activateNow, setActivateNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [placementId, setPlacementId] = useState<string | null>(null);
 
   const flatCats = useMemo(() => flattenCategories(categories), [categories]);
+
+  useEffect(() => {
+    void satelliteService
+      .listAdmin()
+      .then(setSatellites)
+      .catch(() => setSatellites([]));
+  }, []);
+
+  function toggleResolution(key: string) {
+    setApplicableResolutions((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    );
+  }
+
+  function toggleSatellite(name: string) {
+    setApplicableSatellites((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+    );
+  }
 
   async function runValidate() {
     if (!file) return;
@@ -89,6 +113,10 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
       setError('Missing staging validation');
       return;
     }
+    if (applicableResolutions.length === 0) {
+      setError('Select at least one imagery resolution this tool works with');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -110,6 +138,8 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
         icon,
         visible: true,
         enabled: true,
+        applicable_resolutions: applicableResolutions,
+        applicable_satellites: applicableSatellites,
       });
       if (place.ok === false) {
         setError(String(place.error || 'Placement failed'));
@@ -284,6 +314,78 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
               onChange={(e) => setIcon(e.target.value)}
             />
           </label>
+
+          <fieldset
+            className="rounded border border-[var(--line)] p-2"
+            data-testid="wizard-resolutions"
+          >
+            <legend className="px-1 text-[11px] font-semibold">
+              Imagery resolutions this tool works with *
+            </legend>
+            <p className="mb-1.5 text-[10px] text-[var(--muted)]">
+              Not all tools apply to all satellite imagery. Select every resolution band
+              this tool may run against (e.g. ≤1m for VHR ship detect, ≤10m for Sentinel-2).
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {RESOLUTION_BANDS.map((band) => {
+                const on = applicableResolutions.includes(band.key);
+                return (
+                  <label
+                    key={band.key}
+                    className={`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-1 text-[11px] ${
+                      on
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                        : 'border-[var(--line)]'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      checked={on}
+                      onChange={() => toggleResolution(band.key)}
+                    />
+                    {band.label}
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+
+          <fieldset
+            className="rounded border border-[var(--line)] p-2"
+            data-testid="wizard-satellites"
+          >
+            <legend className="px-1 text-[11px] font-semibold">
+              Applicable satellites (optional)
+            </legend>
+            <p className="mb-1.5 text-[10px] text-[var(--muted)]">
+              Leave empty to allow any satellite that matches the resolution tags above.
+              Or pick specific providers this tool is validated for.
+            </p>
+            <div className="max-h-36 space-y-1 overflow-y-auto">
+              {satellites.map((sat) => {
+                const on = applicableSatellites.includes(sat.name);
+                return (
+                  <label
+                    key={sat.id}
+                    className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[11px] hover:bg-[var(--bg)]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => toggleSatellite(sat.name)}
+                    />
+                    <span className="font-medium">{sat.label}</span>
+                    <span className="text-[10px] text-[var(--muted)]">{sat.name}</span>
+                  </label>
+                );
+              })}
+              {!satellites.length && (
+                <p className="text-[10px] text-[var(--muted)]">No satellites configured yet.</p>
+              )}
+            </div>
+          </fieldset>
+
           <p className="text-[10px] text-[var(--muted)]">
             Navigation location = category tree. Execution location = UI slot. Independent.
             Install does not activate.

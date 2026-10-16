@@ -71,6 +71,11 @@ class ToolPlacement(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Optional allowlist of user ids / roles; null = all authenticated users who may see active plugins
     visibility: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Imagery applicability declared at upload / placement (empty = not specified).
+    # Keys from app.core.imagery_resolution.RESOLUTION_BANDS (e.g. lte_10m, lt_30m).
+    applicable_resolutions: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    # Optional satellite provider keys (e.g. SENTINEL-2); empty/null = any satellite.
+    applicable_satellites: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
 
     category: Mapped[ToolCategory] = relationship("ToolCategory", back_populates="placements")
 

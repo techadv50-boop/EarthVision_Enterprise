@@ -9,6 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.imagery_resolution import (
+    BUILTIN_RESOLUTION_CATEGORY,
+    category_implies_high_resolution,
+    normalize_resolution_category,
+)
 from app.models.satellite_provider import SatelliteProvider
 from app.schemas.satellite_provider import (
     SatelliteProviderAdmin,
@@ -102,6 +107,7 @@ def to_admin(row: SatelliteProvider) -> SatelliteProviderAdmin:
         enabled=row.enabled,
         is_builtin=row.is_builtin,
         is_high_resolution=bool(row.is_high_resolution),
+        resolution_category=row.resolution_category,
         sort_order=row.sort_order,
         api_base_url=row.api_base_url,
         token_url=row.token_url,
@@ -129,6 +135,7 @@ class SatelliteProviderService:
             label = str(item["label"])
             collection_id = str(item["collection_id"])
             sort_order = int(item["sort_order"])
+            resolution_category = BUILTIN_RESOLUTION_CATEGORY.get(name)
             existing = by_name.get(name)
             if existing is None:
                 self.db.add(
@@ -144,6 +151,7 @@ class SatelliteProviderService:
                         enabled=True,
                         is_builtin=True,
                         is_high_resolution=False,
+                        resolution_category=resolution_category,
                         sort_order=sort_order,
                     )
                 )
@@ -151,18 +159,25 @@ class SatelliteProviderService:
                 continue
             # Keep admin enable/disable & credentials; sync catalog identity fields.
             # Built-ins are never high-resolution (domain tools stay off).
+            # Seed resolution_category when missing so admin can segregate.
+            needs_resolution = (
+                existing.resolution_category is None and resolution_category is not None
+            )
             if (
                 existing.label != label
                 or existing.collection_id != collection_id
                 or existing.sort_order != sort_order
                 or not existing.is_builtin
                 or existing.is_high_resolution
+                or needs_resolution
             ):
                 existing.label = label
                 existing.collection_id = collection_id
                 existing.sort_order = sort_order
                 existing.is_builtin = True
                 existing.is_high_resolution = False
+                if needs_resolution:
+                    existing.resolution_category = resolution_category
                 changed = True
         if changed:
             await self.db.commit()
@@ -196,6 +211,10 @@ class SatelliteProviderService:
         )
         if existing.scalar_one_or_none() is not None:
             raise ConflictError(f"Satellite '{name}' already exists")
+        resolution_category = normalize_resolution_category(data.resolution_category)
+        is_high_res = bool(data.is_high_resolution) or category_implies_high_resolution(
+            resolution_category
+        )
         row = SatelliteProvider(
             name=name,
             label=data.label.strip(),
@@ -208,7 +227,8 @@ class SatelliteProviderService:
             notes=data.notes,
             enabled=data.enabled,
             is_builtin=False,
-            is_high_resolution=bool(data.is_high_resolution),
+            is_high_resolution=is_high_res,
+            resolution_category=resolution_category,
             sort_order=data.sort_order,
         )
         self.db.add(row)
@@ -224,10 +244,20 @@ class SatelliteProviderService:
         if "auth_password" in payload and not payload["auth_password"]:
             # Empty string means "leave unchanged"
             payload.pop("auth_password")
+        if "resolution_category" in payload:
+            payload["resolution_category"] = normalize_resolution_category(
+                payload.get("resolution_category")
+            )
         for key, value in payload.items():
             if key in {"label", "collection_id"} and isinstance(value, str):
                 value = value.strip()
             setattr(row, key, value)
+        # Built-ins stay non-high-res; custom sats can follow ≤5m category.
+        if row.is_builtin:
+            row.is_high_resolution = False
+        elif "is_high_resolution" not in payload and "resolution_category" in payload:
+            if category_implies_high_resolution(row.resolution_category):
+                row.is_high_resolution = True
         await self.db.commit()
         await self.db.refresh(row)
         return row

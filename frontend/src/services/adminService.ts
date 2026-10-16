@@ -77,4 +77,12 @@ export const adminService = {
     const { data } = await api.post<AdminUser>(`/users/${userId}/decision`, payload);
     return data;
   },
+
+  /** Admin sets/resets a client password (no current password required). */
+  async setPassword(userId: string, password: string): Promise<{ message: string }> {
+    const { data } = await api.post<{ message: string }>(`/users/${userId}/set-password`, {
+      password,
+    });
+    return data;
+  },
 };

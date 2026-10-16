@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Crosshair, Loader2, MapPin, Plus, Search, Shield } from 'lucide-react';
+import {
+  RESOLUTION_BANDS,
+  resolutionLabel,
+} from '../../constants/imageryResolution';
 import { gisService, type GeocodeResult } from '../../services/gisService';
 import { getErrorMessage } from '../../services/api';
 import type { CollectionName } from '../../services/catalogService';
@@ -47,22 +51,78 @@ export interface SatelliteOption {
   collections: CollectionName[];
   /** High-res flag — unlocks AI / Change / Maritime / Air when true. */
   isHighResolution?: boolean;
+  /** Resolution category key (lte_10m, gt_30m, …) for sidebar segregation. */
+  resolutionCategory?: string | null;
 }
+
+/** Built-in fallback resolution tags (mirrors backend BUILTIN_RESOLUTION_CATEGORY). */
+const FALLBACK_RESOLUTION: Record<string, string> = {
+  'SENTINEL-2': 'lte_10m',
+  'SENTINEL-1': 'lte_10m',
+  'SENTINEL-3': 'gt_30m',
+  'SENTINEL-5P': 'gt_30m',
+  'LANDSAT-9': 'lte_30m',
+  'LANDSAT-8': 'lte_30m',
+  'LANDSAT-7': 'lte_30m',
+  MODIS: 'gt_30m',
+  TERRA: 'gt_30m',
+  AQUA: 'gt_30m',
+  SMOS: 'gt_30m',
+};
 
 /** Fallback if the satellites API is unreachable. */
 export const SATELLITE_OPTIONS: SatelliteOption[] = [
-  { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'], isHighResolution: false },
-  { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'], isHighResolution: false },
-  { id: 'SENTINEL-3', label: 'Sentinel-3', collections: ['SENTINEL-3'], isHighResolution: false },
-  { id: 'SENTINEL-5P', label: 'Sentinel-5P', collections: ['SENTINEL-5P'], isHighResolution: false },
-  { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'], isHighResolution: false },
-  { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'], isHighResolution: false },
-  { id: 'LANDSAT-7', label: 'Landsat-7', collections: ['LANDSAT-7'], isHighResolution: false },
-  { id: 'MODIS', label: 'MODIS (Terra+Aqua)', collections: ['TERRAAQUA'], isHighResolution: false },
-  { id: 'TERRA', label: 'Terra MODIS', collections: ['TERRA'], isHighResolution: false },
-  { id: 'AQUA', label: 'Aqua MODIS', collections: ['AQUA'], isHighResolution: false },
-  { id: 'SMOS', label: 'SMOS', collections: ['SMOS'], isHighResolution: false },
+  { id: 'SENTINEL-2', label: 'Sentinel-2', collections: ['SENTINEL-2'], isHighResolution: false, resolutionCategory: 'lte_10m' },
+  { id: 'SENTINEL-1', label: 'Sentinel-1', collections: ['SENTINEL-1'], isHighResolution: false, resolutionCategory: 'lte_10m' },
+  { id: 'SENTINEL-3', label: 'Sentinel-3', collections: ['SENTINEL-3'], isHighResolution: false, resolutionCategory: 'gt_30m' },
+  { id: 'SENTINEL-5P', label: 'Sentinel-5P', collections: ['SENTINEL-5P'], isHighResolution: false, resolutionCategory: 'gt_30m' },
+  { id: 'LANDSAT-9', label: 'Landsat-9', collections: ['LANDSAT-9'], isHighResolution: false, resolutionCategory: 'lte_30m' },
+  { id: 'LANDSAT-8', label: 'Landsat-8', collections: ['LANDSAT-8'], isHighResolution: false, resolutionCategory: 'lte_30m' },
+  { id: 'LANDSAT-7', label: 'Landsat-7', collections: ['LANDSAT-7'], isHighResolution: false, resolutionCategory: 'lte_30m' },
+  { id: 'MODIS', label: 'MODIS (Terra+Aqua)', collections: ['TERRAAQUA'], isHighResolution: false, resolutionCategory: 'gt_30m' },
+  { id: 'TERRA', label: 'Terra MODIS', collections: ['TERRA'], isHighResolution: false, resolutionCategory: 'gt_30m' },
+  { id: 'AQUA', label: 'Aqua MODIS', collections: ['AQUA'], isHighResolution: false, resolutionCategory: 'gt_30m' },
+  { id: 'SMOS', label: 'SMOS', collections: ['SMOS'], isHighResolution: false, resolutionCategory: 'gt_30m' },
 ];
+
+type SatelliteResolutionGroup = {
+  key: string;
+  label: string;
+  options: SatelliteOption[];
+};
+
+function groupSatellitesByResolution(options: SatelliteOption[]): SatelliteResolutionGroup[] {
+  const byKey = new Map<string, SatelliteOption[]>();
+  for (const option of options) {
+    const key =
+      option.resolutionCategory ||
+      FALLBACK_RESOLUTION[option.id] ||
+      '_untagged';
+    const list = byKey.get(key) || [];
+    list.push(option);
+    byKey.set(key, list);
+  }
+  const groups: SatelliteResolutionGroup[] = [];
+  for (const band of RESOLUTION_BANDS) {
+    const opts = byKey.get(band.key);
+    if (opts?.length) {
+      groups.push({ key: band.key, label: band.label, options: opts });
+      byKey.delete(band.key);
+    }
+  }
+  const untagged = byKey.get('_untagged');
+  if (untagged?.length) {
+    groups.push({ key: '_untagged', label: 'Other', options: untagged });
+    byKey.delete('_untagged');
+  }
+  // Any unexpected keys last
+  for (const [key, opts] of byKey) {
+    if (opts.length) {
+      groups.push({ key, label: resolutionLabel(key), options: opts });
+    }
+  }
+  return groups;
+}
 
 export interface CatalogFilters {
   satelliteId: string;
@@ -113,6 +173,8 @@ function toOptions(rows: SatellitePublic[]): SatelliteOption[] {
     label: row.label,
     collections: [row.collection_id],
     isHighResolution: Boolean(row.is_high_resolution),
+    resolutionCategory:
+      row.resolution_category || FALLBACK_RESOLUTION[row.name] || null,
   }));
 }
 
@@ -172,6 +234,11 @@ export function PlaceStep({
       cancelled = true;
     };
   }, [satelliteRefreshKey]);
+
+  const satelliteGroups = useMemo(
+    () => groupSatellitesByResolution(satellites),
+    [satellites],
+  );
 
   const satelliteSelected = Boolean(filters.satelliteId);
   const { startDate, endDate } = filters;
@@ -296,25 +363,41 @@ export function PlaceStep({
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading satellites…
           </div>
         ) : satellites.length ? (
-          <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-0.5">
-            {satellites.map((option) => {
-              const active = filters.satelliteId === option.id;
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => pickSatellite(option)}
-                  className={`rounded-lg border px-3 py-2 text-left text-sm font-medium transition ${
-                    active
-                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/30'
-                      : 'border-[var(--line)] bg-white text-[var(--ink)] hover:bg-[var(--accent-soft)]/50'
-                  }`}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
+          <div
+            className="max-h-64 space-y-3 overflow-y-auto pr-0.5"
+            data-testid="satellite-resolution-groups"
+          >
+            {satelliteGroups.map((group) => (
+              <div key={group.key}>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span className="rounded border border-[var(--line)] bg-[var(--bg)] px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-[var(--muted)]">
+                    {group.label}
+                  </span>
+                  <span className="h-px flex-1 bg-[var(--line)]" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {group.options.map((option) => {
+                    const active = filters.satelliteId === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        disabled={busy}
+                        onClick={() => pickSatellite(option)}
+                        className={`rounded-lg border px-3 py-2 text-left text-sm font-medium transition ${
+                          active
+                            ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]/30'
+                            : 'border-[var(--line)] bg-white text-[var(--ink)] hover:bg-[var(--accent-soft)]/50'
+                        }`}
+                        title={`${option.label} · ${group.label}`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <p className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--muted)]">

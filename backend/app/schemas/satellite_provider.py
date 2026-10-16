@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.imagery_resolution import normalize_resolution_category
 
 
 class SatelliteProviderCreate(BaseModel):
@@ -19,7 +21,17 @@ class SatelliteProviderCreate(BaseModel):
     notes: str | None = None
     enabled: bool = True
     is_high_resolution: bool = False
+    resolution_category: str | None = Field(
+        default=None,
+        max_length=32,
+        description="Resolution tag for admin segregation (lte_1m … gt_30m)",
+    )
     sort_order: int = 100
+
+    @field_validator("resolution_category")
+    @classmethod
+    def _validate_resolution_category(cls, value: str | None) -> str | None:
+        return normalize_resolution_category(value)
 
 
 class SatelliteProviderUpdate(BaseModel):
@@ -33,7 +45,13 @@ class SatelliteProviderUpdate(BaseModel):
     notes: str | None = None
     enabled: bool | None = None
     is_high_resolution: bool | None = None
+    resolution_category: str | None = Field(default=None, max_length=32)
     sort_order: int | None = None
+
+    @field_validator("resolution_category")
+    @classmethod
+    def _validate_resolution_category(cls, value: str | None) -> str | None:
+        return normalize_resolution_category(value)
 
 
 class SatelliteProviderPublic(BaseModel):
@@ -46,6 +64,7 @@ class SatelliteProviderPublic(BaseModel):
     enabled: bool
     is_builtin: bool
     is_high_resolution: bool = False
+    resolution_category: str | None = None
     sort_order: int
 
     model_config = {"from_attributes": True}
