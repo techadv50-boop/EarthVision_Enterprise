@@ -98,6 +98,12 @@ class UserListResponse(BaseModel):
     page_size: int
 
 
+class AdminSetPasswordRequest(BaseModel):
+    """Admin sets or resets a client account password (no current password required)."""
+
+    password: str = Field(min_length=8, max_length=128)
+
+
 class AccountDecisionRequest(BaseModel):
     """Admin approve / decline / restrict action."""
 

@@ -9,8 +9,10 @@ from fastapi import APIRouter, Depends, Query
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.core.exceptions import ForbiddenError, NotFoundError
 from app.models.user import TOOLBOX_IDS, AccountStatus, User, UserRole
+from app.schemas.common import MessageResponse
 from app.schemas.user import (
     AccountDecisionRequest,
+    AdminSetPasswordRequest,
     UserCreate,
     UserDetail,
     UserListResponse,
@@ -99,6 +101,19 @@ async def update_user(
     service = UserService(db)
     user = await service.update(user_id, data)
     return UserDetail.model_validate(user)
+
+
+@router.post("/{user_id}/set-password", response_model=MessageResponse)
+async def admin_set_password(
+    user_id: str,
+    data: AdminSetPasswordRequest,
+    db: DbSession,
+    _: AdminUser,
+) -> MessageResponse:
+    """Admin sets or changes a client account password without knowing the old one."""
+    service = UserService(db)
+    user = await service.admin_set_password(user_id, data.password)
+    return MessageResponse(message=f"Password updated for {user.email}")
 
 
 @router.post("/{user_id}/decision", response_model=UserDetail)

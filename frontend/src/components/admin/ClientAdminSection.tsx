@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, Loader2, ShieldBan, UserPlus, X } from 'lucide-react';
+import { Check, KeyRound, Loader2, ShieldBan, UserPlus, X } from 'lucide-react';
 import {
   adminService,
   type AccountDecisionPayload,
@@ -222,6 +222,27 @@ export function ClientAdminSection() {
     }
   };
 
+  const setOrChangePassword = async () => {
+    if (!selectedId) return;
+    const next = password.trim();
+    if (next.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await adminService.setPassword(selectedId, next);
+      setMessage(res.message || `Password updated for ${email}`);
+      setPassword('');
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const visibleUsers = users.filter((u) =>
     filter === 'all' ? true : (u.account_status || 'approved') === filter,
   );
@@ -380,21 +401,40 @@ export function ClientAdminSection() {
           disabled={mode === 'edit'}
         />
 
-        {mode === 'create' && (
-          <>
-            <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
-              Temporary password
-            </label>
-            <input
-              className="ev-input mb-2"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={8}
-              autoComplete="new-password"
-            />
-          </>
+        <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">
+          {mode === 'create' ? 'Temporary password' : 'Set / change password'}
+        </label>
+        <div className={mode === 'edit' ? 'mb-2 flex gap-2' : 'mb-2'}>
+          <input
+            className="ev-input min-w-0 flex-1"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required={mode === 'create'}
+            minLength={8}
+            placeholder={mode === 'edit' ? 'Enter new password (min 8 chars)' : undefined}
+            autoComplete="new-password"
+            data-testid="client-password-input"
+          />
+          {mode === 'edit' && (
+            <button
+              type="button"
+              className="ev-btn inline-flex shrink-0 items-center gap-1 bg-[var(--accent)] px-3 text-white hover:brightness-110 disabled:opacity-50"
+              disabled={saving || password.trim().length < 8}
+              onClick={() => void setOrChangePassword()}
+              data-testid="btn-set-password"
+              title="Set or change this account password"
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              Set password
+            </button>
+          )}
+        </div>
+        {mode === 'edit' && (
+          <p className="mb-2 text-[10px] text-[var(--muted)]">
+            Enter a new password and click <strong>Set password</strong>. Does not require the
+            current password. Leave blank when only updating account controls.
+          </p>
         )}
 
         <label className="mb-1 block text-[10px] font-medium text-[var(--muted)]">

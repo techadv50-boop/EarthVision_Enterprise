@@ -278,3 +278,16 @@ class UserService:
             raise UnauthorizedError("Current password is incorrect")
         user.hashed_password = hash_password(new_password)
         await self.session.flush()
+
+    async def admin_set_password(self, user_id: str, new_password: str) -> User:
+        """Admin-only password set/reset (does not require the current password)."""
+        password = (new_password or "").strip()
+        if len(password) < 8:
+            raise ValidationError("Password must be at least 8 characters")
+        user = await self.get_by_id(user_id)
+        if user is None:
+            raise NotFoundError("User not found")
+        user.hashed_password = hash_password(password)
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user
