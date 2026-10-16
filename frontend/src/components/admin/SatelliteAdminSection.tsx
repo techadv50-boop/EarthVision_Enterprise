@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Plus, Satellite, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Satellite, Trash2, XCircle } from 'lucide-react';
 import {
   RESOLUTION_BANDS,
   resolutionLabel,
@@ -145,18 +145,49 @@ export function SatelliteAdminSection() {
     }
   };
 
-  const onDelete = async () => {
-    if (!selectedId) return;
-    const row = items.find((i) => i.id === selectedId);
-    if (!row || row.is_builtin) return;
-    if (!window.confirm(`Remove satellite "${row.label}" for all clients?`)) return;
+  /** Remove from Find scenes for all clients (disable). Works for built-in and custom. */
+  const onRemoveFromList = async (row: SatelliteAdmin) => {
+    if (
+      !window.confirm(
+        `Remove "${row.label}" from the satellite list for all clients?\n\n` +
+          (row.is_builtin
+            ? 'Built-in providers are disabled (not deleted) so they can be re-enabled later.'
+            : 'This permanently deletes the custom satellite API.'),
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      if (row.is_builtin) {
+        await satelliteService.update(row.id, { enabled: false });
+        setMessage(`Removed ${row.label} from client list (disabled)`);
+        if (selectedId === row.id) {
+          selectItem({ ...row, enabled: false });
+        }
+      } else {
+        await satelliteService.remove(row.id);
+        setMessage(`Deleted ${row.label}`);
+        if (selectedId === row.id) resetForm();
+      }
+      await load();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onReenable = async (row: SatelliteAdmin) => {
     setSaving(true);
     setError(null);
     try {
-      await satelliteService.remove(selectedId);
-      setMessage(`Removed ${row.label}`);
-      resetForm();
+      await satelliteService.update(row.id, { enabled: true });
+      setMessage(`Re-enabled ${row.label}`);
       await load();
+      if (selectedId === row.id) selectItem({ ...row, enabled: true });
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -209,13 +240,18 @@ export function SatelliteAdminSection() {
         ) : (
           <ul className="max-h-80 space-y-1 overflow-y-auto">
             {filteredItems.map((row) => (
-              <li key={row.id}>
+              <li
+                key={row.id}
+                className={`flex items-stretch gap-1 rounded-md ${
+                  selectedId === row.id ? 'bg-[var(--accent-soft)]' : ''
+                }`}
+              >
                 <button
                   type="button"
                   onClick={() => selectItem(row)}
-                  className={`w-full rounded-md px-2 py-2 text-left text-sm transition ${
+                  className={`min-w-0 flex-1 rounded-md px-2 py-2 text-left text-sm transition ${
                     selectedId === row.id
-                      ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+                      ? 'text-[var(--accent)]'
                       : 'hover:bg-[var(--bg)]'
                   }`}
                 >
@@ -235,6 +271,35 @@ export function SatelliteAdminSection() {
                     {!row.enabled ? ' · disabled' : ''}
                   </div>
                 </button>
+                {row.enabled ? (
+                  <button
+                    type="button"
+                    className="m-1 shrink-0 self-center rounded border border-red-200 px-1.5 py-1 text-[10px] font-semibold text-red-700 hover:bg-red-50"
+                    title="Remove from client satellite list"
+                    disabled={saving}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onRemoveFromList(row);
+                    }}
+                    data-testid={`btn-remove-satellite-${row.name}`}
+                  >
+                    <XCircle className="inline h-3 w-3" /> Remove
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="m-1 shrink-0 self-center rounded border border-emerald-200 px-1.5 py-1 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-50"
+                    title="Show again in client satellite list"
+                    disabled={saving}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onReenable(row);
+                    }}
+                    data-testid={`btn-reenable-satellite-${row.name}`}
+                  >
+                    Enable
+                  </button>
+                )}
               </li>
             ))}
             {!items.length && (
@@ -424,21 +489,35 @@ export function SatelliteAdminSection() {
           </div>
         )}
 
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button type="submit" className="ev-btn-primary flex-1" disabled={saving}>
             {saving ? 'Saving…' : mode === 'create' ? 'Add satellite' : 'Save changes'}
           </button>
-          {mode === 'edit' && selectedId && !items.find((i) => i.id === selectedId)?.is_builtin && (
-            <button
-              type="button"
-              className="ev-btn-ghost px-3 text-red-600"
-              onClick={() => void onDelete()}
-              disabled={saving}
-              title="Delete"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
-          )}
+          {mode === 'edit' && selectedId && (() => {
+            const row = items.find((i) => i.id === selectedId);
+            if (!row) return null;
+            return row.enabled ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                onClick={() => void onRemoveFromList(row)}
+                disabled={saving}
+                data-testid="btn-remove-selected-satellite"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove from list
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                onClick={() => void onReenable(row)}
+                disabled={saving}
+              >
+                Re-enable for clients
+              </button>
+            );
+          })()}
         </div>
       </form>
     </div>
