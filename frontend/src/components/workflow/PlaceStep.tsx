@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Crosshair, Loader2, MapPin, Plus, Search, Shield } from 'lucide-react';
+import { Crosshair, FolderOpen, Loader2, MapPin, Plus, Search, Shield } from 'lucide-react';
 import {
   RESOLUTION_BANDS,
   resolutionLabel,
@@ -7,8 +7,13 @@ import {
 import { gisService, type GeocodeResult } from '../../services/gisService';
 import { getErrorMessage } from '../../services/api';
 import type { CollectionName } from '../../services/catalogService';
+import {
+  folderRepoService,
+  type FolderRepoPublic,
+} from '../../services/folderRepoService';
 import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import type { PlaceSelection } from '../../store/workflowStore';
+import { FolderRepoBrowse } from './FolderRepoBrowse';
 
 /** Half-width of the search window around a point (degrees ≈ 20 km at mid-latitudes). */
 const DEFAULT_COORD_PAD = 0.2;
@@ -144,6 +149,8 @@ interface Props {
   /** Admin-only: show entry point to add satellite catalog APIs. */
   isAdmin?: boolean;
   onOpenSatelliteAdmin?: () => void;
+  /** Admin-only: open folder repository admin form (separate from Copernicus). */
+  onOpenFolderRepoAdmin?: () => void;
   /** Bump to reload the enabled satellite list after admin changes. */
   satelliteRefreshKey?: number;
 }
@@ -203,6 +210,7 @@ export function PlaceStep({
   onFiltersChange,
   isAdmin = false,
   onOpenSatelliteAdmin,
+  onOpenFolderRepoAdmin,
   satelliteRefreshKey = 0,
 }: Props) {
   const [query, setQuery] = useState('');
@@ -213,16 +221,22 @@ export function PlaceStep({
   const [error, setError] = useState<string | null>(null);
   const [satellites, setSatellites] = useState<SatelliteOption[]>(SATELLITE_OPTIONS);
   const [satsLoading, setSatsLoading] = useState(true);
+  const [folderRepos, setFolderRepos] = useState<FolderRepoPublic[]>([]);
+  const [activeFolderRepo, setActiveFolderRepo] = useState<FolderRepoPublic | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setSatsLoading(true);
       try {
-        const rows = await satelliteService.listEnabled();
+        const [rows, folders] = await Promise.all([
+          satelliteService.listEnabled(),
+          folderRepoService.listEnabled().catch(() => [] as FolderRepoPublic[]),
+        ]);
         if (!cancelled) {
           // Empty list is intentional for restricted accounts with no satellite grants.
           setSatellites(rows.length ? toOptions(rows) : []);
+          setFolderRepos(folders);
         }
       } catch {
         // Keep static fallback only when the API is unreachable.
@@ -333,6 +347,15 @@ export function PlaceStep({
     }
   };
 
+  if (activeFolderRepo) {
+    return (
+      <FolderRepoBrowse
+        repo={activeFolderRepo}
+        onClose={() => setActiveFolderRepo(null)}
+      />
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div>
@@ -347,16 +370,30 @@ export function PlaceStep({
           <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
             1. Satellite
           </div>
-          {isAdmin && onOpenSatelliteAdmin && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)] hover:underline"
-              onClick={onOpenSatelliteAdmin}
-            >
-              <Plus className="h-3 w-3" />
-              Add API
-            </button>
-          )}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {isAdmin && onOpenSatelliteAdmin && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)] hover:underline"
+                onClick={onOpenSatelliteAdmin}
+                data-testid="btn-add-api"
+              >
+                <Plus className="h-3 w-3" />
+                Add API
+              </button>
+            )}
+            {isAdmin && onOpenFolderRepoAdmin && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)] hover:underline"
+                onClick={onOpenFolderRepoAdmin}
+                data-testid="btn-add-folder-repository"
+              >
+                <FolderOpen className="h-3 w-3" />
+                Add folder repository
+              </button>
+            )}
+          </div>
         </div>
         {satsLoading ? (
           <div className="flex items-center gap-2 py-2 text-xs text-[var(--muted)]">
@@ -422,7 +459,55 @@ export function PlaceStep({
             </span>
           </button>
         )}
+        {isAdmin && onOpenFolderRepoAdmin && (
+          <button
+            type="button"
+            onClick={onOpenFolderRepoAdmin}
+            className="flex w-full items-start gap-2 rounded-lg border border-dashed border-[var(--line)] bg-[var(--bg)] px-3 py-2.5 text-left transition hover:bg-[var(--accent-soft)]/40"
+            data-testid="btn-add-folder-repository-card"
+          >
+            <FolderOpen className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
+            <span>
+              <span className="block text-sm font-semibold text-[var(--ink)]">
+                Admin · Add folder repository
+              </span>
+              <span className="mt-0.5 block text-[11px] text-[var(--muted)]">
+                Link a relay.xdgen.com folder (repository address + folder API key). Stored
+                separately from Copernicus satellite APIs.
+              </span>
+            </span>
+          </button>
+        )}
       </div>
+
+      {(folderRepos.length > 0 || isAdmin) && (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Folder repositories
+          </div>
+          {folderRepos.length ? (
+            <div className="grid grid-cols-1 gap-2">
+              {folderRepos.map((repo) => (
+                <button
+                  key={repo.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setActiveFolderRepo(repo)}
+                  className="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-left text-sm font-medium transition hover:bg-[var(--accent-soft)]/50"
+                  data-testid={`folder-repo-${repo.id}`}
+                >
+                  <FolderOpen className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+                  <span className="min-w-0 flex-1 truncate">{repo.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-[var(--muted)]">
+              No folder repositories enabled yet. Use Add folder repository to register one.
+            </p>
+          )}
+        </div>
+      )}
 
       {satelliteSelected && (
         <div className="space-y-2">

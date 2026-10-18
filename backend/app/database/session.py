@@ -130,6 +130,7 @@ async def init_db() -> None:
     from app.models import (  # noqa: F401
         api_key,
         bookmark,
+        folder_repository,
         project,
         satellite_provider,
         scene,
