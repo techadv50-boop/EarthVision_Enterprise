@@ -28,9 +28,10 @@ public static class SessionTracker
         Log($"Session {sessionId} started for {config.UserName}.");
         var poll = Math.Max(2, config.PollSeconds);
         var alarmAfter = config.AlarmAfterSeconds < 5 ? 30 : config.AlarmAfterSeconds;
+        var sessionStarted = DateTime.UtcNow;
         StatusServer.Start();
         StartLocalAlarm();
-        var worker = new Thread(() => Loop(config, sessionId, sessionFile, poll, alarmAfter))
+        var worker = new Thread(() => Loop(config, sessionId, sessionFile, poll, alarmAfter, sessionStarted))
         {
             IsBackground = false,
             Name = "WorkPilot tracker"
@@ -62,16 +63,26 @@ public static class SessionTracker
         alarm.Start();
     }
 
-    private static void Loop(PilotConfig config, string sessionId, string sessionFile, int poll, int alarmAfter)
+    private static void Loop(PilotConfig config, string sessionId, string sessionFile, int poll, int alarmAfter, DateTime sessionStarted)
     {
         var clicks = 0;
         var leftDown = false;
         var rightDown = false;
         var nextJournal = DateTime.UtcNow;
+        var nextConfig = DateTime.UtcNow;
         while (true)
         {
             try
             {
+                if (DateTime.UtcNow >= nextConfig)
+                {
+                    var fresh = PilotConfigStore.Load(PilotPaths.Config);
+                    if (fresh is not null && fresh.AlarmAfterSeconds >= 5)
+                    {
+                        alarmAfter = fresh.AlarmAfterSeconds;
+                    }
+                    nextConfig = DateTime.UtcNow.AddSeconds(2);
+                }
                 clicks += CountClick(ref leftDown, 0x01) + CountClick(ref rightDown, 0x02);
                 var sample = Capture(sessionId);
                 var idle = sample.IdleSeconds;
@@ -88,7 +99,8 @@ public static class SessionTracker
                     Title = sample.Title,
                     ClickCount = clicks,
                     EmployeeName = config.EmployeeName,
-                    UpdatedUtc = DateTime.UtcNow
+                    UpdatedUtc = DateTime.UtcNow,
+                    SessionStartedUtc = sessionStarted
                 });
                 if (DateTime.UtcNow >= nextJournal)
                 {

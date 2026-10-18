@@ -64,6 +64,7 @@ public static class LiveBoard
         Title = status.Title,
         ClickCount = status.ClickCount,
         EmployeeName = status.EmployeeName,
-        UpdatedUtc = status.UpdatedUtc
+        UpdatedUtc = status.UpdatedUtc,
+        SessionStartedUtc = status.SessionStartedUtc
     };
 }

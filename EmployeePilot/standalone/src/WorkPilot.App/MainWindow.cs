@@ -2,91 +2,398 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using WorkPilot.Core;
 using WorkPilot.Windows;
 
 namespace WorkPilot;
 
 public class MainWindow : Window
 {
-    private readonly TextBox _fullName = new() { Text = "Pilot Employee", Watermark = "Employee full name" };
-    private readonly TextBox _userName = new() { Text = "employee1", Watermark = "Windows login" };
-    private readonly TextBox _password = new() { PasswordChar = '●', Watermark = "Password" };
-    private readonly TextBox _confirm = new() { PasswordChar = '●', Watermark = "Type the password again" };
-    private readonly TextBox _quota = new() { Text = "80", Watermark = "Disk limit in GB" };
-    private readonly TextBox _idle = new() { Text = "5", Watermark = "Idle after this many minutes" };
-    private readonly TextBox _alarm = new() { Text = "30", Watermark = "Seconds before the red light" };
-    private readonly TextBox _watchAddress = new() { Text = "http://127.0.0.1:8777/status" };
-    private readonly TextBox _log = new() { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 220 };
-    private readonly Button _setup = new() { Content = "Set up this computer" };
-    private readonly Button _check = new() { Content = "Check setup" };
-    private readonly Button _report = new() { Content = "Open latest report" };
-    private readonly Button _audit = new() { Content = "Watch programs only" };
-    private readonly Button _block = new() { Content = "Block other programs" };
-    private readonly Button _watch = new() { Content = "Watch employee" };
+    private static readonly (string Name, string Label)[] KnownPrograms =
+    {
+        ("chrome.exe", "Chrome"),
+        ("msedge.exe", "Edge"),
+        ("WINWORD.EXE", "Word"),
+        ("EXCEL.EXE", "Excel"),
+        ("POWERPNT.EXE", "PowerPoint"),
+        ("notepad.exe", "Notepad"),
+        ("AcroRd32.exe", "Adobe Reader"),
+        ("Acrobat.exe", "Adobe Acrobat")
+    };
+
+    private readonly Border _content = new() { Background = Brushes.White };
+    private readonly TextBlock _liveState = new() { Text = "Waiting for the employee.", FontSize = 28, FontWeight = FontWeight.SemiBold };
+    private readonly TextBlock _liveDetail = new() { TextWrapping = TextWrapping.Wrap, FontSize = 18 };
+    private readonly Button _green = Lamp("Working");
+    private readonly Button _red = Lamp("Not working");
+    private readonly List<Button> _nav = new();
+    private readonly CancellationTokenSource _stop = new();
+    private readonly List<string> _extraPrograms = new();
+    private volatile int _beeping;
+    private int _busy;
 
     public MainWindow()
     {
-        Title = "Work session pilot";
-        Width = 680;
-        Height = 860;
-        MinWidth = 560;
-        MinHeight = 640;
+        Title = "WorkPilot";
+        Width = 1080;
+        Height = 720;
+        MinWidth = 860;
+        MinHeight = 560;
+        Background = new SolidColorBrush(Color.Parse("#F3F6F4"));
         Content = Build();
-        _setup.Click += async (_, _) => await RunBusy(_setup, SetupAsync);
-        _check.Click += async (_, _) => await RunBusy(_check, CheckAsync);
-        _report.Click += (_, _) => OpenReport();
-        _audit.Click += async (_, _) => await RunBusy(_audit, () => RulesAsync(false));
-        _block.Click += async (_, _) => await RunBusy(_block, () => RulesAsync(true));
-        _watch.Click += (_, _) => OpenWatch();
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        timer.Tick += (_, _) => RefreshLive();
+        timer.Start();
+        new Thread(BeepLoop) { IsBackground = true, Name = "WorkPilot alarm" }.Start();
+        Closed += (_, _) => _stop.Cancel();
+        ShowPage("Live activity", LivePage());
+        _ = Task.Run(TryRefreshInstalledCopy);
     }
 
     private Control Build()
     {
-        var intro = new TextBlock
-        {
-            Text = "One employee on this Windows 11 computer. Green means they are working. Red means they stopped. Both computers beep while the light is red. The program does not record keystrokes, screenshots, or passwords.",
-            TextWrapping = TextWrapping.Wrap
-        };
-        var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-        foreach (var button in new[] { _setup, _check, _report, _audit, _block, _watch })
-        {
-            button.Margin = new Avalonia.Thickness(0, 0, 8, 8);
-            button.MinHeight = 36;
-            buttons.Children.Add(button);
-        }
-        var stack = new StackPanel { Spacing = 8, Margin = new Avalonia.Thickness(24) };
-        stack.Children.Add(new TextBlock { Text = "Work session pilot", FontSize = 24 });
-        stack.Children.Add(intro);
-        stack.Children.Add(Label("Employee full name"));
-        stack.Children.Add(_fullName);
-        stack.Children.Add(Label("Windows login"));
-        stack.Children.Add(_userName);
-        stack.Children.Add(Label("Password"));
-        stack.Children.Add(_password);
-        stack.Children.Add(Label("Confirm password"));
-        stack.Children.Add(_confirm);
-        stack.Children.Add(Label("Disk space in GB"));
-        stack.Children.Add(_quota);
-        stack.Children.Add(Label("Minutes without mouse or keyboard before the report counts idle"));
-        stack.Children.Add(_idle);
-        stack.Children.Add(Label("Seconds before the red light and the beep"));
-        stack.Children.Add(_alarm);
-        stack.Children.Add(Label("Watch address"));
-        stack.Children.Add(_watchAddress);
-        stack.Children.Add(buttons);
-        stack.Children.Add(new TextBlock { Text = "Result", FontSize = 16 });
-        stack.Children.Add(new ScrollViewer { Content = _log, Height = 220 });
-        return stack;
+        var root = new Grid();
+        root.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(230)));
+        root.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+        var side = new StackPanel { Spacing = 6, Margin = new Avalonia.Thickness(16) };
+        side.Children.Add(new TextBlock { Text = "WorkPilot", FontSize = 22, FontWeight = FontWeight.SemiBold, Margin = new Avalonia.Thickness(8, 8, 8, 16) });
+        AddNav(side, "Live activity", () => ShowPage("Live activity", LivePage()));
+        AddNav(side, "Activity log", () => ShowPage("Activity log", LogPage()));
+        AddNav(side, "Programs", () => ShowPage("Programs", ProgramsPage()));
+        AddNav(side, "Storage", () => ShowPage("Storage", StoragePage()));
+        AddNav(side, "Beep and time", () => ShowPage("Beep and time", TimerPage()));
+        AddNav(side, "Employee login", () => ShowPage("Employee login", EmployeePage()));
+        var sideHost = new Border { Background = new SolidColorBrush(Color.Parse("#E7EEE9")), Child = side };
+        Grid.SetColumn(sideHost, 0);
+        Grid.SetColumn(_content, 1);
+        root.Children.Add(sideHost);
+        root.Children.Add(_content);
+        return root;
     }
 
-    private static TextBlock Label(string text) => new() { Text = text, Margin = new Avalonia.Thickness(0, 6, 0, 0) };
-
-    private async Task RunBusy(Button button, Func<Task> work)
+    private void AddNav(StackPanel side, string label, Action open)
     {
-        var buttons = new[] { _setup, _check, _report, _audit, _block, _watch };
-        foreach (var item in buttons)
+        var button = new Button
         {
-            item.IsEnabled = false;
+            Content = label,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            MinHeight = 44,
+            FontSize = 16,
+            Background = Brushes.Transparent,
+            BorderThickness = new Avalonia.Thickness(0)
+        };
+        button.Click += (_, _) => open();
+        _nav.Add(button);
+        side.Children.Add(button);
+    }
+
+    private void ShowPage(string name, Control page)
+    {
+        foreach (var button in _nav)
+        {
+            var selected = string.Equals(button.Content as string, name, StringComparison.Ordinal);
+            button.Background = new SolidColorBrush(Color.Parse(selected ? "#0F6B4C" : "#00000000"));
+            button.Foreground = new SolidColorBrush(selected ? Colors.White : Color.Parse("#1C1C1C"));
+        }
+        _content.Child = new ScrollViewer { Content = page, Padding = new Avalonia.Thickness(28) };
+    }
+
+    private Control LivePage()
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        row.Children.Add(_green);
+        row.Children.Add(_red);
+        var page = Page("Live activity", "This is the employee’s current work. Green means the mouse or keyboard was used. Red means they stopped, and this computer beeps until they start again.");
+        page.Children.Add(row);
+        page.Children.Add(_liveState);
+        page.Children.Add(_liveDetail);
+        return page;
+    }
+
+    private Control LogPage()
+    {
+        var body = new TextBlock { Text = "Reading the activity log...", TextWrapping = TextWrapping.Wrap, FontSize = 16 };
+        var open = new Button { Content = "Open the full report", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
+        open.Click += (_, _) => OpenReport(body);
+        var page = Page("Activity log", "Idle time, sites, programs, and how long the employee has been on this computer.");
+        page.Children.Add(open);
+        page.Children.Add(body);
+        _ = Task.Run(() =>
+        {
+            var text = JournalReader.Describe(PilotPaths.Journal);
+            Dispatcher.UIThread.Post(() => body.Text = text);
+        });
+        return page;
+    }
+
+    private Control ProgramsPage()
+    {
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        var allowed = new HashSet<string>(config?.AllowedPrograms ?? new List<string>(PilotDefaults.AllowedPrograms), StringComparer.OrdinalIgnoreCase);
+        var boxes = new List<CheckBox>();
+        var page = Page("Programs", "Tick the programs the employee may use. Save the list, then block the others only after a real work day looks right.");
+        foreach (var program in KnownPrograms)
+        {
+            var box = new CheckBox { Content = program.Label, IsChecked = allowed.Contains(program.Name), FontSize = 16, Margin = new Avalonia.Thickness(0, 4) };
+            box.Tag = program.Name;
+            boxes.Add(box);
+            page.Children.Add(box);
+        }
+        foreach (var extra in _extraPrograms.Concat(allowed).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (KnownPrograms.Any(program => program.Name.Equals(extra, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+            var box = new CheckBox { Content = extra, IsChecked = true, FontSize = 16, Margin = new Avalonia.Thickness(0, 4) };
+            box.Tag = extra;
+            boxes.Add(box);
+            page.Children.Add(box);
+        }
+        var add = new TextBox { Watermark = "Program file, for example WINWORD.EXE" };
+        var addButton = new Button { Content = "Add program", MinHeight = 36 };
+        addButton.Click += (_, _) =>
+        {
+            var name = (add.Text ?? "").Trim();
+            if (name.Length == 0)
+            {
+                return;
+            }
+            if (!_extraPrograms.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                _extraPrograms.Add(name);
+            }
+            ShowPage("Programs", ProgramsPage());
+        };
+        var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var save = new Button { Content = "Save allowed programs", MinHeight = 40 };
+        var block = new Button { Content = "Save and block other programs", MinHeight = 40 };
+        save.Click += async (_, _) => await RunButtons(new[] { save, block }, () => Task.Run(() => PilotSetup.UpdatePrograms(Selected(boxes), false, line => Post(status, line))));
+        block.Click += async (_, _) => await RunButtons(new[] { save, block }, () => Task.Run(() => PilotSetup.UpdatePrograms(Selected(boxes), true, line => Post(status, line))));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        actions.Children.Add(save);
+        actions.Children.Add(block);
+        page.Children.Add(add);
+        page.Children.Add(addButton);
+        page.Children.Add(actions);
+        page.Children.Add(status);
+        return page;
+    }
+
+    private Control StoragePage()
+    {
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        var quota = new TextBox { Text = (config?.QuotaGB ?? 80).ToString(), Watermark = "Gigabytes" };
+        var status = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
+        if (config is not null)
+        {
+            status.Text = $"Current limit: {config.QuotaGB} GB on {config.Volume} for {config.UserName}. The folder is {config.WorkFolder}.";
+        }
+        var apply = new Button { Content = "Apply storage limit", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
+        apply.Click += async (_, _) => await RunButtons(new[] { apply }, () =>
+        {
+            if (!int.TryParse(quota.Text, out var gb))
+            {
+                throw new InvalidOperationException("Enter the storage limit as a whole number of GB.");
+            }
+            return Task.Run(() => PilotSetup.UpdateQuota(gb, line => Post(status, line)));
+        });
+        var page = Page("Storage", "This is the disk space the employee can use on this computer.");
+        page.Children.Add(Label("Storage in GB"));
+        page.Children.Add(quota);
+        page.Children.Add(apply);
+        page.Children.Add(status);
+        return page;
+    }
+
+    private Control TimerPage()
+    {
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        var alarm = new TextBox { Text = (config?.AlarmAfterSeconds ?? 30).ToString() };
+        var idle = new TextBox { Text = ((config?.IdleThresholdSeconds ?? 300) / 60).ToString() };
+        var status = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
+        var save = new Button { Content = "Save beep and idle time", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
+        save.Click += async (_, _) => await RunButtons(new[] { save }, () =>
+        {
+            if (!int.TryParse(alarm.Text, out var seconds))
+            {
+                throw new InvalidOperationException("Enter the beep time as a whole number of seconds.");
+            }
+            if (!int.TryParse(idle.Text, out var minutes))
+            {
+                throw new InvalidOperationException("Enter the idle time as a whole number of minutes.");
+            }
+            return Task.Run(() => PilotSetup.UpdateTimers(minutes, seconds, line => Post(status, line)));
+        });
+        var page = Page("Beep and time", "The beep uses seconds. The activity log uses minutes. A locked screen beeps immediately.");
+        page.Children.Add(Label("Seconds without mouse or keyboard before the beep"));
+        page.Children.Add(alarm);
+        page.Children.Add(Label("Minutes before the activity log counts idle"));
+        page.Children.Add(idle);
+        page.Children.Add(save);
+        page.Children.Add(status);
+        return page;
+    }
+
+    private Control EmployeePage()
+    {
+        var fullName = new TextBox { Text = "Pilot Employee" };
+        var userName = new TextBox { Text = "employee1" };
+        var password = new TextBox { PasswordChar = '●' };
+        var confirm = new TextBox { PasswordChar = '●' };
+        var quota = new TextBox { Text = "80" };
+        var idle = new TextBox { Text = "1" };
+        var alarm = new TextBox { Text = "30" };
+        var log = new TextBox { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 220 };
+        var setup = new Button { Content = "Set up this computer", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
+        setup.Click += async (_, _) => await RunButtons(new[] { setup }, () =>
+        {
+            if ((password.Text ?? "") != (confirm.Text ?? ""))
+            {
+                throw new InvalidOperationException("The passwords did not match.");
+            }
+            if (!int.TryParse(quota.Text, out var quotaGb) || !int.TryParse(idle.Text, out var idleMinutes) || !int.TryParse(alarm.Text, out var alarmSeconds))
+            {
+                throw new InvalidOperationException("Enter storage, idle minutes, and beep seconds as whole numbers.");
+            }
+            var request = new PilotRequest((fullName.Text ?? "").Trim(), (userName.Text ?? "").Trim(), password.Text ?? "", quotaGb, idleMinutes, alarmSeconds);
+            password.Text = "";
+            confirm.Text = "";
+            return Task.Run(() => PilotSetup.Run(request, line => Post(log, line)));
+        });
+        var page = Page("Employee login", "Use this when the employee login still needs to be created. The password needs 8 characters, a capital letter, a small letter, and a number, with no spaces.");
+        page.Children.Add(Label("Employee full name"));
+        page.Children.Add(fullName);
+        page.Children.Add(Label("Windows login"));
+        page.Children.Add(userName);
+        page.Children.Add(Label("Password"));
+        page.Children.Add(password);
+        page.Children.Add(Label("Confirm password"));
+        page.Children.Add(confirm);
+        page.Children.Add(Label("Storage in GB"));
+        page.Children.Add(quota);
+        page.Children.Add(Label("Idle minutes for the activity log"));
+        page.Children.Add(idle);
+        page.Children.Add(Label("Seconds before the beep"));
+        page.Children.Add(alarm);
+        page.Children.Add(setup);
+        page.Children.Add(log);
+        return page;
+    }
+
+    private static StackPanel Page(string title, string intro)
+    {
+        var page = new StackPanel { Spacing = 12, MaxWidth = 720 };
+        page.Children.Add(new TextBlock { Text = title, FontSize = 28, FontWeight = FontWeight.SemiBold });
+        page.Children.Add(new TextBlock { Text = intro, TextWrapping = TextWrapping.Wrap, FontSize = 16 });
+        return page;
+    }
+
+    private static TextBlock Label(string text) => new() { Text = text, FontSize = 15 };
+
+    private static Button Lamp(string label) => new()
+    {
+        Content = label,
+        MinWidth = 180,
+        MinHeight = 64,
+        FontSize = 18,
+        IsHitTestVisible = false,
+        Background = new SolidColorBrush(Color.Parse("#D9D9D9"))
+    };
+
+    private static List<string> Selected(IEnumerable<CheckBox> boxes) =>
+        boxes.Where(box => box.IsChecked == true).Select(box => box.Tag as string ?? "").Where(name => name.Length > 0).ToList();
+
+    private async void RefreshLive()
+    {
+        if (Interlocked.Exchange(ref _busy, 1) == 1)
+        {
+            return;
+        }
+        LiveStatus status;
+        try
+        {
+            status = await Task.Run(() => LiveBoard.ReadUrl("http://127.0.0.1:8777/status"));
+        }
+        catch
+        {
+            status = new LiveStatus { SessionOpen = false, Working = true };
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _busy, 0);
+        }
+        var fresh = LiveBoard.IsFresh(status);
+        var working = fresh && status.Working;
+        Paint(_green, working, "#148F3E");
+        Paint(_red, fresh && !status.Working, "#C62828");
+        _beeping = fresh && !status.Working ? 1 : 0;
+        if (!fresh)
+        {
+            _liveState.Text = "No employee is signed in.";
+            _liveDetail.Text = "Sign in as the employee on this computer. This page then shows the program, the site, the idle time, and the time spent on the system.";
+            return;
+        }
+        var elapsed = status.SessionStartedUtc > DateTime.UnixEpoch
+            ? ReportText.FormatDuration((int)Math.Max(0, (DateTime.UtcNow - status.SessionStartedUtc).TotalSeconds))
+            : "not recorded yet";
+        var place = IsBrowser(status.Program) ? "Site" : "Window";
+        _liveState.Text = working ? "Working" : "Not working";
+        _liveDetail.Text = $"{status.EmployeeName}\nProgram: {status.Program}\n{place}: {status.Title}\nIdle: {status.IdleSeconds} seconds\nTime on this computer: {elapsed}\nClicks: {status.ClickCount}\nBeep after {status.AlarmAfterSeconds} seconds without the mouse or keyboard.";
+    }
+
+    private static bool IsBrowser(string process) =>
+        process.Contains("chrome", StringComparison.OrdinalIgnoreCase) || process.Contains("msedge", StringComparison.OrdinalIgnoreCase);
+
+    private static void Paint(Button button, bool on, string color)
+    {
+        button.Background = new SolidColorBrush(Color.Parse(on ? color : "#D9D9D9"));
+        button.Foreground = new SolidColorBrush(on ? Colors.White : Color.Parse("#555555"));
+    }
+
+    private void BeepLoop()
+    {
+        while (!_stop.IsCancellationRequested)
+        {
+            if (_beeping == 1)
+            {
+                SystemBeep.Tone();
+            }
+            Thread.Sleep(1200);
+        }
+    }
+
+    private void OpenReport(TextBlock status)
+    {
+        var path = Path.Combine(PilotPaths.Reports, "latest.html");
+        if (!File.Exists(path))
+        {
+            status.Text = "No report yet. Sign in as the employee, use the computer, then sign out and wait one minute.";
+            return;
+        }
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+    }
+
+    private static void Post(TextBlock target, string line)
+    {
+        Dispatcher.UIThread.Post(() => target.Text = string.IsNullOrEmpty(target.Text) ? line : target.Text + Environment.NewLine + line);
+    }
+
+    private static void Post(TextBox target, string line)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            target.Text = string.IsNullOrEmpty(target.Text) ? line : target.Text + Environment.NewLine + line;
+            target.CaretIndex = target.Text?.Length ?? 0;
+        });
+    }
+
+    private async Task RunButtons(IReadOnlyList<Button> buttons, Func<Task> work)
+    {
+        foreach (var button in buttons)
+        {
+            button.IsEnabled = false;
         }
         try
         {
@@ -94,87 +401,35 @@ public class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Log(ex.Message);
+            if (buttons.Count > 0)
+            {
+                buttons[0].Content = buttons[0].Content;
+            }
+            var page = _content.Child;
+            var notice = new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Color.Parse("#9B1C1C")) };
+            if (page is ScrollViewer viewer && viewer.Content is StackPanel stack)
+            {
+                stack.Children.Add(notice);
+            }
         }
         finally
         {
-            foreach (var item in buttons)
+            foreach (var button in buttons)
             {
-                item.IsEnabled = true;
+                button.IsEnabled = true;
             }
-            _ = button;
         }
     }
 
-    private Task SetupAsync()
+    private static void TryRefreshInstalledCopy()
     {
-        if ((_password.Text ?? "") != (_confirm.Text ?? ""))
+        try
         {
-            throw new InvalidOperationException("The passwords did not match.");
+            PilotSetup.RefreshInstalledCopy();
         }
-        if (!int.TryParse(_quota.Text, out var quota))
+        catch
         {
-            throw new InvalidOperationException("Enter the disk limit as a whole number of GB.");
+            // The employee session may still be using the installed copy. Sign that login out and open WorkPilot again.
         }
-        if (!int.TryParse(_idle.Text, out var idle))
-        {
-            throw new InvalidOperationException("Enter the idle time as a whole number of minutes.");
-        }
-        if (!int.TryParse(_alarm.Text, out var alarm))
-        {
-            throw new InvalidOperationException("Enter the red-light time as a whole number of seconds.");
-        }
-        var request = new PilotRequest(
-            (_fullName.Text ?? "").Trim(),
-            (_userName.Text ?? "").Trim(),
-            _password.Text ?? "",
-            quota,
-            idle,
-            alarm);
-        _password.Text = "";
-        _confirm.Text = "";
-        return Task.Run(() => PilotSetup.Run(request, Log));
-    }
-
-    private Task CheckAsync() => Task.Run(() =>
-    {
-        foreach (var line in PilotSetup.Check())
-        {
-            Log(line);
-        }
-    });
-
-    private Task RulesAsync(bool enforce) => Task.Run(() => PilotSetup.ApplyAppLocker(enforce, Log));
-
-    private void OpenWatch()
-    {
-        var address = (_watchAddress.Text ?? "").Trim();
-        if (!address.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-        {
-            Log("Enter a watch address such as http://127.0.0.1:8777/status");
-            return;
-        }
-        var window = new AlarmWindow(() => LiveBoard.ReadUrl(address));
-        window.Show();
-    }
-
-    private void OpenReport()
-    {
-        var path = Path.Combine(PilotPaths.Reports, "latest.html");
-        if (!File.Exists(path))
-        {
-            Log("No report yet. Sign in as the employee, use the computer, then sign out and wait one minute.");
-            return;
-        }
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
-    }
-
-    private void Log(string line)
-    {
-        Dispatcher.UIThread.Post(() =>
-        {
-            _log.Text = string.IsNullOrEmpty(_log.Text) ? line : _log.Text + Environment.NewLine + line;
-            _log.CaretIndex = _log.Text?.Length ?? 0;
-        });
     }
 }

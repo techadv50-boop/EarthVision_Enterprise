@@ -68,6 +68,7 @@ public sealed class LiveStatus
     public int ClickCount { get; set; }
     public string EmployeeName { get; set; } = "";
     public DateTime UpdatedUtc { get; set; }
+    public DateTime SessionStartedUtc { get; set; }
 }
 
 public static class PilotDefaults

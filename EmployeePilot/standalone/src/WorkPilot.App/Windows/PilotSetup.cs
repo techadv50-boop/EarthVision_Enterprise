@@ -201,6 +201,74 @@ The administrator receives a report after you sign out.
             : "Program list is in audit mode. Nothing is blocked yet. Administrators can always run every program.");
     }
 
+    public static void UpdatePrograms(IReadOnlyList<string> programs, bool blockOthers, Action<string> log)
+    {
+        var config = RequiredConfig();
+        config.AllowedPrograms = programs
+            .Select(program => program.Trim())
+            .Where(program => program.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (config.AllowedPrograms.Count == 0)
+        {
+            throw new InvalidOperationException("Choose at least one program.");
+        }
+        PilotConfigStore.Save(PilotPaths.Config, config);
+        log("Allowed programs: " + string.Join(", ", config.AllowedPrograms));
+        ApplyAppLocker(blockOthers, log);
+    }
+
+    public static void UpdateQuota(int quotaGb, Action<string> log)
+    {
+        if (quotaGb < 20)
+        {
+            throw new InvalidOperationException("Use at least 20 GB so the Windows profile and Chrome still fit.");
+        }
+        var config = RequiredConfig();
+        ApplyQuota(config.Volume, config.UserName, quotaGb, log);
+        config.QuotaGB = quotaGb;
+        PilotConfigStore.Save(PilotPaths.Config, config);
+    }
+
+    public static void UpdateTimers(int idleMinutes, int alarmSeconds, Action<string> log)
+    {
+        if (idleMinutes is < 1 or > 60)
+        {
+            throw new InvalidOperationException("Idle minutes must be from 1 to 60.");
+        }
+        if (alarmSeconds is < 5 or > 3600)
+        {
+            throw new InvalidOperationException("The beep time must be from 5 to 3600 seconds.");
+        }
+        var config = RequiredConfig();
+        config.IdleThresholdSeconds = idleMinutes * 60;
+        config.AlarmAfterSeconds = alarmSeconds;
+        PilotConfigStore.Save(PilotPaths.Config, config);
+        log($"The report counts idle after {idleMinutes} minutes.");
+        log($"The beep starts after {alarmSeconds} seconds. It applies within a few seconds of the employee session.");
+    }
+
+    public static string RefreshInstalledCopy()
+    {
+        var source = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(source) || !OperatingSystem.IsWindows())
+        {
+            return "";
+        }
+        Directory.CreateDirectory(PilotPaths.Root);
+        var destination = Path.GetFullPath(PilotPaths.Exe);
+        if (string.Equals(Path.GetFullPath(source), destination, StringComparison.OrdinalIgnoreCase))
+        {
+            return "";
+        }
+        File.Copy(source, destination, true);
+        return destination;
+    }
+
+    private static PilotConfig RequiredConfig() =>
+        PilotConfigStore.Load(PilotPaths.Config)
+        ?? throw new InvalidOperationException("Set up the employee login first.");
+
     private static void Validate(PilotRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.FullName))

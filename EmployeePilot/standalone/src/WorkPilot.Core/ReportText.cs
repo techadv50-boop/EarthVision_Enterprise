@@ -65,6 +65,17 @@ public static class ReportText
         var idleMinutes = summary.IdleThresholdSeconds / 60;
         lines.Add($"Idle rule: no mouse or keyboard for {idleMinutes} min still counts the waiting period as active; after that the time is idle. A locked screen is idle immediately.");
         lines.Add("");
+        lines.Add("Sites");
+        var sites = SiteTitles(summary);
+        if (sites.Count == 0)
+        {
+            lines.Add("(none)");
+        }
+        foreach (var site in sites)
+        {
+            lines.Add(site);
+        }
+        lines.Add("");
         lines.Add("Programs");
         if (summary.Programs.Count == 0)
         {
@@ -138,6 +149,16 @@ public static class ReportText
                 .Append(FormatDuration(slice.Seconds)).Append("</td><td>").Append(what).AppendLine("</td></tr>");
         }
         var idleMinutes = summary.IdleThresholdSeconds / 60;
+        var siteRows = new StringBuilder();
+        var sites = SiteTitles(summary);
+        if (sites.Count == 0)
+        {
+            siteRows.AppendLine("<tr><td>No browser page titles recorded</td></tr>");
+        }
+        foreach (var site in sites)
+        {
+            siteRows.Append("<tr><td>").Append(Encode(site)).AppendLine("</td></tr>");
+        }
         return $$"""
 <!DOCTYPE html>
 <html lang="en">
@@ -174,6 +195,13 @@ Session end: {{end}}</p>
 <div class="card"><span>Active percent</span><strong>{{summary.ActivePercent.ToString(CultureInfo.InvariantCulture)}}%</strong></div>
 </div>
 <p class="note">Idle rule used for this report: {{idleMinutes}} minutes without mouse or keyboard. That waiting period still counts as active, so reading and short pauses are not idle. After {{idleMinutes}} minutes the time is idle. A locked screen counts as idle immediately. Locked time inside this session: {{FormatDuration(summary.LockedSeconds)}}.</p>
+<h2>Sites</h2>
+<table>
+<thead><tr><th>Page title from Chrome or Edge</th></tr></thead>
+<tbody>
+{{siteRows}}
+</tbody>
+</table>
 <h2>Programs</h2>
 <table>
 <thead><tr><th>Program</th><th>Active time</th><th>Allocation</th></tr></thead>
@@ -201,4 +229,26 @@ Session end: {{end}}</p>
     }
 
     private static string Encode(string? value) => WebUtility.HtmlEncode(value ?? "");
+
+    private static IReadOnlyList<string> SiteTitles(SessionSummary summary)
+    {
+        var sites = new List<string>();
+        foreach (var slice in summary.Timeline)
+        {
+            if (slice.Kind != "Active" || string.IsNullOrWhiteSpace(slice.Title) || !IsBrowser(slice.Process))
+            {
+                continue;
+            }
+            if (!sites.Contains(slice.Title, StringComparer.OrdinalIgnoreCase))
+            {
+                sites.Add(slice.Title);
+            }
+        }
+        return sites;
+    }
+
+    private static bool IsBrowser(string process) =>
+        process.Contains("chrome", StringComparison.OrdinalIgnoreCase)
+        || process.Contains("msedge", StringComparison.OrdinalIgnoreCase)
+        || process.Contains("firefox", StringComparison.OrdinalIgnoreCase);
 }
