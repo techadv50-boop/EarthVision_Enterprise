@@ -8,6 +8,24 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => CrashLog.Write(eventArgs.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
+        {
+            CrashLog.Write(eventArgs.Exception);
+            eventArgs.SetObserved();
+        };
+        try
+        {
+            Run(args);
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex);
+        }
+    }
+
+    private static void Run(string[] args)
+    {
         if (Has(args, "--track"))
         {
             if (!SessionTracker.Run())

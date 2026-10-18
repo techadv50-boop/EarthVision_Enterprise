@@ -18,18 +18,30 @@ public class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            if (Program.TrackMode)
+            Avalonia.Threading.Dispatcher.UIThread.UnhandledException += (_, eventArgs) =>
             {
-                desktop.MainWindow = new AlarmWindow(LiveBoard.ReadLocal, playSound: false);
+                CrashLog.Write(eventArgs.Exception);
+                eventArgs.Handled = true;
+            };
+            try
+            {
+                if (Program.TrackMode)
+                {
+                    desktop.MainWindow = new AlarmWindow(LiveBoard.ReadLocal, playSound: false);
+                }
+                else if (!string.IsNullOrWhiteSpace(Program.WatchUrl))
+                {
+                    var address = Program.WatchUrl;
+                    desktop.MainWindow = new AlarmWindow(() => LiveBoard.ReadUrl(address));
+                }
+                else
+                {
+                    desktop.MainWindow = new MainWindow();
+                }
             }
-            else if (!string.IsNullOrWhiteSpace(Program.WatchUrl))
+            catch (Exception ex)
             {
-                var address = Program.WatchUrl;
-                desktop.MainWindow = new AlarmWindow(() => LiveBoard.ReadUrl(address));
-            }
-            else
-            {
-                desktop.MainWindow = new MainWindow();
+                CrashLog.Write(ex);
             }
         }
         base.OnFrameworkInitializationCompleted();

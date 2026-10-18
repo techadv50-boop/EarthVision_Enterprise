@@ -324,6 +324,18 @@ public class MainWindow : Window
         {
             Interlocked.Exchange(ref _busy, 0);
         }
+        try
+        {
+            ApplyLive(status);
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex);
+        }
+    }
+
+    private void ApplyLive(LiveStatus status)
+    {
         var fresh = LiveBoard.IsFresh(status);
         var working = fresh && status.Working;
         Paint(_green, working, "#148F3E");
@@ -338,13 +350,14 @@ public class MainWindow : Window
         var elapsed = status.SessionStartedUtc > DateTime.UnixEpoch
             ? ReportText.FormatDuration((int)Math.Max(0, (DateTime.UtcNow - status.SessionStartedUtc).TotalSeconds))
             : "not recorded yet";
-        var place = IsBrowser(status.Program) ? "Site" : "Window";
+        var place = IsBrowser(status.Program ?? "") ? "Site" : "Window";
         _liveState.Text = working ? "Working" : "Not working";
         _liveDetail.Text = $"{status.EmployeeName}\nProgram: {status.Program}\n{place}: {status.Title}\nIdle: {status.IdleSeconds} seconds\nTime on this computer: {elapsed}\nClicks: {status.ClickCount}\nBeep after {status.AlarmAfterSeconds} seconds without the mouse or keyboard.";
     }
 
-    private static bool IsBrowser(string process) =>
-        process.Contains("chrome", StringComparison.OrdinalIgnoreCase) || process.Contains("msedge", StringComparison.OrdinalIgnoreCase);
+    private static bool IsBrowser(string? process) =>
+        !string.IsNullOrEmpty(process)
+        && (process.Contains("chrome", StringComparison.OrdinalIgnoreCase) || process.Contains("msedge", StringComparison.OrdinalIgnoreCase));
 
     private static void Paint(Button button, bool on, string color)
     {
