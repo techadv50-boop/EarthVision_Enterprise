@@ -22,8 +22,8 @@ public class MainWindow : Window
     };
 
     private readonly Border _content = new() { Background = Brushes.White };
-    private readonly TextBlock _liveState = new() { Text = "Waiting for the employee.", FontSize = 28, FontWeight = FontWeight.SemiBold };
-    private readonly TextBlock _liveDetail = new() { TextWrapping = TextWrapping.Wrap, FontSize = 18 };
+    private readonly TextBlock _liveState = new() { Text = "Waiting for the employee.", FontSize = 20, FontWeight = FontWeight.SemiBold, Foreground = Brushes.White };
+    private readonly TextBlock _liveDetail = new() { TextWrapping = TextWrapping.Wrap, FontSize = 16, Foreground = Brushes.White };
     private readonly Button _green = Lamp("Working");
     private readonly Button _red = Lamp("Not working");
     private readonly List<Button> _nav = new();
@@ -55,6 +55,8 @@ public class MainWindow : Window
         var root = new Grid();
         root.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(230)));
         root.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+        root.RowDefinitions.Add(new RowDefinition(GridLength.Star));
+        root.RowDefinitions.Add(new RowDefinition(new GridLength(120)));
         var side = new StackPanel { Spacing = 6, Margin = new Avalonia.Thickness(16) };
         side.Children.Add(new TextBlock { Text = "WorkPilot", FontSize = 22, FontWeight = FontWeight.SemiBold, Margin = new Avalonia.Thickness(8, 8, 8, 16) });
         AddNav(side, "Live activity", () => ShowPage("Live activity", LivePage()));
@@ -65,10 +67,38 @@ public class MainWindow : Window
         AddNav(side, "Employee login", () => ShowPage("Employee login", EmployeePage()));
         var sideHost = new Border { Background = new SolidColorBrush(Color.Parse("#E7EEE9")), Child = side };
         Grid.SetColumn(sideHost, 0);
+        Grid.SetRow(sideHost, 0);
+        Grid.SetRowSpan(sideHost, 2);
         Grid.SetColumn(_content, 1);
+        Grid.SetRow(_content, 0);
+        var strip = LiveStrip();
+        Grid.SetColumn(strip, 1);
+        Grid.SetRow(strip, 1);
         root.Children.Add(sideHost);
         root.Children.Add(_content);
+        root.Children.Add(strip);
         return root;
+    }
+
+    private Control LiveStrip()
+    {
+        var lamps = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        lamps.Children.Add(_green);
+        lamps.Children.Add(_red);
+        var words = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        words.Children.Add(_liveState);
+        words.Children.Add(_liveDetail);
+        var row = new Grid { ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Star) } };
+        Grid.SetColumn(words, 1);
+        words.Margin = new Avalonia.Thickness(16, 0, 0, 0);
+        row.Children.Add(lamps);
+        row.Children.Add(words);
+        return new Border
+        {
+            Background = new SolidColorBrush(Color.Parse("#16382C")),
+            Padding = new Avalonia.Thickness(16, 10),
+            Child = row
+        };
     }
 
     private void AddNav(StackPanel side, string label, Action open)
@@ -101,13 +131,13 @@ public class MainWindow : Window
 
     private Control LivePage()
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-        row.Children.Add(_green);
-        row.Children.Add(_red);
-        var page = Page("Live activity", "This is the employee’s current work. Green means the mouse or keyboard was used. Red means they stopped, and this computer beeps until they start again.");
-        page.Children.Add(row);
-        page.Children.Add(_liveState);
-        page.Children.Add(_liveDetail);
+        var page = Page("Live activity", "The green bar at the bottom stays on every page. It shows the program and the project while the employee is signed in. Red means they stopped, and this computer beeps.");
+        page.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 16,
+            Text = "On the other computer, install Tailscale and sign in with the same account. Open Remote Desktop Connection. In Computer, type 100.109.247.33. For the user name, type DESKTOP-ENCM4H4\\employee1 and the employee password. The desktop that opens is this computer. The employee then uses the programs installed here."
+        });
         return page;
     }
 
@@ -295,9 +325,9 @@ public class MainWindow : Window
     private static Button Lamp(string label) => new()
     {
         Content = label,
-        MinWidth = 180,
-        MinHeight = 64,
-        FontSize = 18,
+        MinWidth = 150,
+        MinHeight = 56,
+        FontSize = 16,
         IsHitTestVisible = false,
         Background = new SolidColorBrush(Color.Parse("#D9D9D9"))
     };
@@ -351,8 +381,9 @@ public class MainWindow : Window
             ? ReportText.FormatDuration((int)Math.Max(0, (DateTime.UtcNow - status.SessionStartedUtc).TotalSeconds))
             : "not recorded yet";
         var place = IsBrowser(status.Program ?? "") ? "Site" : "Window";
+        var project = string.IsNullOrWhiteSpace(status.Title) ? "No project title yet" : status.Title;
         _liveState.Text = working ? "Working" : "Not working";
-        _liveDetail.Text = $"{status.EmployeeName}\nProgram: {status.Program}\n{place}: {status.Title}\nIdle: {status.IdleSeconds} seconds\nTime on this computer: {elapsed}\nClicks: {status.ClickCount}\nBeep after {status.AlarmAfterSeconds} seconds without the mouse or keyboard.";
+        _liveDetail.Text = $"Program: {status.Program}    {place}: {project}\nIdle {status.IdleSeconds} s    Time on computer {elapsed}    Clicks {status.ClickCount}";
     }
 
     private static bool IsBrowser(string? process) =>
