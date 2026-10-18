@@ -3,9 +3,9 @@ use std::path::Path;
 
 use serde::Serialize;
 use study_core::{
-    decode_audio_allowing_whitespace, transcribe_wav, ActiveExam, AppResult, BackupEntry, BookSummary,
+    decode_audio_allowing_whitespace, import_word_into_book, transcribe_wav, ActiveExam, AppResult, BackupEntry, BookSummary,
     ChapterSummary, ClassSummary, CreateExamRequest, CreatedExam, Database, ExamAnswerInput, ExamResult,
-    ExamSync, ExamView, ModelInfo, OralPrompt, OralStep, OralSummary, Profile, ProgressDashboard,
+    ExamSync, ExamView, ImportReport, ModelInfo, OralPrompt, OralStep, OralSummary, Profile, ProgressDashboard,
     Proposal, RevisionTopic, Settings, SettingsUpdate, SpeechConfig, SpeechOutcome, TopicDetail,
     TopicDraftInput, TopicHit, TopicSaveInput, TopicSummary, TrashItem, BlockingRunner,
 };
@@ -558,6 +558,28 @@ pub async fn transcribe_audio(
         let _ = fs::remove_dir_all(&cleanup);
     }
     Ok(outcome)
+}
+
+#[tauri::command]
+pub fn import_word(state: State<AppState>, book_id: String, path: String) -> Result<ImportReport, String> {
+    let file = Path::new(&path);
+    let extension = file.extension().and_then(|item| item.to_str()).unwrap_or("").to_ascii_lowercase();
+    if extension != "docx" {
+        return Err("Choose a Word .docx file. Older .doc files need to be saved as .docx first.".into());
+    }
+    let meta = fs::metadata(file).map_err(|_| "That Word file could not be opened.".to_string())?;
+    if meta.len() > 20 * 1024 * 1024 {
+        return Err("That Word file is larger than 20 MB. Split it and import each part.".into());
+    }
+    let bytes = fs::read(file).map_err(|_| "That Word file could not be read.".to_string())?;
+    with_db(&state, |db| import_word_into_book(db, &book_id, &bytes))
+}
+
+#[tauri::command]
+pub async fn speak_text(text: String, language: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::speak::speak_text(&text, &language))
+        .await
+        .map_err(|err| format!("Reading aloud stopped unexpectedly: {err}"))?
 }
 
 fn failed_audio(message: String) -> SpeechOutcome {

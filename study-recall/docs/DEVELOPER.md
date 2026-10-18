@@ -2,7 +2,7 @@
 
 ## Layout
 
-- `crates/study-core` holds SQLite, the study hierarchy, speech invocation, oral scoring, exam generation, timing, marking, progress, and backup.
+- `crates/study-core` holds SQLite, the study hierarchy, Word import, speech invocation, oral scoring, exam generation, timing, marking, progress, and backup.
 - `src-tauri` is the Tauri 2 shell. Commands are thin wrappers around `study-core`.
 - `src` is the React interface.
 
@@ -26,7 +26,11 @@ A sync without a generation uses the saved wall start. That is the recovery path
 
 ## Speech
 
-`transcribe_wav` checks the binary and model, rejects an English-only model for Urdu, validates the WAV header, and runs the local process with a timeout. The Tauri command does this off the UI thread. The command returns a `SpeechOutcome` with `ok: false` and a specific message when the model is missing. It does not call a network API.
+`transcribe_wav` checks the binary and model, rejects an English-only model for Urdu, validates the WAV header, and runs the local process with a timeout. The Tauri command does this off the UI thread. On startup the shell points speech recognition at `whisper-cli` and `ggml-small.bin` when those files are inside the installation and the saved paths are missing. The command returns a `SpeechOutcome` with `ok: false` and a specific message when the model is missing. It does not call a network API.
+
+`import_word_into_book` reads a `.docx` file and places Heading 1 or “Chapter” lines on chapter shelves and Heading 2–4 or “Topic” lines on topic shelves in the open book. Existing notes are not overwritten.
+
+Listen uses the Windows speaking voice through `System.Speech`. It does not download a voice. If that voice is absent, the text stays on screen.
 
 ## Tests
 

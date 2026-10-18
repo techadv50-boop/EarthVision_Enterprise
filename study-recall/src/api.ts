@@ -20,6 +20,7 @@ import type {
   RevisionTopic,
   Settings,
   SettingsUpdate,
+  ImportReport,
   SpeechOutcome,
   TopicDetail,
   TopicHit,
@@ -162,6 +163,8 @@ export const api = {
   importJson: (path: string) => call<number>("import_json", { path }),
   backupHistory: () => call<BackupEntry[]>("backup_history"),
   integrityCheck: () => call<string>("integrity_check"),
+  importWord: (bookId: string, path: string) => call<ImportReport>("import_word", { bookId, path }),
+  speak: (text: string, language: string) => call<string>("speak_text", { text, language }),
 };
 
 export async function pickFile(filters?: { name: string; extensions: string[] }[]): Promise<string | null> {

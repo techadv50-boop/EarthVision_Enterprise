@@ -1,4 +1,5 @@
 mod commands;
+mod speak;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -18,6 +19,14 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let mut db = Database::open(dir.join("study-recall.sqlite")).map_err(box_err)?;
+            if let Ok(resources) = app.path().resource_dir() {
+                let _ = study_core::apply_bundled_whisper(&mut db, &resources);
+            }
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(folder) = exe.parent() {
+                    let _ = study_core::apply_bundled_whisper(&mut db, folder);
+                }
+            }
             let _ = db.refresh_models();
             let speech_dir = dir.join("speech-jobs");
             std::fs::create_dir_all(&speech_dir)?;
@@ -100,7 +109,9 @@ pub fn run() {
             commands::import_json,
             commands::backup_history,
             commands::integrity_check,
-            commands::transcribe_audio
+            commands::transcribe_audio,
+            commands::import_word,
+            commands::speak_text
         ])
         .run(tauri::generate_context!())
         .expect("Study Recall failed to start");

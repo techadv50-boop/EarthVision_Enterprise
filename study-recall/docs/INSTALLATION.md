@@ -4,7 +4,7 @@ Study Recall is a desktop application for Windows 10 and Windows 11. It does not
 
 ## Install on Windows
 
-1. Download `Study Recall_1.0.0_x64-setup.exe` from the Windows installer workflow artifact, or build it with the commands below.
+1. Download `Study Recall_1.1.0_x64-setup.exe` from the Windows installer workflow artifact, or build it with the commands below.
 2. Run the installer. It installs for the current Windows user.
 3. Open Study Recall from the Start menu.
 4. In Settings, create a student profile. That profile is stored in a local SQLite file.
@@ -23,7 +23,9 @@ cargo test -p study-core
 npx tauri build
 ```
 
-The setup program is written to `study-recall/src-tauri/target/release/bundle/nsis/`.
+The setup program is written to `study-recall/target/release/bundle/nsis/`.
+
+The Windows build also downloads whisper.cpp and the multilingual `ggml-small.bin` model and places them inside the installer. After installation, Record voice and Transcribe voice use those files. No separate speech download is required. Reading a prompt aloud uses the speaking voice already included with Windows.
 
 Rust 1.90 and Node.js 22 are required. WebView2 is included with Windows 11 and with current Windows 10 updates.
 
@@ -39,11 +41,11 @@ An update does not delete the SQLite database. Schema changes are applied by num
 
 ## Offline speech and grading models
 
-Speech recognition and model-based grading are optional. The application works with typed answers when those programs are not installed. To enable them, install the tools locally and select the files in Settings:
+Speech recognition is included in the Windows installer. Record voice and Transcribe voice use the whisper.cpp program and the multilingual `ggml-small.bin` model that the installer places on the computer. Listening to a prompt or a note uses the speaking voice that is already part of Windows. No extra download is required after installation.
 
-- whisper.cpp `whisper-cli` (or the equivalent CLI that accepts `-m`, `-f`, `-otxt`, and `-l`)
-- a Whisper GGML model, preferably multilingual `ggml-small.bin` or larger
-- llama.cpp `llama-cli` and a local GGUF model, if you want model-assisted descriptive grading
+Typing and pasting still work if the microphone is unavailable. If Windows has no Urdu speaking voice, Listen says so and leaves the text on screen.
+
+llama.cpp grading is still optional. Descriptive scores use the labeled approximate rubric until a local llama.cpp program and model are selected in Settings. Replace the included speech files from Settings only if you want a different local model.
 
 Do not select an English-only Whisper model for Urdu. The application refuses that combination and explains why.
 

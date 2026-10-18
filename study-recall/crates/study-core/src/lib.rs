@@ -1,11 +1,12 @@
 //! Offline study, recall, and examination engine.
 //!
-//! Student notes stay in a local SQLite database. Speech recognition and descriptive
-//! grading call local programs only when a Whisper or llama.cpp model is configured.
+//! Student notes stay in a local SQLite database. The Windows installer includes a local
+//! speech program. Descriptive grading calls llama.cpp only when that model is configured.
 //! Otherwise the application keeps an explicit, labeled fallback.
 
 pub mod backup;
 pub mod db;
+pub mod docx_import;
 pub mod error;
 pub mod exam;
 pub mod grading;
@@ -21,6 +22,7 @@ mod flow_tests;
 
 pub use backup::BackupEntry;
 pub use db::{new_id, Database, ModelInfo, Profile, Settings, SettingsUpdate, RECOVERY_POLICY};
+pub use docx_import::{import_word_into_book, ImportReport, ImportedChapter};
 pub use error::{AppError, AppResult};
 pub use exam::{
     render_result_html, ActiveExam, CreateExamRequest, CreatedExam, ExamAnswerInput, ExamResult,
@@ -35,6 +37,6 @@ pub use oral::{OralPrompt, OralStep, OralSummary};
 pub use progress::{ProgressDashboard, RevisionTopic};
 pub use questions::{build_paper, propose, PaperOffer, Proposal};
 pub use speech::{
-    assess_llama, assess_whisper, decode_audio_allowing_whitespace, transcribe_wav, BlockingRunner,
-    SpeechConfig, SpeechOutcome,
+    apply_bundled_whisper, assess_llama, assess_whisper, decode_audio_allowing_whitespace, transcribe_wav,
+    BlockingRunner, SpeechConfig, SpeechOutcome,
 };

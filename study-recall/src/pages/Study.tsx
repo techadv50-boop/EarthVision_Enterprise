@@ -1,10 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, errorText } from "../api";
+import { api, errorText, pickFile } from "../api";
 import { Crumbs, EmptyState, Field, Modal, Notice, PageHeader, PrimaryButton, QuietButton, inputClass } from "../components/ui";
 import { statusLabel } from "../format";
 import { useStudent } from "../store";
-import type { BookSummary, ChapterSummary, ClassSummary, TopicHit, TopicSummary } from "../types";
+import type { BookSummary, ChapterSummary, ClassSummary, ImportReport, TopicHit, TopicSummary } from "../types";
 
 type Confirm = { kind: "class" | "book" | "chapter" | "topic"; id: string; name: string };
 
@@ -59,7 +59,7 @@ export function Study() {
     <div>
       <PageHeader
         title="My Classes"
-        lede="Build Class, then Book, then Chapter, then Topic. Your notes are the only source used for tests."
+        lede="Build Class, then Book, then Chapter, then Topic, or import a Word file that is already arranged chapter by chapter. Your notes are the only source used for tests."
       />
       <form className="mb-4 flex gap-2" onSubmit={(event) => void search(event)}>
         <input
@@ -311,6 +311,8 @@ function Chapters(props: {
   const [bookTitle, setBookTitle] = useState("Book");
   const [className, setClassName] = useState("Class");
   const [title, setTitle] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [imported, setImported] = useState<ImportReport | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -335,9 +337,45 @@ function Chapters(props: {
     }
   }
 
+  async function importWord() {
+    const path = await pickFile([{ name: "Word", extensions: ["docx"] }]);
+    if (!path) return;
+    setImporting(true);
+    try {
+      const report = await api.importWord(props.bookId, path);
+      setImported(report);
+      props.onChange();
+      props.onError("");
+    } catch (err) {
+      props.onError(errorText(err));
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <section>
       <Crumbs items={[{ label: "Classes", to: "/study" }, { label: className, to: `/study/${props.classId}` }, { label: bookTitle }]} />
+      <section className="mt-4 rounded-2xl border border-line bg-card p-4">
+        <h2 className="text-lg font-semibold">Import a Word file</h2>
+        <p className="mt-1 text-sm text-muted">
+          If the notes are already separated chapter by chapter, choose the .docx file. Start each chapter with “Chapter 1: …” or Word Heading 1, and each topic with “Topic: …” or Heading 2. The file stays on this computer and is placed into this book.
+        </p>
+        <div className="mt-3">
+          <PrimaryButton disabled={importing} onClick={() => void importWord()}>
+            {importing ? "Importing…" : "Choose Word file"}
+          </PrimaryButton>
+        </div>
+        {imported ? (
+          <div className="mt-3 text-sm">
+            <p>
+              {imported.chaptersCreated} chapters added, {imported.chaptersReused} already present, {imported.topicsCreated} topics added, {imported.notesSaved} notes saved.
+              {imported.notesLeftUnchanged > 0 ? ` ${imported.notesLeftUnchanged} topics already had notes and were left unchanged.` : ""}
+            </p>
+            {imported.warnings.map((warning, index) => <p key={`${index}-${warning}`} className="mt-1 text-muted">{warning}</p>)}
+          </div>
+        ) : null}
+      </section>
       {items.length === 0 ? (
         <EmptyState title="No chapters have been added to this book." body="Add the first chapter. Topics and notes belong inside a chapter." action={<span className="text-sm text-muted">Use the form below.</span>} />
       ) : null}

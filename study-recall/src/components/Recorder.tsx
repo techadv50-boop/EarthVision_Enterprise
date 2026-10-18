@@ -195,7 +195,7 @@ export const Recorder = forwardRef<RecorderHandle, Props>(function Recorder({ la
         </div>
       </div>
       <p className="mt-2 text-sm text-muted">
-        Speech stays on this computer. Audio is discarded after transcription unless you turn on “Keep recordings” in Settings.
+        Speech recognition is included with Study Recall and runs on this computer. Audio is discarded after transcription unless you turn on “Keep recordings” in Settings.
       </p>
       {message ? (
         <div className="mt-3">

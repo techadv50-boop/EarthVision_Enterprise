@@ -112,18 +112,18 @@ pub fn assess_whisper(binary: &str, model: &str) -> (bool, String) {
     if binary.trim().is_empty() || !Path::new(binary).is_file() {
         return (
             false,
-            "Whisper.cpp is not installed. Speech recognition stays on this computer and is unavailable until you choose a local whisper.cpp binary and a model in Settings. You can type or paste text instead.".into(),
+            "The speech program included with Study Recall was not found. You can type or paste text. Whisper stays on this computer and is not replaced by an online service.".into(),
         );
     }
     if model.trim().is_empty() || !Path::new(model).is_file() {
         return (
             false,
-            "A Whisper model file was not found. Download a local model such as ggml-small.bin and select it in Settings. You can type or paste text until then.".into(),
+            "The multilingual speech model included with Study Recall was not found. You can type or paste text until the installation is repaired.".into(),
         );
     }
     (
         true,
-        "A local whisper.cpp binary and model are configured. Transcription runs on this computer.".into(),
+        "Speech recognition is ready on this computer. Record voice, then choose Transcribe voice. Nothing is sent to a server.".into(),
     )
 }
 
@@ -437,6 +437,67 @@ impl ProcessRunner for ScriptedRunner {
     }
 }
 
+/// Locates the speech program and multilingual model shipped inside the installation.
+pub fn bundled_speech_paths(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let binary = find_named(root, &["whisper-cli.exe", "whisper-cli"], 0)?;
+    let model = find_matching(root, 0, |name| {
+        let lower = name.to_ascii_lowercase();
+        lower.starts_with("ggml") && lower.ends_with(".bin") && !lower.contains(".en.")
+    })?;
+    Some((binary, model))
+}
+
+/// Points speech recognition at the installed program when the saved paths are missing.
+pub fn apply_bundled_whisper(db: &mut crate::Database, root: &Path) -> crate::error::AppResult<bool> {
+    let Some((binary, model)) = bundled_speech_paths(root) else {
+        return Ok(false);
+    };
+    let models = db.get_models()?;
+    let Some(whisper) = models.iter().find(|item| item.kind == "whisper") else {
+        return Ok(false);
+    };
+    let ready = Path::new(&whisper.binary_path).is_file() && Path::new(&whisper.model_path).is_file();
+    if ready {
+        return Ok(false);
+    }
+    db.update_model(
+        "whisper",
+        &binary.display().to_string(),
+        &model.display().to_string(),
+    )?;
+    Ok(true)
+}
+
+fn find_named(root: &Path, names: &[&str], depth: usize) -> Option<PathBuf> {
+    find_matching(root, depth, |name| names.iter().any(|wanted| name.eq_ignore_ascii_case(wanted)))
+}
+
+fn find_matching(root: &Path, depth: usize, pred: impl Fn(&str) -> bool + Copy) -> Option<PathBuf> {
+    if depth > 5 || !root.is_dir() {
+        return None;
+    }
+    let entries = fs::read_dir(root).ok()?;
+    let mut dirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(name) = path.file_name().and_then(|item| item.to_str()) {
+                if pred(name) {
+                    return Some(path);
+                }
+            }
+        } else if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    for dir in dirs {
+        if let Some(found) = find_matching(&dir, depth + 1, pred) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn work_dir_for(parent: &Path) -> PathBuf {
     parent.join(format!("speech-{}", uuid::Uuid::new_v4()))
 }
@@ -468,6 +529,27 @@ mod tests {
         assert!(outcome.error_message.contains("Whisper"));
         assert!(runner.calls.lock().unwrap().is_empty());
         assert!(outcome.text.is_empty());
+    }
+
+    #[test]
+    fn bundled_multilingual_model_is_used_when_saved_paths_are_missing() {
+        let dir = std::env::temp_dir().join(format!("study-recall-bundle-{}", uuid::Uuid::new_v4()));
+        let speech = dir.join("nested").join("speech");
+        fs::create_dir_all(&speech).unwrap();
+        let binary = speech.join("whisper-cli.exe");
+        let model = speech.join("ggml-small.bin");
+        fs::write(&binary, b"cli").unwrap();
+        fs::write(&model, b"model").unwrap();
+        fs::write(speech.join("ggml-small.en.bin"), b"english-only").unwrap();
+        let mut db = crate::Database::open(dir.join("study.sqlite")).unwrap();
+        assert!(apply_bundled_whisper(&mut db, &dir).unwrap());
+        let models = db.get_models().unwrap();
+        let whisper = models.iter().find(|item| item.kind == "whisper").unwrap();
+        assert_eq!(whisper.binary_path, binary.display().to_string());
+        assert!(whisper.model_path.ends_with("ggml-small.bin"));
+        assert!(!whisper.model_path.contains(".en."));
+        assert!(!apply_bundled_whisper(&mut db, &dir).unwrap());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

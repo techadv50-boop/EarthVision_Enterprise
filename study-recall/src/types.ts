@@ -373,6 +373,26 @@ export type RevisionTopic = {
   lastSource: string;
 };
 
+export type ImportedTopic = {
+  title: string;
+  body: string;
+};
+
+export type ImportedChapter = {
+  title: string;
+  topics: ImportedTopic[];
+};
+
+export type ImportReport = {
+  chaptersCreated: number;
+  chaptersReused: number;
+  topicsCreated: number;
+  notesSaved: number;
+  notesLeftUnchanged: number;
+  warnings: string[];
+  chapters: ImportedChapter[];
+};
+
 export type BackupEntry = {
   id: string;
   path: string;

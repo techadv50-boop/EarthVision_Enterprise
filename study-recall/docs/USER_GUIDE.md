@@ -14,7 +14,8 @@ Study Recall helps you store what you are studying, say it back from memory, and
 Open My Classes.
 
 - Add a class, then open it and add books.
-- Open a book and add chapters. If a book has no chapters, the empty state tells you to add one.
+- Open a book. You can add chapters one by one, or choose a Word `.docx` file that is already arranged chapter by chapter. Start each chapter with “Chapter 1: …”, “باب”, or Word Heading 1. Start each topic with “Topic: …”, “موضوع”, or Heading 2. The topics are placed on the matching chapter shelves in the open book. A topic that already has notes is left unchanged.
+- If a book has no chapters, the empty state tells you to add one or import a Word file.
 - Open a chapter and add topics.
 - Use Up and Down to reorder. Archive hides an item without deleting it. Delete moves it to Recently deleted, where Settings can restore it.
 - Permanent removal asks you to type DELETE.
@@ -24,12 +25,13 @@ Open a topic to edit it. You will see the class, book, chapter, title, language,
 
 Type or paste the note. You can also:
 
-1. Choose Record voice and allow the microphone.
+1. Choose Record voice and allow the microphone. Speech recognition is already installed with Study Recall.
 2. Pause, resume, or stop. The elapsed time stays visible.
-3. Choose Transcribe voice. This uses whisper.cpp on this computer when a model is configured.
+3. Choose Transcribe voice. The included speech program turns the recording into text on this computer. Nothing is sent to a server.
 4. Correct the transcript. Several recordings can be added to the same note.
-5. Add definitions, facts, keywords, formulas, examples, and expected answer points.
-6. Choose Save topic.
+5. Choose Listen to hear the note with the speaking voice included with Windows. If that voice is missing for Urdu, the text stays on screen.
+6. Add definitions, facts, keywords, formulas, examples, and expected answer points.
+7. Choose Save topic.
 
 A draft is saved while you edit. If you return to an unsaved draft, you can use it or keep the last saved note. Tests use the saved note, not an unsaved draft.
 
@@ -41,7 +43,7 @@ Choose Go for an Oral Test, then a class, book, and chapter.
 
 Start the test. Topics with saved notes are shuffled. A topic is not repeated in the same test. Skipping a topic records it as skipped.
 
-Explain the topic by speaking or typing. Submit the transcript you approve. The score looks at:
+Explain the topic by speaking or typing. Choose Listen to hear the prompt with the Windows speaking voice. Submit the transcript you approve. The score looks at:
 
 - essential concept coverage, 50%
 - factual correctness, 30%

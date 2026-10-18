@@ -13,6 +13,7 @@
 - [x] Create, rename, reorder, archive, soft-delete, restore, and purge classes, books, chapters, and topics
 - [x] Move a topic to another chapter
 - [x] Topic search and counts for notes and tests
+- [x] Word `.docx` import that places chapters and topics onto the open book without replacing saved notes
 - [x] Topic editor with reference text, language direction, and concept items
 - [x] Draft autosave
 - [x] Persistence covered by engine tests
@@ -20,7 +21,8 @@
 ## Phase 3 — Voice
 
 - [x] Microphone capture, pause, resume, stop, and elapsed time
-- [x] Local whisper.cpp transcription command
+- [x] Local whisper.cpp transcription command, bundled into the Windows installer with a multilingual model
+- [x] Listen button using the Windows speaking voice, with a clear message when that voice is missing
 - [x] Explicit unavailable-model message and typed fallback
 - [x] English and Urdu language passed to the model, with English-only models refused for Urdu
 - [x] Transcript editing and segment combining
@@ -62,8 +64,8 @@
 - [x] NSIS installer configuration and Windows build workflow
 - [x] User guide, installation notes, AI limits, and developer notes
 
-## Not bundled in the repository
+## Not stored in git
 
-- [ ] Whisper.cpp binary and GGML model. The student selects these locally. The app explains when they are missing.
+- [x] Whisper.cpp and `ggml-small.bin` are downloaded by the Windows installer workflow and embedded in the setup program. They are not committed.
 - [ ] llama.cpp binary and GGUF model. Descriptive grading uses the labeled rubric until they are selected.
 - [ ] A built `.exe` in git. The Windows workflow builds it. This environment can compile the app, but it cannot produce the NSIS installer.

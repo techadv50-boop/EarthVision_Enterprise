@@ -7,3 +7,6 @@ src-tauri/target/
 *.sqlite-journal
 *.db.bak
 speech-jobs/
+src-tauri/resources/speech/*.exe
+src-tauri/resources/speech/*.dll
+src-tauri/resources/speech/*.bin

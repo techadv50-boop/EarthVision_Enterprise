@@ -244,7 +244,7 @@ export function Settings() {
       <section className="rounded-2xl border border-line bg-card p-5">
         <h2 className="text-xl font-semibold">Offline speech and grading</h2>
         <p className="mt-1 text-sm text-muted">
-          Whisper.cpp and llama.cpp run only if you select a local program and model file. Until then, you can type, and descriptive scores use the labeled approximate rubric.
+          Speech recognition is installed with Study Recall. Record voice, then Transcribe voice. Listening to a prompt uses the speaking voice included with Windows. Descriptive scores stay on the labeled approximate rubric unless a separate grading model is selected below.
         </p>
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input

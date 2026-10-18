@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errorText } from "../api";
 import { Recorder } from "../components/Recorder";
+import { SpeakButton } from "../components/SpeakButton";
 import { Crumbs, Field, Notice, PageHeader, PrimaryButton, QuietButton, inputClass } from "../components/ui";
 import { CONCEPT_KINDS, statusLabel } from "../format";
 import type { Concept, TopicDetail } from "../types";
@@ -136,6 +137,7 @@ export function TopicEditor() {
             placeholder="Type or paste the notes you want to be tested on."
           />
         </Field>
+        <SpeakButton text={text || title} language={language} />
         <Recorder
           language={language}
           onTranscript={(transcript) => {

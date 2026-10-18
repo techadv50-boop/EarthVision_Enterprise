@@ -307,6 +307,16 @@ impl Database {
         self.purge("books", id, confirmation)
     }
 
+    pub fn book_language(&self, book_id: &str) -> AppResult<String> {
+        self.ensure_live("books", book_id, "That book was not found.")?;
+        let language: String = self.conn.query_row(
+            "SELECT language FROM books WHERE id = ?1",
+            params![book_id],
+            |row| row.get(0),
+        )?;
+        Ok(language)
+    }
+
     pub fn list_chapters(&self, book_id: &str, include_archived: bool) -> AppResult<Vec<ChapterSummary>> {
         self.ensure_live("books", book_id, "That book was not found.")?;
         let mut stmt = self.conn.prepare(

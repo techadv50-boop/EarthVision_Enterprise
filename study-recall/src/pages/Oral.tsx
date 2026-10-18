@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, errorText } from "../api";
 import { Recorder } from "../components/Recorder";
+import { SpeakButton } from "../components/SpeakButton";
 import { Crumbs, EmptyState, Notice, PageHeader, PrimaryButton, QuietButton, inputClass } from "../components/ui";
 import { countNoun, formatPercent, statusLabel } from "../format";
 import { useStudent } from "../store";
@@ -165,6 +166,9 @@ function OralSession({ sessionId }: { sessionId: string }) {
           <h2 className="mt-3 text-3xl font-semibold" dir={prompt.textDirection} lang={prompt.language}>
             Explain the topic: {prompt.topicTitle}
           </h2>
+          <div className="mt-3">
+            <SpeakButton text={`Explain the topic: ${prompt.topicTitle}`} language={prompt.language} />
+          </div>
           <div className="mt-5">
             <Recorder
               language={prompt.language}

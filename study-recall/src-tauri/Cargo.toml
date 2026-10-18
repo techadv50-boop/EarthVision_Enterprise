@@ -18,4 +18,5 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 study-core = { path = "../crates/study-core" }
 tauri = { version = "2", features = [] }
+wait-timeout = { workspace = true }
 tauri-plugin-dialog = "2"

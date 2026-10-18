@@ -1,10 +1,10 @@
 # Limits of speech recognition and automated grading
 
-Study Recall never pretends that a missing local model is a cloud service. If whisper.cpp or llama.cpp is not configured, Settings and the transcription result say so, and the rest of the app keeps working.
+Study Recall never pretends that a missing local model is a cloud service. The Windows installer includes whisper.cpp and a multilingual speech model. If those installed files cannot be found, Settings and the transcription result say so, and typing still works. llama.cpp grading stays optional and is never replaced by an online service.
 
 ## Speech to text
 
-- Transcription runs only through a local whisper.cpp program and a model file you select.
+- Transcription runs only through the whisper.cpp program and multilingual model included with the installation. A different local model can be selected in Settings.
 - English and Urdu depend on that model. An English-only model is rejected for Urdu.
 - Tiny and base models are a weak match for Urdu. The app warns you to read the transcript before saving.
 - Recognition mistakes are normal. The transcript is editable, and the saved note is whatever you approve.

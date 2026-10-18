@@ -621,7 +621,7 @@ fn seed_defaults(conn: &Connection, ts: &str) -> AppResult<()> {
          VALUES (?1, 'whisper', '', '', '', 0, ?2, ?3)",
         params![
             new_id(),
-            "Whisper.cpp is not installed. Speech recognition stays on this computer and is unavailable until you choose a local whisper.cpp binary and a model. You can type or paste text instead.",
+            "Speech recognition is included with Study Recall. If this message remains, the installed speech files were not found and you can type or paste text.",
             ts
         ],
     )?;
