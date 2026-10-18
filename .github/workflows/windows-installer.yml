@@ -1,0 +1,57 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "study-recall/**"
+      - ".github/workflows/windows-installer.yml"
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: study-recall
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: study-recall/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: npm test
+      - name: Run study engine tests
+        run: cargo test -p study-core
+      - name: Bundle the included speech tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dest = "src-tauri/resources/speech"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $zip = Join-Path $env:TEMP "whisper-bin-x64.zip"
+          curl.exe -L --fail --retry 5 --retry-delay 5 -o $zip "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip"
+          if ($LASTEXITCODE -ne 0) { throw "The speech program could not be downloaded." }
+          $extract = Join-Path $env:TEMP "whisper-bin"
+          if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $release = Join-Path $extract "Release"
+          $cli = Join-Path $release "whisper-cli.exe"
+          if (-not (Test-Path $cli)) { throw "whisper-cli.exe was not in the speech package." }
+          Copy-Item $cli $dest -Force
+          Get-ChildItem $release -Filter "*.dll" | Copy-Item -Destination $dest -Force
+          $model = Join-Path $dest "ggml-small.bin"
+          curl.exe -L --fail --retry 5 --retry-delay 5 -o $model "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+          if ($LASTEXITCODE -ne 0) { throw "The speech model could not be downloaded." }
+          if ((Get-Item $model).Length -lt 400MB) { throw "The speech model download is incomplete." }
+      - name: Build the NSIS installer
+        run: npx tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: study-recall-windows-installer
+          path: study-recall/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
