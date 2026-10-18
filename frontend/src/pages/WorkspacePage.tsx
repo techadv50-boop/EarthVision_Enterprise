@@ -1826,6 +1826,14 @@ function WorkspacePageInner() {
                     }
                   : undefined
               }
+              onOpenFolderRepoAdmin={
+                isAdmin
+                  ? () => {
+                      setAdminTab('folder-repos');
+                      setAdminOpen(true);
+                    }
+                  : undefined
+              }
             />
           )}
 

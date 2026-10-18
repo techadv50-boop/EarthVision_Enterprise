@@ -1,11 +1,18 @@
 import { useState } from 'react';
-import { FolderTree, Package, Satellite, Shield, Users, X } from 'lucide-react';
+import { FolderOpen, FolderTree, Package, Satellite, Shield, Users, X } from 'lucide-react';
 import { ClientAdminSection } from './ClientAdminSection';
+import { FolderRepoAdminSection } from './FolderRepoAdminSection';
 import { PluginManagerSection } from './PluginManagerSection';
 import { SatelliteAdminSection } from './SatelliteAdminSection';
 import { ToolTreeManagerSection } from './ToolTreeManagerSection';
 
-export type AdminTab = 'clients' | 'satellites' | 'plugins' | 'tool-tree' | 'upload';
+export type AdminTab =
+  | 'clients'
+  | 'satellites'
+  | 'folder-repos'
+  | 'plugins'
+  | 'tool-tree'
+  | 'upload';
 
 interface Props {
   onClose: () => void;
@@ -63,6 +70,19 @@ export function AdminPanel({ onClose, initialTab = 'clients' }: Props) {
           <button
             type="button"
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
+              tab === 'folder-repos'
+                ? 'bg-[var(--accent)] text-white'
+                : 'text-[var(--muted)] hover:bg-[var(--bg)]'
+            }`}
+            onClick={() => setTab('folder-repos')}
+            data-testid="admin-tab-folder-repos"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Folder repositories
+          </button>
+          <button
+            type="button"
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold ${
               tab === 'tool-tree' || tab === 'upload'
                 ? 'bg-[var(--accent)] text-white'
                 : 'text-[var(--muted)] hover:bg-[var(--bg)]'
@@ -88,6 +108,7 @@ export function AdminPanel({ onClose, initialTab = 'clients' }: Props) {
 
         {tab === 'clients' && <ClientAdminSection />}
         {tab === 'satellites' && <SatelliteAdminSection />}
+        {tab === 'folder-repos' && <FolderRepoAdminSection />}
         {(tab === 'tool-tree' || tab === 'upload') && (
           <ToolTreeManagerSection initialMode={tab === 'upload' ? 'upload' : 'tree'} />
         )}

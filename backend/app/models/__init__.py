@@ -2,6 +2,7 @@
 
 from app.models.api_key import ApiKey
 from app.models.bookmark import Bookmark
+from app.models.folder_repository import FolderRepository
 from app.models.project import Project, ProjectStatus
 from app.models.satellite_provider import SatelliteProvider
 from app.models.scene import Scene
@@ -12,6 +13,7 @@ from app.models.user import User, UserRole
 __all__ = [
     "ApiKey",
     "Bookmark",
+    "FolderRepository",
     "PlanTier",
     "Project",
     "ProjectStatus",
