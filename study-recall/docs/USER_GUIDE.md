@@ -14,7 +14,7 @@ Study Recall helps you store what you are studying, say it back from memory, and
 Open My Classes.
 
 - Add a class, then open it and add books.
-- Open a book. You can add chapters one by one, or choose a Word `.docx` file that is already arranged chapter by chapter. Start each chapter with “Chapter 1: …”, “باب”, or Word Heading 1. Start each topic with “Topic: …”, “موضوع”, or Heading 2. The topics are placed on the matching chapter shelves in the open book. A topic that already has notes is left unchanged.
+- Open a book. You can add chapters one by one, or choose a Word `.docx` file that is already arranged chapter by chapter. A line that starts with “Chapter”, “Unit”, “باب”, or Word Heading 1 becomes a chapter. A bold heading on its own line, such as “Capillaries.”, becomes a topic, and the writing under that heading is saved with the topic. “Topic:” and Heading 2 still work as well. The topics are placed on the matching chapter shelves in the open book. A topic that already has notes is left unchanged.
 - If a book has no chapters, the empty state tells you to add one or import a Word file.
 - Open a chapter and add topics.
 - Use Up and Down to reorder. Archive hides an item without deleting it. Delete moves it to Recently deleted, where Settings can restore it.

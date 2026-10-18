@@ -4,7 +4,7 @@ Study Recall is a desktop application for Windows 10 and Windows 11. It does not
 
 ## Install on Windows
 
-1. Download `Study Recall_1.1.0_x64-setup.exe` from the Windows installer workflow artifact, or build it with the commands below.
+1. Download `Study Recall_1.1.1_x64-setup.exe` from the Windows installer workflow artifact, or build it with the commands below.
 2. Run the installer. It installs for the current Windows user.
 3. Open Study Recall from the Start menu.
 4. In Settings, create a student profile. That profile is stored in a local SQLite file.

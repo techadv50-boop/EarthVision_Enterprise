@@ -359,7 +359,7 @@ function Chapters(props: {
       <section className="mt-4 rounded-2xl border border-line bg-card p-4">
         <h2 className="text-lg font-semibold">Import a Word file</h2>
         <p className="mt-1 text-sm text-muted">
-          If the notes are already separated chapter by chapter, choose the .docx file. Start each chapter with “Chapter 1: …” or Word Heading 1, and each topic with “Topic: …” or Heading 2. The file stays on this computer and is placed into this book.
+          If the notes are already separated chapter by chapter, choose the .docx file. A line that starts with “Chapter” or “Unit” becomes a chapter. A bold heading, such as “Capillaries.”, becomes a topic, and the text under it is saved with that topic. The file stays on this computer and is placed into this book.
         </p>
         <div className="mt-3">
           <PrimaryButton disabled={importing} onClick={() => void importWord()}>
