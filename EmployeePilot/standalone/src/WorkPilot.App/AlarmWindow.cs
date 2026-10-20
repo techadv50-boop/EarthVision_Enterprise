@@ -28,8 +28,7 @@ public class AlarmWindow : Window
         _read = read;
         _lockClose = lockClose;
         Title = "Timer";
-        Width = 280;
-        Height = 188;
+        SizeToContent = SizeToContent.WidthAndHeight;
         Topmost = true;
         CanResize = false;
         ShowInTaskbar = !lockClose;
@@ -69,7 +68,7 @@ public class AlarmWindow : Window
         };
         row.Children.Add(_green);
         row.Children.Add(_red);
-        var root = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
+        var root = new StackPanel { Margin = new Thickness(8, 6), Spacing = 2 };
         root.Children.Add(row);
         root.Children.Add(_active);
         root.Children.Add(_idle);
@@ -115,6 +114,7 @@ public class AlarmWindow : Window
             _idle.Text = "Idle  —";
             _idleNow.Text = "Idle now  —";
             _note.Text = _lockClose ? "" : "No employee is signed in.";
+            _note.IsVisible = _note.Text.Length > 0;
             return;
         }
         _active.Text = "Active  " + ReportText.FormatDuration(status.ActiveSeconds);
@@ -124,6 +124,7 @@ public class AlarmWindow : Window
             ? new SolidColorBrush(Color.Parse("#C62828"))
             : Brushes.Black;
         _note.Text = running ? "" : (string.IsNullOrWhiteSpace(status.TimerNote) ? "Timer stopped" : status.TimerNote);
+        _note.IsVisible = _note.Text.Length > 0;
         Title = working ? "Working" : running ? "Not working" : "Timer stopped";
     }
 
@@ -132,7 +133,8 @@ public class AlarmWindow : Window
         var area = Screens?.Primary?.WorkingArea;
         if (area is { } work)
         {
-            Position = new PixelPoint(work.X + Math.Max(0, work.Width - (int)Width - 12), work.Y + 12);
+            var width = double.IsNaN(Width) || Width < 1 ? 240 : Width;
+            Position = new PixelPoint(work.X + Math.Max(0, work.Width - (int)width - 12), work.Y + 12);
         }
         if (_lockClose)
         {
@@ -172,14 +174,14 @@ public class AlarmWindow : Window
 
     private static Border Lamp(string label) => new()
     {
-        Width = 124,
-        Height = 36,
+        Width = 112,
+        Height = 28,
         CornerRadius = new CornerRadius(6),
         Background = new SolidColorBrush(Color.Parse("#D9D9D9")),
         Child = new TextBlock
         {
             Text = label,
-            FontSize = 14,
+            FontSize = 13,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = new SolidColorBrush(Color.Parse("#555555"))
@@ -189,7 +191,7 @@ public class AlarmWindow : Window
     private static TextBlock Line(string name) => new()
     {
         Text = name + "  0 s",
-        FontSize = 16
+        FontSize = 14
     };
 
     private void BeepLoop()
