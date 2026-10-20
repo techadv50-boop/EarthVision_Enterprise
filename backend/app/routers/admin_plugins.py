@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.core.deps import require_roles
@@ -33,8 +33,9 @@ class InstallStagingBody(BaseModel):
     confirm: str = "install"
 
 
-def _err(exc: Exception) -> dict:
-    return {"ok": False, "error": str(exc)}
+def _err(exc: Exception) -> None:
+    """Surface pack/validation failures as HTTP 422 with a readable detail string."""
+    raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("")
@@ -68,7 +69,7 @@ async def upload_plugin(
         staging_id = engine.upload_stream(file.file)
         return {"ok": True, "staging_id": staging_id}
     except (PackOpsError, ValueError, OSError) as exc:
-        return _err(exc)
+        _err(exc)
 
 
 @router.post("/validate-upload")
@@ -81,7 +82,7 @@ async def validate_upload(
         staging_id = engine.upload_stream(file.file)
         return engine.validate_staging(staging_id)
     except (PackOpsError, ValueError, OSError) as exc:
-        return _err(exc)
+        _err(exc)
 
 
 @router.post("/staging/{staging_id}/validate")
@@ -89,7 +90,7 @@ async def validate_staged(staging_id: str, admin: AdminUser) -> dict:
     try:
         return engine.validate_staging(staging_id)
     except (PackOpsError, ValueError, OSError) as exc:
-        return _err(exc)
+        _err(exc)
 
 
 @router.post("/install")
@@ -103,7 +104,7 @@ async def install_plugin(admin: AdminUser, body: InstallStagingBody) -> dict:
             confirm=body.confirm,
         )
     except (PackOpsError, ValueError, OSError) as exc:
-        return _err(exc)
+        _err(exc)
 
 
 @router.post("/{plugin_id}/activate")
@@ -118,7 +119,7 @@ async def activate(plugin_id: str, admin: AdminUser, body: ConfirmBody) -> dict:
             confirm=body.confirm,
         )
     except (PackOpsError, ValueError) as exc:
-        return _err(exc)
+        _err(exc)
 
 
 @router.post("/{plugin_id}/disable")
@@ -130,7 +131,7 @@ async def disable(plugin_id: str, admin: AdminUser, body: ConfirmBody) -> dict:
             confirm=body.confirm,
         )
     except (PackOpsError, ValueError) as exc:
-        return _err(exc)
+        _err(exc)
 
 
 @router.post("/{plugin_id}/rollback")
@@ -145,4 +146,4 @@ async def rollback(plugin_id: str, admin: AdminUser, body: ConfirmBody) -> dict:
             confirm=body.confirm,
         )
     except (PackOpsError, ValueError) as exc:
-        return _err(exc)
+        _err(exc)
