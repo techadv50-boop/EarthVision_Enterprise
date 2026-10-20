@@ -6,7 +6,7 @@
  */
 
 export const PLUGIN_HOST_SDK_PROTOCOL = 1 as const;
-export const PLUGIN_HOST_SDK_VERSION = '1.1.0';
+export const PLUGIN_HOST_SDK_VERSION = '1.2.0';
 
 export type HostSdkMethod =
   | 'host.meta'
@@ -14,7 +14,11 @@ export type HostSdkMethod =
   | 'host.resize'
   | 'host.getAoiBounds'
   | 'host.setAnalysisResult'
-  | 'host.getAnalysisResult';
+  | 'host.getAnalysisResult'
+  | 'host.getSceneContext'
+  | 'host.renderTrueColor'
+  | 'host.exportGeotiff'
+  | 'host.exportMapJpeg';
 
 const ALLOWED_METHODS = new Set<string>([
   'host.meta',
@@ -23,6 +27,10 @@ const ALLOWED_METHODS = new Set<string>([
   'host.getAoiBounds',
   'host.setAnalysisResult',
   'host.getAnalysisResult',
+  'host.getSceneContext',
+  'host.renderTrueColor',
+  'host.exportGeotiff',
+  'host.exportMapJpeg',
 ]);
 
 const FORBIDDEN_METHODS = new Set<string>([

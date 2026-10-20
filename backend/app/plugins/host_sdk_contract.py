@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 # Semver for the plugin frontend Host SDK (postMessage).
-PLUGIN_HOST_SDK_VERSION = "1.1.0"
+PLUGIN_HOST_SDK_VERSION = "1.2.0"
 PLUGIN_HOST_SDK_PROTOCOL = 1
 
 HOST_SDK_METHODS: dict[str, str] = {
@@ -22,6 +22,11 @@ HOST_SDK_METHODS: dict[str, str] = {
     "host.getAoiBounds": "host.sdk.read_aoi",
     "host.setAnalysisResult": "host.sdk.set_analysis_result",
     "host.getAnalysisResult": "host.sdk.read_analysis_result",
+    # Optical true-color plugin (Host Shell fulfills; bridge echoes / gates only)
+    "host.getSceneContext": "host.sdk.read_scene",
+    "host.renderTrueColor": "host.sdk.render_true_color",
+    "host.exportGeotiff": "host.sdk.export_geotiff",
+    "host.exportMapJpeg": "host.sdk.export_map_jpeg",
 }
 
 FORBIDDEN_HOST_SDK_METHODS = frozenset(

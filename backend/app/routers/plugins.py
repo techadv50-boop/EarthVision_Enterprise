@@ -197,6 +197,24 @@ async def plugin_host_sdk_bridge(
         elif method == "host.getAnalysisResult":
             stored = load_analysis_result(plugin_id)
             result = stored or {"result": None}
+        elif method == "host.getSceneContext":
+            # Host Shell fulfills with live scene; bridge may echo forwarded snapshot.
+            scene = envelope["params"].get("scene")
+            if scene is None:
+                result = {"scene": None, "source": "host", "note": "host_shell_fulfills"}
+            elif not isinstance(scene, dict):
+                raise HostSdkError("scene must be an object or null")
+            else:
+                result = {"scene": scene, "source": "host"}
+        elif method in {
+            "host.renderTrueColor",
+            "host.exportGeotiff",
+            "host.exportMapJpeg",
+        }:
+            # Authenticated side-effects run in the Host Shell (map DOM / session APIs).
+            raise HostSdkError(
+                f"{method} must be fulfilled by Host Shell (not HTTP bridge)"
+            )
         else:
             raise HostSdkError(f"unhandled method: {method}")
 

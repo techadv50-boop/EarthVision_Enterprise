@@ -14,6 +14,11 @@ import { AdminPanel, type AdminTab } from '../components/admin/AdminPanel';
 import { PluginAnalysisResultsHost } from '../plugins/PluginAnalysisResultsHost';
 import { PluginHostProvider, usePluginHost } from '../plugins/PluginHostContext';
 import { PluginSlotHost } from '../plugins/PluginSlotHost';
+import {
+  normalizeSatelliteFamily,
+  opticalProcessingBlockReason as pluginOpticalBlockReason,
+  trueColorBandRecipe,
+} from '../plugins/trueColorBands';
 import type { ToolPlacementNode } from '../services/toolTreeService';
 import { toolTreeService } from '../services/toolTreeService';
 import { useAuthStore } from '../store/authStore';
@@ -65,6 +70,7 @@ function sceneBounds(
 
 /** Sensors with no optical Image Processing pipeline in this app. */
 function opticalProcessingBlockReason(collection?: string | null): string | null {
+  // Soft gate used by legacy toolbox ops — allow unknown optical collections through.
   const c = (collection || '').toUpperCase().replace(/_/g, '-');
   if (!c) return null;
   if (c.includes('SENTINEL-1') || c.startsWith('S1')) {
@@ -158,7 +164,7 @@ const CHANGE_INDEX: Record<string, IndexName> = {
 function WorkspacePageInner() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const { setAoiBounds } = usePluginHost();
+  const { setAoiBounds, setSceneContext, setImageryHandlers } = usePluginHost();
   const mapHostRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [toolLoading, setToolLoading] = useState(false);
@@ -377,6 +383,55 @@ function WorkspacePageInner() {
       setAoiBounds(null);
     }
   }, [aoiGeoJson, drawnFeature, place?.bbox, setAoiBounds]);
+
+  // Host SDK scene context — optical band recipes (OSINT) for sandboxed plugins
+  useEffect(() => {
+    if (!focusScene) {
+      setSceneContext({
+        scene_id: null,
+        collection: null,
+        family: null,
+        label: null,
+        optical_ok: false,
+        optical_block_reason: 'Select an optical satellite scene first (eye icon).',
+        bounds: null,
+        band_recipe: null,
+        has_true_color_overlay: false,
+      });
+      return;
+    }
+    const collection = focusScene.collection || null;
+    const family = normalizeSatelliteFamily(collection);
+    const block =
+      pluginOpticalBlockReason(collection) ||
+      opticalProcessingBlockReason(collection);
+    const sceneOverlay = overlays.find(
+      (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+    );
+    const bounds = (sceneOverlay?.bounds ?? sceneBounds(focusScene, place)) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    const hasTc = overlays.some(
+      (o) =>
+        o.visible !== false &&
+        (o.id === 'composite-true_color' ||
+          (o.kind === 'composite' && /true\s*color/i.test(o.label || ''))),
+    );
+    setSceneContext({
+      scene_id: focusScene.id,
+      collection,
+      family,
+      label: focusScene.id,
+      optical_ok: !block,
+      optical_block_reason: block,
+      bounds,
+      band_recipe: trueColorBandRecipe(collection),
+      has_true_color_overlay: hasTc,
+    });
+  }, [focusScene, overlays, place, setSceneContext]);
 
   const satelliteActive = Boolean(catalogFilters.satelliteId);
 
@@ -1455,6 +1510,201 @@ function WorkspacePageInner() {
       setToolStatus(null);
     }
   };
+
+  // Host SDK imagery actions for optical_true_color (and future optical plugins)
+  useEffect(() => {
+    setImageryHandlers({
+      renderTrueColor: async () => {
+        if (!focusScene) {
+          throw new Error('Select an optical satellite scene first (eye icon).');
+        }
+        const blocked =
+          pluginOpticalBlockReason(focusScene.collection) ||
+          opticalProcessingBlockReason(focusScene.collection);
+        if (blocked) {
+          throw new Error(blocked);
+        }
+        const recipe = trueColorBandRecipe(focusScene.collection);
+        setToolLoading(true);
+        setActiveToolId('composite-true_color');
+        setToolStatus('Rendering true color composite…');
+        setError(null);
+        try {
+          const sceneOverlay = overlays.find(
+            (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+          );
+          const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+          const result = await compositeService.render({
+            preset: 'true_color',
+            scene_id: focusScene.id,
+            collection: focusScene.collection,
+            bbox: [...bounds],
+            p_low: 2,
+            p_high: 98,
+            gamma: 1.0,
+            brightness: 1.0,
+            contrast: 1.0,
+          });
+          setCompositeResult(result);
+          setLastLegend((result.legend as LegendInfo | null) ?? null);
+          setLastMessage(
+            `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
+          );
+          const store = useWorkflowStore.getState();
+          const opacity = store.layerOpacity;
+          for (const o of store.overlays) {
+            if (o.sceneId !== focusScene.id) continue;
+            if (
+              o.kind === 'scene' ||
+              o.kind === 'composite' ||
+              o.id.startsWith('composite-')
+            ) {
+              if (o.visible !== false) {
+                store.setOverlayVisible(o.id, false);
+              }
+            }
+          }
+          const fp =
+            (result.footprint as GeoJSON.Polygon | null | undefined) ??
+            sceneOverlay?.footprint ??
+            null;
+          upsertOverlay({
+            id: 'composite-true_color',
+            kind: 'composite',
+            sceneId: focusScene.id,
+            url: compositeService.toDataUrl(result.overlay_base64),
+            bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+            footprint: fp,
+            opacity,
+            label: result.label,
+            visible: true,
+          });
+          return {
+            ok: true,
+            preset: 'true_color',
+            label: result.label,
+            formula: result.formula,
+            band_recipe: recipe,
+            message: result.message || result.formula,
+            bounds: result.bounds,
+          };
+        } finally {
+          setToolLoading(false);
+          setToolStatus(null);
+        }
+      },
+      exportGeotiff: async () => {
+        if (!focusScene) {
+          throw new Error('Select an optical satellite scene first (eye icon).');
+        }
+        const blocked =
+          pluginOpticalBlockReason(focusScene.collection) ||
+          opticalProcessingBlockReason(focusScene.collection);
+        if (blocked) {
+          throw new Error(blocked);
+        }
+        const store = useWorkflowStore.getState();
+        let layer = store.overlays.find(
+          (o) => o.id === 'composite-true_color' && o.visible !== false,
+        );
+        if (!layer?.url) {
+          // Regenerate then export
+          const sceneOverlay = store.overlays.find(
+            (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+          );
+          const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+          const result = await compositeService.render({
+            preset: 'true_color',
+            scene_id: focusScene.id,
+            collection: focusScene.collection,
+            bbox: [...bounds],
+            p_low: 2,
+            p_high: 98,
+            gamma: 1.0,
+            brightness: 1.0,
+            contrast: 1.0,
+          });
+          setCompositeResult(result);
+          upsertOverlay({
+            id: 'composite-true_color',
+            kind: 'composite',
+            sceneId: focusScene.id,
+            url: compositeService.toDataUrl(result.overlay_base64),
+            bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+            footprint:
+              (result.footprint as GeoJSON.Polygon | null | undefined) ??
+              sceneOverlay?.footprint ??
+              null,
+            opacity: store.layerOpacity,
+            label: result.label,
+            visible: true,
+          });
+          layer = useWorkflowStore
+            .getState()
+            .overlays.find((o) => o.id === 'composite-true_color');
+        }
+        if (!layer?.url) {
+          throw new Error('True color overlay not available for GeoTIFF export');
+        }
+        const overlay_base64 = await compositeService.overlayUrlToBase64(layer.url);
+        const filename = `True_Color_${focusScene.id}.tif`;
+        await compositeService.downloadGeotiff({
+          bounds: [...layer.bounds],
+          filename,
+          overlay_base64,
+          procedure: 'composite',
+          preset: 'true_color',
+          scene_id: focusScene.id,
+        });
+        setLastMessage(`Downloaded GeoTIFF · True Color`);
+        return { ok: true, filename, format: 'geotiff' };
+      },
+      exportMapJpeg: async ({ dpi = 300, title }) => {
+        const host = mapHostRef.current;
+        if (!host) {
+          throw new Error('Map host not ready');
+        }
+        // Ensure north arrow + scale bar chrome for map export
+        const chrome = useWorkflowStore.getState().mapChrome;
+        useWorkflowStore.setState({
+          mapChrome: { ...chrome, scaleBar: true, compass: true, grid: true },
+        });
+        // Allow chrome to paint
+        await new Promise((r) => setTimeout(r, 120));
+        const mapElement =
+          (host.querySelector('.leaflet-container') as HTMLElement | null) || host;
+        const legend =
+          lastLegend || changeResult?.legend || indexResult?.legend || null;
+        const safeName = (place?.name || 'map').replace(/\W+/g, '_').slice(0, 40);
+        const filename = `sateye-truecolor-${safeName}-${dpi}dpi.jpg`;
+        setExporting(true);
+        try {
+          await exportMapJpeg({
+            mapElement,
+            title: title || 'SAT EYE True Color Map',
+            placeName: place?.name,
+            legend,
+            filename,
+            dpi,
+          });
+        } finally {
+          setExporting(false);
+        }
+        setLastMessage(`Exported map JPEG · ${dpi} DPI`);
+        return { ok: true, filename, dpi, format: 'jpeg' };
+      },
+    });
+    return () => setImageryHandlers(null);
+  }, [
+    focusScene,
+    overlays,
+    place,
+    lastLegend,
+    changeResult,
+    indexResult,
+    setImageryHandlers,
+    upsertOverlay,
+  ]);
 
   const deactivateTool = useCallback(
     (tool: ToolboxTool) => {
