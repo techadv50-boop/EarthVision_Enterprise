@@ -133,6 +133,19 @@ public static class DayLedger
     }
 }
 
+public static class ScreenFrame
+{
+    public static (int Width, int Height) Fit(int width, int height, int maxEdge)
+    {
+        if (width <= maxEdge && height <= maxEdge)
+        {
+            return (Math.Max(1, width), Math.Max(1, height));
+        }
+        var scale = Math.Min(maxEdge / (double)Math.Max(1, width), maxEdge / (double)Math.Max(1, height));
+        return (Math.Max(1, (int)Math.Round(width * scale)), Math.Max(1, (int)Math.Round(height * scale)));
+    }
+}
+
 public static class FolderAccess
 {
     public static readonly string[] BuiltIn = { "Desktop", "Documents", "Downloads" };

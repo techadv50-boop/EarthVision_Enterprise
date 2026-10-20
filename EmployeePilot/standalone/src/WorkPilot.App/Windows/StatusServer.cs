@@ -27,17 +27,7 @@ public static class StatusServer
             while (true)
             {
                 var context = listener.GetContext();
-                var path = context.Request.Url?.AbsolutePath ?? "/";
-                var body = path.Equals("/status", StringComparison.OrdinalIgnoreCase)
-                    ? JsonSerializer.Serialize(LiveBoard.ReadLocal(), PilotConfigStore.Json)
-                    : Page();
-                var bytes = Encoding.UTF8.GetBytes(body);
-                context.Response.ContentType = path.Equals("/status", StringComparison.OrdinalIgnoreCase)
-                    ? "application/json"
-                    : "text/html; charset=utf-8";
-                context.Response.ContentLength64 = bytes.Length;
-                context.Response.OutputStream.Write(bytes, 0, bytes.Length);
-                context.Response.Close();
+                ThreadPool.QueueUserWorkItem(_ => Serve(context));
             }
         }
         catch (Exception ex)
@@ -54,6 +44,51 @@ public static class StatusServer
         }
     }
 
+    private static void Serve(HttpListenerContext context)
+    {
+        try
+        {
+            var path = context.Request.Url?.AbsolutePath ?? "/";
+            if (path.Equals("/screen.jpg", StringComparison.OrdinalIgnoreCase))
+            {
+                var jpeg = ScreenGrab.Current();
+                if (jpeg is null)
+                {
+                    context.Response.StatusCode = 503;
+                    context.Response.Close();
+                    return;
+                }
+                context.Response.ContentType = "image/jpeg";
+                context.Response.Headers["Cache-Control"] = "no-store";
+                context.Response.ContentLength64 = jpeg.Length;
+                context.Response.OutputStream.Write(jpeg, 0, jpeg.Length);
+                context.Response.Close();
+                return;
+            }
+            var body = path.Equals("/status", StringComparison.OrdinalIgnoreCase)
+                ? JsonSerializer.Serialize(LiveBoard.ReadLocal(), PilotConfigStore.Json)
+                : Page();
+            var bytes = Encoding.UTF8.GetBytes(body);
+            context.Response.ContentType = path.Equals("/status", StringComparison.OrdinalIgnoreCase)
+                ? "application/json"
+                : "text/html; charset=utf-8";
+            context.Response.ContentLength64 = bytes.Length;
+            context.Response.OutputStream.Write(bytes, 0, bytes.Length);
+            context.Response.Close();
+        }
+        catch
+        {
+            try
+            {
+                context.Response.Abort();
+            }
+            catch
+            {
+                // The browser will request the next frame.
+            }
+        }
+    }
+
     private static string Page() => """
 <!DOCTYPE html>
 <html lang="en">
@@ -61,10 +96,11 @@ public static class StatusServer
 <meta charset="utf-8">
 <title>Employee activity</title>
 <style>
-body { font-family: Segoe UI, sans-serif; margin: 2rem; }
-.row { display: flex; gap: 1rem; }
-button { font-size: 1.4rem; min-width: 12rem; min-height: 4.5rem; border: 0; border-radius: 8px; }
-#detail { margin-top: 1.2rem; font-size: 1.05rem; }
+body { font-family: Segoe UI, sans-serif; margin: 1rem; background: #101410; color: #f4f7f5; }
+.row { display: flex; gap: 0.6rem; align-items: center; }
+button { font-size: 1rem; min-width: 8rem; min-height: 2.4rem; border: 0; border-radius: 8px; }
+#detail { margin: 0.6rem 0 0.8rem; font-size: 1rem; white-space: pre-wrap; }
+#live { width: 100%; max-height: calc(100vh - 9rem); object-fit: contain; background: #000; border-radius: 8px; display: block; }
 </style>
 </head>
 <body>
@@ -74,6 +110,7 @@ button { font-size: 1.4rem; min-width: 12rem; min-height: 4.5rem; border: 0; bor
 <button id="red" type="button">Not working</button>
 </div>
 <pre id="detail">Waiting for the employee.</pre>
+<img id="live" alt="Live employee screen">
 <script>
 let audio;
 document.body.addEventListener("click", () => { audio = audio || new AudioContext(); }, { once: true });
@@ -114,8 +151,16 @@ async function tick() {
     document.getElementById("detail").textContent = "Cannot reach the work computer.";
   }
 }
+function frame() {
+  const live = document.getElementById("live");
+  const next = new Image();
+  next.onload = () => { live.src = next.src; };
+  next.src = "/screen.jpg?t=" + Date.now();
+}
 setInterval(tick, 1200);
+setInterval(frame, 350);
 tick();
+frame();
 </script>
 </body>
 </html>

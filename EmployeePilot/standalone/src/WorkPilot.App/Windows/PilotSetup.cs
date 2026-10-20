@@ -20,10 +20,11 @@ What is recorded
 - The program in front of you, and the window title
 - Whether the mouse and keyboard are being used
 - Idle time, including a locked screen
+- The live screen, which the administrator can watch while you are signed in
 
 What is not recorded
 - Keys you type
-- Screenshots
+- Saved pictures of the screen
 - Passwords
 - Clipboard contents
 - The webcam or microphone

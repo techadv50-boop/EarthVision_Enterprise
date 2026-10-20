@@ -152,4 +152,11 @@ public class ActivitySignalTests
         Assert.NotEqual(0, view & (1 << 3));
         Assert.True(FolderAccess.AllowsProfileFolder(new[] { "Documents" }));
     }
+
+    [Fact]
+    public void LivePictureFitsInsideTheWatchPage()
+    {
+        Assert.Equal((1280, 720), ScreenFrame.Fit(1920, 1080, 1280));
+        Assert.Equal((800, 600), ScreenFrame.Fit(800, 600, 1280));
+    }
 }
