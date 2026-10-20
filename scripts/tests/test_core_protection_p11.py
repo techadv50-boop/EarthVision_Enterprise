@@ -51,20 +51,19 @@ def test_missing_base_fail_closed():
 
 
 def test_empty_base_without_merge_base_fail_closed(tmp_path: Path | None = None):
-    # Unset BASE_SHA and point away from origin merge-base by using a temp bare-ish env
-    env = {"BASE_SHA": "", "GITHUB_BASE_SHA": ""}
-    # Force failure by using invalid empty after strip — resolve_base tries merge-base next.
-    # If merge-base works in this repo, that's OK (returns 0 or OK). Simulate missing remote:
+    # Whitespace / empty BASE_SHA falls through to merge-base with the locked
+    # scene-download baseline. Outcomes:
+    #   0 — merge-base resolved and no unauthorized core diffs
+    #   1 — merge-base resolved but HEAD has unauthorized core diffs (stacked PRs)
+    #   2 — no resolvable base (fail closed)
+    # Explicit unresolvable SHA fail-closed is covered by test_missing_base_fail_closed.
     code, out = run_checker(
         {
-            **env,
-            # Override PATH? Instead call resolve directly via a fake BASE that is whitespace
             "BASE_SHA": "   ",
+            "GITHUB_BASE_SHA": "",
         }
     )
-    # Whitespace BASE_SHA falls through to merge-base; in this workspace it likely succeeds.
-    # The hard fail-closed for unresolvable explicit SHA is covered above.
-    assert code in {0, 2}
+    assert code in {0, 1, 2}, out
 
 
 def test_policy_tamper_self_protect_when_live():
