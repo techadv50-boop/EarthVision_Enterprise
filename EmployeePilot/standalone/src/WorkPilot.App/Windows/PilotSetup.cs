@@ -275,12 +275,65 @@ The administrator receives a report after you sign out.
         }
         Directory.CreateDirectory(PilotPaths.Root);
         var destination = Path.GetFullPath(PilotPaths.Exe);
-        if (string.Equals(Path.GetFullPath(source), destination, StringComparison.OrdinalIgnoreCase))
+        var fullSource = Path.GetFullPath(source);
+        if (string.Equals(fullSource, destination, StringComparison.OrdinalIgnoreCase))
         {
             return "";
         }
-        File.Copy(source, destination, true);
+        var sourceInfo = new FileInfo(fullSource);
+        var destinationInfo = new FileInfo(destination);
+        var sameFile = destinationInfo.Exists
+            && destinationInfo.Length == sourceInfo.Length
+            && destinationInfo.LastWriteTimeUtc >= sourceInfo.LastWriteTimeUtc;
+        if (sameFile)
+        {
+            return "";
+        }
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        if (config is not null && !string.Equals(config.UserName, Environment.UserName, StringComparison.OrdinalIgnoreCase))
+        {
+            WindowsCommand.Run(WindowsCommand.SystemTool("taskkill.exe"), "/F", "/FI", "USERNAME eq " + config.UserName, "/IM", "WorkPilot.exe");
+            Thread.Sleep(500);
+        }
+        IOException? locked = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                File.Copy(fullSource, destination, true);
+                locked = null;
+                break;
+            }
+            catch (IOException ex)
+            {
+                locked = ex;
+                Thread.Sleep(500);
+            }
+        }
+        if (locked is not null)
+        {
+            throw locked;
+        }
+        if (config is not null)
+        {
+            WindowsCommand.Run(WindowsCommand.SystemTool("schtasks.exe"), "/Run", "/TN", PilotPaths.TrackerTask);
+        }
         return destination;
+    }
+
+    public static void WriteTimerCommand(string action)
+    {
+        if (action is not ("stop" or "reset"))
+        {
+            throw new InvalidOperationException("The timer command was not recognised.");
+        }
+        var config = RequiredConfig();
+        Directory.CreateDirectory(PilotPaths.CommandDirectory);
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/inheritance:r");
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/grant:r", "BUILTIN\\Administrators:(OI)(CI)F");
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)F");
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/grant:r", $"{config.UserName}:(OI)(CI)RX");
+        File.WriteAllText(PilotPaths.CommandFile, TimerCommand.Format(action, DateTime.UtcNow));
     }
 
     private static PilotConfig RequiredConfig() =>

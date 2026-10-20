@@ -73,6 +73,9 @@ public sealed class LiveStatus
     public int ActiveSeconds { get; set; }
     public int SessionIdleSeconds { get; set; }
     public string RecentLog { get; set; } = "";
+    public bool TimerRunning { get; set; } = true;
+    public string TimerNote { get; set; } = "";
+    public string ReportToken { get; set; } = "";
 }
 
 public static class SessionClock

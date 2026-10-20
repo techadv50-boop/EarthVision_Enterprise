@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -75,6 +76,10 @@ public static class SessionTracker
         var nextJournal = DateTime.UtcNow;
         var nextConfig = DateTime.UtcNow;
         var startedLocal = sessionStarted.ToLocalTime().ToString("h:mm tt");
+        var clock = new TimerControl();
+        var appliedCommand = default(DateTime);
+        DateTime? disconnectedSince = null;
+        var reportToken = "";
         while (true)
         {
             try
@@ -94,13 +99,51 @@ public static class SessionTracker
                 var locked = sample.Locked;
                 var working = ActivitySignal.IsWorking(idle, locked, alarmAfter);
                 var now = DateTime.UtcNow;
+                var disconnected = Native.IsSessionDisconnected();
+                if (disconnected)
+                {
+                    disconnectedSince ??= now;
+                }
+                else
+                {
+                    disconnectedSince = null;
+                }
+                var sessionConnected = disconnectedSince is null || (now - disconnectedSince.Value).TotalSeconds < 15;
+                var command = ReadCommand(ref appliedCommand);
+                clock.Tick(sessionConnected, command);
+                if ((clock.Running && !clock.BeginSession) || clock.ReportDue)
+                {
+                    if (clock.ReportDue || now >= nextJournal)
+                    {
+                        File.AppendAllText(sessionFile, sample.Line + Environment.NewLine);
+                        nextJournal = now.AddSeconds(poll);
+                    }
+                }
+                if (clock.ReportDue)
+                {
+                    reportToken = sessionId + "-" + now.Ticks;
+                    WriteReport();
+                }
+                if (clock.BeginSession)
+                {
+                    sessionId = now.ToLocalTime().ToString("yyyyMMdd-HHmmss");
+                    sessionFile = Path.Combine(PilotPaths.Journal, $"{config.UserName}-{sessionId}.jsonl");
+                    sessionStarted = now;
+                    startedLocal = sessionStarted.ToLocalTime().ToString("h:mm tt");
+                    activeSeconds = 0;
+                    idleSeconds = 0;
+                    clicks = 0;
+                    countedUntil = now;
+                    recent.Clear();
+                    lastLine = "";
+                }
                 var elapsed = (int)(now - countedUntil).TotalSeconds;
-                if (elapsed > 0)
+                if (clock.Running && elapsed > 0)
                 {
                     SessionClock.Add(ref activeSeconds, ref idleSeconds, working, elapsed);
                     countedUntil = countedUntil.AddSeconds(elapsed);
                 }
-                _localBeep = working ? 0 : 1;
+                _localBeep = clock.Running && !working ? 1 : 0;
                 var line = $"{now.ToLocalTime():h:mm tt}  {(working ? "Working" : "Not working")}  {sample.Process}  {sample.Title}";
                 if (!string.Equals(line, lastLine, StringComparison.Ordinal))
                 {
@@ -126,19 +169,58 @@ public static class SessionTracker
                     StartedLocal = startedLocal,
                     ActiveSeconds = activeSeconds,
                     SessionIdleSeconds = idleSeconds,
-                    RecentLog = string.Join("\n", recent)
+                    RecentLog = string.Join("\n", recent),
+                    TimerRunning = clock.Running,
+                    TimerNote = clock.Note,
+                    ReportToken = reportToken
                 });
-                if (DateTime.UtcNow >= nextJournal)
-                {
-                    File.AppendAllText(sessionFile, sample.Line + Environment.NewLine);
-                    nextJournal = DateTime.UtcNow.AddSeconds(poll);
-                }
             }
             catch (Exception ex)
             {
                 Log(ex.Message);
             }
             Thread.Sleep(250);
+        }
+    }
+
+    private static string? ReadCommand(ref DateTime appliedUtc)
+    {
+        try
+        {
+            if (!File.Exists(PilotPaths.CommandFile))
+            {
+                return null;
+            }
+            using var stream = new FileStream(PilotPaths.CommandFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            var text = reader.ReadToEnd();
+            if (!TimerCommand.TryParse(text, out var action, out var issued) || issued == appliedUtc)
+            {
+                return null;
+            }
+            appliedUtc = issued;
+            return action;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void WriteReport()
+    {
+        try
+        {
+            var config = PilotConfigStore.Load(PilotPaths.Config);
+            if (config is null)
+            {
+                return;
+            }
+            ReportFiles.WriteRecent(PilotPaths.Journal, PilotPaths.Reports, config, Environment.MachineName);
+        }
+        catch (Exception ex)
+        {
+            Log(ex.Message);
         }
     }
 
@@ -223,6 +305,30 @@ public static class SessionTracker
             return buffer.ToString();
         }
 
+        public static bool IsSessionDisconnected()
+        {
+            try
+            {
+                var sessionId = Process.GetCurrentProcess().SessionId;
+                if (!WTSQuerySessionInformation(IntPtr.Zero, sessionId, 8, out var buffer, out _))
+                {
+                    return false;
+                }
+                try
+                {
+                    return Marshal.ReadInt32(buffer) == 4;
+                }
+                finally
+                {
+                    WTSFreeMemory(buffer);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static string ForegroundProcessName()
         {
             var hwnd = GetForegroundWindow();
@@ -287,5 +393,11 @@ public static class SessionTracker
 
         [DllImport("kernel32.dll")]
         private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        private static extern bool WTSQuerySessionInformation(IntPtr server, int sessionId, int infoClass, out IntPtr buffer, out int bytes);
+
+        [DllImport("wtsapi32.dll")]
+        private static extern void WTSFreeMemory(IntPtr memory);
     }
 }

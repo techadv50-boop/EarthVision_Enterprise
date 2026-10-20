@@ -91,11 +91,12 @@ async function tick() {
   try {
     const status = await fetch("/status").then(response => response.json());
     const fresh = status.sessionOpen && (Date.now() - Date.parse(status.updatedUtc)) < 15000;
-    const working = fresh && status.working;
+    const running = fresh && status.timerRunning !== false;
+    const working = running && status.working;
     document.getElementById("green").style.background = working ? "#148F3E" : "#D9D9D9";
     document.getElementById("green").style.color = working ? "#fff" : "#666";
-    document.getElementById("red").style.background = fresh && !status.working ? "#C62828" : "#D9D9D9";
-    document.getElementById("red").style.color = fresh && !status.working ? "#fff" : "#666";
+    document.getElementById("red").style.background = running && !status.working ? "#C62828" : "#D9D9D9";
+    document.getElementById("red").style.color = running && !status.working ? "#fff" : "#666";
     function duration(seconds) {
       seconds = seconds || 0;
       const hours = Math.floor(seconds / 3600);
@@ -106,9 +107,9 @@ async function tick() {
       return rest + " s";
     }
     document.getElementById("detail").textContent = fresh
-      ? "Started " + (status.startedLocal || "") + "\nTime worked " + duration(status.activeSeconds) + "\nTime idle " + duration(status.sessionIdleSeconds) + "\n" + (status.program || "") + " — " + (status.title || "") + "\nClicks " + status.clickCount + "\n\n" + (status.recentLog || "")
+      ? (status.timerRunning === false ? "Timer stopped\n" : "") + (status.timerNote ? status.timerNote + "\n" : "") + "Started " + (status.startedLocal || "") + "\nTime worked " + duration(status.activeSeconds) + "\nTime idle " + duration(status.sessionIdleSeconds) + "\n" + (status.program || "") + " — " + (status.title || "") + "\nClicks " + status.clickCount + "\n\n" + (status.recentLog || "")
       : "No employee is signed in.";
-    if (fresh && !status.working) beep();
+    if (running && !status.working) beep();
   } catch (error) {
     document.getElementById("detail").textContent = "Cannot reach the work computer.";
   }

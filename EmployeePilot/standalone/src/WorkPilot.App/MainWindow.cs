@@ -31,6 +31,7 @@ public class MainWindow : Window
     private readonly List<string> _extraPrograms = new();
     private volatile int _beeping;
     private int _busy;
+    private string _reportToken = "";
 
     public MainWindow()
     {
@@ -56,7 +57,7 @@ public class MainWindow : Window
         root.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(230)));
         root.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
         root.RowDefinitions.Add(new RowDefinition(GridLength.Star));
-        root.RowDefinitions.Add(new RowDefinition(new GridLength(120)));
+        root.RowDefinitions.Add(new RowDefinition(new GridLength(188)));
         var side = new StackPanel { Spacing = 6, Margin = new Avalonia.Thickness(16) };
         side.Children.Add(new TextBlock { Text = "WorkPilot", FontSize = 22, FontWeight = FontWeight.SemiBold, Margin = new Avalonia.Thickness(8, 8, 8, 16) });
         AddNav(side, "Live activity", () => ShowPage("Live activity", LivePage()));
@@ -89,11 +90,28 @@ public class MainWindow : Window
         var words = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         words.Children.Add(_liveState);
         words.Children.Add(_liveDetail);
-        var row = new Grid { ColumnDefinitions = { new ColumnDefinition(GridLength.Auto), new ColumnDefinition(GridLength.Star) } };
+        var actions = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        var stopTimer = new Button { Content = "Stop timer", MinWidth = 120, MinHeight = 40 };
+        var resetTimer = new Button { Content = "Reset timer", MinWidth = 120, MinHeight = 40 };
+        stopTimer.Click += (_, _) => SendTimer("stop");
+        resetTimer.Click += (_, _) => SendTimer("reset");
+        actions.Children.Add(stopTimer);
+        actions.Children.Add(resetTimer);
+        var row = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto)
+            }
+        };
         Grid.SetColumn(words, 1);
-        words.Margin = new Avalonia.Thickness(16, 0, 0, 0);
+        Grid.SetColumn(actions, 2);
+        words.Margin = new Avalonia.Thickness(16, 0, 16, 0);
         row.Children.Add(lamps);
         row.Children.Add(words);
+        row.Children.Add(actions);
         return new Border
         {
             Background = new SolidColorBrush(Color.Parse("#16382C")),
@@ -132,7 +150,7 @@ public class MainWindow : Window
 
     private Control LivePage()
     {
-        var page = Page("Live activity", "The employee sees this same green and red window on the desktop, with time worked and time idle. The bar at the bottom of your window shows that record while the employee is signed in. Red means they stopped, and this computer beeps.");
+        var page = Page("Live activity", "The employee sees this same timer on their desktop, and it stays open. This bar is your copy. Stop timer freezes the numbers and saves the report. Reset timer saves the report and starts again from zero. If the employee disconnects, the timer stops after 15 seconds and the report is saved. The next connection starts a new timer.");
         page.Children.Add(new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
@@ -379,10 +397,12 @@ public class MainWindow : Window
     private void ApplyLive(LiveStatus status)
     {
         var fresh = LiveBoard.IsFresh(status);
-        var working = fresh && status.Working;
+        var running = fresh && status.TimerRunning;
+        var working = running && status.Working;
         Paint(_green, working, "#148F3E");
-        Paint(_red, fresh && !status.Working, "#C62828");
-        _beeping = fresh && !status.Working ? 1 : 0;
+        Paint(_red, running && !status.Working, "#C62828");
+        _beeping = running && !status.Working ? 1 : 0;
+        SaveReportIfNeeded(status);
         if (!fresh)
         {
             _liveState.Text = "No employee is signed in.";
@@ -399,8 +419,48 @@ public class MainWindow : Window
                 : "not recorded yet";
         var place = IsBrowser(status.Program ?? "") ? "Site" : "Window";
         var project = string.IsNullOrWhiteSpace(status.Title) ? "No project title yet" : status.Title;
-        _liveState.Text = working ? "Working" : "Not working";
-        _liveDetail.Text = $"Started {started}    Time worked {ReportText.FormatDuration(status.ActiveSeconds)}    Time idle {ReportText.FormatDuration(status.SessionIdleSeconds)}\nProgram: {status.Program}    {place}: {project}\nTime on computer {elapsed}    Clicks {status.ClickCount}";
+        var note = string.IsNullOrWhiteSpace(status.TimerNote) ? "" : status.TimerNote + "\n";
+        _liveState.Text = running ? (working ? "Working" : "Not working") : "Timer stopped";
+        _liveDetail.Text = $"{note}Started {started}    Time worked {ReportText.FormatDuration(status.ActiveSeconds)}    Time idle {ReportText.FormatDuration(status.SessionIdleSeconds)}\nProgram: {status.Program}    {place}: {project}\nTime on computer {elapsed}    Clicks {status.ClickCount}";
+    }
+
+    private void SendTimer(string action)
+    {
+        try
+        {
+            PilotSetup.WriteTimerCommand(action);
+            _liveState.Text = action == "reset" ? "Timer reset" : "Timer stopping";
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, notify: false);
+            _liveDetail.Text = ex.Message;
+        }
+    }
+
+    private void SaveReportIfNeeded(LiveStatus status)
+    {
+        if (string.IsNullOrWhiteSpace(status.ReportToken) || status.ReportToken == _reportToken)
+        {
+            return;
+        }
+        _reportToken = status.ReportToken;
+        Task.Run(() =>
+        {
+            try
+            {
+                var config = PilotConfigStore.Load(PilotPaths.Config);
+                if (config is null)
+                {
+                    return;
+                }
+                ReportFiles.WriteRecent(PilotPaths.Journal, PilotPaths.Reports, config, Environment.MachineName);
+            }
+            catch (Exception ex)
+            {
+                CrashLog.Write(ex, notify: false);
+            }
+        });
     }
 
     private static bool IsBrowser(string? process) =>
@@ -491,11 +551,7 @@ public class MainWindow : Window
         }
         catch (Exception ex)
         {
-            CrashLog.Write(ex);
-            if (!WindowsAdmin.IsAdmin())
-            {
-                WindowsAdmin.Show("This update is open, but the employee window still uses the older copy. Sign the employee out, close this window, right-click WorkPilot.exe, and choose Run as administrator. Approve the prompt. The employee should sign in again.");
-            }
+            CrashLog.Write(ex, notify: false);
         }
         try
         {
@@ -503,7 +559,7 @@ public class MainWindow : Window
         }
         catch (Exception ex)
         {
-            CrashLog.Write(ex);
+            CrashLog.Write(ex, notify: false);
         }
     }
 }

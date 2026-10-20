@@ -106,10 +106,11 @@ public class AlarmWindow : Window
             Interlocked.Exchange(ref _busy, 0);
         }
         var fresh = LiveBoard.IsFresh(status);
-        var working = fresh && status.Working;
+        var running = fresh && status.TimerRunning;
+        var working = running && status.Working;
         Paint(_green, working, "#148F3E");
-        Paint(_red, fresh && !status.Working, "#C62828");
-        _beeping = fresh && !status.Working ? 1 : 0;
+        Paint(_red, running && !status.Working, "#C62828");
+        _beeping = running && !status.Working ? 1 : 0;
         if (!fresh)
         {
             _worked.Text = "Time worked  —";
@@ -120,7 +121,7 @@ public class AlarmWindow : Window
             Title = "Employee activity";
             return;
         }
-        var state = working ? "Working" : "Not working";
+        var state = running ? (working ? "Working" : "Not working") : "Timer stopped";
         Title = $"{state}  ·  worked {ReportText.FormatDuration(status.ActiveSeconds)}";
         _worked.Text = "Time worked  " + ReportText.FormatDuration(status.ActiveSeconds);
         _idle.Text = "Time idle  " + ReportText.FormatDuration(status.SessionIdleSeconds);
@@ -166,8 +167,9 @@ public class AlarmWindow : Window
             ? "Site"
             : "Window";
         var started = string.IsNullOrWhiteSpace(status.StartedLocal) ? "the sign-in time" : status.StartedLocal;
+        var note = string.IsNullOrWhiteSpace(status.TimerNote) ? "" : status.TimerNote + "\n";
         var log = string.IsNullOrWhiteSpace(status.RecentLog) ? "" : "\n\n" + status.RecentLog;
-        return $"Started {started}\n{program} — {place}: {status.Title}\nClicks {status.ClickCount}. Red light after {status.AlarmAfterSeconds} seconds.{log}";
+        return $"{note}Started {started}\n{program} — {place}: {status.Title}\nClicks {status.ClickCount}. Red light after {status.AlarmAfterSeconds} seconds.{log}";
     }
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]

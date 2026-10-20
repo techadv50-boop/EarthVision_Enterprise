@@ -69,6 +69,9 @@ public static class LiveBoard
         StartedLocal = status.StartedLocal,
         ActiveSeconds = status.ActiveSeconds,
         SessionIdleSeconds = status.SessionIdleSeconds,
-        RecentLog = status.RecentLog
+        RecentLog = status.RecentLog,
+        TimerRunning = status.TimerRunning,
+        TimerNote = status.TimerNote,
+        ReportToken = status.ReportToken
     };
 }

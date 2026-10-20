@@ -4,7 +4,7 @@ public static class CrashLog
 {
     private static int _shown;
 
-    public static void Write(Exception? exception)
+    public static void Write(Exception? exception, bool notify = true)
     {
         if (exception is null)
         {
@@ -27,7 +27,7 @@ public static class CrashLog
                 // Try the next location.
             }
         }
-        if (Interlocked.Exchange(ref _shown, 1) == 0)
+        if (notify && Interlocked.Exchange(ref _shown, 1) == 0)
         {
             Windows.WindowsAdmin.Show("WorkPilot hit a problem and kept a note in WorkPilot-crash.txt on your desktop.");
         }

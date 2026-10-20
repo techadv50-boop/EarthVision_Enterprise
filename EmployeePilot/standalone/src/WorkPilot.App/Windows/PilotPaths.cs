@@ -9,6 +9,8 @@ public static class PilotPaths
     public static string Logs => Path.Combine(Root, "logs");
     public static string LiveDirectory => Path.Combine(Root, "live");
     public static string LiveFile => Path.Combine(LiveDirectory, "status.json");
+    public static string CommandDirectory => Path.Combine(Root, "commands");
+    public static string CommandFile => Path.Combine(CommandDirectory, "timer.txt");
     public const int WatchPort = 8777;
     public static string Exe => Path.Combine(Root, "WorkPilot.exe");
     public const string TrackerTask = "WorkPilot Session Tracker";
