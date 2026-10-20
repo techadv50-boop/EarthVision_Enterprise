@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -159,15 +158,7 @@ public static class SessionTracker
         try
         {
             title = Native.ForegroundTitle();
-            var pid = Native.ForegroundProcessId();
-            if (pid > 0)
-            {
-                process = Process.GetProcessById((int)pid).ProcessName;
-                if (!process.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    process += ".exe";
-                }
-            }
+            process = Native.ForegroundProcessName();
         }
         catch
         {
@@ -232,15 +223,38 @@ public static class SessionTracker
             return buffer.ToString();
         }
 
-        public static uint ForegroundProcessId()
+        public static string ForegroundProcessName()
         {
             var hwnd = GetForegroundWindow();
             if (hwnd == IntPtr.Zero)
             {
-                return 0;
+                return "unknown.exe";
             }
             _ = GetWindowThreadProcessId(hwnd, out var pid);
-            return pid;
+            if (pid == 0)
+            {
+                return "unknown.exe";
+            }
+            var handle = OpenProcess(0x1000, false, pid);
+            if (handle == IntPtr.Zero)
+            {
+                return "unknown.exe";
+            }
+            try
+            {
+                var buffer = new StringBuilder(1024);
+                var size = buffer.Capacity;
+                if (!QueryFullProcessImageName(handle, 0, buffer, ref size))
+                {
+                    return "unknown.exe";
+                }
+                var name = Path.GetFileName(buffer.ToString());
+                return string.IsNullOrWhiteSpace(name) ? "unknown.exe" : name;
+            }
+            finally
+            {
+                CloseHandle(handle);
+            }
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -264,5 +278,14 @@ public static class SessionTracker
 
         [DllImport("user32.dll")]
         public static extern short GetAsyncKeyState(int virtualKey);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder name, ref int size);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr handle);
     }
 }

@@ -34,6 +34,8 @@ Chrome
 - Page titles can appear in the session report because they are window titles
 
 A green light means you are working. A red light means you have stopped. The computer beeps while the red light is on, until you use the mouse or keyboard again.
+The time window shows how long you have worked and how long the computer was idle. Leave that window open.
+Save files in Documents, Downloads, or Desktop. Control Panel opens. Installed programs cannot be removed.
 The administrator receives a report after you sign out.
 """;
 
@@ -94,6 +96,7 @@ The administrator receives a report after you sign out.
         RegisterTasks(request.UserName, log);
         CreateReportShortcut(log);
         ApplyAppLocker(enforce: false, log);
+        ApplyEmployeeLimits(log);
         log("");
         log("Pilot is ready for one employee.");
         log("1. Sign in as " + request.UserName + " at this computer and confirm the recording message.");
@@ -168,6 +171,14 @@ The administrator receives a report after you sign out.
             rules.AppendLine(PathRule(Guid.NewGuid().ToString(), "Allow " + fileName, "S-1-1-0", folder));
             log($"Allowed folder: {folder}");
         }
+        var employeeSid = EmployeeDesktopLimits.TrySid(config.UserName);
+        if (employeeSid is not null)
+        {
+            foreach (var blocked in EmployeeDesktopPolicy.BlockedInstallerPaths)
+            {
+                rules.AppendLine(PathRule(Guid.NewGuid().ToString(), "Block " + blocked, employeeSid, blocked, "Deny"));
+            }
+        }
         var xml = $"""
 <AppLockerPolicy Version="1">
   <RuleCollection Type="Appx" EnforcementMode="NotConfigured" />
@@ -199,6 +210,13 @@ The administrator receives a report after you sign out.
         log(enforce
             ? "Other programs are now blocked. Sign in as the employee and open Chrome to confirm it still starts."
             : "Program list is in audit mode. Nothing is blocked yet. Administrators can always run every program.");
+    }
+
+    public static void ApplyEmployeeLimits(Action<string> log)
+    {
+        var config = RequiredConfig();
+        EmployeeDesktopLimits.Apply(config.UserName, config.WorkFolder, log);
+        File.WriteAllText(Path.Combine(PilotPaths.Root, "NOTICE.txt"), Notice);
     }
 
     public static void UpdatePrograms(IReadOnlyList<string> programs, bool blockOthers, Action<string> log)
@@ -549,10 +567,10 @@ The administrator receives a report after you sign out.
         }
     }
 
-    private static string PathRule(string id, string name, string sid, string path)
+    private static string PathRule(string id, string name, string sid, string path, string action = "Allow")
     {
         return $"""
-    <FilePathRule Id="{id}" Name="{SecurityElement.Escape(name)}" Description="" UserOrGroupSid="{sid}" Action="Allow">
+    <FilePathRule Id="{id}" Name="{SecurityElement.Escape(name)}" Description="" UserOrGroupSid="{sid}" Action="{action}">
       <Conditions><FilePathCondition Path="{SecurityElement.Escape(path)}" /></Conditions>
     </FilePathRule>
 """;

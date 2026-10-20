@@ -65,6 +65,7 @@ public class MainWindow : Window
         AddNav(side, "Storage", () => ShowPage("Storage", StoragePage()));
         AddNav(side, "Beep and time", () => ShowPage("Beep and time", TimerPage()));
         AddNav(side, "Employee login", () => ShowPage("Employee login", EmployeePage()));
+        AddNav(side, "Folders", () => ShowPage("Folders", FoldersPage()));
         var sideHost = new Border { Background = new SolidColorBrush(Color.Parse("#E7EEE9")), Child = side };
         Grid.SetColumn(sideHost, 0);
         Grid.SetRow(sideHost, 0);
@@ -131,7 +132,7 @@ public class MainWindow : Window
 
     private Control LivePage()
     {
-        var page = Page("Live activity", "The green bar at the bottom stays on every page. It shows the program and the project while the employee is signed in. Red means they stopped, and this computer beeps.");
+        var page = Page("Live activity", "The employee sees this same green and red window on the desktop, with time worked and time idle. The bar at the bottom of your window shows that record while the employee is signed in. Red means they stopped, and this computer beeps.");
         page.Children.Add(new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
@@ -266,6 +267,17 @@ public class MainWindow : Window
         return page;
     }
 
+    private Control FoldersPage()
+    {
+        var status = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
+        var apply = new Button { Content = "Apply folder limits", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
+        apply.Click += async (_, _) => await RunButtons(new[] { apply }, () => Task.Run(() => PilotSetup.ApplyEmployeeLimits(line => Post(status, line))));
+        var page = Page("Folders", "The employee can open Documents, Downloads, Desktop, and Control Panel. Drive C, the Windows folder, and Program Files stay closed. Installed programs cannot be removed. The time window stays open.");
+        page.Children.Add(apply);
+        page.Children.Add(status);
+        return page;
+    }
+
     private Control EmployeePage()
     {
         var fullName = new TextBox { Text = "Pilot Employee" };
@@ -380,10 +392,15 @@ public class MainWindow : Window
         var elapsed = status.SessionStartedUtc > DateTime.UnixEpoch
             ? ReportText.FormatDuration((int)Math.Max(0, (DateTime.UtcNow - status.SessionStartedUtc).TotalSeconds))
             : "not recorded yet";
+        var started = !string.IsNullOrWhiteSpace(status.StartedLocal)
+            ? status.StartedLocal
+            : status.SessionStartedUtc > DateTime.UnixEpoch
+                ? status.SessionStartedUtc.ToLocalTime().ToString("h:mm tt")
+                : "not recorded yet";
         var place = IsBrowser(status.Program ?? "") ? "Site" : "Window";
         var project = string.IsNullOrWhiteSpace(status.Title) ? "No project title yet" : status.Title;
         _liveState.Text = working ? "Working" : "Not working";
-        _liveDetail.Text = $"Started {status.StartedLocal}    Active {ReportText.FormatDuration(status.ActiveSeconds)}    Idle {ReportText.FormatDuration(status.SessionIdleSeconds)}\nProgram: {status.Program}    {place}: {project}\nTime on computer {elapsed}    Clicks {status.ClickCount}";
+        _liveDetail.Text = $"Started {started}    Time worked {ReportText.FormatDuration(status.ActiveSeconds)}    Time idle {ReportText.FormatDuration(status.SessionIdleSeconds)}\nProgram: {status.Program}    {place}: {project}\nTime on computer {elapsed}    Clicks {status.ClickCount}";
     }
 
     private static bool IsBrowser(string? process) =>
@@ -479,6 +496,14 @@ public class MainWindow : Window
             {
                 WindowsAdmin.Show("This update is open, but the employee window still uses the older copy. Sign the employee out, close this window, right-click WorkPilot.exe, and choose Run as administrator. Approve the prompt. The employee should sign in again.");
             }
+        }
+        try
+        {
+            PilotSetup.ApplyEmployeeLimits(static _ => { });
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex);
         }
     }
 }

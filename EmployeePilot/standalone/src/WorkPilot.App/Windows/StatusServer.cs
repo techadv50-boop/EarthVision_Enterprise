@@ -106,7 +106,7 @@ async function tick() {
       return rest + " s";
     }
     document.getElementById("detail").textContent = fresh
-      ? "Started " + (status.startedLocal || "") + "\nActive " + duration(status.activeSeconds) + "\nIdle " + duration(status.sessionIdleSeconds) + "\n" + (status.program || "") + " — " + (status.title || "") + "\nClicks " + status.clickCount + "\n\n" + (status.recentLog || "")
+      ? "Started " + (status.startedLocal || "") + "\nTime worked " + duration(status.activeSeconds) + "\nTime idle " + duration(status.sessionIdleSeconds) + "\n" + (status.program || "") + " — " + (status.title || "") + "\nClicks " + status.clickCount + "\n\n" + (status.recentLog || "")
       : "No employee is signed in.";
     if (fresh && !status.working) beep();
   } catch (error) {

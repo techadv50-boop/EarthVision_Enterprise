@@ -35,4 +35,12 @@ public class ActivitySignalTests
         Assert.Equal(12, active);
         Assert.Equal(5, idle);
     }
+
+    [Fact]
+    public void DriveCIsTheThirdDriveBit()
+    {
+        Assert.Equal(4, EmployeeDesktopPolicy.HideDriveC);
+        Assert.Contains("cmd.exe", EmployeeDesktopPolicy.BlockedTools);
+        Assert.Contains("appsfeatures", EmployeeDesktopPolicy.HiddenSettingsPages);
+    }
 }

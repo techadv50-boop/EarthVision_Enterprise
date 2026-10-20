@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Threading;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -14,21 +16,34 @@ public class AlarmWindow : Window
     private readonly Func<LiveStatus> _read;
     private readonly Button _green = Lamp("Working");
     private readonly Button _red = Lamp("Not working");
+    private readonly TextBlock _worked = new() { FontSize = 28, FontWeight = FontWeight.SemiBold, Text = "Time worked  0 s" };
+    private readonly TextBlock _idle = new() { FontSize = 28, FontWeight = FontWeight.SemiBold, Text = "Time idle  0 s" };
     private readonly TextBlock _detail = new() { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
     private readonly CancellationTokenSource _stop = new();
+    private readonly bool _lockClose;
     private volatile int _beeping;
 
     public AlarmWindow(Func<LiveStatus> read, bool playSound = true, bool lockClose = false)
     {
         _read = read;
+        _lockClose = lockClose;
         Title = "Employee activity";
-        Width = 560;
-        Height = lockClose ? 480 : 380;
+        Width = 520;
+        Height = lockClose ? 460 : 400;
         Topmost = true;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        CanResize = !lockClose;
         Content = Build(lockClose);
         if (lockClose)
         {
             Closing += (_, eventArgs) => eventArgs.Cancel = true;
+            PropertyChanged += (_, eventArgs) =>
+            {
+                if (eventArgs.Property == WindowStateProperty && WindowState == WindowState.Minimized)
+                {
+                    WindowState = WindowState.Normal;
+                }
+            };
         }
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         timer.Tick += (_, _) => Refresh();
@@ -39,6 +54,7 @@ public class AlarmWindow : Window
             alarm.Start();
         }
         Closed += (_, _) => _stop.Cancel();
+        Opened += (_, _) => Place();
     }
 
     private Control Build(bool showSignOut)
@@ -46,9 +62,11 @@ public class AlarmWindow : Window
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center };
         row.Children.Add(_green);
         row.Children.Add(_red);
-        var root = new StackPanel { Margin = new Avalonia.Thickness(20), Spacing = 12 };
-        root.Children.Add(new TextBlock { Text = "Employee activity", FontSize = 22 });
+        var root = new StackPanel { Margin = new Avalonia.Thickness(20), Spacing = 10 };
+        root.Children.Add(new TextBlock { Text = "Your time on this computer", FontSize = 22 });
         root.Children.Add(row);
+        root.Children.Add(_worked);
+        root.Children.Add(_idle);
         root.Children.Add(_detail);
         if (showSignOut)
         {
@@ -94,24 +112,72 @@ public class AlarmWindow : Window
         _beeping = fresh && !status.Working ? 1 : 0;
         if (!fresh)
         {
-            _detail.Text = "No employee is signed in on the work computer.";
+            _worked.Text = "Time worked  —";
+            _idle.Text = "Time idle  —";
+            _detail.Text = _lockClose
+                ? "The time record is starting."
+                : "No employee is signed in on the work computer.";
             Title = "Employee activity";
             return;
         }
         var state = working ? "Working" : "Not working";
-        Title = state;
+        Title = $"{state}  ·  worked {ReportText.FormatDuration(status.ActiveSeconds)}";
+        _worked.Text = "Time worked  " + ReportText.FormatDuration(status.ActiveSeconds);
+        _idle.Text = "Time idle  " + ReportText.FormatDuration(status.SessionIdleSeconds);
         _detail.Text = Describe(status);
+    }
+
+    private void Place()
+    {
+        var area = Screens?.Primary?.WorkingArea;
+        if (area is { } work)
+        {
+            Position = new PixelPoint(work.X + Math.Max(0, work.Width - (int)Width - 24), work.Y + Math.Max(0, work.Height - (int)Height - 24));
+        }
+        if (_lockClose)
+        {
+            HideCloseButton();
+        }
+    }
+
+    private void HideCloseButton()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var handle = TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+        const int styleIndex = -16;
+        const int systemMenu = 0x00080000;
+        var style = GetWindowLongPtr(handle, styleIndex);
+        SetWindowLongPtr(handle, styleIndex, new IntPtr(style.ToInt64() & ~systemMenu));
+        SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, 0x0027);
     }
 
     private static string Describe(LiveStatus status)
     {
-        var place = status.Program.Contains("chrome", StringComparison.OrdinalIgnoreCase)
-            || status.Program.Contains("msedge", StringComparison.OrdinalIgnoreCase)
+        var program = status.Program ?? "";
+        var place = program.Contains("chrome", StringComparison.OrdinalIgnoreCase)
+            || program.Contains("msedge", StringComparison.OrdinalIgnoreCase)
             ? "Site"
             : "Window";
+        var started = string.IsNullOrWhiteSpace(status.StartedLocal) ? "the sign-in time" : status.StartedLocal;
         var log = string.IsNullOrWhiteSpace(status.RecentLog) ? "" : "\n\n" + status.RecentLog;
-        return $"{status.EmployeeName}\nStarted {status.StartedLocal}\nActive {ReportText.FormatDuration(status.ActiveSeconds)}\nIdle {ReportText.FormatDuration(status.SessionIdleSeconds)}\n{status.Program} — {place}: {status.Title}\nClicks {status.ClickCount}. Red light after {status.AlarmAfterSeconds} seconds.{log}";
+        return $"Started {started}\n{program} — {place}: {status.Title}\nClicks {status.ClickCount}. Red light after {status.AlarmAfterSeconds} seconds.{log}";
     }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
     private static void SignOut()
     {

@@ -94,6 +94,31 @@ public static class SessionClock
     }
 }
 
+public static class EmployeeDesktopPolicy
+{
+    public const int HideDriveC = 1 << 2;
+    public const string HiddenSettingsPages = "hide:appsfeatures";
+
+    public static readonly string[] BlockedTools =
+    {
+        "cmd.exe", "powershell.exe", "pwsh.exe", "regedit.exe", "reg.exe", "mmc.exe"
+    };
+
+    public static readonly string[] BlockedInstallerPaths =
+    {
+        @"%WINDIR%\System32\cmd.exe",
+        @"%WINDIR%\SysWOW64\cmd.exe",
+        @"%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe",
+        @"%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe",
+        @"%WINDIR%\System32\reg.exe",
+        @"%WINDIR%\regedit.exe",
+        @"%WINDIR%\System32\mmc.exe",
+        @"%WINDIR%\SysWOW64\mmc.exe",
+        @"%WINDIR%\System32\msiexec.exe",
+        @"%WINDIR%\SysWOW64\msiexec.exe"
+    };
+}
+
 public static class PilotDefaults
 {
     public static readonly string[] AllowedPrograms =
