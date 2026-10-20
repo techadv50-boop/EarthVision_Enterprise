@@ -107,7 +107,7 @@ async function tick() {
       return rest + " s";
     }
     document.getElementById("detail").textContent = fresh
-      ? (status.timerRunning === false ? "Timer stopped\n" : "") + (status.timerNote ? status.timerNote + "\n" : "") + "Started " + (status.startedLocal || "") + "\nTime worked " + duration(status.activeSeconds) + "\nTime idle " + duration(status.sessionIdleSeconds) + "\n" + (status.program || "") + " — " + (status.title || "") + "\nClicks " + status.clickCount + "\n\n" + (status.recentLog || "")
+      ? "Active " + duration(status.activeSeconds) + "\nIdle " + duration(status.sessionIdleSeconds) + "\nIdle now " + (status.idleSeconds || 0) + " s" + (status.timerRunning === false ? "\n" + (status.timerNote || "Timer stopped") : "")
       : "No employee is signed in.";
     if (running && !status.working) beep();
   } catch (error) {

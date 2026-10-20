@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -24,14 +25,15 @@ public class MainWindow : Window
     private readonly Border _content = new() { Background = Brushes.White };
     private readonly TextBlock _liveState = new() { Text = "Waiting for the employee.", FontSize = 20, FontWeight = FontWeight.SemiBold, Foreground = Brushes.White };
     private readonly TextBlock _liveDetail = new() { TextWrapping = TextWrapping.Wrap, FontSize = 16, Foreground = Brushes.White };
-    private readonly Button _green = Lamp("Working");
-    private readonly Button _red = Lamp("Not working");
+    private readonly Border _green = Lamp("Working");
+    private readonly Border _red = Lamp("Not working");
     private readonly List<Button> _nav = new();
     private readonly CancellationTokenSource _stop = new();
     private readonly List<string> _extraPrograms = new();
     private volatile int _beeping;
     private int _busy;
     private string _reportToken = "";
+    private AlarmWindow? _employeeTimer;
 
     public MainWindow()
     {
@@ -47,6 +49,7 @@ public class MainWindow : Window
         timer.Start();
         new Thread(BeepLoop) { IsBackground = true, Name = "WorkPilot alarm" }.Start();
         Closed += (_, _) => _stop.Cancel();
+        Opened += (_, _) => ShowEmployeeTimer();
         ShowPage("Live activity", LivePage());
         _ = Task.Run(TryRefreshInstalledCopy);
     }
@@ -67,6 +70,7 @@ public class MainWindow : Window
         AddNav(side, "Beep and time", () => ShowPage("Beep and time", TimerPage()));
         AddNav(side, "Employee login", () => ShowPage("Employee login", EmployeePage()));
         AddNav(side, "Folders", () => ShowPage("Folders", FoldersPage()));
+        AddNav(side, "Days", () => ShowPage("Days", DaysPage()));
         var sideHost = new Border { Background = new SolidColorBrush(Color.Parse("#E7EEE9")), Child = side };
         Grid.SetColumn(sideHost, 0);
         Grid.SetRow(sideHost, 0);
@@ -150,7 +154,7 @@ public class MainWindow : Window
 
     private Control LivePage()
     {
-        var page = Page("Live activity", "The employee sees this same timer on their desktop, and it stays open. This bar is your copy. Stop timer freezes the numbers and saves the report. Reset timer saves the report and starts again from zero. If the employee disconnects, the timer stops after 15 seconds and the report is saved. The next connection starts a new timer.");
+        var page = Page("Live activity", "The employee has the same small timer in a corner of the desktop. You can drag it, and the employee cannot close or minimize it. Active and Idle are today's totals in Pakistan time. They continue when the employee signs in again on the same date, and they return to zero at midnight. Idle now is the current pause. At 30 seconds the computer beeps. Days lists the last 30 dates.");
         page.Children.Add(new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
@@ -285,6 +289,72 @@ public class MainWindow : Window
         return page;
     }
 
+    private void ShowEmployeeTimer()
+    {
+        if (_employeeTimer is not null)
+        {
+            return;
+        }
+        _employeeTimer = new AlarmWindow(() => LiveBoard.ReadUrl("http://127.0.0.1:8777/status"), playSound: false, lockClose: false);
+        _employeeTimer.Show();
+    }
+
+    private Control DaysPage()
+    {
+        var body = new TextBlock { Text = "Choose a date.", TextWrapping = TextWrapping.Wrap, FontSize = 16 };
+        var list = new StackPanel { Spacing = 4 };
+        var today = PakistanClock.Today(DateTime.UtcNow);
+        foreach (var date in PakistanClock.LastDays(today, 30))
+        {
+            var chosen = date;
+            var button = new Button
+            {
+                Content = chosen.ToString("ddd d MMM yyyy"),
+                MinHeight = 34,
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+            button.Click += async (_, _) =>
+            {
+                body.Text = "Reading " + chosen.ToString("d MMMM yyyy") + "...";
+                var text = await Task.Run(() => DescribeDay(chosen));
+                body.Text = text;
+            };
+            list.Children.Add(button);
+        }
+        var page = Page("Days", "The last 30 days in Pakistan time. Choose a date to see active time, idle time, programs, and the sites or windows.");
+        page.Children.Add(list);
+        page.Children.Add(body);
+        return page;
+    }
+
+    private static string DescribeDay(DateOnly date)
+    {
+        DayTotals? saved = null;
+        var path = Path.Combine(PilotPaths.Days, date.ToString("yyyy-MM-dd") + ".json");
+        if (File.Exists(path))
+        {
+            try
+            {
+                saved = System.Text.Json.JsonSerializer.Deserialize<DayTotals>(File.ReadAllText(path), PilotConfigStore.Json);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                saved = null;
+            }
+        }
+        var samples = new List<ActivitySample>();
+        if (Directory.Exists(PilotPaths.Journal))
+        {
+            foreach (var file in Directory.GetFiles(PilotPaths.Journal, "*.jsonl"))
+            {
+                samples.AddRange(ReportFiles.ReadSamples(file).Where(sample => PakistanClock.Today(sample.Utc) == date));
+            }
+        }
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        var totals = saved ?? DayReport.FromSamples(date, samples, config?.AlarmAfterSeconds ?? 30);
+        return DayReport.Describe(date, totals, samples);
+    }
+
     private Control FoldersPage()
     {
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
@@ -352,14 +422,19 @@ public class MainWindow : Window
 
     private static TextBlock Label(string text) => new() { Text = text, FontSize = 15 };
 
-    private static Button Lamp(string label) => new()
+    private static Border Lamp(string label) => new()
     {
-        Content = label,
-        MinWidth = 150,
-        MinHeight = 56,
-        FontSize = 16,
-        IsHitTestVisible = false,
-        Background = new SolidColorBrush(Color.Parse("#D9D9D9"))
+        Width = 132,
+        Height = 44,
+        CornerRadius = new CornerRadius(6),
+        Background = new SolidColorBrush(Color.Parse("#D9D9D9")),
+        Child = new TextBlock
+        {
+            Text = label,
+            FontSize = 14,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        }
     };
 
     private static List<string> Selected(IEnumerable<CheckBox> boxes) =>
@@ -421,7 +496,7 @@ public class MainWindow : Window
         var project = string.IsNullOrWhiteSpace(status.Title) ? "No project title yet" : status.Title;
         var note = string.IsNullOrWhiteSpace(status.TimerNote) ? "" : status.TimerNote + "\n";
         _liveState.Text = running ? (working ? "Working" : "Not working") : "Timer stopped";
-        _liveDetail.Text = $"{note}Started {started}    Time worked {ReportText.FormatDuration(status.ActiveSeconds)}    Time idle {ReportText.FormatDuration(status.SessionIdleSeconds)}\nProgram: {status.Program}    {place}: {project}\nTime on computer {elapsed}    Clicks {status.ClickCount}";
+        _liveDetail.Text = $"{note}Active {ReportText.FormatDuration(status.ActiveSeconds)}    Idle {ReportText.FormatDuration(status.SessionIdleSeconds)}    Idle now {status.IdleSeconds} s\nProgram: {status.Program}    {place}: {project}\nStarted {started}    Time on computer {elapsed}";
     }
 
     private void SendTimer(string action)
@@ -467,10 +542,13 @@ public class MainWindow : Window
         !string.IsNullOrEmpty(process)
         && (process.Contains("chrome", StringComparison.OrdinalIgnoreCase) || process.Contains("msedge", StringComparison.OrdinalIgnoreCase));
 
-    private static void Paint(Button button, bool on, string color)
+    private static void Paint(Border lamp, bool on, string color)
     {
-        button.Background = new SolidColorBrush(Color.Parse(on ? color : "#D9D9D9"));
-        button.Foreground = new SolidColorBrush(on ? Colors.White : Color.Parse("#555555"));
+        lamp.Background = new SolidColorBrush(Color.Parse(on ? color : "#D9D9D9"));
+        if (lamp.Child is TextBlock label)
+        {
+            label.Foreground = new SolidColorBrush(on ? Colors.White : Color.Parse("#555555"));
+        }
     }
 
     private void BeepLoop()

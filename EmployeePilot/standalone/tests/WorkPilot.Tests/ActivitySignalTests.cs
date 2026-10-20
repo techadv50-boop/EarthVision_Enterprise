@@ -85,4 +85,49 @@ public class ActivitySignalTests
         Assert.Equal(issued, parsed.ToUniversalTime());
         Assert.False(TimerCommand.TryParse("close|now", out _, out _));
     }
+
+    [Fact]
+    public void PakistanMidnightSplitsTheWorkDay()
+    {
+        var beforeMidnight = new DateTime(2026, 10, 19, 18, 30, 0, DateTimeKind.Utc);
+        var afterMidnight = new DateTime(2026, 10, 19, 19, 30, 0, DateTimeKind.Utc);
+        Assert.Equal(new DateOnly(2026, 10, 19), PakistanClock.Today(beforeMidnight));
+        Assert.Equal(new DateOnly(2026, 10, 20), PakistanClock.Today(afterMidnight));
+    }
+
+    [Fact]
+    public void SamePakistanDateKeepsAddingAndTheNextDateStartsAtZero()
+    {
+        var today = new DateOnly(2026, 10, 20);
+        var totals = new DayTotals { Date = "2026-10-20", ActiveSeconds = 40, IdleSeconds = 5 };
+        totals = DayLedger.EnsureToday(totals, today, out var closed);
+        Assert.Null(closed);
+        DayLedger.Add(totals, working: true, seconds: 10, process: "chrome.exe");
+        DayLedger.Add(totals, working: false, seconds: 4, process: "chrome.exe");
+        Assert.Equal(50, totals.ActiveSeconds);
+        Assert.Equal(9, totals.IdleSeconds);
+        Assert.Equal(10, totals.Programs["chrome.exe"]);
+        var next = DayLedger.EnsureToday(totals, today.AddDays(1), out closed);
+        Assert.Equal(50, closed!.ActiveSeconds);
+        Assert.Equal(0, next.ActiveSeconds);
+        Assert.Equal("2026-10-21", next.Date);
+    }
+
+    [Fact]
+    public void SamplesOnOneDateBecomeActiveProgramTime()
+    {
+        var date = new DateOnly(2026, 10, 20);
+        var start = new DateTime(2026, 10, 20, 4, 0, 0, DateTimeKind.Utc);
+        var samples = new List<ActivitySample>
+        {
+            new() { Utc = start, IdleSeconds = 0, Process = "chrome.exe", Title = "Inbox" },
+            new() { Utc = start.AddSeconds(20), IdleSeconds = 40, Process = "chrome.exe", Title = "Inbox" },
+            new() { Utc = start.AddSeconds(30), IdleSeconds = 50, Process = "chrome.exe", Title = "Inbox" }
+        };
+        var totals = DayReport.FromSamples(date, samples, alarmAfterSeconds: 30);
+        Assert.Equal(20, totals.ActiveSeconds);
+        Assert.Equal(10, totals.IdleSeconds);
+        Assert.Contains("Active 20 s", DayReport.Describe(date, totals, samples));
+        Assert.Contains("Inbox", DayReport.Describe(date, totals, samples));
+    }
 }

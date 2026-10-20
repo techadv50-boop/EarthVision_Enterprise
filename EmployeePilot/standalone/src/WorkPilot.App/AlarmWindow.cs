@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Avalonia;
@@ -14,11 +13,12 @@ namespace WorkPilot;
 public class AlarmWindow : Window
 {
     private readonly Func<LiveStatus> _read;
-    private readonly Button _green = Lamp("Working");
-    private readonly Button _red = Lamp("Not working");
-    private readonly TextBlock _worked = new() { FontSize = 28, FontWeight = FontWeight.SemiBold, Text = "Time worked  0 s" };
-    private readonly TextBlock _idle = new() { FontSize = 28, FontWeight = FontWeight.SemiBold, Text = "Time idle  0 s" };
-    private readonly TextBlock _detail = new() { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
+    private readonly Border _green = Lamp("Working");
+    private readonly Border _red = Lamp("Not working");
+    private readonly TextBlock _active = Line("Active");
+    private readonly TextBlock _idle = Line("Idle");
+    private readonly TextBlock _idleNow = Line("Idle now");
+    private readonly TextBlock _note = new() { FontSize = 12, Foreground = new SolidColorBrush(Color.Parse("#9B1C1C")) };
     private readonly CancellationTokenSource _stop = new();
     private readonly bool _lockClose;
     private volatile int _beeping;
@@ -27,13 +27,15 @@ public class AlarmWindow : Window
     {
         _read = read;
         _lockClose = lockClose;
-        Title = "Employee activity";
-        Width = 520;
-        Height = lockClose ? 460 : 400;
+        Title = "Timer";
+        Width = 280;
+        Height = 188;
         Topmost = true;
+        CanResize = false;
+        ShowInTaskbar = !lockClose;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        CanResize = !lockClose;
-        Content = Build(lockClose);
+        Background = Brushes.White;
+        Content = Build();
         if (lockClose)
         {
             Closing += (_, eventArgs) => eventArgs.Cancel = true;
@@ -57,30 +59,22 @@ public class AlarmWindow : Window
         Opened += (_, _) => Place();
     }
 
-    private Control Build(bool showSignOut)
+    private Control Build()
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center };
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
         row.Children.Add(_green);
         row.Children.Add(_red);
-        var root = new StackPanel { Margin = new Avalonia.Thickness(20), Spacing = 10 };
-        root.Children.Add(new TextBlock { Text = "Your time on this computer", FontSize = 22 });
+        var root = new StackPanel { Margin = new Thickness(10), Spacing = 4 };
         root.Children.Add(row);
-        root.Children.Add(_worked);
+        root.Children.Add(_active);
         root.Children.Add(_idle);
-        root.Children.Add(_detail);
-        if (showSignOut)
-        {
-            var signOut = new Button
-            {
-                Content = "Sign out",
-                MinWidth = 160,
-                MinHeight = 40,
-                FontSize = 16,
-                HorizontalAlignment = HorizontalAlignment.Center
-            };
-            signOut.Click += (_, _) => SignOut();
-            root.Children.Add(signOut);
-        }
+        root.Children.Add(_idleNow);
+        root.Children.Add(_note);
         return root;
     }
 
@@ -111,21 +105,26 @@ public class AlarmWindow : Window
         Paint(_green, working, "#148F3E");
         Paint(_red, running && !status.Working, "#C62828");
         _beeping = running && !status.Working ? 1 : 0;
+        if (_lockClose)
+        {
+            Topmost = true;
+        }
         if (!fresh)
         {
-            _worked.Text = "Time worked  —";
-            _idle.Text = "Time idle  —";
-            _detail.Text = _lockClose
-                ? "The time record is starting."
-                : "No employee is signed in on the work computer.";
-            Title = "Employee activity";
+            _active.Text = "Active  —";
+            _idle.Text = "Idle  —";
+            _idleNow.Text = "Idle now  —";
+            _note.Text = _lockClose ? "" : "No employee is signed in.";
             return;
         }
-        var state = running ? (working ? "Working" : "Not working") : "Timer stopped";
-        Title = $"{state}  ·  worked {ReportText.FormatDuration(status.ActiveSeconds)}";
-        _worked.Text = "Time worked  " + ReportText.FormatDuration(status.ActiveSeconds);
-        _idle.Text = "Time idle  " + ReportText.FormatDuration(status.SessionIdleSeconds);
-        _detail.Text = Describe(status);
+        _active.Text = "Active  " + ReportText.FormatDuration(status.ActiveSeconds);
+        _idle.Text = "Idle  " + ReportText.FormatDuration(status.SessionIdleSeconds);
+        _idleNow.Text = "Idle now  " + status.IdleSeconds + " s";
+        _idleNow.Foreground = status.IdleSeconds >= status.AlarmAfterSeconds
+            ? new SolidColorBrush(Color.Parse("#C62828"))
+            : Brushes.Black;
+        _note.Text = running ? "" : (string.IsNullOrWhiteSpace(status.TimerNote) ? "Timer stopped" : status.TimerNote);
+        Title = working ? "Working" : running ? "Not working" : "Timer stopped";
     }
 
     private void Place()
@@ -133,15 +132,15 @@ public class AlarmWindow : Window
         var area = Screens?.Primary?.WorkingArea;
         if (area is { } work)
         {
-            Position = new PixelPoint(work.X + Math.Max(0, work.Width - (int)Width - 24), work.Y + Math.Max(0, work.Height - (int)Height - 24));
+            Position = new PixelPoint(work.X + Math.Max(0, work.Width - (int)Width - 12), work.Y + 12);
         }
         if (_lockClose)
         {
-            HideCloseButton();
+            HideWindowButtons();
         }
     }
 
-    private void HideCloseButton()
+    private void HideWindowButtons()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -153,57 +152,44 @@ public class AlarmWindow : Window
             return;
         }
         const int styleIndex = -16;
-        const int systemMenu = 0x00080000;
-        var style = GetWindowLongPtr(handle, styleIndex);
-        SetWindowLongPtr(handle, styleIndex, new IntPtr(style.ToInt64() & ~systemMenu));
+        const long caption = 0x00C00000;
+        const long systemMenu = 0x00080000;
+        const long minimize = 0x00020000;
+        const long maximize = 0x00010000;
+        var style = GetWindowLongPtr(handle, styleIndex).ToInt64();
+        SetWindowLongPtr(handle, styleIndex, new IntPtr((style | caption) & ~(systemMenu | minimize | maximize)));
         SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, 0x0027);
     }
 
-    private static string Describe(LiveStatus status)
+    private static void Paint(Border lamp, bool on, string color)
     {
-        var program = status.Program ?? "";
-        var place = program.Contains("chrome", StringComparison.OrdinalIgnoreCase)
-            || program.Contains("msedge", StringComparison.OrdinalIgnoreCase)
-            ? "Site"
-            : "Window";
-        var started = string.IsNullOrWhiteSpace(status.StartedLocal) ? "the sign-in time" : status.StartedLocal;
-        var note = string.IsNullOrWhiteSpace(status.TimerNote) ? "" : status.TimerNote + "\n";
-        var log = string.IsNullOrWhiteSpace(status.RecentLog) ? "" : "\n\n" + status.RecentLog;
-        return $"{note}Started {started}\n{program} — {place}: {status.Title}\nClicks {status.ClickCount}. Red light after {status.AlarmAfterSeconds} seconds.{log}";
-    }
-
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
-
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static extern IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
-
-    private static void SignOut()
-    {
-        Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "shutdown.exe"), "/l")
+        lamp.Background = new SolidColorBrush(Color.Parse(on ? color : "#D9D9D9"));
+        if (lamp.Child is TextBlock label)
         {
-            UseShellExecute = false,
-            CreateNoWindow = true
-        });
+            label.Foreground = new SolidColorBrush(on ? Colors.White : Color.Parse("#555555"));
+        }
     }
 
-    private static void Paint(Button button, bool on, string color)
+    private static Border Lamp(string label) => new()
     {
-        button.Background = new SolidColorBrush(Color.Parse(on ? color : "#D9D9D9"));
-        button.Foreground = new SolidColorBrush(on ? Colors.White : Color.Parse("#555555"));
-    }
+        Width = 124,
+        Height = 36,
+        CornerRadius = new CornerRadius(6),
+        Background = new SolidColorBrush(Color.Parse("#D9D9D9")),
+        Child = new TextBlock
+        {
+            Text = label,
+            FontSize = 14,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(Color.Parse("#555555"))
+        }
+    };
 
-    private static Button Lamp(string label) => new()
+    private static TextBlock Line(string name) => new()
     {
-        Content = label,
-        MinWidth = 200,
-        MinHeight = 72,
-        FontSize = 20,
-        IsHitTestVisible = false,
-        Background = new SolidColorBrush(Color.Parse("#D9D9D9"))
+        Text = name + "  0 s",
+        FontSize = 16
     };
 
     private void BeepLoop()
@@ -217,4 +203,13 @@ public class AlarmWindow : Window
             Thread.Sleep(1200);
         }
     }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 }

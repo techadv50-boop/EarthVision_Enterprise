@@ -66,8 +66,6 @@ public static class SessionTracker
     private static void Loop(PilotConfig config, string sessionId, string sessionFile, int poll, int alarmAfter, DateTime sessionStarted)
     {
         var clicks = 0;
-        var activeSeconds = 0;
-        var idleSeconds = 0;
         var countedUntil = DateTime.UtcNow;
         var leftDown = false;
         var rightDown = false;
@@ -76,6 +74,11 @@ public static class SessionTracker
         var nextJournal = DateTime.UtcNow;
         var nextConfig = DateTime.UtcNow;
         var startedLocal = sessionStarted.ToLocalTime().ToString("h:mm tt");
+        var totals = DayLedger.Load(PilotPaths.Days, PakistanClock.Today(DateTime.UtcNow));
+        var activeSeconds = totals.ActiveSeconds;
+        var idleSeconds = totals.IdleSeconds;
+        var displayIdle = 0;
+        var nextSave = DateTime.UtcNow.AddSeconds(5);
         var clock = new TimerControl();
         var appliedCommand = default(DateTime);
         DateTime? disconnectedSince = null;
@@ -110,6 +113,13 @@ public static class SessionTracker
                 }
                 var sessionConnected = disconnectedSince is null || (now - disconnectedSince.Value).TotalSeconds < 15;
                 var command = ReadCommand(ref appliedCommand);
+                if (string.Equals(command, "reset", StringComparison.Ordinal))
+                {
+                    totals = new DayTotals { Date = PakistanClock.Key(PakistanClock.Today(now)) };
+                    activeSeconds = 0;
+                    idleSeconds = 0;
+                    DayLedger.Save(PilotPaths.Days, totals);
+                }
                 clock.Tick(sessionConnected, command);
                 if ((clock.Running && !clock.BeginSession) || clock.ReportDue)
                 {
@@ -128,20 +138,34 @@ public static class SessionTracker
                 {
                     sessionId = now.ToLocalTime().ToString("yyyyMMdd-HHmmss");
                     sessionFile = Path.Combine(PilotPaths.Journal, $"{config.UserName}-{sessionId}.jsonl");
-                    sessionStarted = now;
-                    startedLocal = sessionStarted.ToLocalTime().ToString("h:mm tt");
-                    activeSeconds = 0;
-                    idleSeconds = 0;
-                    clicks = 0;
                     countedUntil = now;
                     recent.Clear();
                     lastLine = "";
                 }
+                var today = PakistanClock.Today(now);
+                totals = DayLedger.EnsureToday(totals, today, out var closedDay);
+                if (closedDay is not null)
+                {
+                    DayLedger.Save(PilotPaths.Days, closedDay);
+                    activeSeconds = 0;
+                    idleSeconds = 0;
+                }
                 var elapsed = (int)(now - countedUntil).TotalSeconds;
                 if (clock.Running && elapsed > 0)
                 {
-                    SessionClock.Add(ref activeSeconds, ref idleSeconds, working, elapsed);
+                    DayLedger.Add(totals, working, elapsed, sample.Process);
                     countedUntil = countedUntil.AddSeconds(elapsed);
+                    activeSeconds = totals.ActiveSeconds;
+                    idleSeconds = totals.IdleSeconds;
+                }
+                if (clock.ReportDue || now >= nextSave)
+                {
+                    DayLedger.Save(PilotPaths.Days, totals);
+                    nextSave = now.AddSeconds(5);
+                }
+                if (clock.Running)
+                {
+                    displayIdle = idle;
                 }
                 _localBeep = clock.Running && !working ? 1 : 0;
                 var line = $"{now.ToLocalTime():h:mm tt}  {(working ? "Working" : "Not working")}  {sample.Process}  {sample.Title}";
@@ -158,7 +182,7 @@ public static class SessionTracker
                 {
                     SessionOpen = true,
                     Working = working,
-                    IdleSeconds = idle,
+                    IdleSeconds = displayIdle,
                     AlarmAfterSeconds = alarmAfter,
                     Program = sample.Process,
                     Title = sample.Title,
