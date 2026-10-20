@@ -11,6 +11,24 @@ public static class PakistanClock
 
     public static string Key(DateOnly date) => date.ToString("yyyy-MM-dd");
 
+    public static IReadOnlyList<DateOnly> ConnectedDays(IEnumerable<string> dayFileNames, IEnumerable<DateOnly> journalDates, int limit = 30)
+    {
+        var dates = new HashSet<DateOnly>();
+        foreach (var name in dayFileNames)
+        {
+            var stem = Path.GetFileNameWithoutExtension(name);
+            if (DateOnly.TryParseExact(stem, "yyyy-MM-dd", out var date))
+            {
+                dates.Add(date);
+            }
+        }
+        foreach (var date in journalDates)
+        {
+            dates.Add(date);
+        }
+        return dates.OrderByDescending(date => date).Take(limit).ToList();
+    }
+
     public static IReadOnlyList<DateOnly> LastDays(DateOnly today, int count)
     {
         var dates = new List<DateOnly>(count);
@@ -112,6 +130,34 @@ public static class DayLedger
         }
         Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, totals.Date + ".json"), JsonSerializer.Serialize(totals, PilotConfigStore.Json));
+    }
+}
+
+public static class FolderAccess
+{
+    public static readonly string[] BuiltIn = { "Desktop", "Documents", "Downloads" };
+
+    public static int HiddenDriveMask(IReadOnlyCollection<string> allowed, IEnumerable<char> drives)
+    {
+        var open = new HashSet<char>();
+        foreach (var item in allowed)
+        {
+            if (item.Length >= 2 && item[1] == ':')
+            {
+                open.Add(char.ToUpperInvariant(item[0]));
+            }
+        }
+        var mask = 0;
+        foreach (var drive in drives)
+        {
+            var letter = char.ToUpperInvariant(drive);
+            if (letter is < 'A' or > 'Z' || open.Contains(letter))
+            {
+                continue;
+            }
+            mask |= 1 << (letter - 'A');
+        }
+        return mask;
     }
 }
 

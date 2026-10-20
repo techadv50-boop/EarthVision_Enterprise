@@ -215,8 +215,24 @@ The administrator receives a report after you sign out.
     public static void ApplyEmployeeLimits(Action<string> log)
     {
         var config = RequiredConfig();
-        EmployeeDesktopLimits.Apply(config.UserName, config.WorkFolder, log);
+        var allowed = config.AllowedFolders is { Count: > 0 }
+            ? config.AllowedFolders
+            : new List<string> { "Desktop", "Documents", "Downloads" };
+        EmployeeDesktopLimits.Apply(config.UserName, config.WorkFolder, allowed, log);
         File.WriteAllText(Path.Combine(PilotPaths.Root, "NOTICE.txt"), Notice);
+    }
+
+    public static void UpdateFolders(IReadOnlyList<string> folders, Action<string> log)
+    {
+        var config = RequiredConfig();
+        config.AllowedFolders = folders
+            .Select(folder => folder.Trim())
+            .Where(folder => folder.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        PilotConfigStore.Save(PilotPaths.Config, config);
+        log("Allowed folders: " + (config.AllowedFolders.Count == 0 ? "none" : string.Join(", ", config.AllowedFolders)));
+        ApplyEmployeeLimits(log);
     }
 
     public static void UpdatePrograms(IReadOnlyList<string> programs, bool blockOthers, Action<string> log)
@@ -262,8 +278,8 @@ The administrator receives a report after you sign out.
         config.IdleThresholdSeconds = idleMinutes * 60;
         config.AlarmAfterSeconds = alarmSeconds;
         PilotConfigStore.Save(PilotPaths.Config, config);
-        log($"The report counts idle after {idleMinutes} minutes.");
-        log($"The beep starts after {alarmSeconds} seconds. It applies within a few seconds of the employee session.");
+        log($"The beep and the red light start after {alarmSeconds} seconds with no mouse or keyboard.");
+        log($"The written activity report is separate. A pause shorter than {idleMinutes} minute(s) still counts as working there. A pause of {idleMinutes} minute(s) or more counts as idle in that report.");
     }
 
     public static string RefreshInstalledCopy()

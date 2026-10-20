@@ -55,6 +55,7 @@ public sealed class PilotConfig
     public string WorkFolder { get; set; } = @"C:\WorkPilot\employee1";
     public List<string> AllowedPrograms { get; set; } = new(PilotDefaults.AllowedPrograms);
     public List<string> SystemPrograms { get; set; } = new(PilotDefaults.SystemPrograms);
+    public List<string> AllowedFolders { get; set; } = new() { "Desktop", "Documents", "Downloads" };
 }
 
 public sealed class LiveStatus

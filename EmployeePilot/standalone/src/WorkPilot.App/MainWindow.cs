@@ -30,6 +30,7 @@ public class MainWindow : Window
     private readonly List<Button> _nav = new();
     private readonly CancellationTokenSource _stop = new();
     private readonly List<string> _extraPrograms = new();
+    private readonly List<string> _extraFolders = new();
     private volatile int _beeping;
     private int _busy;
     private string _reportToken = "";
@@ -279,10 +280,16 @@ public class MainWindow : Window
             }
             return Task.Run(() => PilotSetup.UpdateTimers(minutes, seconds, line => Post(status, line)));
         });
-        var page = Page("Beep and time", "The beep uses seconds. The activity log uses minutes. A locked screen beeps immediately.");
-        page.Children.Add(Label("Seconds without mouse or keyboard before the beep"));
+        var page = Page("Beep and time", "The seconds box controls the beep and the red light. The minutes box does not change the beep. It is only for the written activity report.");
+        page.Children.Add(Label("Seconds with no mouse or keyboard before the beep and the red light"));
         page.Children.Add(alarm);
-        page.Children.Add(Label("Minutes before the activity log counts idle"));
+        page.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 16,
+            Text = "Example: 30 means the light turns red and the beep starts after 30 seconds. The minutes box below is a different rule. A pause shorter than that many minutes still counts as working in the activity report. A pause that reaches that many minutes counts as idle in the report. If you enter 1, the report calls a pause idle after 1 minute, while the beep still follows the seconds box."
+        });
+        page.Children.Add(Label("Minutes before the written report calls a pause idle"));
         page.Children.Add(idle);
         page.Children.Add(save);
         page.Children.Add(status);
@@ -303,8 +310,12 @@ public class MainWindow : Window
     {
         var body = new TextBlock { Text = "Choose a date.", TextWrapping = TextWrapping.Wrap, FontSize = 16 };
         var list = new StackPanel { Spacing = 4 };
-        var today = PakistanClock.Today(DateTime.UtcNow);
-        foreach (var date in PakistanClock.LastDays(today, 30))
+        var dates = ConnectedDates();
+        if (dates.Count == 0)
+        {
+            body.Text = "No connected day yet. A date appears here only after the employee signs in and the timer runs. A day off, such as a Sunday with no sign-in, is left out.";
+        }
+        foreach (var date in dates)
         {
             var chosen = date;
             var button = new Button
@@ -321,10 +332,45 @@ public class MainWindow : Window
             };
             list.Children.Add(button);
         }
-        var page = Page("Days", "The last 30 days in Pakistan time. Choose a date to see active time, idle time, programs, and the sites or windows.");
+        var page = Page("Days", "Only days when the employee signed in and the timer ran. A day with no connection is not listed. Choose a date to see active time, idle time, programs, and the sites or windows.");
         page.Children.Add(list);
         page.Children.Add(body);
         return page;
+    }
+
+    private static IReadOnlyList<DateOnly> ConnectedDates()
+    {
+        var files = Directory.Exists(PilotPaths.Days)
+            ? Directory.GetFiles(PilotPaths.Days, "*.json")
+            : Array.Empty<string>();
+        var journalDates = new List<DateOnly>();
+        if (Directory.Exists(PilotPaths.Journal))
+        {
+            foreach (var file in Directory.GetFiles(PilotPaths.Journal, "*.jsonl"))
+            {
+                foreach (var line in File.ReadLines(file))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        using var document = System.Text.Json.JsonDocument.Parse(line);
+                        if (document.RootElement.TryGetProperty("utc", out var utcText)
+                            && DateTime.TryParse(utcText.GetString(), null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var utc))
+                        {
+                            journalDates.Add(PakistanClock.Today(utc));
+                        }
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                    }
+                    break;
+                }
+            }
+        }
+        return PakistanClock.ConnectedDays(files, journalDates);
     }
 
     private static string DescribeDay(DateOnly date)
@@ -357,14 +403,71 @@ public class MainWindow : Window
 
     private Control FoldersPage()
     {
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        var allowed = new HashSet<string>(config?.AllowedFolders ?? new List<string>(FolderAccess.BuiltIn), StringComparer.OrdinalIgnoreCase);
+        var choices = new List<string>(FolderAccess.BuiltIn);
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            if (!drive.IsReady || drive.DriveType != DriveType.Fixed || drive.Name.Length == 0)
+            {
+                continue;
+            }
+            var name = drive.Name.TrimEnd('\\');
+            if (!choices.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                choices.Add(name);
+            }
+        }
+        foreach (var extra in _extraFolders.Concat(allowed))
+        {
+            if (!choices.Contains(extra, StringComparer.OrdinalIgnoreCase))
+            {
+                choices.Add(extra);
+            }
+        }
+        var boxes = new List<CheckBox>();
+        var page = Page("Folders", "Tick the places the employee may open. Leave a place unticked to keep it closed. Drive C includes the Windows folder and Program Files. Uninstall stays blocked either way. Sign the employee out and back in after you save.");
+        foreach (var choice in choices)
+        {
+            var box = new CheckBox
+            {
+                Content = FolderLabel(choice),
+                IsChecked = allowed.Contains(choice),
+                FontSize = 16,
+                Margin = new Thickness(0, 4),
+                Tag = choice
+            };
+            boxes.Add(box);
+            page.Children.Add(box);
+        }
+        var add = new TextBox { Watermark = "Another folder, for example D:\\Projects" };
+        var addButton = new Button { Content = "Add folder", MinHeight = 36 };
+        addButton.Click += (_, _) =>
+        {
+            var path = (add.Text ?? "").Trim();
+            if (path.Length == 0)
+            {
+                return;
+            }
+            if (!_extraFolders.Contains(path, StringComparer.OrdinalIgnoreCase))
+            {
+                _extraFolders.Add(path);
+            }
+            ShowPage("Folders", FoldersPage());
+        };
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
-        var apply = new Button { Content = "Apply folder limits", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
-        apply.Click += async (_, _) => await RunButtons(new[] { apply }, () => Task.Run(() => PilotSetup.ApplyEmployeeLimits(line => Post(status, line))));
-        var page = Page("Folders", "The employee can open Documents, Downloads, Desktop, and Control Panel. Drive C, the Windows folder, and Program Files stay closed. Installed programs cannot be removed. The time window stays open.");
+        var apply = new Button { Content = "Save folder access", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
+        apply.Click += async (_, _) => await RunButtons(new[] { apply, addButton }, () => Task.Run(() => PilotSetup.UpdateFolders(Selected(boxes), line => Post(status, line))));
+        page.Children.Add(add);
+        page.Children.Add(addButton);
         page.Children.Add(apply);
         page.Children.Add(status);
         return page;
     }
+
+    private static string FolderLabel(string choice) => choice.Length == 2 && choice[1] == ':'
+        ? "Drive " + char.ToUpperInvariant(choice[0])
+        : choice;
 
     private Control EmployeePage()
     {

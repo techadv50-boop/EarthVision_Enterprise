@@ -130,4 +130,22 @@ public class ActivitySignalTests
         Assert.Contains("Active 20 s", DayReport.Describe(date, totals, samples));
         Assert.Contains("Inbox", DayReport.Describe(date, totals, samples));
     }
+
+    [Fact]
+    public void DaysListSkipsDatesWithNoConnection()
+    {
+        var connected = PakistanClock.ConnectedDays(
+            new[] { "2026-10-20.json", "notes.txt" },
+            new[] { new DateOnly(2026, 10, 18) });
+        Assert.Equal(new[] { new DateOnly(2026, 10, 20), new DateOnly(2026, 10, 18) }, connected);
+    }
+
+    [Fact]
+    public void UntickedDriveStaysHiddenAndATickedDriveOpens()
+    {
+        var hidden = FolderAccess.HiddenDriveMask(new[] { "Desktop", "Documents" }, new[] { 'C', 'D' });
+        Assert.Equal((1 << 2) | (1 << 3), hidden);
+        var opened = FolderAccess.HiddenDriveMask(new[] { "Desktop", "C:", @"D:\Projects" }, new[] { 'C', 'D' });
+        Assert.Equal(0, opened);
+    }
 }

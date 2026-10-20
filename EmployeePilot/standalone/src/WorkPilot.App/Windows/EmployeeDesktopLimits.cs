@@ -6,7 +6,7 @@ namespace WorkPilot.Windows;
 
 public static class EmployeeDesktopLimits
 {
-    public static void Apply(string userName, string workFolder, Action<string> log)
+    public static void Apply(string userName, string workFolder, IReadOnlyList<string> allowedFolders, Action<string> log)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -19,8 +19,13 @@ public static class EmployeeDesktopLimits
         {
             using var hive = Registry.Users.OpenSubKey(hiveName, writable: true)
                 ?? throw new InvalidOperationException("The employee profile did not open.");
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoDrives", EmployeeDesktopPolicy.HideDriveC);
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoViewOnDrive", EmployeeDesktopPolicy.HideDriveC);
+            var drives = DriveInfo.GetDrives()
+                .Where(drive => drive.DriveType == DriveType.Fixed && drive.Name.Length > 0)
+                .Select(drive => drive.Name[0])
+                .Append('C');
+            var hidden = FolderAccess.HiddenDriveMask(allowedFolders, drives);
+            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoDrives", hidden);
+            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoViewOnDrive", hidden);
             WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoRun", 1);
             WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "DisallowRun", 1);
             WriteString(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "SettingsPageVisibility", EmployeeDesktopPolicy.HiddenSettingsPages);
@@ -48,11 +53,14 @@ public static class EmployeeDesktopLimits
                 }
             }
         }
-        HideSystemFolders(userName, log);
-        PlaceShortcuts(profile, workFolder, log);
-        log("Drive C is hidden. The employee can use Documents, Downloads, Desktop, and Control Panel.");
-        log("Uninstall is blocked. The time window cannot be closed.");
-        log("Sign the employee out and back in so these limits take effect.");
+        var allowC = allowedFolders.Any(folder => folder.StartsWith("C:", StringComparison.OrdinalIgnoreCase));
+        HideSystemFolders(userName, allowC, log);
+        PlaceShortcuts(profile, workFolder, allowedFolders, log);
+        log("The employee can open: " + (allowedFolders.Count == 0 ? "nothing selected" : string.Join(", ", allowedFolders)) + ".");
+        log(allowC
+            ? "Drive C is open to the employee. Uninstall stays blocked."
+            : "Drive C stays closed. Windows and Program Files stay closed.");
+        log("Sign the employee out and back in so these folder choices take effect.");
     }
 
     public static string? TrySid(string userName)
@@ -136,7 +144,7 @@ public static class EmployeeDesktopLimits
         key.SetValue(name, value, RegistryValueKind.String);
     }
 
-    private static void HideSystemFolders(string userName, Action<string> log)
+    private static void HideSystemFolders(string userName, bool allowC, Action<string> log)
     {
         foreach (var folder in new[] { @"C:\", @"C:\Windows", @"C:\Program Files", @"C:\Program Files (x86)", @"C:\ProgramData" })
         {
@@ -145,6 +153,10 @@ public static class EmployeeDesktopLimits
                 continue;
             }
             WindowsCommand.Run("icacls.exe", folder, "/remove:d", userName);
+            if (allowC)
+            {
+                continue;
+            }
             var denied = WindowsCommand.Run("icacls.exe", folder, "/deny", $"{userName}:(RD)");
             if (denied.Code != 0)
             {
@@ -153,7 +165,7 @@ public static class EmployeeDesktopLimits
         }
     }
 
-    private static void PlaceShortcuts(string profile, string workFolder, Action<string> log)
+    private static void PlaceShortcuts(string profile, string workFolder, IReadOnlyList<string> allowedFolders, Action<string> log)
     {
         var desktop = Path.Combine(profile, "Desktop");
         if (!Directory.Exists(desktop))
@@ -162,17 +174,32 @@ public static class EmployeeDesktopLimits
             desktop = Directory.Exists(oneDrive) ? oneDrive : desktop;
             Directory.CreateDirectory(desktop);
         }
-        Directory.CreateDirectory(Path.Combine(profile, "Documents"));
-        Directory.CreateDirectory(Path.Combine(profile, "Downloads"));
-        Link(desktop, "Documents", "explorer.exe", "shell:Personal");
-        Link(desktop, "Downloads", "explorer.exe", "shell:Downloads");
+        var allowed = new HashSet<string>(allowedFolders, StringComparer.OrdinalIgnoreCase);
+        if (allowed.Contains("Documents"))
+        {
+            Directory.CreateDirectory(Path.Combine(profile, "Documents"));
+            Link(desktop, "Documents", "explorer.exe", "shell:Personal");
+        }
+        if (allowed.Contains("Downloads"))
+        {
+            Directory.CreateDirectory(Path.Combine(profile, "Downloads"));
+            Link(desktop, "Downloads", "explorer.exe", "shell:Downloads");
+        }
         Link(desktop, "Control Panel", "explorer.exe", "shell:ControlPanelFolder");
-        if (!string.IsNullOrWhiteSpace(workFolder) && Directory.Exists(workFolder)
-            && !workFolder.StartsWith(@"C:\", StringComparison.OrdinalIgnoreCase))
+        foreach (var folder in allowedFolders.Where(folder => folder.Contains('\\') || folder.Contains('/')))
+        {
+            if (!Directory.Exists(folder))
+            {
+                log("Folder is not on this computer yet: " + folder);
+                continue;
+            }
+            Link(desktop, Path.GetFileName(folder.TrimEnd('\\', '/')), "explorer.exe", folder);
+        }
+        if (!string.IsNullOrWhiteSpace(workFolder) && Directory.Exists(workFolder) && allowed.Contains(workFolder))
         {
             Link(desktop, "Work files", "explorer.exe", workFolder);
         }
-        log("Desktop shortcuts: Documents, Downloads, and Control Panel.");
+        log("Shortcuts were placed for the folders you allowed.");
     }
 
     private static void Link(string desktop, string name, string target, string arguments)
