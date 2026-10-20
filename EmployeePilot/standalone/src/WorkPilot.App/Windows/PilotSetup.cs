@@ -65,7 +65,7 @@ The administrator receives a report after you sign out.
         Directory.CreateDirectory(workFolder);
         CopyProgram(log);
         ProtectFolder(workFolder, request.UserName, modify: true);
-        ProtectFolder(PilotPaths.Journal, request.UserName, modify: false);
+        ProtectJournal(request.UserName);
         ProtectFolder(PilotPaths.Logs, request.UserName, modify: false);
         ProtectFolder(PilotPaths.LiveDirectory, request.UserName, modify: true);
         ProtectFolder(PilotPaths.Reports, request.UserName, modify: false, employeeAccess: false);
@@ -360,6 +360,31 @@ The administrator receives a report after you sign out.
             File.Copy(fullSource, fullDest, true);
             log($"Copied the program to {fullDest}");
         }
+    }
+
+    public static void RepairRecordingAccess()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        if (config is null)
+        {
+            return;
+        }
+        Directory.CreateDirectory(PilotPaths.Journal);
+        Directory.CreateDirectory(PilotPaths.LiveDirectory);
+        ProtectJournal(config.UserName);
+        ProtectFolder(PilotPaths.LiveDirectory, config.UserName, modify: true);
+        RefreshInstalledCopy();
+    }
+
+    private static void ProtectJournal(string user)
+    {
+        Directory.CreateDirectory(PilotPaths.Journal);
+        ProtectFolder(PilotPaths.Journal, user, modify: true);
+        WindowsCommand.Run("icacls.exe", PilotPaths.Journal, "/deny", $"{user}:(OI)(CI)(DE,DC)");
     }
 
     private static void ProtectFolder(string path, string user, bool modify, bool employeeAccess = true)

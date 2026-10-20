@@ -17,7 +17,7 @@ public class AlarmWindow : Window
     private readonly CancellationTokenSource _stop = new();
     private volatile int _beeping;
 
-    public AlarmWindow(Func<LiveStatus> read, bool playSound = true)
+    public AlarmWindow(Func<LiveStatus> read, bool playSound = true, bool lockClose = false)
     {
         _read = read;
         Title = "Employee activity";
@@ -25,6 +25,10 @@ public class AlarmWindow : Window
         Height = 280;
         Topmost = true;
         Content = Build();
+        if (lockClose)
+        {
+            Closing += (_, eventArgs) => eventArgs.Cancel = true;
+        }
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         timer.Tick += (_, _) => Refresh();
         timer.Start();

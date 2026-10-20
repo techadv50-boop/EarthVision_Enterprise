@@ -27,7 +27,8 @@ public class App : Application
             {
                 if (Program.TrackMode)
                 {
-                    desktop.MainWindow = new AlarmWindow(LiveBoard.ReadLocal, playSound: false);
+                    desktop.ShutdownMode = Avalonia.Controls.ShutdownMode.OnExplicitShutdown;
+                    desktop.MainWindow = new AlarmWindow(LiveBoard.ReadLocal, playSound: false, lockClose: true);
                 }
                 else if (!string.IsNullOrWhiteSpace(Program.WatchUrl))
                 {

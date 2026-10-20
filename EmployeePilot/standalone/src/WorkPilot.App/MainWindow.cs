@@ -469,7 +469,7 @@ public class MainWindow : Window
     {
         try
         {
-            PilotSetup.RefreshInstalledCopy();
+            PilotSetup.RepairRecordingAccess();
         }
         catch
         {
