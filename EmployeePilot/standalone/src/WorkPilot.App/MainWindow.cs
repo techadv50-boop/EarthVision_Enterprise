@@ -383,7 +383,7 @@ public class MainWindow : Window
         var place = IsBrowser(status.Program ?? "") ? "Site" : "Window";
         var project = string.IsNullOrWhiteSpace(status.Title) ? "No project title yet" : status.Title;
         _liveState.Text = working ? "Working" : "Not working";
-        _liveDetail.Text = $"Program: {status.Program}    {place}: {project}\nIdle {status.IdleSeconds} s    Time on computer {elapsed}    Clicks {status.ClickCount}";
+        _liveDetail.Text = $"Started {status.StartedLocal}    Active {ReportText.FormatDuration(status.ActiveSeconds)}    Idle {ReportText.FormatDuration(status.SessionIdleSeconds)}\nProgram: {status.Program}    {place}: {project}\nTime on computer {elapsed}    Clicks {status.ClickCount}";
     }
 
     private static bool IsBrowser(string? process) =>

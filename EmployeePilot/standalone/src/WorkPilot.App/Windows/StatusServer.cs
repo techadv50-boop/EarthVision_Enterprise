@@ -73,7 +73,7 @@ button { font-size: 1.4rem; min-width: 12rem; min-height: 4.5rem; border: 0; bor
 <button id="green" type="button">Working</button>
 <button id="red" type="button">Not working</button>
 </div>
-<p id="detail">Waiting for the employee.</p>
+<pre id="detail">Waiting for the employee.</pre>
 <script>
 let audio;
 document.body.addEventListener("click", () => { audio = audio || new AudioContext(); }, { once: true });
@@ -96,8 +96,17 @@ async function tick() {
     document.getElementById("green").style.color = working ? "#fff" : "#666";
     document.getElementById("red").style.background = fresh && !status.working ? "#C62828" : "#D9D9D9";
     document.getElementById("red").style.color = fresh && !status.working ? "#fff" : "#666";
+    function duration(seconds) {
+      seconds = seconds || 0;
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const rest = seconds % 60;
+      if (hours > 0) return hours + " h " + minutes + " min";
+      if (minutes > 0) return minutes + " min " + rest + " s";
+      return rest + " s";
+    }
     document.getElementById("detail").textContent = fresh
-      ? status.program + "  ·  idle " + status.idleSeconds + "s  ·  clicks " + status.clickCount
+      ? "Started " + (status.startedLocal || "") + "\nActive " + duration(status.activeSeconds) + "\nIdle " + duration(status.sessionIdleSeconds) + "\n" + (status.program || "") + " — " + (status.title || "") + "\nClicks " + status.clickCount + "\n\n" + (status.recentLog || "")
       : "No employee is signed in.";
     if (fresh && !status.working) beep();
   } catch (error) {

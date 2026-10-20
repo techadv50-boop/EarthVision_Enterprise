@@ -69,6 +69,29 @@ public sealed class LiveStatus
     public string EmployeeName { get; set; } = "";
     public DateTime UpdatedUtc { get; set; }
     public DateTime SessionStartedUtc { get; set; }
+    public string StartedLocal { get; set; } = "";
+    public int ActiveSeconds { get; set; }
+    public int SessionIdleSeconds { get; set; }
+    public string RecentLog { get; set; } = "";
+}
+
+public static class SessionClock
+{
+    public static void Add(ref int activeSeconds, ref int idleSeconds, bool working, int elapsedSeconds)
+    {
+        if (elapsedSeconds <= 0)
+        {
+            return;
+        }
+        if (working)
+        {
+            activeSeconds += elapsedSeconds;
+        }
+        else
+        {
+            idleSeconds += elapsedSeconds;
+        }
+    }
 }
 
 public static class PilotDefaults

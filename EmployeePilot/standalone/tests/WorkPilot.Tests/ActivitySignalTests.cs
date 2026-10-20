@@ -23,4 +23,16 @@ public class ActivitySignalTests
     {
         Assert.False(ActivitySignal.IsWorking(0, locked: true, alarmAfterSeconds: 30));
     }
+
+    [Fact]
+    public void SessionClockAddsWorkingTimeToActiveAndStoppedTimeToIdle()
+    {
+        var active = 0;
+        var idle = 0;
+        SessionClock.Add(ref active, ref idle, working: true, elapsedSeconds: 12);
+        SessionClock.Add(ref active, ref idle, working: false, elapsedSeconds: 5);
+        SessionClock.Add(ref active, ref idle, working: true, elapsedSeconds: 0);
+        Assert.Equal(12, active);
+        Assert.Equal(5, idle);
+    }
 }

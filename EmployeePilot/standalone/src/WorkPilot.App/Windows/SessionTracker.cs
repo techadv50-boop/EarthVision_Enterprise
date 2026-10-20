@@ -66,10 +66,16 @@ public static class SessionTracker
     private static void Loop(PilotConfig config, string sessionId, string sessionFile, int poll, int alarmAfter, DateTime sessionStarted)
     {
         var clicks = 0;
+        var activeSeconds = 0;
+        var idleSeconds = 0;
+        var countedUntil = DateTime.UtcNow;
         var leftDown = false;
         var rightDown = false;
+        var lastLine = "";
+        var recent = new List<string>();
         var nextJournal = DateTime.UtcNow;
         var nextConfig = DateTime.UtcNow;
+        var startedLocal = sessionStarted.ToLocalTime().ToString("h:mm tt");
         while (true)
         {
             try
@@ -88,7 +94,24 @@ public static class SessionTracker
                 var idle = sample.IdleSeconds;
                 var locked = sample.Locked;
                 var working = ActivitySignal.IsWorking(idle, locked, alarmAfter);
+                var now = DateTime.UtcNow;
+                var elapsed = (int)(now - countedUntil).TotalSeconds;
+                if (elapsed > 0)
+                {
+                    SessionClock.Add(ref activeSeconds, ref idleSeconds, working, elapsed);
+                    countedUntil = countedUntil.AddSeconds(elapsed);
+                }
                 _localBeep = working ? 0 : 1;
+                var line = $"{now.ToLocalTime():h:mm tt}  {(working ? "Working" : "Not working")}  {sample.Process}  {sample.Title}";
+                if (!string.Equals(line, lastLine, StringComparison.Ordinal))
+                {
+                    recent.Add(line);
+                    if (recent.Count > 8)
+                    {
+                        recent.RemoveAt(0);
+                    }
+                    lastLine = line;
+                }
                 LiveBoard.Publish(new LiveStatus
                 {
                     SessionOpen = true,
@@ -99,8 +122,12 @@ public static class SessionTracker
                     Title = sample.Title,
                     ClickCount = clicks,
                     EmployeeName = config.EmployeeName,
-                    UpdatedUtc = DateTime.UtcNow,
-                    SessionStartedUtc = sessionStarted
+                    UpdatedUtc = now,
+                    SessionStartedUtc = sessionStarted,
+                    StartedLocal = startedLocal,
+                    ActiveSeconds = activeSeconds,
+                    SessionIdleSeconds = idleSeconds,
+                    RecentLog = string.Join("\n", recent)
                 });
                 if (DateTime.UtcNow >= nextJournal)
                 {

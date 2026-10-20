@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading;
 using Avalonia.Controls;
 using Avalonia.Layout;
@@ -21,10 +22,10 @@ public class AlarmWindow : Window
     {
         _read = read;
         Title = "Employee activity";
-        Width = 520;
-        Height = 280;
+        Width = 560;
+        Height = lockClose ? 480 : 380;
         Topmost = true;
-        Content = Build();
+        Content = Build(lockClose);
         if (lockClose)
         {
             Closing += (_, eventArgs) => eventArgs.Cancel = true;
@@ -40,15 +41,28 @@ public class AlarmWindow : Window
         Closed += (_, _) => _stop.Cancel();
     }
 
-    private Control Build()
+    private Control Build(bool showSignOut)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center };
         row.Children.Add(_green);
         row.Children.Add(_red);
-        var root = new StackPanel { Margin = new Avalonia.Thickness(20), Spacing = 16 };
+        var root = new StackPanel { Margin = new Avalonia.Thickness(20), Spacing = 12 };
         root.Children.Add(new TextBlock { Text = "Employee activity", FontSize = 22 });
         root.Children.Add(row);
         root.Children.Add(_detail);
+        if (showSignOut)
+        {
+            var signOut = new Button
+            {
+                Content = "Sign out",
+                MinWidth = 160,
+                MinHeight = 40,
+                FontSize = 16,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            signOut.Click += (_, _) => SignOut();
+            root.Children.Add(signOut);
+        }
         return root;
     }
 
@@ -86,7 +100,26 @@ public class AlarmWindow : Window
         }
         var state = working ? "Working" : "Not working";
         Title = state;
-        _detail.Text = $"{status.EmployeeName}\n{status.Program} — {status.Title}\nIdle {status.IdleSeconds} seconds · clicks {status.ClickCount}\nRed light after {status.AlarmAfterSeconds} seconds without the mouse or keyboard.";
+        _detail.Text = Describe(status);
+    }
+
+    private static string Describe(LiveStatus status)
+    {
+        var place = status.Program.Contains("chrome", StringComparison.OrdinalIgnoreCase)
+            || status.Program.Contains("msedge", StringComparison.OrdinalIgnoreCase)
+            ? "Site"
+            : "Window";
+        var log = string.IsNullOrWhiteSpace(status.RecentLog) ? "" : "\n\n" + status.RecentLog;
+        return $"{status.EmployeeName}\nStarted {status.StartedLocal}\nActive {ReportText.FormatDuration(status.ActiveSeconds)}\nIdle {ReportText.FormatDuration(status.SessionIdleSeconds)}\n{status.Program} — {place}: {status.Title}\nClicks {status.ClickCount}. Red light after {status.AlarmAfterSeconds} seconds.{log}";
+    }
+
+    private static void SignOut()
+    {
+        Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "shutdown.exe"), "/l")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
     }
 
     private static void Paint(Button button, bool on, string color)
