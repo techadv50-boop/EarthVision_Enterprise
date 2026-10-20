@@ -469,11 +469,16 @@ public class MainWindow : Window
     {
         try
         {
+            PilotSetup.RefreshInstalledCopy();
             PilotSetup.RepairRecordingAccess();
         }
-        catch
+        catch (Exception ex)
         {
-            // The employee session may still be using the installed copy. Sign that login out and open WorkPilot again.
+            CrashLog.Write(ex);
+            if (!WindowsAdmin.IsAdmin())
+            {
+                WindowsAdmin.Show("This update is open, but the employee window still uses the older copy. Sign the employee out, close this window, right-click WorkPilot.exe, and choose Run as administrator. Approve the prompt. The employee should sign in again.");
+            }
         }
     }
 }
