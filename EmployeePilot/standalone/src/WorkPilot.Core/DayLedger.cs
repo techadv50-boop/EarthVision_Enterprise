@@ -159,6 +159,12 @@ public static class FolderAccess
         }
         return mask;
     }
+
+    public static bool AllowsProfileFolder(IReadOnlyCollection<string> allowed) =>
+        allowed.Any(item => BuiltIn.Contains(item, StringComparer.OrdinalIgnoreCase));
+
+    public static int ExplorerViewMask(int hiddenDriveMask, bool profileFoldersAllowed) =>
+        profileFoldersAllowed ? hiddenDriveMask & ~(1 << ('C' - 'A')) : hiddenDriveMask;
 }
 
 public static class DayReport

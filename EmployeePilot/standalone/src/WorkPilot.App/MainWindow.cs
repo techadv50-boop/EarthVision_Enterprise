@@ -223,8 +223,16 @@ public class MainWindow : Window
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
         var save = new Button { Content = "Save allowed programs", MinHeight = 40 };
         var block = new Button { Content = "Save and block other programs", MinHeight = 40 };
-        save.Click += async (_, _) => await RunButtons(new[] { save, block }, () => Task.Run(() => PilotSetup.UpdatePrograms(Selected(boxes), false, line => Post(status, line))));
-        block.Click += async (_, _) => await RunButtons(new[] { save, block }, () => Task.Run(() => PilotSetup.UpdatePrograms(Selected(boxes), true, line => Post(status, line))));
+        save.Click += async (_, _) =>
+        {
+            var programs = Selected(boxes);
+            await RunButtons(new[] { save, block }, () => Task.Run(() => PilotSetup.UpdatePrograms(programs, false, line => Post(status, line))));
+        };
+        block.Click += async (_, _) =>
+        {
+            var programs = Selected(boxes);
+            await RunButtons(new[] { save, block }, () => Task.Run(() => PilotSetup.UpdatePrograms(programs, true, line => Post(status, line))));
+        };
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(save);
         actions.Children.Add(block);
@@ -457,7 +465,11 @@ public class MainWindow : Window
         };
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 16 };
         var apply = new Button { Content = "Save folder access", MinHeight = 40, HorizontalAlignment = HorizontalAlignment.Left };
-        apply.Click += async (_, _) => await RunButtons(new[] { apply, addButton }, () => Task.Run(() => PilotSetup.UpdateFolders(Selected(boxes), line => Post(status, line))));
+        apply.Click += async (_, _) =>
+        {
+            var folders = Selected(boxes);
+            await RunButtons(new[] { apply, addButton }, () => Task.Run(() => PilotSetup.UpdateFolders(folders, line => Post(status, line))));
+        };
         page.Children.Add(add);
         page.Children.Add(addButton);
         page.Children.Add(apply);

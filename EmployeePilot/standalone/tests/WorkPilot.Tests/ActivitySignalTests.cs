@@ -147,5 +147,9 @@ public class ActivitySignalTests
         Assert.Equal((1 << 2) | (1 << 3), hidden);
         var opened = FolderAccess.HiddenDriveMask(new[] { "Desktop", "C:", @"D:\Projects" }, new[] { 'C', 'D' });
         Assert.Equal(0, opened);
+        var view = FolderAccess.ExplorerViewMask(hidden, profileFoldersAllowed: true);
+        Assert.Equal(0, view & (1 << 2));
+        Assert.NotEqual(0, view & (1 << 3));
+        Assert.True(FolderAccess.AllowsProfileFolder(new[] { "Documents" }));
     }
 }

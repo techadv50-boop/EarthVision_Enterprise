@@ -15,17 +15,20 @@ public static class EmployeeDesktopLimits
         var sid = RequireSid(userName);
         var profile = ProfilePath(sid);
         var hiveName = OpenHive(sid, profile, out var loaded);
+        IReadOnlyDictionary<string, string> profileFolders = new Dictionary<string, string>();
         try
         {
             using var hive = Registry.Users.OpenSubKey(hiveName, writable: true)
                 ?? throw new InvalidOperationException("The employee profile did not open.");
+            profileFolders = ReadProfileFolders(hive, profile);
             var drives = DriveInfo.GetDrives()
                 .Where(drive => drive.DriveType == DriveType.Fixed && drive.Name.Length > 0)
                 .Select(drive => drive.Name[0])
                 .Append('C');
             var hidden = FolderAccess.HiddenDriveMask(allowedFolders, drives);
+            var view = FolderAccess.ExplorerViewMask(hidden, FolderAccess.AllowsProfileFolder(allowedFolders));
             WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoDrives", hidden);
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoViewOnDrive", hidden);
+            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoViewOnDrive", view);
             WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoRun", 1);
             WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "DisallowRun", 1);
             WriteString(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "SettingsPageVisibility", EmployeeDesktopPolicy.HiddenSettingsPages);
@@ -55,6 +58,7 @@ public static class EmployeeDesktopLimits
         }
         var allowC = allowedFolders.Any(folder => folder.StartsWith("C:", StringComparison.OrdinalIgnoreCase));
         HideSystemFolders(userName, allowC, log);
+        GrantProfileFolders(userName, profileFolders, allowedFolders, log);
         PlaceShortcuts(profile, workFolder, allowedFolders, log);
         log("The employee can open: " + (allowedFolders.Count == 0 ? "nothing selected" : string.Join(", ", allowedFolders)) + ".");
         log(allowC
@@ -142,6 +146,58 @@ public static class EmployeeDesktopLimits
     {
         using var key = root.CreateSubKey(subKey) ?? throw new InvalidOperationException("Windows did not save a folder limit.");
         key.SetValue(name, value, RegistryValueKind.String);
+    }
+
+    private static IReadOnlyDictionary<string, string> ReadProfileFolders(RegistryKey hive, string profile)
+    {
+        using var key = hive.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders");
+        string Resolve(string name, string fallback)
+        {
+            var value = key?.GetValue(name) as string;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return fallback;
+            }
+            return Environment.ExpandEnvironmentVariables(value.Replace("%USERPROFILE%", profile, StringComparison.OrdinalIgnoreCase));
+        }
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Desktop"] = Resolve("Desktop", Path.Combine(profile, "Desktop")),
+            ["Documents"] = Resolve("Personal", Path.Combine(profile, "Documents")),
+            ["Downloads"] = Resolve("{374DE290-123F-4565-9164-39C4925E467B}", Path.Combine(profile, "Downloads"))
+        };
+    }
+
+    private static void GrantProfileFolders(string userName, IReadOnlyDictionary<string, string> profileFolders, IReadOnlyList<string> allowedFolders, Action<string> log)
+    {
+        var allowed = new HashSet<string>(allowedFolders, StringComparer.OrdinalIgnoreCase);
+        foreach (var folder in profileFolders)
+        {
+            var path = folder.Value;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+            Directory.CreateDirectory(path);
+            WindowsCommand.Run("icacls.exe", path, "/remove:d", userName);
+            if (!allowed.Contains(folder.Key))
+            {
+                if (!folder.Key.Equals("Desktop", StringComparison.OrdinalIgnoreCase))
+                {
+                    WindowsCommand.Run("icacls.exe", path, "/deny", $"{userName}:(OI)(CI)(RD)");
+                }
+                continue;
+            }
+            var granted = WindowsCommand.Run("icacls.exe", path, "/grant:r", $"{userName}:(OI)(CI)M");
+            if (granted.Code != 0)
+            {
+                log($"Could not open {folder.Key} for the employee. {granted.Output}");
+            }
+            else
+            {
+                log(folder.Key + " is open: " + path);
+            }
+        }
     }
 
     private static void HideSystemFolders(string userName, bool allowC, Action<string> log)
