@@ -1,4 +1,4 @@
-import { api } from './api';
+import { api, postMultipartFile } from './api';
 
 export type PluginActivationStatus = 'inactive' | 'active' | 'disabled';
 export type PluginInstallationStatus = 'not_installed' | 'installed';
@@ -141,17 +141,12 @@ export const pluginService = {
   },
 
   async upload(file: File): Promise<{ ok?: boolean; staging_id?: string; error?: string }> {
-    const body = new FormData();
-    body.append('file', file);
-    const { data } = await api.post('/admin/plugins/upload', body);
-    return data;
+    // Use fetch multipart helper — axios FormData + Content-Type caused 422 Field required.
+    return postMultipartFile('/admin/plugins/upload', file);
   },
 
   async validateUpload(file: File): Promise<Record<string, unknown>> {
-    const body = new FormData();
-    body.append('file', file);
-    const { data } = await api.post('/admin/plugins/validate-upload', body);
-    return data;
+    return postMultipartFile('/admin/plugins/validate-upload', file);
   },
 
   async validateStaging(stagingId: string): Promise<Record<string, unknown>> {
