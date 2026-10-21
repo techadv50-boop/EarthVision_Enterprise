@@ -9,10 +9,12 @@ interface AdminUser {
   email: string;
   username: string;
   full_name?: string;
+  organization?: string;
   is_active: boolean;
   is_superuser: boolean;
   roles: string[];
   access_status?: string;
+  created_at?: string;
 }
 
 type Role = 'admin' | 'user';
@@ -33,6 +35,55 @@ const STATUS_STYLE: Record<Status, string> = {
   restricted: 'text-red-400',
 };
 
+function joinedOn(value?: string) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString();
+}
+
+function InfoList({ users, currentId }: { users: AdminUser[]; currentId?: number }) {
+  const ordered = [...users].sort((a, b) => {
+    if (a.id === currentId) return -1;
+    if (b.id === currentId) return 1;
+    return 0;
+  });
+  return (
+    <div className="space-y-2">
+      {ordered.map((u) => {
+        const status = statusOf(u);
+        const rows: [string, string][] = [
+          ['Username', u.username],
+          ['Email', u.email],
+          ['Full name', u.full_name || '—'],
+          ['Organization', u.organization || '—'],
+          ['Role', roleOf(u) === 'admin' ? 'Admin' : 'User'],
+          ['Access', status],
+          ['Joined', joinedOn(u.created_at)],
+        ];
+        return (
+          <article key={u.id} className="rounded bg-gray-900/70 p-3 ring-1 ring-white/10">
+            <h3 className="text-sm font-medium">
+              {u.full_name || u.username}
+              {u.id === currentId && <span className="ml-1 text-[10px] text-cyan-400">(you)</span>}
+            </h3>
+            <dl className="mt-2 grid grid-cols-[7.5rem_1fr] gap-x-2 gap-y-1 text-xs">
+              {rows.map(([label, value]) => (
+                <div key={label} className="contents">
+                  <dt className="text-gray-500">{label}</dt>
+                  <dd className={`min-w-0 break-all ${label === 'Access' ? STATUS_STYLE[status] : 'text-gray-200'}`}>
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function SatPassUsersModal({ onClose }: { onClose: () => void }) {
   const current = useAuthStore((s) => s.user);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -48,6 +99,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState<Role>('user');
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [tab, setTab] = useState<'access' | 'info'>('access');
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
@@ -229,6 +281,21 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
           </button>
         </div>
 
+        <div className="flex gap-1 border-b border-white/10 px-4 py-2">
+          {(['access', 'info'] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              className={`rounded px-3 py-1 text-xs font-medium ${
+                tab === id ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              {id === 'access' ? 'Access' : 'Info'}
+            </button>
+          ))}
+        </div>
+
         <div className="max-h-[70vh] overflow-y-auto px-4 py-3">
           {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
           {notice && <p className="mb-2 text-xs text-emerald-400">{notice}</p>}
@@ -236,6 +303,8 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
             <div className="flex items-center gap-2 py-8 text-sm text-gray-400">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading users…
             </div>
+          ) : tab === 'info' ? (
+            <InfoList users={users} currentId={current?.id} />
           ) : (
             <>
               <div className="mb-4">
