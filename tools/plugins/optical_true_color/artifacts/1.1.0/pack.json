@@ -1,0 +1,35 @@
+{
+  "plugin_id": "optical_true_color",
+  "tool_id": "optical_true_color",
+  "name": "True Color (Optical)",
+  "description": "Optical true-color band recipes and AOI-aware analysis notes via Host SDK 1.1 (synthetic + AOI + analysis result).",
+  "version": "1.1.0",
+  "digest": "sha256:cd7ded1f3a62ee109337a4e98c0e7c7421de37ebaac10d57ec9c51b37f246dc9",
+  "created_at": "2026-10-21T23:20:42Z",
+  "host_sdk": ">=1.1.0,<2",
+  "compatible_host_api": ">=1.1.0,<2",
+  "ui_strategy": "sandboxed_iframe",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.read_aoi",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result"
+  ],
+  "entry": {
+    "backend": "backend/plugin.py",
+    "ui_meta": "ui/tool-meta.json",
+    "ui_entry": "ui/panel.html"
+  },
+  "execution_model": "static_synthetic_only",
+  "optical_only": true,
+  "applicable_satellites": [
+    "SENTINEL-2",
+    "LANDSAT-8",
+    "LANDSAT-9",
+    "LANDSAT-7",
+    "MODIS"
+  ]
+}

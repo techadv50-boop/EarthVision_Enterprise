@@ -1,0 +1,34 @@
+{
+  "plugin_id": "optical_true_color",
+  "tool_id": "optical_true_color",
+  "label": "True Color (Optical)",
+  "description": "Optical true-color band recipes and AOI-aware analysis notes via Host SDK 1.1 (synthetic + AOI + analysis result). No Leaflet; no scene/render/export Host APIs.",
+  "ui_strategy": "sandboxed_iframe",
+  "entry_html": "ui/panel.html",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.read_aoi",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result"
+  ],
+  "host_sdk": {
+    "protocol": 1,
+    "version": ">=1.1.0,<2",
+    "react": "forbidden",
+    "leaflet": "forbidden",
+    "remote_bundle": false,
+    "execution": "sandboxed_iframe_srcdoc"
+  },
+  "optical_only": true,
+  "applicable_satellites": [
+    "SENTINEL-2",
+    "LANDSAT-8",
+    "LANDSAT-9",
+    "LANDSAT-7",
+    "MODIS"
+  ],
+  "notes": "Absorbable on current SAT EYE Host SDK 1.1. Reads AOI via host.getAoiBounds, band recipes via host.getSynthetic, publishes via host.setAnalysisResult."
+}

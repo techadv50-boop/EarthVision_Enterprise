@@ -1,0 +1,44 @@
+{
+  "kind": "optical_true_color",
+  "plugin_id": "optical_true_color",
+  "version": "1.1.0",
+  "message": "True color RGB band recipes for optical satellites (Host SDK 1.1 absorbable).",
+  "optical_only": true,
+  "metrics": [
+    {
+      "label": "Preset",
+      "value": "true_color"
+    },
+    {
+      "label": "Method",
+      "value": "percentile stretch RGB"
+    },
+    {
+      "label": "Host surface",
+      "value": "sdk_1.1_absorbable"
+    }
+  ],
+  "band_recipes": {
+    "SENTINEL-2": {
+      "codes": "B04-B03-B02",
+      "formula": "R=Red(B04), G=Green(B03), B=Blue(B02) \u2014 natural color"
+    },
+    "LANDSAT-8": {
+      "codes": "B4-B3-B2",
+      "formula": "R=Red(B4), G=Green(B3), B=Blue(B2) \u2014 natural color"
+    },
+    "LANDSAT-9": {
+      "codes": "B4-B3-B2",
+      "formula": "R=Red(B4), G=Green(B3), B=Blue(B2) \u2014 natural color"
+    },
+    "LANDSAT-7": {
+      "codes": "B3-B2-B1",
+      "formula": "R=Red(B3), G=Green(B2), B=Blue(B1) \u2014 natural color"
+    },
+    "MODIS": {
+      "codes": "B01-B04-B03",
+      "formula": "R=Red(B01), G=Green(B04), B=Blue(B03) \u2014 natural color"
+    }
+  },
+  "note": "Integrity-covered payload. Compatible with Host SDK 1.1 (AOI + synthetic + analysis result)."
+}

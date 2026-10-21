@@ -4,14 +4,14 @@
   var parentOrigin = boot.parentOrigin || "*";
   var pending = {};
   var seq = 0;
-  var sceneState = null;
-  var rendered = false;
+  var lastAoi = null;
+  var lastSyn = null;
 
   function el(id) { return document.getElementById(id); }
 
   function callHost(method, params, timeoutMs) {
     return new Promise(function (resolve, reject) {
-      var id = "tc" + (++seq);
+      var id = "otc" + (++seq);
       pending[id] = { resolve: resolve, reject: reject };
       window.parent.postMessage(
         {
@@ -55,74 +55,60 @@
     el("err").textContent = "";
   }
 
-  function setBusy(busy) {
-    el("render").disabled = busy || !(sceneState && sceneState.optical_ok);
-    el("geotiff").disabled = busy || !(sceneState && sceneState.optical_ok);
-    el("jpeg").disabled = busy || !(sceneState && sceneState.optical_ok);
-  }
-
-  function applyScene(scene) {
-    sceneState = scene || null;
-    var gate = el("gate");
-    var bands = el("bands");
-    if (!scene || !scene.scene_id) {
-      gate.className = "status warn";
-      gate.textContent = "Inactive — select an optical satellite image (eye icon).";
-      bands.hidden = true;
-      rendered = false;
-      setBusy(false);
-      el("render").disabled = true;
-      el("geotiff").disabled = true;
-      el("jpeg").disabled = true;
+  function renderBands(syn) {
+    var body = (syn && syn.payload) || syn || {};
+    var recipes = body.band_recipes || {};
+    var keys = Object.keys(recipes);
+    if (!keys.length) {
+      el("bands").innerHTML = "<em>No band recipes in synthetic payload.</em>";
       return;
     }
-    if (!scene.optical_ok) {
-      gate.className = "status warn";
-      gate.textContent =
-        "Inactive for this sensor — " +
-        (scene.optical_block_reason || "optical satellites only (Sentinel-2 / Landsat / MODIS).");
-      bands.hidden = true;
-      rendered = false;
-      el("render").disabled = true;
-      el("geotiff").disabled = true;
-      el("jpeg").disabled = true;
-      return;
-    }
-    gate.className = "status ok";
-    gate.textContent =
-      "Active · " +
-      (scene.family || scene.collection || "optical") +
-      " · scene " +
-      String(scene.scene_id).slice(0, 28);
-    var recipe = scene.band_recipe;
-    if (recipe) {
-      bands.hidden = false;
-      bands.innerHTML =
-        "<strong>True color bands</strong><br/>" +
-        "RGB codes: <code>" +
-        (recipe.codes || "") +
-        "</code><br/>" +
-        "R=<code>" +
-        (recipe.R || "") +
-        "</code> G=<code>" +
-        (recipe.G || "") +
-        "</code> B=<code>" +
-        (recipe.B || "") +
-        "</code><br/>" +
-        "<span style='color:#5d7368'>" +
-        (recipe.formula || "") +
-        "</span>";
-    } else {
-      bands.hidden = true;
-    }
-    rendered = !!scene.has_true_color_overlay;
-    setBusy(false);
+    el("bands").innerHTML =
+      "<strong>Optical true-color band recipes</strong><br/>" +
+      keys
+        .map(function (k) {
+          var r = recipes[k] || {};
+          return (
+            "<div style='margin-top:4px'><code>" +
+            k +
+            "</code> · <code>" +
+            (r.codes || "—") +
+            "</code><br/><span style='color:#5d7368'>" +
+            (r.formula || "") +
+            "</span></div>"
+          );
+        })
+        .join("");
   }
 
-  function refreshScene() {
-    return callHost("host.getSceneContext", {})
-      .then(function (res) {
-        applyScene(res && res.scene);
+  function formatAoi(aoi) {
+    if (!aoi) return "(none — draw an AOI in the Host Shell)";
+    return (
+      "<code>" +
+      [aoi.west, aoi.south, aoi.east, aoi.north]
+        .map(function (x) {
+          return Number(x).toFixed(4);
+        })
+        .join(", ") +
+      "</code>"
+    );
+  }
+
+  function refresh() {
+    clearErr();
+    return callHost("host.getAoiBounds", {})
+      .then(function (aoiRes) {
+        lastAoi = aoiRes && aoiRes.aoi;
+        el("gate").textContent =
+          "AOI: " +
+          (lastAoi
+            ? "bound · use Host Shell true_color toolbox for map composite"
+            : "none — draw an AOI, then publish a plan");
+        return callHost("host.getSynthetic", {});
+      })
+      .then(function (syn) {
+        lastSyn = syn;
+        renderBands(syn);
         return callHost("host.resize", { height: document.body.scrollHeight + 12 });
       })
       .catch(function (e) {
@@ -136,94 +122,55 @@
     " · v" +
     (boot.version || "") +
     " · sdk " +
-    (boot.hostSdkVersion || "");
+    (boot.hostSdkVersion || "1.1");
 
   window.parent.postMessage(
     { v: 1, type: "ready", plugin_id: boot.pluginId, version: boot.version, digest: boot.digest },
     parentOrigin === "*" ? "*" : parentOrigin
   );
 
-  refreshScene();
-  setInterval(function () {
-    refreshScene();
-  }, 4000);
+  refresh();
 
-  el("render").addEventListener("click", function () {
+  el("refresh").addEventListener("click", function () {
+    refresh();
+  });
+
+  el("run").addEventListener("click", function () {
     clearErr();
-    setBusy(true);
-    el("out").textContent = "Rendering true color composite…";
-    callHost("host.renderTrueColor", {}, 120000)
-      .then(function (res) {
-        rendered = true;
-        var recipe = (res && res.band_recipe) || (sceneState && sceneState.band_recipe);
-        el("out").textContent =
-          (res && res.message ? res.message : "True color ready") +
-          (recipe ? "\nBands: " + recipe.codes : "");
-        return callHost("host.setAnalysisResult", {
-          result: {
-            title: "True Color (Optical)",
-            summary: (res && res.message) || "True color composite on map",
-            metrics: [
-              { label: "Preset", value: "true_color" },
-              { label: "Bands", value: (recipe && recipe.codes) || "—" },
-              { label: "Family", value: (sceneState && sceneState.family) || "—" },
-            ],
-          },
-        });
-      })
+    el("out").textContent = "Publishing true-color plan…";
+    var body = (lastSyn && lastSyn.payload) || lastSyn || {};
+    var recipes = body.band_recipes || {};
+    var metrics = (body.metrics || []).slice();
+    metrics.push({
+      label: "AOI",
+      value: lastAoi ? "bound" : "none",
+    });
+    var families = Object.keys(recipes);
+    var summary =
+      (body.message || "True color optical plan") +
+      (lastAoi ? " · AOI bound" : " · no AOI") +
+      (families.length ? " · " + families.length + " sensor recipes" : "");
+    callHost("host.setAnalysisResult", {
+      result: {
+        title: "True Color (Optical)",
+        summary: summary,
+        metrics: metrics,
+        aoi: lastAoi || null,
+        band_recipes: recipes,
+        optical_only: true,
+        host_surface: "sdk_1.1_absorbable",
+      },
+    })
       .then(function () {
+        el("out").textContent =
+          summary +
+          "\n\nBand codes published to Host analysis result.\n" +
+          "Map RGB composite: use Host Shell toolbox true_color (legacy) on an optical scene.";
         return callHost("host.resize", { height: document.body.scrollHeight + 12 });
       })
       .catch(function (e) {
         showErr(e && e.message ? e.message : String(e));
         el("out").textContent = "Result: —";
-      })
-      .then(function () {
-        setBusy(false);
-      });
-  });
-
-  el("geotiff").addEventListener("click", function () {
-    clearErr();
-    setBusy(true);
-    el("out").textContent = "Exporting GeoTIFF…";
-    callHost("host.exportGeotiff", {}, 180000)
-      .then(function (res) {
-        el("out").textContent =
-          "GeoTIFF downloaded" + (res && res.filename ? ": " + res.filename : "");
-      })
-      .catch(function (e) {
-        showErr(e && e.message ? e.message : String(e));
-      })
-      .then(function () {
-        setBusy(false);
-      });
-  });
-
-  el("jpeg").addEventListener("click", function () {
-    clearErr();
-    var dpiEl = document.querySelector('input[name="dpi"]:checked');
-    var dpi = dpiEl && dpiEl.value === "600" ? 600 : 300;
-    setBusy(true);
-    el("out").textContent = "Exporting map JPEG at " + dpi + " DPI…";
-    callHost(
-      "host.exportMapJpeg",
-      { dpi: dpi, title: "SAT EYE True Color Map" },
-      180000
-    )
-      .then(function (res) {
-        el("out").textContent =
-          "Map JPEG downloaded (" +
-          dpi +
-          " DPI)" +
-          (res && res.filename ? ": " + res.filename : "") +
-          "\nNorth arrow + scale bar attached.";
-      })
-      .catch(function (e) {
-        showErr(e && e.message ? e.message : String(e));
-      })
-      .then(function () {
-        setBusy(false);
       });
   });
 })();

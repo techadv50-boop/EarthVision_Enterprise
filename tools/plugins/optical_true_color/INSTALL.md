@@ -1,44 +1,47 @@
-# Install True Color (Optical) 1.0.0
+# Install True Color (Optical) 1.1.0 — Host SDK 1.1 absorbable
 
-## Why upload failed (422) on current Host
+This pack is designed for the **current SAT EYE Host** surface (same absorbable
+API as `demo_gis_analysis`), not the newer 1.2 scene/render/export Host APIs.
 
-Your Admin health showed:
+## What the live Host accepts
 
-| Badge | Meaning |
-|-------|---------|
-| **HOST SDK 1.1.0** | This plugin needs **Host SDK ≥ 1.2.0** (scene / true-color / export APIs) |
-| **SIGNATURES REQUIRED** + **TRUST PRODUCTION** | Zip must include `SIGNATURE.json` from an allowlisted production publisher |
+| Surface | This pack |
+|---------|-----------|
+| **HOST SDK 1.1.0** | Requires `>=1.1.0,<2` |
+| Permissions | `synthetic_data`, slot, `read_meta`, `read_aoi`, `set/read_analysis_result` |
+| Host methods used | `host.getAoiBounds`, `host.getSynthetic`, `host.setAnalysisResult`, `host.resize` |
+| Signatures | Zip includes `SIGNATURE.json` from an allowlisted publisher |
 
-Unsigned zip + SDK 1.1 Host → validate rejects.
+Does **not** declare `host.sdk.read_scene` / `render_true_color` / export perms
+(those are rejected by the current Host allowlist).
 
-## Steps (in order)
+## Steps
 
-### 1. Deploy Host with SDK 1.2
+### 1. Publisher allowlist (preview)
 
-Merge / deploy PR stack including [#90](https://github.com/techadv50-boop/EarthVision_Enterprise/pull/90) so Admin health shows **HOST SDK 1.2.0**.
+On the RC preview volume, publisher id **`rc-verify`** must be enabled
+(`EV_PACK_PUBLISHERS`). The shipped zip is signed for `rc-verify`.
 
-Until then, install cannot succeed even with a perfect zip.
+For production, re-sign with your production publisher and merge that public key
+into the production allowlist (never commit private keys).
 
-### 2. Allowlist the pack publisher (production volume)
+### 2. Download signed zip
 
-Merge publishers from:
+`tools/plugins/optical_true_color/artifacts/optical_true_color-1.1.0.zip`
 
-`tools/publishers/approved_publishers.optical_true_color.json`
+### 3. Admin → Plugins → Validate zip → Install → Activate
 
-into the live file pointed at by `EV_PACK_PUBLISHERS` (typically  
-`/data/tool_packs/publishers/approved_publishers.json`).
+Place on **right analysis panel**.
 
-Publisher id: `sateye-optical-tc` (public key only — no private key in git).
+### 4. Use
 
-### 3. Download signed zip
-
-https://github.com/techadv50-boop/EarthVision_Enterprise/raw/cursor/sateye-optical-truecolor-plugin-5d6d/tools/plugins/optical_true_color/artifacts/optical_true_color-1.0.0.zip
-
-### 4. Admin → Plugins → Validate zip → Install → Activate
-
-Place on **right analysis panel**. Restrict satellites to optical families if desired.
+1. Draw an AOI (optional but recommended).
+2. Open the plugin → **Publish true-color plan**.
+3. Band recipes appear in Host analysis results.
+4. Map RGB composite remains Host Shell toolbox **true_color** (legacy builtin)
+   on an optical scene — this pack does not call map render APIs.
 
 ## Notes
 
-- Worker badge **NOT CONFIGURED** does not block this pack (`static_synthetic_only`); Host Shell fulfills imagery.
 - Legacy builtin `true_color` pack id stays frozen; this plugin id is `optical_true_color`.
+- Version **1.0.0** (SDK 1.2 scene/export) is superseded for current Host installs by **1.1.0**.
