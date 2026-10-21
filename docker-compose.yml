@@ -67,6 +67,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.frontend
+      args:
+        FRONTEND_BUILD_ID: ${FRONTEND_BUILD_ID:-dev}
     restart: unless-stopped
     ports:
       - "5173:80"
