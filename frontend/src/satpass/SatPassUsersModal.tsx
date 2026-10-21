@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { X, Check, Ban, Loader2, RotateCcw, Plus } from 'lucide-react';
 import { adminApi } from '@/services/api';
 import { useAuthStore } from '@/store/authStore';
+import { QuietSecretInput, QuietTextInput } from '@/components/QuietField';
 
 interface AdminUser {
   id: number;
@@ -191,17 +192,23 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                   <Plus className="h-3.5 w-3.5" /> {showAdd ? 'Close new user' : 'Add user'}
                 </button>
                 {showAdd && (
-                  <form onSubmit={(e) => void addUser(e)} className="mt-2 space-y-2 rounded bg-gray-900/70 p-2 ring-1 ring-white/10">
+                  <form
+                    onSubmit={(e) => void addUser(e)}
+                    autoComplete="off"
+                    className="mt-2 space-y-2 rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
+                  >
                     <div className="grid gap-2 sm:grid-cols-2">
-                      <input
-                        type="email"
+                      <QuietTextInput
+                        name="satpass-email"
+                        inputMode="email"
                         required
                         value={newEmail}
                         onChange={(e) => setNewEmail(e.target.value)}
                         placeholder="Email"
                         className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                       />
-                      <input
+                      <QuietTextInput
+                        name="satpass-username"
                         required
                         minLength={3}
                         value={newUsername}
@@ -209,20 +216,19 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                         placeholder="Username"
                         className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                       />
-                      <input
+                      <QuietTextInput
+                        name="satpass-name"
                         value={newName}
                         onChange={(e) => setNewName(e.target.value)}
                         placeholder="Full name"
                         className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                       />
-                      <input
-                        type="password"
+                      <QuietSecretInput
                         required
                         minLength={8}
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
                         placeholder="Password"
-                        autoComplete="new-password"
                         className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                       />
                     </div>
@@ -281,14 +287,12 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                           </button>
                         </div>
                         <div className="mt-2 flex items-center gap-2">
-                          <input
-                            type="password"
+                          <QuietSecretInput
                             value={draftPassword[u.id] || ''}
                             onChange={(e) =>
                               setDraftPassword((prev) => ({ ...prev, [u.id]: e.target.value }))
                             }
                             placeholder="New password"
-                            autoComplete="new-password"
                             className="min-w-0 flex-1 rounded bg-gray-950 px-2 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                           />
                           <button
@@ -355,14 +359,12 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                       )}
                       </div>
                       <div className="mt-2 flex items-center gap-2">
-                          <input
-                            type="password"
+                          <QuietSecretInput
                             value={draftPassword[u.id] || ''}
                             onChange={(e) =>
                               setDraftPassword((prev) => ({ ...prev, [u.id]: e.target.value }))
                             }
                             placeholder="New password"
-                            autoComplete="new-password"
                             className="min-w-0 flex-1 rounded bg-gray-950 px-2 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
                           />
                           <button

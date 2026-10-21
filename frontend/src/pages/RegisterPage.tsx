@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Globe, Loader2 } from 'lucide-react';
 import { authApi } from '@/services/api';
+import { QuietSecretInput, QuietTextInput } from '@/components/QuietField';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
@@ -48,11 +49,12 @@ export default function RegisterPage() {
           <p className="text-gray-500 mt-2">An admin must approve your account</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
           <div>
             <label className="text-sm text-gray-400 mb-1 block">Email</label>
-            <input
-              type="email"
+            <QuietTextInput
+              name="satpass-email"
+              inputMode="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="input-field"
@@ -61,8 +63,8 @@ export default function RegisterPage() {
           </div>
           <div>
             <label className="text-sm text-gray-400 mb-1 block">Username</label>
-            <input
-              type="text"
+            <QuietTextInput
+              name="satpass-username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="input-field"
@@ -71,8 +73,8 @@ export default function RegisterPage() {
           </div>
           <div>
             <label className="text-sm text-gray-400 mb-1 block">Full name</label>
-            <input
-              type="text"
+            <QuietTextInput
+              name="satpass-name"
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
               className="input-field"
@@ -80,8 +82,7 @@ export default function RegisterPage() {
           </div>
           <div>
             <label className="text-sm text-gray-400 mb-1 block">Password</label>
-            <input
-              type="password"
+            <QuietSecretInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="input-field"

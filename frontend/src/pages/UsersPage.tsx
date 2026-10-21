@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { adminApi } from '@/services/api';
 import { useAuthStore } from '@/store/authStore';
+import { QuietSecretInput, QuietTextInput } from '@/components/QuietField';
 
 interface AdminUser {
   id: number;
@@ -139,34 +140,40 @@ export default function UsersPage() {
       {msg && <p className="text-earth-400 text-sm mb-3">{msg}</p>}
       {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
 
-      <form className="panel p-4 mb-6 grid gap-3 md:grid-cols-2 max-w-3xl" onSubmit={(e) => void addUser(e)}>
+      <form
+        className="panel p-4 mb-6 grid gap-3 md:grid-cols-2 max-w-3xl"
+        autoComplete="off"
+        onSubmit={(e) => void addUser(e)}
+      >
         <h3 className="md:col-span-2 text-sm font-medium">Add new user</h3>
-        <input
+        <QuietTextInput
           className="input-field"
+          name="satpass-email"
+          inputMode="email"
           placeholder="Email"
-          type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
         />
-        <input
+        <QuietTextInput
           className="input-field"
+          name="satpass-username"
           placeholder="Username"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           minLength={3}
           required
         />
-        <input
+        <QuietTextInput
           className="input-field"
+          name="satpass-name"
           placeholder="Full name"
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
         />
-        <input
+        <QuietSecretInput
           className="input-field"
           placeholder="Password"
-          type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           minLength={8}
