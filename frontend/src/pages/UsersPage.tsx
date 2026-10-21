@@ -43,6 +43,7 @@ export default function UsersPage() {
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
   const [newRole, setNewRole] = useState<'admin' | 'user'>('user');
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
 
   const load = async () => {
     const { data } = await adminApi.users();
@@ -122,6 +123,33 @@ export default function UsersPage() {
           ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
           : undefined;
       setError(typeof detail === 'string' ? detail : 'Could not add that user.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeAccount = async (user: AdminUser) => {
+    if (user.id === current?.id) return;
+    if (confirmDelete !== user.id) {
+      setConfirmDelete(user.id);
+      setError('');
+      setMsg(`Click Confirm delete to remove ${user.username}.`);
+      return;
+    }
+    setBusy(user.id);
+    setMsg('');
+    setError('');
+    try {
+      await adminApi.deleteUser(user.id);
+      setConfirmDelete(null);
+      await load();
+      setMsg(`Deleted ${user.username}.`);
+    } catch (err: unknown) {
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      setError(typeof detail === 'string' ? detail : 'Could not delete that account.');
     } finally {
       setBusy(null);
     }
@@ -242,6 +270,14 @@ export default function UsersPage() {
                       >
                         Restrict
                       </button>
+                      <button
+                        className="btn-secondary"
+                        type="button"
+                        disabled={busy !== null || user.id === current?.id}
+                        onClick={() => void removeAccount(user)}
+                      >
+                        {confirmDelete === user.id ? 'Confirm delete' : 'Delete'}
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -321,6 +357,14 @@ export default function UsersPage() {
                           Restore access
                         </button>
                       )}
+                      <button
+                        className="btn-secondary"
+                        type="button"
+                        disabled={busy !== null || self}
+                        onClick={() => void removeAccount(user)}
+                      >
+                        {confirmDelete === user.id ? 'Confirm delete' : 'Delete'}
+                      </button>
                     </div>
                   </td>
                 </tr>

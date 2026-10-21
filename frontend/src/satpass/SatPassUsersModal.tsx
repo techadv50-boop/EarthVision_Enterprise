@@ -47,6 +47,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
   const [newName, setNewName] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState<Role>('user');
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
@@ -141,6 +142,60 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
     }
   };
 
+  const removeAccount = async (u: AdminUser) => {
+    if (u.id === current?.id) return;
+    if (confirmDelete !== u.id) {
+      setConfirmDelete(u.id);
+      setError('');
+      setNotice(`Click Confirm delete to remove ${u.username}.`);
+      return;
+    }
+    setBusy(u.id);
+    setError('');
+    setNotice('');
+    try {
+      await adminApi.deleteUser(u.id);
+      setConfirmDelete(null);
+      setNotice(`Deleted ${u.username}.`);
+      await load();
+    } catch (err: unknown) {
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      setError(typeof detail === 'string' ? detail : 'Could not delete that account.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const passwordRow = (u: AdminUser) => (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <QuietSecretInput
+        value={draftPassword[u.id] || ''}
+        onChange={(e) => setDraftPassword((prev) => ({ ...prev, [u.id]: e.target.value }))}
+        placeholder="New password"
+        className="min-w-0 flex-1 rounded bg-gray-950 px-2 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+      />
+      <button
+        disabled={busy === u.id}
+        onClick={() => void savePassword(u)}
+        className="rounded bg-cyan-600 px-2 py-1 text-xs font-medium hover:bg-cyan-500 disabled:opacity-50"
+      >
+        Set password
+      </button>
+      <button
+        type="button"
+        disabled={busy === u.id || u.id === current?.id}
+        title={u.id === current?.id ? 'You cannot delete the account you are signed in with' : 'Delete this account'}
+        onClick={() => void removeAccount(u)}
+        className="rounded bg-white/5 px-2 py-1 text-xs text-red-300 ring-1 ring-red-500/30 hover:bg-red-500/10 disabled:opacity-50"
+      >
+        {confirmDelete === u.id ? 'Confirm delete' : 'Delete'}
+      </button>
+    </div>
+  );
+
   const pending = users.filter((u) => statusOf(u) === 'pending');
   const others = users.filter((u) => statusOf(u) !== 'pending');
 
@@ -166,7 +221,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
           <div>
             <h2 className="text-sm font-bold">Users &amp; access</h2>
             <p className="text-[11px] text-gray-500">
-              Add accounts, set any password, and approve or restrict access.
+              Add accounts, set any password, and approve, restrict, or delete access.
             </p>
           </div>
           <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-white/10 hover:text-white">
@@ -286,23 +341,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                             <Ban className="h-3.5 w-3.5" /> Restrict
                           </button>
                         </div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <QuietSecretInput
-                            value={draftPassword[u.id] || ''}
-                            onChange={(e) =>
-                              setDraftPassword((prev) => ({ ...prev, [u.id]: e.target.value }))
-                            }
-                            placeholder="New password"
-                            className="min-w-0 flex-1 rounded bg-gray-950 px-2 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
-                          />
-                          <button
-                            disabled={busy === u.id}
-                            onClick={() => void savePassword(u)}
-                            className="rounded bg-cyan-600 px-2 py-1 text-xs font-medium hover:bg-cyan-500 disabled:opacity-50"
-                          >
-                            Set password
-                          </button>
-                        </div>
+                        {passwordRow(u)}
                       </div>
                     ))}
                   </div>
@@ -358,23 +397,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                         </button>
                       )}
                       </div>
-                      <div className="mt-2 flex items-center gap-2">
-                          <QuietSecretInput
-                            value={draftPassword[u.id] || ''}
-                            onChange={(e) =>
-                              setDraftPassword((prev) => ({ ...prev, [u.id]: e.target.value }))
-                            }
-                            placeholder="New password"
-                            className="min-w-0 flex-1 rounded bg-gray-950 px-2 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
-                          />
-                          <button
-                            disabled={busy === u.id}
-                            onClick={() => void savePassword(u)}
-                            className="rounded bg-cyan-600 px-2 py-1 text-xs font-medium hover:bg-cyan-500 disabled:opacity-50"
-                          >
-                            Set password
-                          </button>
-                        </div>
+                      {passwordRow(u)}
                     </div>
                   );
                 })}

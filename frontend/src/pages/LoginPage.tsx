@@ -68,23 +68,35 @@ export default function LoginPage() {
         </div>
 
         {!showReset ? (
-          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="on">
             <div>
-              <label className="text-sm text-gray-400 mb-1 block">Username or email</label>
-              <QuietTextInput
+              <label className="text-sm text-gray-400 mb-1 block" htmlFor="satpass-username">
+                Username or email
+              </label>
+              <input
+                id="satpass-username"
+                name="username"
+                type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="input-field"
+                autoComplete="username"
                 placeholder="Username or email"
                 required
               />
             </div>
             <div>
-              <label className="text-sm text-gray-400 mb-1 block">Password</label>
-              <QuietSecretInput
+              <label className="text-sm text-gray-400 mb-1 block" htmlFor="satpass-password">
+                Password
+              </label>
+              <input
+                id="satpass-password"
+                name="password"
+                type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="input-field"
+                autoComplete="current-password"
                 required
               />
             </div>

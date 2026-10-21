@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,6 +17,10 @@ from app.core.config import get_settings
 from app.core.dependencies import get_current_user, require_permission
 from app.database.session import get_db
 from app.models.analysis import AnalysisJob
+from app.models.aoi import AreaOfInterest
+from app.models.aoi_layer import AoiLayer
+from app.models.bookmark import Bookmark
+from app.models.copernicus import CopernicusToken
 from app.models.project import Project
 from app.models.scene import CachedScene
 from app.models.subscription import APIKey, Subscription
@@ -196,6 +201,35 @@ async def update_user(
         "is_active": updated.is_active,
         "access_status": updated.portal_status(),
     }
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: int,
+    admin: Annotated[User, Depends(require_permission("admin", "all"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot delete the account you are signed in with")
+    result = await db.execute(select(User).options(selectinload(User.roles)).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.roles.clear()
+    await db.flush()
+    await db.execute(update(AoiLayer).where(AoiLayer.created_by_id == user_id).values(created_by_id=None))
+    for model in (APIKey, Subscription, AnalysisJob, CachedScene, Bookmark, AreaOfInterest, CopernicusToken):
+        await db.execute(delete(model).where(model.user_id == user_id))
+    await db.execute(delete(Project).where(Project.owner_id == user_id))
+    await db.delete(user)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="This account still owns records that could not be removed.",
+        ) from exc
 
 
 @router.get("/roles", response_model=list[RoleResponse])

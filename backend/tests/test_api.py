@@ -314,3 +314,43 @@ async def test_login_accepts_username_or_email(client):
         )
         assert login.status_code == 200, f"{ident}: {login.text}"
 
+
+@pytest.mark.asyncio
+async def test_admin_can_delete_another_account_but_not_self(client):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
+    )
+    admin_headers = _bearer(operator)
+    created = await client.post(
+        "/api/v1/admin/users",
+        headers=admin_headers,
+        json={
+            "email": "gone@example.com",
+            "username": "goneuser",
+            "password": "Goneuser@123",
+            "full_name": "Gone User",
+            "role": "user",
+        },
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["id"]
+
+    removed = await client.delete(f"/api/v1/admin/users/{uid}", headers=admin_headers)
+    assert removed.status_code == 204, removed.text
+
+    gone = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "goneuser", "password": "Goneuser@123"},
+    )
+    assert gone.status_code == 401
+
+    listing = await client.get("/api/v1/admin/users", headers=admin_headers)
+    assert listing.status_code == 200
+    assert all(row["username"] != "goneuser" for row in listing.json())
+
+    me = await client.get("/api/v1/auth/me", headers=admin_headers)
+    assert me.status_code == 200
+    self_delete = await client.delete(f"/api/v1/admin/users/{me.json()['id']}", headers=admin_headers)
+    assert self_delete.status_code == 400
+
