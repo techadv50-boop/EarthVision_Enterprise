@@ -288,3 +288,29 @@ async def test_admin_can_add_a_user_and_set_any_password(client):
     )
     assert new.status_code == 200, new.text
 
+
+@pytest.mark.asyncio
+async def test_login_accepts_username_or_email(client):
+    operator = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
+    )
+    created = await client.post(
+        "/api/v1/admin/users",
+        headers=_bearer(operator),
+        json={
+            "email": "PNSSS@Example.com",
+            "username": "PNSSS",
+            "password": "PnsssPass99",
+            "full_name": "PNSSS",
+            "role": "user",
+        },
+    )
+    assert created.status_code == 201, created.text
+    for ident in ("PNSSS", "pnsss", "PNSSS@Example.com", "pnsss@example.com"):
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": ident, "password": "PnsssPass99"},
+        )
+        assert login.status_code == 200, f"{ident}: {login.text}"
+
