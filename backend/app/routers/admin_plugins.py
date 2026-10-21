@@ -5,10 +5,14 @@ Upload/install uses opaque staging IDs only — no client ``source_path``.
 
 from __future__ import annotations
 
+import base64
+import binascii
+from io import BytesIO
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, ValidationError
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.core.deps import require_roles
 from app.models.user import User, UserRole
@@ -33,9 +37,50 @@ class InstallStagingBody(BaseModel):
     confirm: str = "install"
 
 
+class ZipBase64Body(BaseModel):
+    """JSON zip upload — avoids broken multipart/FormData proxies and axios Content-Type bugs."""
+
+    filename: str = Field(..., min_length=1, max_length=255)
+    content_base64: str = Field(..., min_length=16)
+
+
 def _err(exc: Exception) -> None:
     """Surface pack/validation failures as HTTP 422 with a readable detail string."""
     raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _staging_from_base64(body: ZipBase64Body) -> str:
+    name = (body.filename or "").strip()
+    if not name.lower().endswith(".zip"):
+        raise PackOpsError("filename must end with .zip")
+    try:
+        raw = base64.b64decode(body.content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise PackOpsError("invalid content_base64") from exc
+    if not raw:
+        raise PackOpsError("empty upload")
+    return engine.upload_stream(BytesIO(raw))
+
+
+async def _staging_from_request(request: Request) -> str:
+    """Accept multipart ``file`` or JSON ``{filename, content_base64}``.
+
+    Parsed from the raw Request so JSON bodies are not rejected by ``File(...)``.
+    """
+    ctype = (request.headers.get("content-type") or "").lower()
+    if "application/json" in ctype:
+        payload = await request.json()
+        return _staging_from_base64(ZipBase64Body.model_validate(payload))
+    if "multipart/form-data" in ctype:
+        form = await request.form()
+        upload = form.get("file")
+        if not isinstance(upload, StarletteUploadFile):
+            raise PackOpsError("missing zip upload: multipart field 'file' required")
+        return engine.upload_stream(upload.file)
+    raise PackOpsError(
+        "missing zip upload: send multipart field 'file' or JSON "
+        "{filename, content_base64}"
+    )
 
 
 @router.get("")
@@ -60,28 +105,29 @@ async def plugin_versions(plugin_id: str, admin: AdminUser) -> dict:
 
 
 @router.post("/upload")
-async def upload_plugin(
-    admin: AdminUser,
-    file: UploadFile = File(...),
-) -> dict:
-    """Stream zip into opaque staging. Does not validate or install."""
+async def upload_plugin(request: Request, admin: AdminUser) -> dict:
+    """Stream zip into opaque staging. Does not validate or install.
+
+    Accepts multipart ``file`` or JSON ``{filename, content_base64}``.
+    """
     try:
-        staging_id = engine.upload_stream(file.file)
+        staging_id = await _staging_from_request(request)
         return {"ok": True, "staging_id": staging_id}
-    except (PackOpsError, ValueError, OSError) as exc:
+    except (PackOpsError, ValueError, OSError, ValidationError) as exc:
         _err(exc)
 
 
 @router.post("/validate-upload")
-async def validate_upload(
-    admin: AdminUser,
-    file: UploadFile = File(...),
-) -> dict:
-    """Upload + validate in one step; returns staging_id + digest (not installed)."""
+async def validate_upload(request: Request, admin: AdminUser) -> dict:
+    """Upload + validate in one step; returns staging_id + digest (not installed).
+
+    Accepts multipart ``file`` or JSON ``{filename, content_base64}`` so clients
+    that cannot send multipart (axios JSON Content-Type) still work.
+    """
     try:
-        staging_id = engine.upload_stream(file.file)
+        staging_id = await _staging_from_request(request)
         return engine.validate_staging(staging_id)
-    except (PackOpsError, ValueError, OSError) as exc:
+    except (PackOpsError, ValueError, OSError, ValidationError) as exc:
         _err(exc)
 
 

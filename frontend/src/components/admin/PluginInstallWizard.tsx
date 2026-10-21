@@ -214,6 +214,9 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
             Select a signed SATEYE tool plugin package (.zip). Install never rebuilds the Host
             Platform.
           </p>
+          <p className="font-mono text-[10px] text-[var(--muted)]" data-testid="upload-client-stamp">
+            upload-client: json-b64-v1
+          </p>
           <input
             type="file"
             accept=".zip,application/zip"
