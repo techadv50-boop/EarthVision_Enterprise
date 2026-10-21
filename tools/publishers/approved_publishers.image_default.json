@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "notes": "Image default: NO enabled publishers. Production must set EV_PACK_PUBLISHERS to a protected volume allowlist. Preview compose mounts approved_publishers.preview.json. preview-dev must never be the production default.",
+  "publishers": []
+}

@@ -25,19 +25,24 @@ CompositePreset = Literal[
 
 class CompositeRequest(BaseModel):
     scene_id: str | None = None
+    collection: str | None = Field(
+        default=None,
+        description="Satellite/collection id used to validate & label band formulas",
+    )
     bbox: list[float] | None = Field(default=None, description="[west,south,east,north]")
     preset: CompositePreset = "false_color_infrared"
     # Optional custom band mapping (overrides preset)
     red_band: str | None = None
     green_band: str | None = None
     blue_band: str | None = None
-    size: int = Field(default=512, ge=64, le=1024)
+    # Larger default so True/False Color overlays stay sharp on the map.
+    size: int = Field(default=2048, ge=64, le=2048)
     stretch: Literal["percentile", "minmax", "none"] = "percentile"
     p_low: float = Field(default=2.0, ge=0, le=49)
     p_high: float = Field(default=98.0, ge=51, le=100)
-    gamma: float = Field(default=1.0, gt=0.1, le=3.0)
-    brightness: float = Field(default=1.0, gt=0.1, le=2.5)
-    contrast: float = Field(default=1.0, gt=0.1, le=2.5)
+    gamma: float = Field(default=1.2, gt=0.1, le=3.0)
+    brightness: float = Field(default=1.05, gt=0.1, le=2.5)
+    contrast: float = Field(default=1.05, gt=0.1, le=2.5)
 
 
 class CompositeResponse(BaseModel):
@@ -52,17 +57,19 @@ class CompositeResponse(BaseModel):
     legend: LegendInfo | None = None
     message: str | None = None
     stretch: str | None = None
+    # STAC scene footprint (tilted polygon) — map should clip image to this
+    footprint: dict[str, Any] | None = None
 
 
 class StretchRequest(BaseModel):
     scene_id: str | None = None
     bbox: list[float] | None = None
-    size: int = Field(default=512, ge=64, le=1024)
-    p_low: float = Field(default=2.0, ge=0, le=49)
-    p_high: float = Field(default=98.0, ge=51, le=100)
-    gamma: float = Field(default=1.0, gt=0.1, le=3.0)
+    size: int = Field(default=512, ge=64, le=640)
+    p_low: float = Field(default=1.0, ge=0, le=49)
+    p_high: float = Field(default=99.0, ge=51, le=100)
+    gamma: float = Field(default=1.05, gt=0.1, le=3.0)
     brightness: float = Field(default=1.0, gt=0.1, le=2.5)
-    contrast: float = Field(default=1.0, gt=0.1, le=2.5)
+    contrast: float = Field(default=1.1, gt=0.1, le=2.5)
     source: Literal["true_color", "current"] = "true_color"
 
 

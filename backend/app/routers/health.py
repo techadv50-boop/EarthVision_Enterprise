@@ -25,8 +25,9 @@ async def health() -> HealthResponse:
     )
 
 
-@router.get("/")
-async def root() -> dict:
+@router.get("/api-info")
+async def api_info() -> dict:
+    """Lightweight API metadata (kept off '/' so the SPA can own the root URL)."""
     settings = get_settings()
     return {
         "name": settings.app_name,

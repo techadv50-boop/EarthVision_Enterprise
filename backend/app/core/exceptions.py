@@ -49,6 +49,16 @@ class ExternalServiceError(EarthVisionError):
         super().__init__(message, status_code=502, details=details)
 
 
+class GatewayTimeoutError(EarthVisionError):
+    def __init__(self, message: str = "Request timed out", details: Any = None) -> None:
+        super().__init__(message, status_code=504, details=details)
+
+
+class ServiceUnavailableError(EarthVisionError):
+    def __init__(self, message: str = "Service temporarily unavailable", details: Any = None) -> None:
+        super().__init__(message, status_code=503, details=details)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register global exception handlers."""
 
@@ -60,10 +70,31 @@ def register_exception_handlers(app: FastAPI) -> None:
             content={"detail": exc.message, "details": exc.details},
         )
 
+    @app.exception_handler(TimeoutError)
+    async def timeout_error_handler(_: Request, exc: TimeoutError) -> JSONResponse:
+        logger.warning("Timeout: {}", exc)
+        return JSONResponse(
+            status_code=504,
+            content={
+                "detail": "Request timed out — please retry. Previews use a smaller size on slow links."
+            },
+        )
+
     @app.exception_handler(Exception)
     async def unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
+        # Avoid opaque 500s for common infra faults (COG/network).
+        name = type(exc).__name__
+        msg = str(exc) or name
+        if "timed out" in msg.lower() or name in {"TimeoutError", "ReadTimeout", "ConnectTimeout"}:
+            logger.warning("Mapped timeout-like error: {}", exc)
+            return JSONResponse(
+                status_code=504,
+                content={"detail": "Imagery request timed out — please retry."},
+            )
         logger.exception("Unhandled exception: {}", exc)
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal server error"},
+            content={
+                "detail": "Internal server error — please retry. If it persists, turn the eye off/on."
+            },
         )

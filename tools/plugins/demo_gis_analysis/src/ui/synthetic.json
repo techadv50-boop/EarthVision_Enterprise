@@ -1,0 +1,17 @@
+{
+  "kind": "gis_analysis_demo",
+  "plugin_id": "demo_gis_analysis",
+  "version": "1.0.0",
+  "message": "Controlled GIS analysis via Host SDK (no Leaflet access).",
+  "metrics": [
+    {
+      "label": "NDVI mean (demo)",
+      "value": 0.42
+    },
+    {
+      "label": "Cloud fraction (demo)",
+      "value": 0.08
+    }
+  ],
+  "note": "Integrity-covered payload. Prefer worker render when available."
+}

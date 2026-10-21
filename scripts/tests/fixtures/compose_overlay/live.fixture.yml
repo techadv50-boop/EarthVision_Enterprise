@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  backend:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://earthvision:secret@db:5432/earthvision
+      SECRET_KEY: live-secret-must-preserve
+      ADMIN_EMAIL: admin@xdgen.com
+      IMAGERY_CACHE_DIR: /data/cache
+    volumes:
+      - ./cache:/data/cache
+      - ./imagery:/data/imagery
+      - ./uploads:/data/uploads
+      - ./logs:/data/logs
+    ports:
+      - "8100:8000"
+  frontend:
+    image: custom-frontend:live
+  nginx:
+    image: nginx:1.27-alpine
+volumes:
+  pgdata:
+networks:
+  default:
+    name: sateye_live_net

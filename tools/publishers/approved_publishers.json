@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "notes": "Repo default mirrors image_default (no enabled publishers). Preview/CI tests use approved_publishers.preview.json or ephemeral keys. Production uses a volume allowlist — never preview-dev.",
+  "publishers": []
+}

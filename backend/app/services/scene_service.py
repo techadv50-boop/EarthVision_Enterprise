@@ -132,7 +132,7 @@ class SceneService:
             shade = 20 + (i % 64)
             draw.rectangle([i, 0, i + 16, 512], fill=(shade, shade + 40, shade + 20))
         draw.rectangle([20, 20, 492, 80], fill=(11, 61, 46))
-        draw.text((32, 40), f"EarthVision Quicklook", fill=(220, 240, 230))
+        draw.text((32, 40), "SAT EYE Quicklook", fill=(220, 240, 230))
         draw.text((32, 460), scene_id[:48], fill=(180, 200, 190))
         import io
 

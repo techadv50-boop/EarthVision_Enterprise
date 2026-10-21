@@ -1,0 +1,23 @@
+{
+  "plugin_id": "demo_hello",
+  "tool_id": "demo_hello",
+  "label": "Demo Hello",
+  "description": "Harmless sandboxed demonstration plugin for Plugin Manager Stage P2B.",
+  "ui_strategy": "sandboxed_iframe",
+  "entry_html": "ui/panel.html",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta"
+  ],
+  "host_sdk": {
+    "protocol": 1,
+    "version": ">=1.0.0,<2",
+    "react": "forbidden",
+    "leaflet": "forbidden",
+    "remote_bundle": false,
+    "execution": "sandboxed_iframe_srcdoc"
+  },
+  "notes": "P2B: independent UI via sandboxed iframe + postMessage Host SDK. Never loads into privileged React Host Shell."
+}

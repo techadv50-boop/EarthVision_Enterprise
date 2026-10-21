@@ -1,0 +1,6 @@
+{
+  "plugin_id": "my_custom_tool",
+  "name": "My Custom Tool",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": ["synthetic_data", "ui.slot.right_analysis_panel", "host.sdk.read_meta"]
+}

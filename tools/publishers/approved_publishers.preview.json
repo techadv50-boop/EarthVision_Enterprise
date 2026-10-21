@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "notes": "PREVIEW/CI only. Never use as production trust root. Production must mount a distinct allowlist without preview-dev.",
+  "publishers": [
+    {
+      "id": "preview-dev",
+      "name": "SATEYE Preview Dev Publisher",
+      "environment": "preview",
+      "enabled": true,
+      "public_key": "izevWnELgnNCnLKPrjQKcWOuKQ7f1x4q86wP18SyVzY"
+    }
+  ]
+}

@@ -14,6 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import {
+  HIGH_RES_ONLY_TOOLBOXES,
   TOOLBOXES,
   type ToolboxId,
   type ToolboxTool,
@@ -57,16 +58,38 @@ interface Props {
   overlays: MapOverlay[];
   layerOpacity: number;
   hasScene: boolean;
+  /** Active scene collection for satellite-aware indicator gating. */
+  sceneCollection?: string | null;
   hasDrawn: boolean;
   drawnType?: string | null;
+  /** User-drawn polygon AOI marking the water body (required for Ship Detection). */
+  hasWaterAoi?: boolean;
   bufferLoading?: boolean;
   lastBufferDistance?: number | null;
   lastBufferArea?: number | null;
   lastLegend?: LegendInfo | null;
   lastMessage?: string | null;
+  /** Numbered ship contacts from the last Ship Detection run. */
+  shipContacts?: Array<{
+    id: number;
+    lon: number;
+    lat: number;
+    confidence: number;
+    label: string;
+  }>;
+  activeContactId?: number | null;
+  onLocateContact?: (contact: {
+    id: number;
+    lon: number;
+    lat: number;
+    confidence: number;
+    label: string;
+  }) => void;
   mapChrome?: Record<string, boolean> | null;
   /** null/undefined = all toolboxes; otherwise filter to these ids */
   allowedTools?: string[] | null;
+  /** Toolbox actions only work when a satellite is selected. */
+  toolsEnabled?: boolean;
   onExpand: (id: ToolboxId) => void;
   onTool: (tool: ToolboxTool) => void;
   onClose: () => void;
@@ -83,6 +106,7 @@ interface Props {
   indexResult?: IndexResult | null;
   compositeResult?: CompositeResult | null;
   stretchResult?: StretchResult | null;
+  classificationResult?: import('../../services/classificationService').ClassificationResult | null;
   stretchParams?: {
     p_low: number;
     p_high: number;
@@ -93,6 +117,13 @@ interface Props {
   colormap?: ColormapName | string | null;
   onComposite?: (preset: CompositePreset) => void;
   onIndexTool?: (index: IndexName) => void;
+  onClassify?: (opts: {
+    n_classes: import('../../services/classificationService').ClassCount;
+    class_styles: import('../../services/classificationService').ClassStyle[];
+  }) => void;
+  onRecolorClassify?: (
+    styles: import('../../services/classificationService').ClassStyle[],
+  ) => void;
   onColormapChange?: (cmap: ColormapName) => void;
   onStretch?: () => void;
   onStretchParams?: (patch: Record<string, number>) => void;
@@ -102,6 +133,16 @@ interface Props {
   onExportCompositePng?: () => void;
   onExportStretchPng?: () => void;
   onExportOverlayPng?: () => void;
+  onExportIndexGeotiff?: () => void;
+  onExportCompositeGeotiff?: () => void;
+  onExportStretchGeotiff?: () => void;
+  onExportOverlayGeotiff?: () => void;
+  onExportClassifyPng?: () => void;
+  onExportClassifyCsv?: () => void;
+  onExportClassifyGeotiff?: () => void;
+  onDownloadLayerGeotiff?: (layer: MapOverlay) => void;
+  geotiffBusy?: boolean;
+  geotiffLayerId?: string | null;
 }
 
 export function ToolboxPanel({
@@ -112,15 +153,21 @@ export function ToolboxPanel({
   overlays,
   layerOpacity,
   hasScene,
+  sceneCollection = null,
   hasDrawn,
   drawnType,
+  hasWaterAoi = false,
   bufferLoading,
   lastBufferDistance,
   lastBufferArea,
   lastLegend,
   lastMessage,
+  shipContacts = [],
+  activeContactId = null,
+  onLocateContact,
   mapChrome,
   allowedTools = null,
+  toolsEnabled = false,
   onExpand,
   onTool,
   onClose,
@@ -136,10 +183,13 @@ export function ToolboxPanel({
   indexResult = null,
   compositeResult = null,
   stretchResult = null,
+  classificationResult = null,
   stretchParams = { p_low: 2, p_high: 98, gamma: 1, brightness: 1, contrast: 1 },
   colormap = null,
   onComposite,
   onIndexTool,
+  onClassify,
+  onRecolorClassify,
   onColormapChange,
   onStretch,
   onStretchParams,
@@ -149,6 +199,16 @@ export function ToolboxPanel({
   onExportCompositePng,
   onExportStretchPng,
   onExportOverlayPng,
+  onExportIndexGeotiff,
+  onExportCompositeGeotiff,
+  onExportStretchGeotiff,
+  onExportOverlayGeotiff,
+  onExportClassifyPng,
+  onExportClassifyCsv,
+  onExportClassifyGeotiff,
+  onDownloadLayerGeotiff,
+  geotiffBusy = false,
+  geotiffLayerId = null,
 }: Props) {
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -157,13 +217,18 @@ export function ToolboxPanel({
   const visibleToolboxes = useMemo(() => {
     if (allowedTools == null) return TOOLBOXES;
     const allowed = new Set(allowedTools);
-    return TOOLBOXES.filter((b) => allowed.has(b.id));
+    // Always keep AI / Change / Maritime / Air visible in the menu (locked).
+    const locked = new Set(HIGH_RES_ONLY_TOOLBOXES);
+    return TOOLBOXES.filter((b) => allowed.has(b.id) || locked.has(b.id));
   }, [allowedTools]);
 
+  const lockedIds = useMemo(() => new Set(HIGH_RES_ONLY_TOOLBOXES), []);
   const activeId = (expanded && visibleToolboxes.some((b) => b.id === expanded)
     ? expanded
     : visibleToolboxes[0]?.id) || 'image';
   const activeBox = visibleToolboxes.find((b) => b.id === activeId) || visibleToolboxes[0] || TOOLBOXES[2];
+  const categoryLocked = lockedIds.has(activeBox.id);
+  const actionsEnabled = toolsEnabled && !categoryLocked;
   const chrome = mapChrome || DEFAULT_CHROME;
 
   const managedLayers = useMemo(() => [...overlays].reverse(), [overlays]);
@@ -211,6 +276,7 @@ export function ToolboxPanel({
           <p className="text-[11px] text-[var(--muted)]">
             {visibleToolboxes.length} categories ·{' '}
             {visibleToolboxes.reduce((n, b) => n + b.tools.length, 0)} tools
+            {toolsEnabled ? '' : ' · inactive'}
           </p>
         </div>
         <button type="button" className="ev-btn-ghost p-1" onClick={onClose} title="Close">
@@ -218,28 +284,53 @@ export function ToolboxPanel({
         </button>
       </div>
 
-      {/* Category tabs — always visible */}
+      {!toolsEnabled ? (
+        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+          Select a satellite in Find scenes to activate toolbox options.
+        </div>
+      ) : categoryLocked ? (
+        <div className="shrink-0 border-b border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--muted)]">
+          {activeBox.title} is shown in the menu but stays inactive until high-resolution
+          imagery is enabled for your account.
+        </div>
+      ) : null}
+
+      {/* Category tabs — AI / Change / Maritime / Air always visible but locked */}
       <div className="shrink-0 border-b border-[var(--line)] bg-white px-2 py-2">
         <div className="grid grid-cols-5 gap-1">
           {visibleToolboxes.map((box) => {
             const Icon = ICONS[box.id];
             const on = activeId === box.id;
+            const locked = lockedIds.has(box.id);
             return (
               <button
                 key={box.id}
                 type="button"
-                title={box.title}
+                title={
+                  locked
+                    ? `${box.title} (inactive — high-res imagery later)`
+                    : box.title
+                }
                 onClick={() => onExpand(box.id)}
-                className={`flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[9px] font-semibold leading-tight ${
+                className={`relative flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[9px] font-semibold leading-tight ${
                   on
-                    ? 'bg-[var(--accent)] text-white'
-                    : 'bg-[var(--bg)] text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]'
+                    ? locked
+                      ? 'bg-[var(--line)] text-[var(--muted)]'
+                      : 'bg-[var(--accent)] text-white'
+                    : locked
+                      ? 'bg-[var(--bg)] text-[var(--muted)] opacity-70 hover:opacity-100'
+                      : 'bg-[var(--bg)] text-[var(--muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]'
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />
                 <span className="line-clamp-2 w-full text-center">
                   {box.title.split(' ')[0]}
                 </span>
+                {locked && (
+                  <span className="absolute right-0.5 top-0.5 text-[8px] leading-none opacity-80">
+                    ·
+                  </span>
+                )}
               </button>
             );
           })}
@@ -253,14 +344,19 @@ export function ToolboxPanel({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div
+        className={`min-h-0 flex-1 overflow-y-auto p-3 ${
+          actionsEnabled ? '' : 'pointer-events-none opacity-45'
+        }`}
+      >
         <div className="mb-2">
           <div className="font-display text-sm font-semibold">{activeBox.title}</div>
           <p className="text-[11px] text-[var(--muted)]">{activeBox.blurb}</p>
           {['ai', 'maritime', 'aviation'].includes(activeBox.id) && (
             <p className="mt-1 rounded border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10px] text-[var(--muted)]">
-              Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its
-              formula. Detections show legend, scale bar, north arrow, and grid on the map.
+              {activeBox.id === 'ai'
+                ? 'AI tools stay inactive except Ship Detection. Activate with Landsat/Sentinel-2 eye ON, then draw a Rect/Poly AOI — sensitive GEE Optimized NIR (AOI-first, soft wakes) marks ships with a thick red outline (no shapefile download).'
+                : 'Classical EO algorithms (NDVI/NDWI/NDBI/NBR, Sobel edges, LoG/CFAR blobs). Hover a tool for its formula. Detections show legend, scale bar, north arrow, and grid on the map.'}
             </p>
           )}
           {!hasScene && activeBox.tools.some((t) => t.needsScene) && (
@@ -273,15 +369,19 @@ export function ToolboxPanel({
         {activeBox.id === 'image' && onComposite && onIndexTool && onStretch && (
           <ImageProcessingPanel
             hasScene={hasScene}
-            loading={loading}
+            sceneCollection={sceneCollection}
+            loading={loading || !actionsEnabled}
             activeToolId={activeToolId}
             indexResult={indexResult}
             compositeResult={compositeResult}
             stretchResult={stretchResult}
+            classificationResult={classificationResult}
             stretchParams={stretchParams}
             colormap={colormap}
             onComposite={onComposite}
             onIndex={onIndexTool}
+            onClassify={(opts) => onClassify?.(opts)}
+            onRecolorClassify={(styles) => onRecolorClassify?.(styles)}
             onColormapChange={onColormapChange}
             onStretch={onStretch}
             onStretchParams={(patch) => onStretchParams?.(patch)}
@@ -291,6 +391,14 @@ export function ToolboxPanel({
             onExportCompositePng={() => onExportCompositePng?.()}
             onExportStretchPng={() => onExportStretchPng?.()}
             onExportOverlayPng={() => onExportOverlayPng?.()}
+            onExportIndexGeotiff={() => onExportIndexGeotiff?.()}
+            onExportCompositeGeotiff={() => onExportCompositeGeotiff?.()}
+            onExportStretchGeotiff={() => onExportStretchGeotiff?.()}
+            onExportOverlayGeotiff={() => onExportOverlayGeotiff?.()}
+            onExportClassifyPng={() => onExportClassifyPng?.()}
+            onExportClassifyCsv={() => onExportClassifyCsv?.()}
+            onExportClassifyGeotiff={() => onExportClassifyGeotiff?.()}
+            geotiffBusy={geotiffBusy}
           />
         )}
 
@@ -301,12 +409,15 @@ export function ToolboxPanel({
               layerOpacity={layerOpacity}
               renameId={renameId}
               renameValue={renameValue}
+              geotiffBusy={geotiffBusy}
+              geotiffLayerId={geotiffLayerId}
               onOpacity={onOpacity}
               onToggle={onToggleOverlay}
               onRemove={onRemoveOverlay}
               onMove={onMoveOverlay}
               onReorder={(ids) => onReorderOverlays?.(ids)}
               onPatch={(id, patch) => onPatchOverlay?.(id, patch)}
+              onDownloadGeotiff={(layer) => onDownloadLayerGeotiff?.(layer)}
               onStartRename={(id, label) => {
                 setRenameId(id);
                 setRenameValue(label);
@@ -365,21 +476,60 @@ export function ToolboxPanel({
               const taskId =
                 tool.action.type === 'detection' ? tool.action.task : undefined;
               const algo = taskId ? algoByTask[taskId] : undefined;
-              const tip = active
-                ? `${tool.label} (click again to turn off)`
-                : algo || tool.hint || tool.label;
+              const needsOpticalScene = Boolean(tool.opticalOnly);
+              const opticalReady =
+                !needsOpticalScene ||
+                (hasScene &&
+                  (() => {
+                    const c = (sceneCollection || '').toUpperCase().replace(/_/g, '-');
+                    return (
+                      c.includes('SENTINEL-2') ||
+                      c.startsWith('S2') ||
+                      c.includes('LANDSAT') ||
+                      c.startsWith('L8') ||
+                      c.startsWith('L9') ||
+                      c.startsWith('L7')
+                    );
+                  })());
+              const needsWaterAoi = Boolean(tool.requiresWaterAoi);
+              const waterAoiReady = !needsWaterAoi || hasWaterAoi;
+              const permanentlyOff = Boolean(tool.inactive);
+              const toolOff =
+                permanentlyOff ||
+                loading ||
+                !actionsEnabled ||
+                (tool.needsScene && !hasScene) ||
+                (needsOpticalScene && !opticalReady) ||
+                (needsWaterAoi && !waterAoiReady);
+              const tip = permanentlyOff
+                ? `${tool.label} — inactive`
+                : !actionsEnabled
+                  ? 'Select a satellite first'
+                  : categoryLocked
+                    ? `${tool.label} — inactive`
+                    : tool.needsScene && !hasScene
+                      ? `${tool.label} — turn an eye on a Landsat/Sentinel-2 scene first`
+                      : needsOpticalScene && !opticalReady
+                        ? `${tool.label} — Landsat / Sentinel-2 optical only`
+                        : needsWaterAoi && !waterAoiReady
+                          ? `${tool.label} — draw a Rect/Poly AOI around the water body first`
+                          : active
+                            ? `${tool.label} (click again to turn off)`
+                            : algo || tool.hint || tool.label;
               return (
                 <button
                   key={tool.id}
                   type="button"
                   title={tip}
-                  disabled={loading}
+                  disabled={toolOff}
                   onClick={() => onTool(tool)}
                   className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] font-medium ${
                     active
                       ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                      : 'border-[var(--line)] bg-white hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
-                  } disabled:opacity-50`}
+                      : permanentlyOff
+                        ? 'border-[var(--line)] bg-[var(--bg)] text-[var(--muted)] opacity-55'
+                        : 'border-[var(--line)] bg-white hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   <span
                     className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[9px] ${
@@ -391,7 +541,27 @@ export function ToolboxPanel({
                     {active ? '✓' : ''}
                   </span>
                   <span className="flex-1">{tool.label}</span>
-                  {tool.needsScene && (
+                  {permanentlyOff ? (
+                    <span className="rounded px-1 py-0.5 text-[9px] uppercase bg-[var(--bg)] text-[var(--muted)]">
+                      Off
+                    </span>
+                  ) : tool.requiresWaterAoi ? (
+                    <span
+                      className={`rounded px-1 py-0.5 text-[9px] uppercase ${
+                        active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'
+                      }`}
+                    >
+                      AOI
+                    </span>
+                  ) : tool.opticalOnly ? (
+                    <span
+                      className={`rounded px-1 py-0.5 text-[9px] uppercase ${
+                        active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'
+                      }`}
+                    >
+                      S2/L8
+                    </span>
+                  ) : tool.needsScene ? (
                     <span
                       className={`rounded px-1 py-0.5 text-[9px] uppercase ${
                         active ? 'bg-white/20' : 'bg-[var(--bg)] text-[var(--muted)]'
@@ -399,7 +569,7 @@ export function ToolboxPanel({
                     >
                       EO
                     </span>
-                  )}
+                  ) : null}
                 </button>
               );
             })}
@@ -407,10 +577,54 @@ export function ToolboxPanel({
         )}
       </div>
 
-      {(lastMessage || lastLegend) && (
+      {(lastMessage || lastLegend || shipContacts.length > 0) && (
         <div className="shrink-0 space-y-1 border-t border-[var(--line)] px-3 py-2">
           {lastMessage && (
             <div className="text-[11px] text-[var(--muted)]">{lastMessage}</div>
+          )}
+          {shipContacts.length > 0 && (
+            <div className="rounded border border-[var(--line)] bg-[var(--bg)] p-2">
+              <div className="mb-1 flex items-center justify-between">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                  Ship contacts ({shipContacts.length})
+                </div>
+                <div className="text-[9px] text-[var(--muted)]">Click Locate to fly map</div>
+              </div>
+              <div className="max-h-44 space-y-1 overflow-y-auto">
+                {shipContacts.map((c) => {
+                  const active = activeContactId === c.id;
+                  return (
+                    <div
+                      key={c.id}
+                      className={`flex items-center gap-2 rounded border px-2 py-1.5 text-[11px] ${
+                        active
+                          ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                          : 'border-[var(--line)] bg-white'
+                      }`}
+                    >
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#ff0000] text-[10px] font-bold text-white">
+                        {c.id}
+                      </span>
+                      <div className="min-w-0 flex-1 font-mono text-[10px] leading-tight">
+                        <div className="truncate font-sans text-[11px] font-medium text-[var(--ink)]">
+                          {c.label}
+                        </div>
+                        <div className="text-[var(--muted)]">
+                          {c.lat.toFixed(5)}°, {c.lon.toFixed(5)}° · conf {c.confidence.toFixed(2)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded border border-[var(--accent)] bg-white px-2 py-1 text-[10px] font-semibold text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+                        onClick={() => onLocateContact?.(c)}
+                      >
+                        Locate
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
           {lastLegend && (
             <div>
@@ -499,12 +713,15 @@ function LayerManagerBody({
   layerOpacity,
   renameId,
   renameValue,
+  geotiffBusy,
+  geotiffLayerId,
   onOpacity,
   onToggle,
   onRemove,
   onMove,
   onReorder,
   onPatch,
+  onDownloadGeotiff,
   onStartRename,
   onCommitRename,
   setRenameValue,
@@ -513,12 +730,15 @@ function LayerManagerBody({
   layerOpacity: number;
   renameId: string | null;
   renameValue: string;
+  geotiffBusy?: boolean;
+  geotiffLayerId?: string | null;
   onOpacity: (v: number) => void;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
   onMove: (id: string, dir: 'up' | 'down') => void;
   onReorder: (displayIds: string[]) => void;
   onPatch: (id: string, patch: Partial<MapOverlay>) => void;
+  onDownloadGeotiff: (layer: MapOverlay) => void;
   onStartRename: (id: string, label: string) => void;
   onCommitRename: () => void;
   setRenameValue: (v: string) => void;
@@ -661,7 +881,7 @@ function LayerManagerBody({
               </label>
             )}
 
-            <div className="mt-1 flex gap-1">
+            <div className="mt-1 flex flex-wrap gap-1">
               <button
                 type="button"
                 className="ev-btn-ghost px-1.5 py-0.5 text-[10px]"
@@ -685,6 +905,17 @@ function LayerManagerBody({
               >
                 Rename
               </button>
+              {(layer.url || layer.demGrid?.length) && (
+                <button
+                  type="button"
+                  className="ev-btn-ghost px-1.5 py-0.5 text-[10px] text-[var(--accent)]"
+                  title="Download this layer as GeoTIFF"
+                  disabled={geotiffBusy && geotiffLayerId === layer.id}
+                  onClick={() => onDownloadGeotiff(layer)}
+                >
+                  {geotiffBusy && geotiffLayerId === layer.id ? 'GeoTIFF…' : 'GeoTIFF'}
+                </button>
+              )}
               <button
                 type="button"
                 className="ev-btn-ghost px-1.5 py-0.5 text-[10px] text-red-600"

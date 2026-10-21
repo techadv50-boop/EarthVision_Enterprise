@@ -34,7 +34,7 @@ export const gisService = {
   async exportFeatures(features: GeoJSON.FeatureCollection, format: 'geojson' | 'kml' | 'csv') {
     const response = await api.post(
       '/gis/export',
-      { features, format, filename: 'earthvision-export' },
+      { features, format, filename: 'sateye-export' },
       { responseType: 'blob' },
     );
     return response.data as Blob;

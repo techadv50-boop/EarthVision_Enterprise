@@ -1,0 +1,26 @@
+{
+  "plugin_id": "demo_gis_analysis",
+  "tool_id": "demo_gis_analysis",
+  "label": "Demo GIS Analysis",
+  "description": "Practical GIS analysis demo using only permitted Host SDK APIs (AOI bounds + analysis results). No Leaflet or auth token access.",
+  "ui_strategy": "sandboxed_iframe",
+  "entry_html": "ui/panel.html",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.read_aoi",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result"
+  ],
+  "host_sdk": {
+    "protocol": 1,
+    "version": ">=1.1.0,<2",
+    "react": "forbidden",
+    "leaflet": "forbidden",
+    "remote_bundle": false,
+    "execution": "sandboxed_iframe_srcdoc"
+  },
+  "notes": "RC demo: reads AOI via host.getAoiBounds, runs worker synthetic/render, publishes via host.setAnalysisResult."
+}

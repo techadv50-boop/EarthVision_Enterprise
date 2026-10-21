@@ -1,0 +1,21 @@
+{
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "workflow_runs": [
+    {
+      "id": 10,
+      "name": "CI",
+      "path": ".github/workflows/ci.yml",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 11,
+      "name": "Tool Protection",
+      "path": ".github/workflows/tool-protection.yml",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "completed",
+      "conclusion": "cancelled"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Architecture
 
-EarthVision Enterprise follows clean architecture with clear separation:
+SAT EYE follows clean architecture with clear separation:
 
 - **API layer** (`routers/`) — HTTP contracts, auth dependencies
 - **Schemas** (`schemas/`) — Pydantic v2 request/response models
@@ -8,7 +8,7 @@ EarthVision Enterprise follows clean architecture with clear separation:
 - **Models** (`models/`) — SQLAlchemy ORM entities
 - **Core** (`core/`) — config, security, DI, exceptions
 
-## Frontend (Light Explorer)
+## Frontend (Eye In Sky)
 
 The primary UI is a three-step workflow optimized for slow networks:
 

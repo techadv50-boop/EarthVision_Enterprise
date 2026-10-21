@@ -27,3 +27,13 @@ frontend/node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
 *.pyc
+logs/
+# Tool Pack publisher private keys (never commit)
+tools/publishers/*.priv
+tools/publishers/*.ed25519.priv
+.env.preview
+
+# Preview plugin worker mTLS materials (never commit keys)
+tools/plugins/worker/certs/
+*.key
+
