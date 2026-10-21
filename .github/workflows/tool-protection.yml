@@ -87,6 +87,9 @@ jobs:
         run: |
           chmod +x scripts/tests/test_e19a_safety.sh scripts/tests/test_deploy_sateye_live.sh \
             scripts/deploy_verify_ci_gate.sh scripts/deploy_capture_preflight.sh \
-            scripts/deploy_merge_compose_overlay.py
+            scripts/deploy_merge_compose_overlay.py scripts/e19c_operator_inventory.sh
           bash scripts/tests/test_e19a_safety.sh
           bash scripts/tests/test_deploy_sateye_live.sh
+      - name: Run E1.9C-R1 inventory adversarial safety tests
+        run: |
+          python3 scripts/tests/test_e19c_inventory_safety.py
