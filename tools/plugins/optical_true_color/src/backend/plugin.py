@@ -1,11 +1,11 @@
-"""Optical True Color plugin backend (worker / synthetic metadata).
+"""Optical True Color plugin backend (static synthetic metadata).
 
-Imagery I/O and composite rendering are fulfilled by the Host Shell via
-Host SDK 1.2 methods (host.getSceneContext, host.renderTrueColor, …).
-This module only returns static capability / band-recipe metadata.
+Designed for Host SDK 1.1 absorbable surface: meta, synthetic, AOI, analysis
+results. Imagery composite I/O stays in the Host Shell toolbox; this pack
+publishes optical band-recipe guidance only (no Leaflet / no 1.2 scene APIs).
 """
 
-PACK_VERSION = "1.0.0"
+PACK_VERSION = "1.1.0"
 
 # OSINT band recipes (mirror COMPOSITE_BAND_CODES["true_color"])
 TRUE_COLOR_BANDS = {
@@ -55,14 +55,17 @@ def render(payload=None):
         "plugin_id": "optical_true_color",
         "version": PACK_VERSION,
         "kind": "optical_true_color",
-        "message": "True color RGB composite for optical satellites only.",
+        "message": "True color RGB band recipes for optical satellites (Host SDK 1.1).",
         "optical_only": True,
-        "export": {"geotiff": True, "map_jpeg_dpi": [300, 600]},
         "band_recipes": TRUE_COLOR_BANDS,
         "active_recipe": recipe,
         "metrics": [
             {"label": "Preset", "value": "true_color"},
             {"label": "Method", "value": "percentile stretch RGB"},
+            {"label": "Host surface", "value": "sdk_1.1_absorbable"},
         ],
-        "note": "Host SDK fulfills scene, render, and export. No Leaflet in iframe.",
+        "note": (
+            "Uses host.getAoiBounds + host.getSynthetic + host.setAnalysisResult. "
+            "Map composite remains Host Shell toolbox (legacy true_color)."
+        ),
     }

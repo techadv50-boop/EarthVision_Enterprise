@@ -1494,16 +1494,17 @@ def test_rc_demo_gis_analysis_lifecycle(plugin_volume, tmp_path):
 
 
 def test_optical_true_color_plugin_lifecycle(plugin_volume, tmp_path):
+    """Host SDK 1.1 absorbable surface (same digestible APIs as demo_gis_analysis)."""
     from app.plugins.frontend_assets import active_frontend_manifest, read_active_ui_asset
     from app.plugins.host_sdk_contract import assert_method_allowed
 
-    art = REPO / "tools" / "plugins" / "optical_true_color" / "artifacts" / "1.0.0"
+    art = REPO / "tools" / "plugins" / "optical_true_color" / "artifacts" / "1.1.0"
     if not (art / "pack.json").is_file():
-        pytest.skip("optical_true_color artifact missing — build first")
+        pytest.skip("optical_true_color 1.1.0 artifact missing — build first")
 
     dest = tmp_path / "otc"
     shutil.copytree(art, dest)
-    meta = verify_pack_at(dest, "optical_true_color", "1.0.0")
+    meta = verify_pack_at(dest, "optical_true_color", "1.1.0")
     sig = sign_digest(meta["digest"], plugin_volume["priv"])
     write_signature_file(
         dest, digest=meta["digest"], signature=sig, publisher_id="test-pub"
@@ -1515,12 +1516,21 @@ def test_optical_true_color_plugin_lifecycle(plugin_volume, tmp_path):
     validated = engine.validate_staging(staging_id)
     assert validated["ok"] is True
     for need in (
+        "synthetic_data",
+        "ui.slot.right_analysis_panel",
+        "host.sdk.read_meta",
+        "host.sdk.read_aoi",
+        "host.sdk.set_analysis_result",
+        "host.sdk.read_analysis_result",
+    ):
+        assert need in validated["permissions"]
+    for forbidden_on_host11 in (
         "host.sdk.read_scene",
         "host.sdk.render_true_color",
         "host.sdk.export_geotiff",
         "host.sdk.export_map_jpeg",
     ):
-        assert need in validated["permissions"]
+        assert forbidden_on_host11 not in validated["permissions"]
     engine.install_from_staging(
         staging_id=staging_id,
         expected_digest=validated["digest"],
@@ -1529,7 +1539,7 @@ def test_optical_true_color_plugin_lifecycle(plugin_volume, tmp_path):
     )
     engine.activate_plugin(
         plugin_id="optical_true_color",
-        version="1.0.0",
+        version="1.1.0",
         actor="t",
         confirm="activate",
     )
@@ -1537,15 +1547,16 @@ def test_optical_true_color_plugin_lifecycle(plugin_volume, tmp_path):
     assert man["frontend_slot"] == "right_analysis_panel"
     assert man["ui_strategy"] == "sandboxed_iframe"
     perms = list(get_plugin("optical_true_color")["permissions"])
-    assert_method_allowed("host.getSceneContext", perms)
-    assert_method_allowed("host.renderTrueColor", perms)
-    assert_method_allowed("host.exportGeotiff", perms)
-    assert_method_allowed("host.exportMapJpeg", perms)
+    assert_method_allowed("host.getAoiBounds", perms)
+    assert_method_allowed("host.getSynthetic", perms)
+    assert_method_allowed("host.setAnalysisResult", perms)
     html, _ = read_active_ui_asset("optical_true_color", "panel.html")
     assert b"True Color" in html
     js, _ = read_active_ui_asset("optical_true_color", "plugin.js")
-    assert b"host.renderTrueColor" in js
-    assert b"host.exportMapJpeg" in js
+    assert b"host.getAoiBounds" in js
+    assert b"host.setAnalysisResult" in js
+    assert b"host.renderTrueColor" not in js
+    assert b"host.exportMapJpeg" not in js
     # Legacy frozen id remains reserved
     assert get_pin("true_color")["mode"] == "builtin"
     engine.disable_plugin(

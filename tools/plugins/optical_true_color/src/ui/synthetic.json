@@ -1,13 +1,23 @@
 {
   "kind": "optical_true_color",
   "plugin_id": "optical_true_color",
-  "version": "1.0.0",
-  "message": "True color RGB composite for optical satellites only.",
+  "version": "1.1.0",
+  "message": "True color RGB band recipes for optical satellites (Host SDK 1.1 absorbable).",
   "optical_only": true,
-  "export": {
-    "geotiff": true,
-    "map_jpeg_dpi": [300, 600]
-  },
+  "metrics": [
+    {
+      "label": "Preset",
+      "value": "true_color"
+    },
+    {
+      "label": "Method",
+      "value": "percentile stretch RGB"
+    },
+    {
+      "label": "Host surface",
+      "value": "sdk_1.1_absorbable"
+    }
+  ],
   "band_recipes": {
     "SENTINEL-2": {
       "codes": "B04-B03-B02",
@@ -30,5 +40,5 @@
       "formula": "R=Red(B01), G=Green(B04), B=Blue(B03) — natural color"
     }
   },
-  "note": "Integrity-covered payload. Prefer Host SDK renderTrueColor when a scene is selected."
+  "note": "Integrity-covered payload. Compatible with Host SDK 1.1 (AOI + synthetic + analysis result)."
 }

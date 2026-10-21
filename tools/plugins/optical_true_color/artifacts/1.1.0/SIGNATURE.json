@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "digest": "sha256:cd7ded1f3a62ee109337a4e98c0e7c7421de37ebaac10d57ec9c51b37f246dc9",
+  "algorithm": "ed25519",
+  "publisher_id": "rc-verify",
+  "signature": "oLmSaKG_ELudkAciByZ2Ia7P5MLuNpMYtC2FGz0pBeiUUeIkYF8XiLLsI3TrhdpnXxaJwwgrPxl7cR2JRYJrCw"
+}
