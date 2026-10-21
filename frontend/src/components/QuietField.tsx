@@ -1,6 +1,8 @@
 import { useState, type InputHTMLAttributes } from 'react';
 
-type Props = InputHTMLAttributes<HTMLInputElement>;
+type Props = InputHTMLAttributes<HTMLInputElement> & {
+  [key: `data-${string}`]: string | undefined;
+};
 
 /**
  * Fields that must not be stored by Chrome, Google Password Manager, or other
