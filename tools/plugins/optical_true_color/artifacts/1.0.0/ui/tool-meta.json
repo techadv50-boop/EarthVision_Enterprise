@@ -1,0 +1,37 @@
+{
+  "plugin_id": "optical_true_color",
+  "tool_id": "optical_true_color",
+  "label": "True Color (Optical)",
+  "description": "Optical-only true color RGB composite from OSINT band recipes (e.g. Sentinel-2 B04/B03/B02). Export GeoTIFF or map JPEG at 300/600 DPI with north arrow and scale bar.",
+  "ui_strategy": "sandboxed_iframe",
+  "entry_html": "ui/panel.html",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.read_scene",
+    "host.sdk.render_true_color",
+    "host.sdk.export_geotiff",
+    "host.sdk.export_map_jpeg",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result"
+  ],
+  "host_sdk": {
+    "protocol": 1,
+    "version": ">=1.2.0,<2",
+    "react": "forbidden",
+    "leaflet": "forbidden",
+    "remote_bundle": false,
+    "execution": "sandboxed_iframe_srcdoc"
+  },
+  "optical_only": true,
+  "applicable_satellites": [
+    "SENTINEL-2",
+    "LANDSAT-8",
+    "LANDSAT-9",
+    "LANDSAT-7",
+    "MODIS"
+  ],
+  "notes": "Active only for optical scenes. Uses host.getSceneContext for band recipes, host.renderTrueColor for composite, host.exportGeotiff / host.exportMapJpeg for exports."
+}

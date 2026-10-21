@@ -42,6 +42,7 @@ export function SandboxedPluginFrame({
   const [loading, setLoading] = useState(true);
   const [srcdoc, setSrcdoc] = useState<string | null>(null);
   const pinRef = useRef({ pluginId, version, digest: digestProp || '' });
+  const permissionsRef = useRef<string[]>([]);
 
   useEffect(() => {
     pinRef.current = { pluginId, version, digest: digestProp || '' };
@@ -70,6 +71,9 @@ export function SandboxedPluginFrame({
           version: manifest.version,
           digest: manifest.digest,
         };
+        permissionsRef.current = Array.isArray(manifest.permissions)
+          ? manifest.permissions
+          : [];
 
         const entryRel = (manifest.entry_html || 'ui/panel.html').replace(/^ui\//, '');
         const html = await pluginService.uiAssetText(pluginId, entryRel);
@@ -216,6 +220,71 @@ ${pluginJs}
         if (msg.method === 'host.getAnalysisResult') {
           const local = hostRef.current.getAnalysisResult(msg.plugin_id);
           frame.contentWindow?.postMessage(replyOk(local || { result: null }), '*');
+          return;
+        }
+
+        const METHOD_PERMS: Record<string, string> = {
+          'host.getSceneContext': 'host.sdk.read_scene',
+          'host.renderTrueColor': 'host.sdk.render_true_color',
+          'host.exportGeotiff': 'host.sdk.export_geotiff',
+          'host.exportMapJpeg': 'host.sdk.export_map_jpeg',
+        };
+        const needPerm = METHOD_PERMS[msg.method];
+        if (needPerm && !permissionsRef.current.includes(needPerm)) {
+          throw new HostSdkValidationError(
+            `permission denied for ${msg.method}: requires ${needPerm}`,
+          );
+        }
+
+        if (msg.method === 'host.getSceneContext') {
+          const scene = hostRef.current.sceneContext;
+          frame.contentWindow?.postMessage(
+            replyOk({
+              scene: scene || null,
+              source: 'host',
+            }),
+            '*',
+          );
+          return;
+        }
+
+        if (
+          msg.method === 'host.renderTrueColor' ||
+          msg.method === 'host.exportGeotiff' ||
+          msg.method === 'host.exportMapJpeg'
+        ) {
+          void (async () => {
+            try {
+              const handlers = hostRef.current.getImageryHandlers();
+              if (!handlers) {
+                throw new Error('Host imagery handlers not registered');
+              }
+              let result: Record<string, unknown>;
+              if (msg.method === 'host.renderTrueColor') {
+                result = await handlers.renderTrueColor();
+              } else if (msg.method === 'host.exportGeotiff') {
+                result = await handlers.exportGeotiff();
+              } else {
+                const dpiRaw = msg.params.dpi;
+                const dpi: 300 | 600 = dpiRaw === 600 ? 600 : 300;
+                const title =
+                  typeof msg.params.title === 'string' ? msg.params.title : undefined;
+                result = await handlers.exportMapJpeg({ dpi, title });
+              }
+              frame.contentWindow?.postMessage(replyOk(result), '*');
+            } catch (err: unknown) {
+              const reply: HostToPluginMessage = {
+                v: 1,
+                type: 'error',
+                id: msg.id,
+                plugin_id: pluginId,
+                ok: false,
+                error: err instanceof Error ? err.message : 'imagery action failed',
+                code: 'imagery_error',
+              };
+              frame.contentWindow?.postMessage(reply, '*');
+            }
+          })();
           return;
         }
 

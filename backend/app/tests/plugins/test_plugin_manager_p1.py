@@ -1297,7 +1297,7 @@ def test_p2b_audit_redacts_secrets_and_health_has_no_tokens(plugin_volume, tmp_p
     assert "password" not in blob.lower() or health.get("ok")
     assert "EV_PLUGIN_WORKER_AUTH_TOKEN" not in blob
     assert health["loading_model"] == "sandboxed_iframe_srcdoc"
-    assert health["host_sdk_version"] == "1.1.0"
+    assert health["host_sdk_version"] == "1.2.0"
 
 
 def test_p2b_sandboxed_iframe_requires_panel_and_plugin_js(plugin_volume, tmp_path):
@@ -1491,6 +1491,66 @@ def test_rc_demo_gis_analysis_lifecycle(plugin_volume, tmp_path):
     )
     assert get_plugin("demo_gis_analysis")["activation_status"] == "disabled"
     assert get_pin("true_color")["mode"] == "builtin"
+
+
+def test_optical_true_color_plugin_lifecycle(plugin_volume, tmp_path):
+    from app.plugins.frontend_assets import active_frontend_manifest, read_active_ui_asset
+    from app.plugins.host_sdk_contract import assert_method_allowed
+
+    art = REPO / "tools" / "plugins" / "optical_true_color" / "artifacts" / "1.0.0"
+    if not (art / "pack.json").is_file():
+        pytest.skip("optical_true_color artifact missing — build first")
+
+    dest = tmp_path / "otc"
+    shutil.copytree(art, dest)
+    meta = verify_pack_at(dest, "optical_true_color", "1.0.0")
+    sig = sign_digest(meta["digest"], plugin_volume["priv"])
+    write_signature_file(
+        dest, digest=meta["digest"], signature=sig, publisher_id="test-pub"
+    )
+    zpath = tmp_path / "otc.zip"
+    _zip_pack(dest, zpath)
+    with zpath.open("rb") as fh:
+        staging_id = stream_upload_to_staging(fh)
+    validated = engine.validate_staging(staging_id)
+    assert validated["ok"] is True
+    for need in (
+        "host.sdk.read_scene",
+        "host.sdk.render_true_color",
+        "host.sdk.export_geotiff",
+        "host.sdk.export_map_jpeg",
+    ):
+        assert need in validated["permissions"]
+    engine.install_from_staging(
+        staging_id=staging_id,
+        expected_digest=validated["digest"],
+        actor="t",
+        confirm="install",
+    )
+    engine.activate_plugin(
+        plugin_id="optical_true_color",
+        version="1.0.0",
+        actor="t",
+        confirm="activate",
+    )
+    man = active_frontend_manifest("optical_true_color")
+    assert man["frontend_slot"] == "right_analysis_panel"
+    assert man["ui_strategy"] == "sandboxed_iframe"
+    perms = list(get_plugin("optical_true_color")["permissions"])
+    assert_method_allowed("host.getSceneContext", perms)
+    assert_method_allowed("host.renderTrueColor", perms)
+    assert_method_allowed("host.exportGeotiff", perms)
+    assert_method_allowed("host.exportMapJpeg", perms)
+    html, _ = read_active_ui_asset("optical_true_color", "panel.html")
+    assert b"True Color" in html
+    js, _ = read_active_ui_asset("optical_true_color", "plugin.js")
+    assert b"host.renderTrueColor" in js
+    assert b"host.exportMapJpeg" in js
+    # Legacy frozen id remains reserved
+    assert get_pin("true_color")["mode"] == "builtin"
+    engine.disable_plugin(
+        plugin_id="optical_true_color", actor="t", confirm="disable"
+    )
 
 
 def test_rc_no_default_worker_token_in_production_profile(monkeypatch):

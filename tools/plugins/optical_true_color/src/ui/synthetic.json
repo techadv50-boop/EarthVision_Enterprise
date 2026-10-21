@@ -1,0 +1,34 @@
+{
+  "kind": "optical_true_color",
+  "plugin_id": "optical_true_color",
+  "version": "1.0.0",
+  "message": "True color RGB composite for optical satellites only.",
+  "optical_only": true,
+  "export": {
+    "geotiff": true,
+    "map_jpeg_dpi": [300, 600]
+  },
+  "band_recipes": {
+    "SENTINEL-2": {
+      "codes": "B04-B03-B02",
+      "formula": "R=Red(B04), G=Green(B03), B=Blue(B02) — natural color"
+    },
+    "LANDSAT-8": {
+      "codes": "B4-B3-B2",
+      "formula": "R=Red(B4), G=Green(B3), B=Blue(B2) — natural color"
+    },
+    "LANDSAT-9": {
+      "codes": "B4-B3-B2",
+      "formula": "R=Red(B4), G=Green(B3), B=Blue(B2) — natural color"
+    },
+    "LANDSAT-7": {
+      "codes": "B3-B2-B1",
+      "formula": "R=Red(B3), G=Green(B2), B=Blue(B1) — natural color"
+    },
+    "MODIS": {
+      "codes": "B01-B04-B03",
+      "formula": "R=Red(B01), G=Green(B04), B=Blue(B03) — natural color"
+    }
+  },
+  "note": "Integrity-covered payload. Prefer Host SDK renderTrueColor when a scene is selected."
+}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronRight, Upload } from 'lucide-react';
 import { RESOLUTION_BANDS } from '../../constants/imageryResolution';
+import { getErrorMessage } from '../../services/api';
 import { pluginService, type PluginSlot } from '../../services/pluginService';
 import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import { toolTreeService, type ToolCategoryNode } from '../../services/toolTreeService';
@@ -89,7 +90,7 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
       }
       setStep(2);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Validation failed');
+      setError(getErrorMessage(err) || 'Validation failed');
     } finally {
       setBusy(false);
     }
@@ -148,7 +149,7 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
       setPlacementId(String(place.id));
       setStep(4);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Install failed');
+      setError(getErrorMessage(err) || 'Install failed');
     } finally {
       setBusy(false);
     }
@@ -173,7 +174,7 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
       }
       setStep(6);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Activate failed');
+      setError(getErrorMessage(err) || 'Activate failed');
     } finally {
       setBusy(false);
     }
@@ -212,6 +213,9 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
           <p className="text-[11px] text-[var(--muted)]">
             Select a signed SATEYE tool plugin package (.zip). Install never rebuilds the Host
             Platform.
+          </p>
+          <p className="font-mono text-[10px] text-[var(--muted)]" data-testid="upload-client-stamp">
+            upload-client: json-b64-v1
           </p>
           <input
             type="file"

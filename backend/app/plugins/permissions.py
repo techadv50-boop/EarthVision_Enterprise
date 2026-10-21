@@ -21,6 +21,11 @@ ALLOWED_PERMISSIONS = frozenset(
         "host.sdk.read_aoi",
         "host.sdk.set_analysis_result",
         "host.sdk.read_analysis_result",
+        # Optical true-color imagery (Host Shell side-effects; no Leaflet in iframe)
+        "host.sdk.read_scene",
+        "host.sdk.render_true_color",
+        "host.sdk.export_geotiff",
+        "host.sdk.export_map_jpeg",
     }
 )
 

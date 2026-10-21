@@ -13,6 +13,7 @@ import {
   type PluginRecord,
   type PluginSystemHealth,
 } from '../../services/pluginService';
+import { getErrorMessage } from '../../services/api';
 
 function statusBadge(text: string, tone: 'ok' | 'warn' | 'muted' | 'bad') {
   const cls =
@@ -79,13 +80,13 @@ export function PluginManagerSection() {
     try {
       const res = await fn();
       if (res.ok === false) {
-        setError(String(res.error || `${label} failed`));
+        setError(String(res.error || res.detail || `${label} failed`));
       } else {
-        setMessage(`${label} OK`);
+        setMessage(`${label} OK · ${String(res.plugin_id || '')} ${String(res.version || '')}`.trim());
       }
       await refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : `${label} failed`);
+      setError(getErrorMessage(err) || `${label} failed`);
     } finally {
       setBusy(false);
     }

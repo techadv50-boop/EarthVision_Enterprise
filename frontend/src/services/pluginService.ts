@@ -1,5 +1,17 @@
 import { api } from './api';
 
+/** Read a File as base64 (no data: URL prefix) for JSON plugin uploads. */
+async function fileToBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 export type PluginActivationStatus = 'inactive' | 'active' | 'disabled';
 export type PluginInstallationStatus = 'not_installed' | 'installed';
 
@@ -140,17 +152,26 @@ export const pluginService = {
     return data;
   },
 
+  /**
+   * Upload via JSON base64 (not multipart).
+   * Multipart FormData was broken in production by axios Content-Type /
+   * proxies → FastAPI 422 ``body.file Field required``.
+   */
   async upload(file: File): Promise<{ ok?: boolean; staging_id?: string; error?: string }> {
-    const body = new FormData();
-    body.append('file', file);
-    const { data } = await api.post('/admin/plugins/upload', body);
+    const content_base64 = await fileToBase64(file);
+    const { data } = await api.post('/admin/plugins/upload', {
+      filename: file.name,
+      content_base64,
+    });
     return data;
   },
 
   async validateUpload(file: File): Promise<Record<string, unknown>> {
-    const body = new FormData();
-    body.append('file', file);
-    const { data } = await api.post('/admin/plugins/validate-upload', body);
+    const content_base64 = await fileToBase64(file);
+    const { data } = await api.post('/admin/plugins/validate-upload', {
+      filename: file.name,
+      content_base64,
+    });
     return data;
   },
 
