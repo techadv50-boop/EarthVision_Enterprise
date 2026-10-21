@@ -242,30 +242,12 @@ async def test_admin_creates_user_and_can_restrict_access(client):
 
 
 @pytest.mark.asyncio
-async def test_admin_can_set_password_only_for_admin_accounts(client):
+async def test_admin_can_add_a_user_and_set_any_password(client):
     operator = await client.post(
         "/api/v1/auth/login",
         json={"username": "operator@satpass.xdgen.com", "password": "pak123"},
     )
     admin_headers = _bearer(operator)
-    listed = await client.get("/api/v1/admin/users", headers=admin_headers)
-    assert listed.status_code == 200
-    admin_row = next(row for row in listed.json() if row["username"] == "admin")
-
-    changed = await client.patch(
-        f"/api/v1/admin/users/{admin_row['id']}",
-        headers=admin_headers,
-        json={"password": "AdminPass99"},
-    )
-    assert changed.status_code == 200, changed.text
-    assert "password" not in changed.json()
-
-    login = await client.post(
-        "/api/v1/auth/login",
-        json={"username": "admin", "password": "AdminPass99"},
-    )
-    assert login.status_code == 200, login.text
-
     created = await client.post(
         "/api/v1/admin/users",
         headers=admin_headers,
@@ -273,20 +255,36 @@ async def test_admin_can_set_password_only_for_admin_accounts(client):
             "email": "plain@example.com",
             "username": "plainuser",
             "password": "Plainuser@123",
+            "full_name": "Plain User",
             "role": "user",
         },
     )
     assert created.status_code == 201, created.text
-    refused = await client.patch(
-        f"/api/v1/admin/users/{created.json()['id']}",
-        headers=admin_headers,
-        json={"password": "AnotherPass99"},
-    )
-    assert refused.status_code == 400
-    assert "admin" in refused.json()["detail"].lower()
-    still = await client.post(
+    assert created.json()["roles"] == ["user"]
+    uid = created.json()["id"]
+
+    first = await client.post(
         "/api/v1/auth/login",
         json={"username": "plainuser", "password": "Plainuser@123"},
     )
-    assert still.status_code == 200
+    assert first.status_code == 200, first.text
+
+    changed = await client.patch(
+        f"/api/v1/admin/users/{uid}",
+        headers=admin_headers,
+        json={"password": "AnotherPass99"},
+    )
+    assert changed.status_code == 200, changed.text
+    assert "password" not in changed.json()
+
+    old = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "plainuser", "password": "Plainuser@123"},
+    )
+    assert old.status_code == 401
+    new = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "plainuser", "password": "AnotherPass99"},
+    )
+    assert new.status_code == 200, new.text
 

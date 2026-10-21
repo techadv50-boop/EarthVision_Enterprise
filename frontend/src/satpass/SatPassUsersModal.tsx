@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Check, Ban, Loader2, RotateCcw } from 'lucide-react';
+import { X, Check, Ban, Loader2, RotateCcw, Plus } from 'lucide-react';
 import { adminApi } from '@/services/api';
 import { useAuthStore } from '@/store/authStore';
 
@@ -36,10 +36,16 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
   const current = useAuthStore((s) => s.user);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [draftRole, setDraftRole] = useState<Record<number, Role>>({});
-  const [busy, setBusy] = useState<number | null>(null);
+  const [busy, setBusy] = useState<number | 'create' | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [draftPassword, setDraftPassword] = useState<Record<number, string>>({});
+  const [showAdd, setShowAdd] = useState(false);
+  const [newEmail, setNewEmail] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState<Role>('user');
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
@@ -91,7 +97,44 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
       setDraftPassword((prev) => ({ ...prev, [u.id]: '' }));
       setNotice(`Password updated for ${u.username}.`);
     } catch {
-      setError('Could not update that admin password.');
+      setError('Could not update that password.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const addUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword.trim().length < 8) {
+      setNotice('');
+      setError('Password must be at least 8 characters.');
+      return;
+    }
+    setBusy('create');
+    setError('');
+    setNotice('');
+    try {
+      await adminApi.createUser({
+        email: newEmail.trim(),
+        username: newUsername.trim(),
+        password: newPassword,
+        full_name: newName.trim() || undefined,
+        role: newRole,
+      });
+      setNewEmail('');
+      setNewUsername('');
+      setNewName('');
+      setNewPassword('');
+      setNewRole('user');
+      setShowAdd(false);
+      await load();
+      setNotice(`Added ${newUsername.trim()}. They can sign in now.`);
+    } catch (err: unknown) {
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      setError(typeof detail === 'string' ? detail : 'Could not add that user.');
     } finally {
       setBusy(null);
     }
@@ -122,7 +165,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
           <div>
             <h2 className="text-sm font-bold">Users &amp; access</h2>
             <p className="text-[11px] text-gray-500">
-              People self-register; approve or restrict their access here.
+              Add accounts, set any password, and approve or restrict access.
             </p>
           </div>
           <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-white/10 hover:text-white">
@@ -139,6 +182,70 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
             </div>
           ) : (
             <>
+              <div className="mb-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAdd((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-xs text-cyan-300 ring-1 ring-cyan-500/40 hover:bg-white/10"
+                >
+                  <Plus className="h-3.5 w-3.5" /> {showAdd ? 'Close new user' : 'Add user'}
+                </button>
+                {showAdd && (
+                  <form onSubmit={(e) => void addUser(e)} className="mt-2 space-y-2 rounded bg-gray-900/70 p-2 ring-1 ring-white/10">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <input
+                        type="email"
+                        required
+                        value={newEmail}
+                        onChange={(e) => setNewEmail(e.target.value)}
+                        placeholder="Email"
+                        className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                      />
+                      <input
+                        required
+                        minLength={3}
+                        value={newUsername}
+                        onChange={(e) => setNewUsername(e.target.value)}
+                        placeholder="Username"
+                        className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                      />
+                      <input
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        placeholder="Full name"
+                        className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                      />
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        placeholder="Password"
+                        autoComplete="new-password"
+                        className="rounded bg-gray-950 px-2 py-1 text-xs outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={newRole}
+                        onChange={(e) => setNewRole(e.target.value as Role)}
+                        className="rounded bg-gray-950 px-1.5 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                      >
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                      <button
+                        type="submit"
+                        disabled={busy === 'create'}
+                        className="rounded bg-cyan-600 px-2 py-1 text-xs font-medium hover:bg-cyan-500 disabled:opacity-50"
+                      >
+                        {busy === 'create' ? 'Adding…' : 'Create account'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
               {pending.length > 0 && (
                 <div className="mb-4">
                   <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-amber-400">
@@ -148,29 +255,50 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                     {pending.map((u) => (
                       <div
                         key={u.id}
-                        className="flex items-center gap-2 rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
+                        className="rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
                       >
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">{u.full_name || u.username}</p>
-                          <p className="truncate text-[11px] text-gray-500">
-                            {u.email} · {u.username}
-                          </p>
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{u.full_name || u.username}</p>
+                            <p className="truncate text-[11px] text-gray-500">
+                              {u.email} · {u.username}
+                            </p>
+                          </div>
+                          {roleSelect(u)}
+                          <button
+                            disabled={busy === u.id}
+                            onClick={() => approve(u)}
+                            className="inline-flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-xs font-medium hover:bg-emerald-500 disabled:opacity-50"
+                          >
+                            <Check className="h-3.5 w-3.5" /> Approve
+                          </button>
+                          <button
+                            disabled={busy === u.id}
+                            onClick={() => restrict(u)}
+                            className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-xs text-gray-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
+                          >
+                            <Ban className="h-3.5 w-3.5" /> Restrict
+                          </button>
                         </div>
-                        {roleSelect(u)}
-                        <button
-                          disabled={busy === u.id}
-                          onClick={() => approve(u)}
-                          className="inline-flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-xs font-medium hover:bg-emerald-500 disabled:opacity-50"
-                        >
-                          <Check className="h-3.5 w-3.5" /> Approve
-                        </button>
-                        <button
-                          disabled={busy === u.id}
-                          onClick={() => restrict(u)}
-                          className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-1 text-xs text-gray-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
-                        >
-                          <Ban className="h-3.5 w-3.5" /> Restrict
-                        </button>
+                        <div className="mt-2 flex items-center gap-2">
+                          <input
+                            type="password"
+                            value={draftPassword[u.id] || ''}
+                            onChange={(e) =>
+                              setDraftPassword((prev) => ({ ...prev, [u.id]: e.target.value }))
+                            }
+                            placeholder="New password"
+                            autoComplete="new-password"
+                            className="min-w-0 flex-1 rounded bg-gray-950 px-2 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                          />
+                          <button
+                            disabled={busy === u.id}
+                            onClick={() => void savePassword(u)}
+                            className="rounded bg-cyan-600 px-2 py-1 text-xs font-medium hover:bg-cyan-500 disabled:opacity-50"
+                          >
+                            Set password
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -184,7 +312,6 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                 {others.map((u) => {
                   const status = statusOf(u);
                   const self = u.id === current?.id;
-                  const isAdmin = roleOf(u) === 'admin';
                   return (
                     <div
                       key={u.id}
@@ -227,8 +354,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                         </button>
                       )}
                       </div>
-                      {isAdmin && (
-                        <div className="mt-2 flex items-center gap-2">
+                      <div className="mt-2 flex items-center gap-2">
                           <input
                             type="password"
                             value={draftPassword[u.id] || ''}
@@ -247,7 +373,6 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                             Set password
                           </button>
                         </div>
-                      )}
                     </div>
                   );
                 })}

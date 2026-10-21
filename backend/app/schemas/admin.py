@@ -90,7 +90,7 @@ class UserAdminUpdate(BaseModel):
         default=None,
         min_length=8,
         max_length=128,
-        description="New password. Only applied to an admin account.",
+        description="New password set by an admin for this account.",
     )
 
 
