@@ -143,19 +143,14 @@ export const pluginService = {
   async upload(file: File): Promise<{ ok?: boolean; staging_id?: string; error?: string }> {
     const body = new FormData();
     body.append('file', file);
-    const { data } = await api.post('/admin/plugins/upload', body, {
-      // Let the browser set multipart boundary (api default JSON Content-Type breaks this).
-      headers: { 'Content-Type': undefined as unknown as string },
-    });
+    const { data } = await api.post('/admin/plugins/upload', body);
     return data;
   },
 
   async validateUpload(file: File): Promise<Record<string, unknown>> {
     const body = new FormData();
     body.append('file', file);
-    const { data } = await api.post('/admin/plugins/validate-upload', body, {
-      headers: { 'Content-Type': undefined as unknown as string },
-    });
+    const { data } = await api.post('/admin/plugins/validate-upload', body);
     return data;
   },
 

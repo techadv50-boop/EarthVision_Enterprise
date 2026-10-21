@@ -7,7 +7,8 @@ const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
 export const api: AxiosInstance = axios.create({
   baseURL: API_URL,
   timeout: 75000,
-  headers: { 'Content-Type': 'application/json' },
+  // Do NOT default Content-Type to application/json — that breaks FormData
+  // uploads (plugin zip validate-upload) because multipart boundary is lost.
 });
 
 api.interceptors.request.use((config) => {
@@ -15,12 +16,24 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
-  // FormData must set its own multipart boundary — never force application/json.
-  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
-    if (config.headers && typeof config.headers === 'object') {
+  const isForm =
+    typeof FormData !== 'undefined' && config.data instanceof FormData;
+  if (isForm) {
+    // AxiosHeaders: must delete so the browser sets multipart + boundary.
+    const h = config.headers as {
+      delete?: (k: string) => void;
+      set?: (k: string, v: string) => void;
+    };
+    h.delete?.('Content-Type');
+    h.delete?.('content-type');
+    if (typeof (config.headers as { 'Content-Type'?: unknown })['Content-Type'] !== 'undefined') {
       delete (config.headers as Record<string, unknown>)['Content-Type'];
-      delete (config.headers as Record<string, unknown>)['content-type'];
     }
+  } else if (config.data != null && typeof config.data === 'object') {
+    // JSON body requests
+    const h = config.headers as { set?: (k: string, v: string) => void };
+    if (h.set) h.set('Content-Type', 'application/json');
+    else (config.headers as Record<string, string>)['Content-Type'] = 'application/json';
   }
   return config;
 });
