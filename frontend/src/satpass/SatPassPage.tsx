@@ -477,8 +477,8 @@ export default function SatPassPage() {
         </div>
       </aside>
 
-      {/* Map play area */}
-      <div className="relative flex-1">
+      {/* Map play area. z-0 keeps Leaflet panes under page dialogs. */}
+      <div className="relative z-0 flex-1">
         <SatPassMap
           sats={sats}
           onStates={handleStates}

@@ -90,7 +90,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
         className="max-h-[85vh] w-full max-w-2xl overflow-hidden rounded-lg bg-gray-950 ring-1 ring-white/10"
         onClick={(e) => e.stopPropagation()}

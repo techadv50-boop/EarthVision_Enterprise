@@ -1101,7 +1101,7 @@ export default function PredictView({
           </button>
           <span className="ml-auto font-mono text-gray-500">{cursor}</span>
         </div>
-        <div className="relative min-h-0 flex-1">
+        <div className="relative z-0 min-h-0 flex-1">
           {view === 'report' ? (
             <PredictReport passes={result?.passes || []} timeZone={timeZone} />
           ) : (
