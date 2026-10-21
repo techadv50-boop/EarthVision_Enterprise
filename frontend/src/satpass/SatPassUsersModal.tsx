@@ -38,6 +38,8 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
   const [draftRole, setDraftRole] = useState<Record<number, Role>>({});
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [draftPassword, setDraftPassword] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
@@ -74,6 +76,27 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
   const restrict = (u: AdminUser) => update(u, { access_status: 'restricted' });
   const saveRole = (u: AdminUser) => update(u, { role: draftRole[u.id] || roleOf(u) });
 
+  const savePassword = async (u: AdminUser) => {
+    const password = (draftPassword[u.id] || '').trim();
+    if (password.length < 8) {
+      setNotice('');
+      setError('Password must be at least 8 characters.');
+      return;
+    }
+    setBusy(u.id);
+    setError('');
+    setNotice('');
+    try {
+      await adminApi.updateUser(u.id, { password });
+      setDraftPassword((prev) => ({ ...prev, [u.id]: '' }));
+      setNotice(`Password updated for ${u.username}.`);
+    } catch {
+      setError('Could not update that admin password.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const pending = users.filter((u) => statusOf(u) === 'pending');
   const others = users.filter((u) => statusOf(u) !== 'pending');
 
@@ -109,6 +132,7 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
 
         <div className="max-h-[70vh] overflow-y-auto px-4 py-3">
           {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
+          {notice && <p className="mb-2 text-xs text-emerald-400">{notice}</p>}
           {loading ? (
             <div className="flex items-center gap-2 py-8 text-sm text-gray-400">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading users…
@@ -160,11 +184,13 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                 {others.map((u) => {
                   const status = statusOf(u);
                   const self = u.id === current?.id;
+                  const isAdmin = roleOf(u) === 'admin';
                   return (
                     <div
                       key={u.id}
-                      className="flex items-center gap-2 rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
+                      className="rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
                     >
+                      <div className="flex items-center gap-2">
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">
                           {u.full_name || u.username}
@@ -199,6 +225,28 @@ export default function SatPassUsersModal({ onClose }: { onClose: () => void }) 
                         >
                           <RotateCcw className="h-3.5 w-3.5" /> Restore
                         </button>
+                      )}
+                      </div>
+                      {isAdmin && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <input
+                            type="password"
+                            value={draftPassword[u.id] || ''}
+                            onChange={(e) =>
+                              setDraftPassword((prev) => ({ ...prev, [u.id]: e.target.value }))
+                            }
+                            placeholder="New password"
+                            autoComplete="new-password"
+                            className="min-w-0 flex-1 rounded bg-gray-950 px-2 py-1 text-xs text-gray-200 outline-none ring-1 ring-white/10 focus:ring-cyan-500"
+                          />
+                          <button
+                            disabled={busy === u.id}
+                            onClick={() => void savePassword(u)}
+                            className="rounded bg-cyan-600 px-2 py-1 text-xs font-medium hover:bg-cyan-500 disabled:opacity-50"
+                          >
+                            Set password
+                          </button>
+                        </div>
                       )}
                     </div>
                   );

@@ -178,6 +178,14 @@ async def update_user(
     elif data.role_ids is not None:
         roles_result = await db.execute(select(Role).where(Role.id.in_(data.role_ids)))
         user.roles = list(roles_result.scalars().all())
+    if data.password is not None:
+        from app.core.security import get_password_hash
+
+        becoming_admin = data.role.strip().lower() == "admin" if data.role is not None else False
+        already_admin = user.is_superuser or any(r.name == "admin" for r in user.roles)
+        if not (already_admin or becoming_admin):
+            raise HTTPException(status_code=400, detail="Password can only be changed for an admin account")
+        user.hashed_password = get_password_hash(data.password)
 
     await db.flush()
     result = await db.execute(
