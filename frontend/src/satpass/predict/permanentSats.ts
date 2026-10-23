@@ -1,6 +1,6 @@
 import type { SatelliteKind } from './types';
 
-/** Cartosat and SAR-series satellites that stay in the Predict list. */
+/** Cartosat and SAR-series satellites shown in Track and Predict. */
 export const PERMANENT_SATS: { name: string; norad: number; kind: SatelliteKind }[] = [
   { name: 'Cartosat-2B', norad: 36795, kind: 'optical' },
   { name: 'Cartosat-2C', norad: 41599, kind: 'optical' },
@@ -22,3 +22,11 @@ export const PERMANENT_SATS: { name: string; norad: number; kind: SatelliteKind 
   { name: 'ResourceSat-2A', norad: 41877, kind: 'optical' },
   { name: 'HySIS', norad: 43719, kind: 'optical' },
 ];
+
+const NAME_BY_NORAD = new Map(PERMANENT_SATS.map((sat) => [sat.norad, sat.name]));
+
+/** Keep the series name when Celestrak publishes a generic catalog title. */
+export function preferredSatName(norad: number | null | undefined, fallback: string): string {
+  if (norad == null) return fallback;
+  return NAME_BY_NORAD.get(norad) || fallback;
+}

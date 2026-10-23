@@ -15,7 +15,7 @@ import PredictMap, { type AoiDrawMode } from './PredictMap';
 import PredictLayerLibrary from './PredictLayerLibrary';
 import PredictReport from './PredictReport';
 import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, knownSensor } from './predict/catalog';
-import { PERMANENT_SATS } from './predict/permanentSats';
+import { PERMANENT_SATS, preferredSatName } from './predict/permanentSats';
 import { parseKmlToGeoJSON } from './predict/kml';
 import { uploadGeometryFiles } from './predict/export';
 import { downloadAoiMapPng } from './predict/mapExport';
@@ -548,28 +548,41 @@ export default function PredictView({
     const norad = noradFromLine1(l1);
     const inferred = inferSatelliteKind(n, norad);
     const kind = kindOverride ?? (pendingKind === 'auto' ? inferred : pendingKind);
-    const color = colorForSatellite(n, usedColors);
     const known = knownSensor(n, norad);
     const sensor = known
       ? known
       : allowFallback
         ? { swathKm, minElevationDeg: minEl }
         : undefined;
-    setSats((prev) => [
-      ...prev,
-      {
-        id: newId(),
-        name: n,
-        line1: l1.trim(),
-        line2: l2.trim(),
-        color,
-        kind,
-        noradId: norad,
-        sensor,
-        paramsKnown: Boolean(known),
-        sensorSource: known ? 'catalog' : allowFallback ? 'fallback' : 'none',
-      },
-    ]);
+    const row = {
+      name: preferredSatName(norad, n),
+      line1: l1.trim(),
+      line2: l2.trim(),
+      kind,
+      noradId: norad,
+      sensor,
+      paramsKnown: Boolean(known),
+      sensorSource: known ? ('catalog' as const) : allowFallback ? ('fallback' as const) : ('none' as const),
+    };
+    setSats((prev) => {
+      const idx =
+        norad == null
+          ? -1
+          : prev.findIndex((sat) => (sat.noradId ?? noradFromLine1(sat.line1)) === norad);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], ...row, color: copy[idx].color };
+        return copy;
+      }
+      return [
+        ...prev,
+        {
+          id: newId(),
+          color: colorForSatellite(n, usedColors),
+          ...row,
+        },
+      ];
+    });
     setSatName('');
     setLine1('');
     setLine2('');
@@ -580,6 +593,29 @@ export default function PredictView({
       );
     } else {
       setError('');
+    }
+  };
+
+  const addTrackedFresh = async (sat: { name: string; line1: string; line2: string; noradId?: number | null }) => {
+    const norad = sat.noradId ?? noradFromLine1(sat.line1);
+    if (!norad) {
+      addSat(sat.name, sat.line1, sat.line2);
+      return;
+    }
+    setBusy('sat');
+    setError('');
+    try {
+      const { data } = await satelliteApi.fetch(String(norad));
+      const hit = data.find((row) => row.norad_id === norad) ?? data[0];
+      if (!hit?.line1 || !hit.line2) {
+        setError(`No current orbit for ${sat.name}.`);
+        return;
+      }
+      addSat(preferredSatName(norad, sat.name), hit.line1, hit.line2);
+    } catch {
+      setError(`No current orbit for ${sat.name}.`);
+    } finally {
+      setBusy('');
     }
   };
 
@@ -914,8 +950,9 @@ export default function PredictView({
                   {trackedSats.map((s) => (
                     <button
                       key={s.id}
-                      onClick={() => addSat(s.name, s.line1, s.line2)}
-                      className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] ring-1 ring-white/10 hover:bg-white/10"
+                      disabled={busy === 'sat'}
+                      onClick={() => void addTrackedFresh(s)}
+                      className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
                     >
                       + {s.name}
                     </button>
