@@ -15,6 +15,7 @@ import PredictMap, { type AoiDrawMode } from './PredictMap';
 import PredictLayerLibrary from './PredictLayerLibrary';
 import PredictReport from './PredictReport';
 import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, knownSensor } from './predict/catalog';
+import { PERMANENT_SATS, preferredSatName } from './predict/permanentSats';
 import { parseKmlToGeoJSON } from './predict/kml';
 import { uploadGeometryFiles } from './predict/export';
 import { downloadAoiMapPng } from './predict/mapExport';
@@ -118,6 +119,10 @@ export default function PredictView({
   const [busy, setBusy] = useState('');
   const [aoiDraw, setAoiDraw] = useState<AoiDrawMode>('off');
   const [mapExporting, setMapExporting] = useState(false);
+  const [adminCountry, setAdminCountry] = useState<'pak' | 'ind' | null>(null);
+  const [adminLevel, setAdminLevel] = useState<0 | 1 | 2 | null>(null);
+  const [adminGeojson, setAdminGeojson] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [seriesNote, setSeriesNote] = useState('');
 
   const startDate = startLocal.slice(0, 10);
   const endDate = endLocal.slice(0, 10);
@@ -193,6 +198,105 @@ export default function PredictView({
   }, [layerId]);
 
   const usedColors = useMemo(() => new Set(sats.map((s) => s.color)), [sats]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const loaded = await Promise.all(
+        PERMANENT_SATS.map(async (spec) => {
+          try {
+            const { data } = await satelliteApi.fetch(String(spec.norad));
+            const hit = data.find((row) => row.norad_id === spec.norad) ?? data[0];
+            if (!hit?.line1 || !hit.line2) return { spec, hit: null };
+            return { spec, hit };
+          } catch {
+            return { spec, hit: null };
+          }
+        }),
+      );
+      if (cancelled) return;
+      const missing = loaded.filter((row) => !row.hit).map((row) => row.spec.name);
+      const used = new Set<string>();
+      const rows = loaded.flatMap(({ spec, hit }) => {
+        if (!hit) return [];
+        const known = knownSensor(spec.name, spec.norad);
+        const color = colorForSatellite(spec.name, used);
+        used.add(color);
+        return [
+          {
+            id: `perm-${spec.norad}`,
+            name: spec.name,
+            line1: hit.line1.trim(),
+            line2: hit.line2.trim(),
+            color,
+            kind: spec.kind,
+            noradId: spec.norad,
+            sensor: known ?? undefined,
+            paramsKnown: Boolean(known),
+            sensorSource: known ? ('catalog' as const) : ('none' as const),
+          },
+        ];
+      });
+      setSats((prev) => {
+        const have = new Set(prev.map((sat) => sat.noradId));
+        const fresh = rows.filter((sat) => !have.has(sat.noradId));
+        return fresh.length ? [...fresh, ...prev] : prev;
+      });
+      setSeriesNote(
+        missing.length
+          ? `No current orbit for ${missing.join(', ')}.`
+          : 'Cartosat and SAR series are kept in the satellite list.',
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!adminCountry || adminLevel == null) {
+      setAdminGeojson(null);
+      return;
+    }
+    let cancelled = false;
+    setAdminGeojson(null);
+    void fetch(`/aoi/${adminCountry}-${adminLevel}.geojson`)
+      .then((resp) => {
+        if (!resp.ok) throw new Error('missing');
+        return resp.json();
+      })
+      .then((data: GeoJSON.FeatureCollection) => {
+        if (!cancelled) setAdminGeojson(data);
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load that area level.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [adminCountry, adminLevel]);
+
+  const chooseAdmin = (country: 'pak' | 'ind', level: 0 | 1 | 2) => {
+    setAdminCountry(country);
+    setAdminLevel(level);
+    setAoiDraw('off');
+    setView('map');
+    setError('');
+  };
+
+  const applyAdminFeature = (feature: GeoJSON.Feature) => {
+    if (!feature.geometry) return;
+    const name = String((feature.properties as { name?: string } | null)?.name || 'AOI');
+    const next = targetFromGeometry(feature.geometry, name);
+    if (!next) {
+      setError('Could not use that area.');
+      return;
+    }
+    applyTarget({ ...next, source: 'layer' });
+    setPlaceQuery('');
+    setFileNote(`${name} · clicked area`);
+    setResult(null);
+  };
 
   const applyTarget = (t: PredictTarget) => {
     setError('');
@@ -444,28 +548,41 @@ export default function PredictView({
     const norad = noradFromLine1(l1);
     const inferred = inferSatelliteKind(n, norad);
     const kind = kindOverride ?? (pendingKind === 'auto' ? inferred : pendingKind);
-    const color = colorForSatellite(n, usedColors);
     const known = knownSensor(n, norad);
     const sensor = known
       ? known
       : allowFallback
         ? { swathKm, minElevationDeg: minEl }
         : undefined;
-    setSats((prev) => [
-      ...prev,
-      {
-        id: newId(),
-        name: n,
-        line1: l1.trim(),
-        line2: l2.trim(),
-        color,
-        kind,
-        noradId: norad,
-        sensor,
-        paramsKnown: Boolean(known),
-        sensorSource: known ? 'catalog' : allowFallback ? 'fallback' : 'none',
-      },
-    ]);
+    const row = {
+      name: preferredSatName(norad, n),
+      line1: l1.trim(),
+      line2: l2.trim(),
+      kind,
+      noradId: norad,
+      sensor,
+      paramsKnown: Boolean(known),
+      sensorSource: known ? ('catalog' as const) : allowFallback ? ('fallback' as const) : ('none' as const),
+    };
+    setSats((prev) => {
+      const idx =
+        norad == null
+          ? -1
+          : prev.findIndex((sat) => (sat.noradId ?? noradFromLine1(sat.line1)) === norad);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], ...row, color: copy[idx].color };
+        return copy;
+      }
+      return [
+        ...prev,
+        {
+          id: newId(),
+          color: colorForSatellite(n, usedColors),
+          ...row,
+        },
+      ];
+    });
     setSatName('');
     setLine1('');
     setLine2('');
@@ -476,6 +593,29 @@ export default function PredictView({
       );
     } else {
       setError('');
+    }
+  };
+
+  const addTrackedFresh = async (sat: { name: string; line1: string; line2: string; noradId?: number | null }) => {
+    const norad = sat.noradId ?? noradFromLine1(sat.line1);
+    if (!norad) {
+      addSat(sat.name, sat.line1, sat.line2);
+      return;
+    }
+    setBusy('sat');
+    setError('');
+    try {
+      const { data } = await satelliteApi.fetch(String(norad));
+      const hit = data.find((row) => row.norad_id === norad) ?? data[0];
+      if (!hit?.line1 || !hit.line2) {
+        setError(`No current orbit for ${sat.name}.`);
+        return;
+      }
+      addSat(preferredSatName(norad, sat.name), hit.line1, hit.line2);
+    } catch {
+      setError(`No current orbit for ${sat.name}.`);
+    } finally {
+      setBusy('');
     }
   };
 
@@ -690,6 +830,52 @@ export default function PredictView({
               Place a point or polygon anywhere on the globe. Points use the {bufferKm} km buffer.
               Polygons stay exactly as drawn.
             </p>
+            <div className="mt-3">
+              <p className="text-[11px] font-medium text-gray-300">Area levels</p>
+              <p className="mt-0.5 text-[10px] text-gray-500">
+                Level 0 is the whole country, level 1 provinces, level 2 districts. Click a shape to use it as the AOI.
+                Pakistan includes Kashmir.
+              </p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {([
+                  ['pak', 'Pakistan'],
+                  ['ind', 'India'],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => chooseAdmin(id, adminLevel ?? 0)}
+                    className={`rounded px-2 py-0.5 text-[11px] ring-1 ${
+                      adminCountry === id
+                        ? 'bg-cyan-600 text-white ring-cyan-500'
+                        : 'bg-white/5 text-gray-300 ring-white/10 hover:bg-white/10'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {([
+                  [0, 'Level 0'],
+                  [1, 'Level 1'],
+                  [2, 'Level 2'],
+                ] as const).map(([level, label]) => (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => chooseAdmin(adminCountry ?? 'pak', level)}
+                    className={`rounded px-2 py-0.5 text-[11px] ring-1 ${
+                      adminLevel === level
+                        ? 'bg-cyan-600 text-white ring-cyan-500'
+                        : 'bg-white/5 text-gray-300 ring-white/10 hover:bg-white/10'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               <label className="inline-flex cursor-pointer items-center gap-1 rounded bg-white/5 px-2 py-1 ring-1 ring-white/10 hover:bg-white/10">
                 <Upload className="h-3.5 w-3.5" /> KML
@@ -756,6 +942,7 @@ export default function PredictView({
             <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-cyan-400">
               B. Satellite selection (TLE)
             </h2>
+            {seriesNote && <p className="mb-2 text-[10px] text-gray-500">{seriesNote}</p>}
             {trackedSats.length > 0 && (
               <div className="mb-2">
                 <p className="mb-1 text-[11px] text-gray-500">From live tracker</p>
@@ -763,8 +950,9 @@ export default function PredictView({
                   {trackedSats.map((s) => (
                     <button
                       key={s.id}
-                      onClick={() => addSat(s.name, s.line1, s.line2)}
-                      className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] ring-1 ring-white/10 hover:bg-white/10"
+                      disabled={busy === 'sat'}
+                      onClick={() => void addTrackedFresh(s)}
+                      className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
                     >
                       + {s.name}
                     </button>
@@ -924,7 +1112,7 @@ export default function PredictView({
                   type="date"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
+                  className="satpass-date w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
                 />
                 <span className="shrink-0 rounded bg-white/5 px-2 py-1.5 text-[11px] text-gray-300 ring-1 ring-white/10">
                   12:00 AM
@@ -938,7 +1126,7 @@ export default function PredictView({
                   type="date"
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
+                  className="satpass-date w-full rounded bg-gray-900 px-2 py-1.5 text-sm outline-none ring-1 ring-white/10"
                 />
                 <span className="shrink-0 rounded bg-white/5 px-2 py-1.5 text-[11px] text-gray-300 ring-1 ring-white/10">
                   11:59 PM
@@ -1101,7 +1289,7 @@ export default function PredictView({
           </button>
           <span className="ml-auto font-mono text-gray-500">{cursor}</span>
         </div>
-        <div className="relative min-h-0 flex-1">
+        <div className="relative z-0 min-h-0 flex-1">
           {view === 'report' ? (
             <PredictReport passes={result?.passes || []} timeZone={timeZone} />
           ) : (
@@ -1125,6 +1313,8 @@ export default function PredictView({
                 selectedFeatureIds={selectedFeatureIds}
                 showLibrary={showLibrary}
                 onLibraryFeatureClick={toggleLayerFeature}
+                adminGeojson={adminGeojson}
+                onAdminAoi={applyAdminFeature}
               />
               <div className="pointer-events-auto absolute right-3 top-3 z-[1000] max-h-[calc(100%-1.5rem)] w-64 overflow-y-auto space-y-2 rounded bg-gray-950/90 p-2 text-[11px] ring-1 ring-white/10">
                 <p className="font-semibold uppercase tracking-wide text-gray-300">Layers</p>

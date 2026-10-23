@@ -27,6 +27,8 @@ interface Props {
   selectedFeatureIds?: Set<string>;
   showLibrary?: boolean;
   onLibraryFeatureClick?: (id: string) => void;
+  adminGeojson?: GeoJSON.FeatureCollection | null;
+  onAdminAoi?: (feature: GeoJSON.Feature) => void;
   onCursor?: (text: string) => void;
   onAoiDrawn?: (target: PredictTarget) => void;
   onAoiCancel?: () => void;
@@ -90,6 +92,8 @@ export default function PredictMap({
   selectedFeatureIds,
   showLibrary = false,
   onLibraryFeatureClick,
+  adminGeojson = null,
+  onAdminAoi,
   onCursor,
   onAoiDrawn,
   onAoiCancel,
@@ -98,6 +102,9 @@ export default function PredictMap({
   const mapRef = useRef<L.Map | null>(null);
   const overlayRef = useRef<L.LayerGroup | null>(null);
   const fittedKeyRef = useRef<string>('');
+  const adminFitRef = useRef<GeoJSON.FeatureCollection | null>(null);
+  const onAdminAoiRef = useRef(onAdminAoi);
+  onAdminAoiRef.current = onAdminAoi;
   const lastFitRef = useRef<{ bounds: L.LatLngBounds; maxZoom: number } | null>(null);
   const finishPolyRef = useRef<() => void>(() => undefined);
   const onAoiDrawnRef = useRef(onAoiDrawn);
@@ -150,6 +157,31 @@ export default function PredictMap({
     if (!map || !overlay) return;
     overlay.clearLayers();
     const passById = new Map((result?.passes || []).map((p) => [p.passId, p]));
+
+    if (aoiDraw === 'off' && adminGeojson?.features?.length) {
+      const admin = L.geoJSON(adminGeojson as GeoJSON.GeoJsonObject, {
+        pane: 'overlayPane',
+        style: (feat) => {
+          const name = String((feat?.properties as { name?: string } | null)?.name || '');
+          const on = Boolean(target && name && name === target.name);
+          return {
+            color: on ? '#fbbf24' : '#67e8f9',
+            weight: on ? 2.5 : 1,
+            fillColor: on ? '#fbbf24' : '#155e75',
+            fillOpacity: on ? 0.38 : 0.14,
+          };
+        },
+        onEachFeature: (feat, layer) => {
+          const name = String((feat.properties as { name?: string } | null)?.name || 'AOI');
+          layer.bindTooltip(name, { sticky: true });
+          layer.on('click', (ev) => {
+            L.DomEvent.stopPropagation(ev);
+            onAdminAoiRef.current?.(feat as GeoJSON.Feature);
+          });
+        },
+      });
+      overlay.addLayer(admin);
+    }
 
     if (showLibrary && libraryGeojson?.features?.length) {
       const lib = L.geoJSON(libraryGeojson as GeoJSON.GeoJsonObject, {
@@ -304,6 +336,12 @@ export default function PredictMap({
       }
       fittedKeyRef.current = fitKey;
     }
+
+    if (adminGeojson?.features?.length && adminGeojson !== adminFitRef.current) {
+      adminFitRef.current = adminGeojson;
+      const bounds = L.geoJSON(adminGeojson as GeoJSON.GeoJsonObject).getBounds();
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [28, 28], maxZoom: 6, animate: false });
+    }
   }, [
     target,
     result,
@@ -318,6 +356,8 @@ export default function PredictMap({
     selectedFeatureIds,
     showLibrary,
     onLibraryFeatureClick,
+    adminGeojson,
+    aoiDraw,
   ]);
 
   useEffect(() => {

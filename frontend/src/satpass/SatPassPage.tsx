@@ -20,6 +20,7 @@ import SatPassLayersModal from './SatPassLayersModal';
 import PredictView from './PredictView';
 import type { SatState } from './orbit';
 import { catalogSensor } from './predict/catalog';
+import { PERMANENT_SATS, preferredSatName } from './predict/permanentSats';
 
 const PALETTE = [
   '#22d3ee',
@@ -126,14 +127,53 @@ export default function SatPassPage() {
 
   const addFromTle = async (name: string, line1: string, line2: string, noradId?: number | null) => {
     setError('');
-    const color = nextColor;
+    const norad = noradId ?? noradFromLine1(line1);
+    const existing =
+      norad == null ? undefined : sats.find((s) => (s.noradId ?? noradFromLine1(s.line1)) === norad);
+    const color = existing?.color || nextColor;
     try {
-      const { data } = await satelliteApi.add({ name, line1, line2, norad_id: noradId, color });
-      setSats((prev) => [...prev, toTracked(data, color)]);
+      const { data } = await satelliteApi.add({ name, line1, line2, norad_id: norad, color });
+      if (existing) {
+        try {
+          await satelliteApi.remove(existing.id);
+        } catch {
+          /* the new TLE is saved; drop the old row from the list anyway */
+        }
+      }
+      setSats((prev) => [
+        ...prev.filter((s) => !existing || s.id !== existing.id),
+        toTracked(data, color),
+      ]);
       return true;
     } catch {
       setError('Could not add satellite (check the TLE lines).');
       return false;
+    }
+  };
+
+  /** Fetch the current Celestrak TLE, then add or replace that NORAD id. */
+  const addLatest = async (q: string, preferredName?: string) => {
+    const term = q.trim();
+    if (!term) return false;
+    setSearching(true);
+    setError('');
+    try {
+      const { data } = await satelliteApi.fetch(term);
+      const noradGuess = /^\d+$/.test(term) ? Number(term) : null;
+      const hit =
+        (noradGuess != null ? data.find((row) => row.norad_id === noradGuess) : undefined) ?? data[0];
+      if (!hit?.line1 || !hit.line2) {
+        setError(`No current orbit for ${preferredName || term}.`);
+        return false;
+      }
+      const norad = hit.norad_id ?? noradGuess;
+      const name = preferredName || preferredSatName(norad, hit.name);
+      return await addFromTle(name, hit.line1, hit.line2, norad);
+    } catch {
+      setError(`No current orbit for ${preferredName || term}.`);
+      return false;
+    } finally {
+      setSearching(false);
     }
   };
 
@@ -149,19 +189,6 @@ export default function SatPassPage() {
       if (data.length === 0) setError(`No satellite found for "${term}".`);
     } catch {
       setError(`No satellite found for "${term}".`);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const addPreset = async (q: string) => {
-    setSearching(true);
-    setError('');
-    try {
-      const { data } = await satelliteApi.fetch(q);
-      if (data[0]) await addFromTle(data[0].name, data[0].line1, data[0].line2, data[0].norad_id);
-    } catch {
-      setError('Lookup failed. Try again.');
     } finally {
       setSearching(false);
     }
@@ -322,10 +349,27 @@ export default function SatPassPage() {
               {PRESETS.map((p) => (
                 <button
                   key={p.q}
-                  onClick={() => addPreset(p.q)}
-                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 ring-1 ring-white/10 hover:bg-white/10"
+                  disabled={searching}
+                  onClick={() => void addLatest(p.q, p.name)}
+                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
                 >
                   + {p.name}
+                </button>
+              ))}
+            </div>
+
+            <p className="mb-1 mt-3 text-[11px] text-gray-500">
+              Cartosat and SAR series — click loads the latest TLE
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {PERMANENT_SATS.map((sat) => (
+                <button
+                  key={sat.norad}
+                  disabled={searching}
+                  onClick={() => void addLatest(String(sat.norad), sat.name)}
+                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
+                >
+                  + {sat.name}
                 </button>
               ))}
             </div>
@@ -374,7 +418,12 @@ export default function SatPassPage() {
                   <button
                     key={`${r.norad_id}-${r.name}`}
                     onClick={async () => {
-                      const ok = await addFromTle(r.name, r.line1, r.line2, r.norad_id);
+                      const ok = await addFromTle(
+                        preferredSatName(r.norad_id, r.name),
+                        r.line1,
+                        r.line2,
+                        r.norad_id,
+                      );
                       if (ok) setResults([]);
                     }}
                     className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-white/10"
@@ -477,8 +526,8 @@ export default function SatPassPage() {
         </div>
       </aside>
 
-      {/* Map play area */}
-      <div className="relative flex-1">
+      {/* Map play area. z-0 keeps Leaflet panes under page dialogs. */}
+      <div className="relative z-0 flex-1">
         <SatPassMap
           sats={sats}
           onStates={handleStates}
