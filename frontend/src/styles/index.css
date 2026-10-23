@@ -39,3 +39,14 @@
 .cesium-widget-credits {
   display: none !important;
 }
+
+/* Dark panels hide the native date icon and popup. Force a white calendar. */
+.satpass-date {
+  color-scheme: light;
+  color: #f8fafc;
+}
+.satpass-date::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  filter: invert(1);
+  opacity: 1;
+}
