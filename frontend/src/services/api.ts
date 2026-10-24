@@ -159,6 +159,24 @@ export async function postMultipartFile<T = Record<string, unknown>>(
   return data as T;
 }
 
+/** Full error text including raw response body (for matching immutable collisions). */
+export function getErrorBlob(error: unknown): string {
+  const parts: string[] = [getErrorMessage(error)];
+  if (error instanceof ApiHttpError) {
+    if (error.detail != null) parts.push(JSON.stringify(error.detail));
+    if (error.data != null) parts.push(JSON.stringify(error.data));
+  }
+  if (axios.isAxiosError(error) && error.response?.data != null) {
+    parts.push(JSON.stringify(error.response.data));
+  }
+  return parts.join(' ');
+}
+
+/** True when Plugin Manager rejected reinstall of an immutable digest. */
+export function isImmutableArtifactError(error: unknown): boolean {
+  return /immutable|already exists/i.test(getErrorBlob(error));
+}
+
 export function getErrorMessage(error: unknown): string {
   if (error instanceof ApiHttpError) {
     return error.message || `Request failed with status code ${error.status}`;
