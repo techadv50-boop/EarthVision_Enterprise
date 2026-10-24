@@ -14,15 +14,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.deps import require_roles
+from app.database.session import get_db_session
 from app.models.user import User, UserRole
 from app.plugins import engine
 from app.plugins.registry import list_plugins
+from app.services import tool_tree_service as tool_tree_svc
 from app.tools.pack_ops import PackOpsError
 
 router = APIRouter(prefix="/admin/plugins", tags=["AdminPlugins"])
 
 AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]
+DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
 class ConfirmBody(BaseModel):
@@ -177,6 +182,27 @@ async def disable(plugin_id: str, admin: AdminUser, body: ConfirmBody) -> dict:
             confirm=body.confirm,
         )
     except (PackOpsError, ValueError) as exc:
+        _err(exc)
+
+
+@router.post("/{plugin_id}/uninstall")
+async def uninstall(plugin_id: str, admin: AdminUser, body: ConfirmBody, db: DbSession) -> dict:
+    """Delete Tool Tree placements and remove the plugin from the active registry."""
+    try:
+        if body.confirm != "uninstall":
+            raise PackOpsError("refusing uninstall: confirm must be exactly 'uninstall'")
+        actor = admin.email or str(admin.id)
+        placements = await tool_tree_svc.delete_placements_for_plugin(
+            db, plugin_id, actor=actor
+        )
+        result = engine.uninstall_plugin(
+            plugin_id=plugin_id,
+            actor=actor,
+            confirm=body.confirm,
+        )
+        result["placements"] = placements
+        return result
+    except (PackOpsError, ValueError, tool_tree_svc.ToolTreeError) as exc:
         _err(exc)
 
 

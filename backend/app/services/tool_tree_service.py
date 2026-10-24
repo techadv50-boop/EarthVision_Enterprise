@@ -387,6 +387,31 @@ async def delete_placement(
     return {"ok": True, "deleted": placement_id}
 
 
+async def delete_placements_for_plugin(
+    session: AsyncSession, plugin_id: str, *, actor: str | None = None
+) -> dict[str, Any]:
+    """Remove every Tool Tree placement for a plugin (used on uninstall)."""
+    plugin_id = (plugin_id or "").strip()
+    if not plugin_id:
+        raise ToolTreeError("plugin_id required")
+    result = await session.execute(
+        select(ToolPlacement).where(ToolPlacement.plugin_id == plugin_id)
+    )
+    rows = list(result.scalars().all())
+    ids = [p.id for p in rows]
+    for p in rows:
+        await session.delete(p)
+    await session.flush()
+    _audit_append(
+        "placement_delete_for_plugin",
+        actor,
+        plugin_id=plugin_id,
+        deleted_ids=ids,
+        count=len(ids),
+    )
+    return {"ok": True, "plugin_id": plugin_id, "deleted": ids, "count": len(ids)}
+
+
 def _placement_dict(p: ToolPlacement, plugin: dict[str, Any] | None) -> dict[str, Any]:
     active = bool(plugin and plugin.get("activation_status") == "active")
     resolutions = list(p.applicable_resolutions or [])

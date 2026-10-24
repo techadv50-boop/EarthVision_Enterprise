@@ -14,25 +14,45 @@ import {
   type ToolCategoryNode,
   type ToolPlacementNode,
 } from '../../services/toolTreeService';
+import type { ToolRunEntry, ToolRunStatus } from '../../plugins/PluginHostContext';
 
 interface Props {
   isAdmin: boolean;
   onClose: () => void;
   onOpenAdminTools: (tab: 'plugins' | 'tool-tree' | 'upload') => void;
-  onOpenTool: (placement: ToolPlacementNode) => void;
+  /** Toggle check/uncheck — re-clicking a checked tool unselects it. */
+  onToggleTool: (placement: ToolPlacementNode, checked: boolean) => void;
   selectedPluginId?: string | null;
+  toolRuns?: Record<string, ToolRunEntry>;
+}
+
+function statusLabel(status: ToolRunStatus | undefined): { text: string; cls: string } {
+  switch (status) {
+    case 'processing':
+      return { text: 'Processing…', cls: 'bg-amber-100 text-amber-900' };
+    case 'applied':
+      return { text: 'Applied', cls: 'bg-emerald-100 text-emerald-800' };
+    case 'failed':
+      return { text: 'Failed', cls: 'bg-red-100 text-red-800' };
+    case 'selected':
+      return { text: 'Selected', cls: 'bg-sky-100 text-sky-900' };
+    default:
+      return { text: '', cls: '' };
+  }
 }
 
 function CategoryBranch({
   node,
   depth,
   selectedPluginId,
-  onOpenTool,
+  onToggleTool,
+  toolRuns,
 }: {
   node: ToolCategoryNode;
   depth: number;
   selectedPluginId?: string | null;
-  onOpenTool: (p: ToolPlacementNode) => void;
+  onToggleTool: (p: ToolPlacementNode, checked: boolean) => void;
+  toolRuns?: Record<string, ToolRunEntry>;
 }) {
   const [open, setOpen] = useState(!node.collapsed_default);
   return (
@@ -48,30 +68,61 @@ function CategoryBranch({
       </button>
       {open && (
         <div className="ml-2 border-l border-[var(--line)] pl-1">
-          {node.placements.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className={`mb-0.5 flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs ${
-                selectedPluginId === p.plugin_id
-                  ? 'bg-[var(--accent-soft)] font-semibold text-[var(--accent)]'
-                  : 'text-[var(--ink)] hover:bg-[var(--bg)]'
-              }`}
-              onClick={() => onOpenTool(p)}
-              data-testid={`tool-item-${p.plugin_id}`}
-              title={p.description || p.display_name}
-            >
-              <Wrench className="h-3 w-3 shrink-0 opacity-70" />
-              <span className="truncate">{p.display_name}</span>
-            </button>
-          ))}
+          {node.placements.map((p) => {
+            const checked = selectedPluginId === p.plugin_id;
+            const run = toolRuns?.[p.plugin_id];
+            const badge = statusLabel(run?.status);
+            return (
+              <label
+                key={p.id}
+                className={`mb-0.5 flex w-full cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-left text-xs ${
+                  checked
+                    ? 'bg-[var(--accent-soft)] font-semibold text-[var(--accent)]'
+                    : 'text-[var(--ink)] hover:bg-[var(--bg)]'
+                }`}
+                data-testid={`tool-item-${p.plugin_id}`}
+                title={
+                  run?.message ||
+                  p.description ||
+                  p.display_name ||
+                  'Check to apply · uncheck to clear'
+                }
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5 shrink-0"
+                  checked={checked}
+                  onChange={(e) => onToggleTool(p, e.target.checked)}
+                  data-testid={`tool-check-${p.plugin_id}`}
+                />
+                <Wrench className="mt-0.5 h-3 w-3 shrink-0 opacity-70" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{p.display_name}</span>
+                  {badge.text && (
+                    <span
+                      className={`mt-0.5 inline-block rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${badge.cls}`}
+                      data-testid={`tool-status-${p.plugin_id}`}
+                    >
+                      {badge.text}
+                    </span>
+                  )}
+                  {run?.message && (run.status === 'failed' || run.status === 'processing') && (
+                    <span className="mt-0.5 block text-[10px] font-normal text-[var(--muted)]">
+                      {run.message}
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
           {node.children.map((ch) => (
             <CategoryBranch
               key={ch.id}
               node={ch}
               depth={depth + 1}
               selectedPluginId={selectedPluginId}
-              onOpenTool={onOpenTool}
+              onToggleTool={onToggleTool}
+              toolRuns={toolRuns}
             />
           ))}
         </div>
@@ -82,15 +133,15 @@ function CategoryBranch({
 
 /**
  * Plugin-first analytical tools panel.
- * No hardcoded legacy tools. Admins upload plugins and arrange categories;
- * normal users only see activated tools they are allowed to use.
+ * Check a tool to apply / open it; uncheck to clear selection and host apply state.
  */
 export function PluginFirstToolsPanel({
   isAdmin,
   onClose,
   onOpenAdminTools,
-  onOpenTool,
+  onToggleTool,
   selectedPluginId,
+  toolRuns,
 }: Props) {
   const [tree, setTree] = useState<ToolTreeResponseLike | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +169,7 @@ export function PluginFirstToolsPanel({
   }, [refresh]);
 
   const empty = !loading && (tree?.empty || !(tree?.roots?.length));
+  const activeRun = selectedPluginId ? toolRuns?.[selectedPluginId] : null;
 
   async function createRootCategory() {
     const name = newCategoryName.trim();
@@ -151,15 +203,43 @@ export function PluginFirstToolsPanel({
             Tools
           </div>
           <p className="mt-0.5 text-[10px] text-[var(--muted)]">
-            {isAdmin
-              ? 'Admin: upload plugins · create categories · arrange tree'
-              : 'Installed tools appear here when an administrator activates them'}
+            Check a tool to apply · uncheck to clear · status shows on each row
           </p>
         </div>
         <button type="button" className="ev-btn-ghost p-1.5" onClick={onClose} title="Close">
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {activeRun && (
+        <div
+          className="border-b border-[var(--line)] px-3 py-2 text-[11px]"
+          data-testid="tool-run-banner"
+        >
+          <span className="font-semibold">{activeRun.displayName || activeRun.pluginId}</span>
+          {': '}
+          <span
+            className={
+              activeRun.status === 'failed'
+                ? 'text-red-700'
+                : activeRun.status === 'applied'
+                  ? 'text-emerald-800'
+                  : activeRun.status === 'processing'
+                    ? 'text-amber-900'
+                    : 'text-[var(--muted)]'
+            }
+          >
+            {activeRun.status === 'processing'
+              ? 'Processing…'
+              : activeRun.status === 'applied'
+                ? 'Applied on map'
+                : activeRun.status === 'failed'
+                  ? 'Could not apply'
+                  : 'Selected'}
+            {activeRun.message ? ` — ${activeRun.message}` : ''}
+          </span>
+        </div>
+      )}
 
       {isAdmin && (
         <div className="space-y-2 border-b border-[var(--line)] px-3 py-2">
@@ -228,9 +308,7 @@ export function PluginFirstToolsPanel({
             className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--bg)] px-3 py-8 text-center"
             data-testid="tools-empty-state"
           >
-            <p className="text-sm font-semibold text-[var(--ink)]">
-              No tools installed.
-            </p>
+            <p className="text-sm font-semibold text-[var(--ink)]">No tools installed.</p>
             {isAdmin ? (
               <>
                 <p className="mt-2 text-xs text-[var(--muted)]">
@@ -263,7 +341,8 @@ export function PluginFirstToolsPanel({
               node={root}
               depth={0}
               selectedPluginId={selectedPluginId}
-              onOpenTool={onOpenTool}
+              onToggleTool={onToggleTool}
+              toolRuns={toolRuns}
             />
           ))}
       </div>

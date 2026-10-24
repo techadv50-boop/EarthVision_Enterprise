@@ -5,6 +5,7 @@ import {
   Package,
   RotateCcw,
   ShieldCheck,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import {
@@ -299,6 +300,26 @@ export function PluginManagerSection() {
               }
             >
               Disable
+            </button>
+            <button
+              type="button"
+              className="rounded border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 disabled:opacity-50"
+              disabled={busy}
+              data-testid="plugin-uninstall"
+              onClick={() => {
+                const ok = window.confirm(
+                  `Delete installed plugin “${selectedPlugin.name || selectedPlugin.plugin_id}”?\n\n` +
+                    'This removes it from the Tool Tree and marks it uninstalled. ' +
+                    'Signed artifact files stay on disk (immutable).',
+                );
+                if (!ok) return;
+                void run('Uninstall / delete', () =>
+                  pluginService.uninstall(selectedPlugin.plugin_id),
+                ).then(() => setSelected(null));
+              }}
+            >
+              <Trash2 className="mr-1 inline h-3 w-3" />
+              Delete plugin
             </button>
             <button
               type="button"

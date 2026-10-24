@@ -164,7 +164,16 @@ const CHANGE_INDEX: Record<string, IndexName> = {
 function WorkspacePageInner() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const { setAoiBounds, setSceneContext, setImageryHandlers } = usePluginHost();
+  const {
+    setAoiBounds,
+    setSceneContext,
+    setImageryHandlers,
+    getImageryHandlers,
+    setToolRunStatus,
+    clearToolRun,
+    clearAnalysisResult,
+    toolRunByPlugin,
+  } = usePluginHost();
   const mapHostRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [toolLoading, setToolLoading] = useState(false);
@@ -1514,6 +1523,19 @@ function WorkspacePageInner() {
   // Host SDK imagery actions for optical_true_color (and future optical plugins)
   useEffect(() => {
     setImageryHandlers({
+      clearTrueColor: () => {
+        const store = useWorkflowStore.getState();
+        for (const o of store.overlays) {
+          if (o.id === 'composite-true_color' || (o.kind === 'composite' && o.label?.toLowerCase().includes('true color'))) {
+            store.setOverlayVisible(o.id, false);
+          }
+          if (o.kind === 'scene' && o.visible === false) {
+            store.setOverlayVisible(o.id, true);
+          }
+        }
+        setActiveToolId(null);
+        setToolStatus(null);
+      },
       renderTrueColor: async () => {
         if (!focusScene) {
           throw new Error('Select an optical satellite scene first (eye icon).');
@@ -2209,20 +2231,103 @@ function WorkspacePageInner() {
               <PluginFirstToolsPanel
                 isAdmin={isAdmin}
                 selectedPluginId={activePluginId}
+                toolRuns={toolRunByPlugin}
                 onClose={() => setToolboxOpen(false)}
                 onOpenAdminTools={(tab) => {
                   setAdminTab(tab);
                   setAdminOpen(true);
                 }}
-                onOpenTool={(placement: ToolPlacementNode) => {
-                  setActivePluginId(placement.plugin_id);
+                onToggleTool={(placement: ToolPlacementNode, checked: boolean) => {
                   const slot = (placement.execution_slot || 'right_analysis_panel') as
                     | 'left_toolbar'
                     | 'right_analysis_panel'
                     | 'map_overlay'
                     | 'results_panel';
+                  const now = new Date().toISOString();
+
+                  if (!checked) {
+                    // Uncheck: clear selection, analysis, and host-applied overlay
+                    if (activePluginId === placement.plugin_id) {
+                      setActivePluginId(null);
+                    }
+                    clearToolRun(placement.plugin_id);
+                    clearAnalysisResult(placement.plugin_id);
+                    const handlers = getImageryHandlers();
+                    if (
+                      placement.plugin_id === 'optical_true_color' ||
+                      placement.plugin_id === 'true_color'
+                    ) {
+                      void handlers?.clearTrueColor?.();
+                    }
+                    setLastMessage(`Cleared ${placement.display_name}`);
+                    return;
+                  }
+
+                  // Checking a different tool first clears the previous one
+                  if (activePluginId && activePluginId !== placement.plugin_id) {
+                    clearToolRun(activePluginId);
+                    clearAnalysisResult(activePluginId);
+                    if (
+                      activePluginId === 'optical_true_color' ||
+                      activePluginId === 'true_color'
+                    ) {
+                      void getImageryHandlers()?.clearTrueColor?.();
+                    }
+                  }
+
+                  setActivePluginId(placement.plugin_id);
                   setActivePluginSlot(slot);
-                  setLastMessage(`Opened ${placement.display_name} · ${slot}`);
+                  setToolRunStatus({
+                    pluginId: placement.plugin_id,
+                    displayName: placement.display_name,
+                    status: 'selected',
+                    message: 'Tool selected',
+                    updatedAt: now,
+                  });
+                  setLastMessage(`Selected ${placement.display_name} · ${slot}`);
+
+                  // Host-owned apply for true-color tools (works even if plugin
+                  // pack lacks render_true_color — status is visible on the row).
+                  const isTrueColor =
+                    placement.plugin_id === 'optical_true_color' ||
+                    placement.plugin_id === 'true_color';
+                  if (isTrueColor) {
+                    setToolRunStatus({
+                      pluginId: placement.plugin_id,
+                      displayName: placement.display_name,
+                      status: 'processing',
+                      message: 'Rendering true color on selected scene…',
+                      updatedAt: new Date().toISOString(),
+                    });
+                    void (async () => {
+                      try {
+                        const handlers = getImageryHandlers();
+                        if (!handlers?.renderTrueColor) {
+                          throw new Error('Host imagery apply is not ready');
+                        }
+                        const res = await handlers.renderTrueColor();
+                        setToolRunStatus({
+                          pluginId: placement.plugin_id,
+                          displayName: placement.display_name,
+                          status: 'applied',
+                          message:
+                            typeof res.message === 'string'
+                              ? res.message
+                              : 'True color applied on map',
+                          updatedAt: new Date().toISOString(),
+                        });
+                      } catch (err: unknown) {
+                        setToolRunStatus({
+                          pluginId: placement.plugin_id,
+                          displayName: placement.display_name,
+                          status: 'failed',
+                          message:
+                            err instanceof Error ? err.message : 'Could not apply tool',
+                          updatedAt: new Date().toISOString(),
+                        });
+                      }
+                    })();
+                  }
                 }}
               />
               {activePluginSlot === 'right_analysis_panel' && (

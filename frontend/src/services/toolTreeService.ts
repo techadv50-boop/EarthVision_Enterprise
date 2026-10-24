@@ -62,6 +62,11 @@ export const toolTreeService = {
     return data;
   },
 
+  async resolutionBands(): Promise<{ ok: boolean; bands: Array<{ key: string; label: string }> }> {
+    const { data } = await api.get('/tools/resolution-bands');
+    return data;
+  },
+
   async activeForSlot(slot: PluginSlot): Promise<{ ok?: boolean; plugins: ToolPlacementNode[] }> {
     const { data } = await api.get(`/tools/slots/${slot}/active`);
     return data;

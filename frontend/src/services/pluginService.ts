@@ -207,6 +207,14 @@ export const pluginService = {
     return data;
   },
 
+  /** Remove placements + mark plugin not installed (artifacts retained). */
+  async uninstall(pluginId: string): Promise<Record<string, unknown>> {
+    const { data } = await api.post(`/admin/plugins/${pluginId}/uninstall`, {
+      confirm: 'uninstall',
+    });
+    return data;
+  },
+
   async rollback(pluginId: string, to: string): Promise<Record<string, unknown>> {
     const { data } = await api.post(`/admin/plugins/${pluginId}/rollback`, {
       confirm: 'rollback',
