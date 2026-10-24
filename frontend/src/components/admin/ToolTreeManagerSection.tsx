@@ -9,11 +9,16 @@ import {
 } from 'lucide-react';
 import { resolutionLabel } from '../../constants/imageryResolution';
 import { pluginService } from '../../services/pluginService';
+import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import {
   toolTreeService,
   type ToolCategoryNode,
   type ToolPlacementNode,
 } from '../../services/toolTreeService';
+import {
+  ResolutionApplicabilityPicker,
+  SatelliteApplicabilityPicker,
+} from './ApplicabilityPickers';
 import { PluginInstallWizard } from './PluginInstallWizard';
 
 type Mode = 'tree' | 'upload';
@@ -48,6 +53,12 @@ export function ToolTreeManagerSection({ initialMode = 'tree' }: Props) {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
   const [selectedPlacement, setSelectedPlacement] = useState<ToolPlacementNode | null>(null);
   const [moveTargetCategory, setMoveTargetCategory] = useState('');
+  const [editResolutions, setEditResolutions] = useState<string[]>([]);
+  const [editSatellites, setEditSatellites] = useState<string[]>([]);
+  const [satellites, setSatellites] = useState<SatellitePublic[]>([]);
+  const [resolutionBands, setResolutionBands] = useState<
+    Array<{ key: string; label: string }>
+  >([]);
 
   const refresh = useCallback(async () => {
     const data = await toolTreeService.getManageTree();
@@ -58,7 +69,26 @@ export function ToolTreeManagerSection({ initialMode = 'tree' }: Props) {
     refresh().catch((err: unknown) =>
       setError(err instanceof Error ? err.message : 'Failed to load tool tree'),
     );
+    void satelliteService
+      .listAdmin()
+      .then(setSatellites)
+      .catch(() => setSatellites([]));
+    void toolTreeService
+      .resolutionBands()
+      .then((res) => setResolutionBands(res.bands || []))
+      .catch(() => setResolutionBands([]));
   }, [refresh]);
+
+  useEffect(() => {
+    if (!selectedPlacement) {
+      setEditResolutions([]);
+      setEditSatellites([]);
+      return;
+    }
+    setEditResolutions([...(selectedPlacement.applicable_resolutions || [])]);
+    setEditSatellites([...(selectedPlacement.applicable_satellites || [])]);
+    setMoveTargetCategory(selectedPlacement.category_id);
+  }, [selectedPlacement]);
 
   const flat = useMemo(() => flatten(tree?.roots || []), [tree]);
 
@@ -356,6 +386,20 @@ export function ToolTreeManagerSection({ initialMode = 'tree' }: Props) {
                             Disable
                           </button>
                         )}
+                        <button
+                          type="button"
+                          className="rounded border border-red-200 px-1 text-[10px] text-red-700"
+                          title="Remove from tree (plugin stays installed)"
+                          onClick={() =>
+                            void run('Remove placement', () =>
+                              toolTreeService.deletePlacement(p.id),
+                            ).then(() => {
+                              if (selectedPlacement?.id === p.id) setSelectedPlacement(null);
+                            })
+                          }
+                        >
+                          <Trash2 className="inline h-3 w-3" /> Remove
+                        </button>
                       </li>
                     ))}
                   </ul>
@@ -408,6 +452,8 @@ export function ToolTreeManagerSection({ initialMode = 'tree' }: Props) {
                         icon: selectedPlacement.icon || undefined,
                         visible: selectedPlacement.visible,
                         enabled: selectedPlacement.enabled,
+                        applicable_resolutions: editResolutions,
+                        applicable_satellites: editSatellites,
                       }),
                     )
                   }
@@ -418,6 +464,39 @@ export function ToolTreeManagerSection({ initialMode = 'tree' }: Props) {
                   <option value="results_panel">results_panel</option>
                 </select>
               </div>
+              <ResolutionApplicabilityPicker
+                bands={resolutionBands.length ? resolutionBands : tree?.resolution_bands}
+                selected={editResolutions}
+                onChange={setEditResolutions}
+                required
+              />
+              <SatelliteApplicabilityPicker
+                satellites={satellites}
+                selected={editSatellites}
+                onChange={setEditSatellites}
+              />
+              <button
+                type="button"
+                className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                disabled={busy || editResolutions.length === 0}
+                onClick={() =>
+                  void run('Save applicability', () =>
+                    toolTreeService.upsertPlacement({
+                      plugin_id: selectedPlacement.plugin_id,
+                      category_id: moveTargetCategory || selectedPlacement.category_id,
+                      display_name: selectedPlacement.display_name,
+                      execution_slot: String(selectedPlacement.execution_slot),
+                      icon: selectedPlacement.icon || undefined,
+                      visible: selectedPlacement.visible,
+                      enabled: selectedPlacement.enabled,
+                      applicable_resolutions: editResolutions,
+                      applicable_satellites: editSatellites,
+                    }),
+                  )
+                }
+              >
+                Save resolutions &amp; satellites
+              </button>
             </section>
           )}
         </>

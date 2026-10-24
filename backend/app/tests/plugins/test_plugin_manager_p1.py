@@ -17,6 +17,7 @@ from app.plugins.permissions import FORBIDDEN_PERMISSIONS, validate_permissions
 from app.plugins.registry import (
     PluginRegistryError,
     get_plugin,
+    list_plugins,
     load_registry,
     mutate_registry,
     validate_plugin_id,
@@ -213,6 +214,23 @@ def test_duplicate_version_immutable(plugin_volume, tmp_path):
         engine.install_from_staging(
             staging_id=s2, expected_digest=d2, actor="tester", confirm="install"
         )
+
+
+def test_uninstall_marks_not_installed(plugin_volume, tmp_path):
+    s1, d1, _ = _stage_signed(tmp_path, "1.0.0", plugin_volume["priv"])
+    engine.install_from_staging(
+        staging_id=s1, expected_digest=d1, actor="tester", confirm="install"
+    )
+    engine.activate_plugin(
+        plugin_id="demo_hello", version="1.0.0", actor="tester", confirm="activate"
+    )
+    out = engine.uninstall_plugin(
+        plugin_id="demo_hello", actor="tester", confirm="uninstall"
+    )
+    assert out["ok"] is True
+    assert out["installation_status"] == "not_installed"
+    assert get_plugin("demo_hello") is None
+    assert all(p.get("plugin_id") != "demo_hello" for p in list_plugins())
 
 
 def test_version_rollback(plugin_volume, tmp_path):

@@ -483,6 +483,50 @@ def disable_plugin(*, plugin_id: str, actor: str, confirm: str) -> dict[str, Any
     return result
 
 
+def uninstall_plugin(*, plugin_id: str, actor: str, confirm: str) -> dict[str, Any]:
+    """Remove plugin from the active registry (disable + mark not installed).
+
+    Immutable artifact files on the tool_packs volume are retained for audit;
+    reinstall of the same digest remains blocked by pack immutability.
+    Callers should also delete Tool Tree placements for this plugin_id.
+    """
+    if confirm != "uninstall":
+        raise PackOpsError("refusing uninstall: confirm must be exactly 'uninstall'")
+    validate_plugin_id(plugin_id)
+
+    def _mut(data: dict[str, Any]) -> dict[str, Any]:
+        cur = data.get("plugins", {}).get(plugin_id)
+        if not cur:
+            raise PackOpsError(f"unknown plugin: {plugin_id}")
+        version = cur.get("version")
+        digest = cur.get("digest")
+        # Drop from registry so admin list / workspace no longer surface it.
+        # Artifact directory remains for immutability / audit.
+        data.get("plugins", {}).pop(plugin_id, None)
+        return {
+            "plugin_id": plugin_id,
+            "version": version,
+            "digest": digest,
+            "installation_status": "not_installed",
+            "activation_status": "inactive",
+            "removed_from_registry": True,
+        }
+
+    try:
+        info = mutate_registry(_mut)
+    except PackOpsError:
+        raise
+    result = {
+        "action": "uninstall",
+        "ok": True,
+        "plugin_id": plugin_id,
+        "actor": actor,
+        **(info if isinstance(info, dict) else {}),
+    }
+    _audit(result)
+    return result
+
+
 def rollback_plugin(
     *,
     plugin_id: str,

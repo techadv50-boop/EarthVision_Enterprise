@@ -47,6 +47,19 @@ export type PluginImageryHandlers = {
   renderTrueColor: () => Promise<Record<string, unknown>>;
   exportGeotiff: () => Promise<Record<string, unknown>>;
   exportMapJpeg: (params: ExportMapJpegParams) => Promise<Record<string, unknown>>;
+  /** Optional: remove host-applied true-color overlay when tool is unchecked. */
+  clearTrueColor?: () => Promise<void> | void;
+};
+
+/** Workspace tool-row status (selected / processing / applied / failed). */
+export type ToolRunStatus = 'idle' | 'selected' | 'processing' | 'applied' | 'failed';
+
+export type ToolRunEntry = {
+  pluginId: string;
+  displayName?: string;
+  status: ToolRunStatus;
+  message?: string;
+  updatedAt: string;
 };
 
 type PluginHostContextValue = {
@@ -54,7 +67,11 @@ type PluginHostContextValue = {
   setAoiBounds: (b: AoiBounds) => void;
   analysisByPlugin: Record<string, AnalysisResultEntry>;
   setAnalysisResult: (entry: AnalysisResultEntry) => void;
+  clearAnalysisResult: (pluginId: string) => void;
   getAnalysisResult: (pluginId: string) => AnalysisResultEntry | null;
+  toolRunByPlugin: Record<string, ToolRunEntry>;
+  setToolRunStatus: (entry: ToolRunEntry) => void;
+  clearToolRun: (pluginId: string) => void;
   sceneContext: PluginSceneContext | null;
   setSceneContext: (ctx: PluginSceneContext | null) => void;
   setImageryHandlers: (handlers: PluginImageryHandlers | null) => void;
@@ -80,6 +97,7 @@ export function PluginHostProvider({ children }: { children: ReactNode }) {
   const [analysisByPlugin, setAnalysisByPlugin] = useState<
     Record<string, AnalysisResultEntry>
   >({});
+  const [toolRunByPlugin, setToolRunByPlugin] = useState<Record<string, ToolRunEntry>>({});
   const [sceneContext, setSceneContext] = useState<PluginSceneContext | null>(null);
   const imageryHandlersRef = useRef<PluginImageryHandlers | null>(null);
 
@@ -96,14 +114,49 @@ export function PluginHostProvider({ children }: { children: ReactNode }) {
       analysisByPlugin,
       setAnalysisResult: (entry) => {
         setAnalysisByPlugin((prev) => ({ ...prev, [entry.pluginId]: entry }));
+        setToolRunByPlugin((prev) => ({
+          ...prev,
+          [entry.pluginId]: {
+            pluginId: entry.pluginId,
+            displayName: entry.title || prev[entry.pluginId]?.displayName,
+            status: 'applied',
+            message: entry.summary || 'Result ready',
+            updatedAt: entry.updatedAt,
+          },
+        }));
+      },
+      clearAnalysisResult: (pluginId) => {
+        setAnalysisByPlugin((prev) => {
+          const next = { ...prev };
+          delete next[pluginId];
+          return next;
+        });
       },
       getAnalysisResult: (pluginId) => analysisByPlugin[pluginId] || null,
+      toolRunByPlugin,
+      setToolRunStatus: (entry) => {
+        setToolRunByPlugin((prev) => ({ ...prev, [entry.pluginId]: entry }));
+      },
+      clearToolRun: (pluginId) => {
+        setToolRunByPlugin((prev) => {
+          const next = { ...prev };
+          delete next[pluginId];
+          return next;
+        });
+      },
       sceneContext,
       setSceneContext,
       setImageryHandlers,
       getImageryHandlers,
     }),
-    [aoiBounds, analysisByPlugin, sceneContext, setImageryHandlers, getImageryHandlers],
+    [
+      aoiBounds,
+      analysisByPlugin,
+      toolRunByPlugin,
+      sceneContext,
+      setImageryHandlers,
+      getImageryHandlers,
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -118,7 +171,11 @@ export function usePluginHost(): PluginHostContextValue {
       setAoiBounds: () => undefined,
       analysisByPlugin: {},
       setAnalysisResult: () => undefined,
+      clearAnalysisResult: () => undefined,
       getAnalysisResult: () => null,
+      toolRunByPlugin: {},
+      setToolRunStatus: () => undefined,
+      clearToolRun: () => undefined,
       sceneContext: EMPTY_SCENE,
       setSceneContext: () => undefined,
       setImageryHandlers: () => undefined,

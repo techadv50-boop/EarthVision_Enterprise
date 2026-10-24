@@ -261,7 +261,22 @@ ${pluginJs}
               }
               let result: Record<string, unknown>;
               if (msg.method === 'host.renderTrueColor') {
+                hostRef.current.setToolRunStatus({
+                  pluginId: msg.plugin_id,
+                  status: 'processing',
+                  message: 'Rendering true color…',
+                  updatedAt: new Date().toISOString(),
+                });
                 result = await handlers.renderTrueColor();
+                hostRef.current.setToolRunStatus({
+                  pluginId: msg.plugin_id,
+                  status: 'applied',
+                  message:
+                    typeof result.message === 'string'
+                      ? result.message
+                      : 'True color applied on map',
+                  updatedAt: new Date().toISOString(),
+                });
               } else if (msg.method === 'host.exportGeotiff') {
                 result = await handlers.exportGeotiff();
               } else {
@@ -273,6 +288,14 @@ ${pluginJs}
               }
               frame.contentWindow?.postMessage(replyOk(result), '*');
             } catch (err: unknown) {
+              if (msg.method === 'host.renderTrueColor') {
+                hostRef.current.setToolRunStatus({
+                  pluginId: msg.plugin_id,
+                  status: 'failed',
+                  message: err instanceof Error ? err.message : 'Could not apply tool',
+                  updatedAt: new Date().toISOString(),
+                });
+              }
               const reply: HostToPluginMessage = {
                 v: 1,
                 type: 'error',
