@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronRight, Upload } from 'lucide-react';
 import { RESOLUTION_BANDS } from '../../constants/imageryResolution';
-import { getErrorMessage } from '../../services/api';
+import { getErrorMessage, isImmutableArtifactError } from '../../services/api';
 import { pluginService, type PluginSlot } from '../../services/pluginService';
 import { satelliteService, type SatellitePublic } from '../../services/satelliteService';
 import { toolTreeService, type ToolCategoryNode } from '../../services/toolTreeService';
@@ -122,13 +122,50 @@ export function PluginInstallWizard({ categories, onDone, onRefreshCategories }:
     setError(null);
     try {
       const catId = await ensureCategory();
-      const inst = await pluginService.installStaging(
-        String(validated.staging_id),
-        String(validated.digest),
-      );
-      if (inst.ok === false) {
-        setError(String(inst.error || 'Install failed'));
-        return;
+      // Plugin Manager may already have installed this digest (e.g. via Plugins
+      // tab). Skip reinstall / treat immutable collision as OK, then place.
+      const wantId = String(validated.plugin_id || '');
+      const wantDigest = String(validated.digest || '');
+      let alreadyInstalled = false;
+      try {
+        const listed = await pluginService.listAdmin();
+        alreadyInstalled = (listed.plugins || []).some(
+          (p) =>
+            p.plugin_id === wantId &&
+            (p.digest === wantDigest ||
+              (p.installed_versions || []).includes(String(validated.version || ''))),
+        );
+      } catch {
+        alreadyInstalled = false;
+      }
+
+      let inst: Record<string, unknown> = {
+        ok: true,
+        plugin_id: validated.plugin_id,
+        version: validated.version,
+        digest: validated.digest,
+      };
+      if (!alreadyInstalled) {
+        try {
+          const res = await pluginService.installStaging(
+            String(validated.staging_id),
+            String(validated.digest),
+          );
+          if (res.ok === false) {
+            const errText = String(res.error || '');
+            if (!/immutable|already exists/i.test(errText)) {
+              setError(errText || 'Install failed');
+              return;
+            }
+          } else {
+            inst = res;
+          }
+        } catch (installErr: unknown) {
+          if (!isImmutableArtifactError(installErr)) {
+            setError(getErrorMessage(installErr) || 'Install failed');
+            return;
+          }
+        }
       }
       setInstalled(inst);
       const place = await toolTreeService.upsertPlacement({
