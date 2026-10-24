@@ -1,0 +1,50 @@
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Styling;
+using Avalonia.Themes.Fluent;
+using WorkPilot.Windows;
+
+namespace WorkPilot;
+
+public class App : Application
+{
+    public override void Initialize()
+    {
+        Styles.Add(new FluentTheme());
+        RequestedThemeVariant = ThemeVariant.Light;
+    }
+
+    public override void OnFrameworkInitializationCompleted()
+    {
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            Avalonia.Threading.Dispatcher.UIThread.UnhandledException += (_, eventArgs) =>
+            {
+                CrashLog.Write(eventArgs.Exception);
+                eventArgs.Handled = true;
+            };
+            try
+            {
+                if (Program.TrackMode)
+                {
+                    desktop.ShutdownMode = Avalonia.Controls.ShutdownMode.OnExplicitShutdown;
+                    desktop.MainWindow = new AlarmWindow(LiveBoard.ReadLocal, playSound: false, lockClose: true);
+                }
+                else if (!string.IsNullOrWhiteSpace(Program.WatchUrl))
+                {
+                    var address = Program.WatchUrl;
+                    desktop.MainWindow = new AlarmWindow(() => LiveBoard.ReadUrl(address));
+                }
+                else
+                {
+                    desktop.MainWindow = new MainWindow();
+                }
+            }
+            catch (Exception ex)
+            {
+                CrashLog.Write(ex);
+            }
+        }
+        base.OnFrameworkInitializationCompleted();
+    }
+}
