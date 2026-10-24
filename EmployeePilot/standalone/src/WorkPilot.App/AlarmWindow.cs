@@ -118,8 +118,9 @@ public class AlarmWindow : Window
             _active.Text = "Active  —";
             _idle.Text = "Idle  —";
             _idleNow.Text = "Idle now  —";
-            _note.Text = _lockClose ? "" : "No employee is signed in.";
+            _note.Text = _lockClose ? "" : "No employee is signed in. This copy is only on your screen.";
             _note.IsVisible = _note.Text.Length > 0;
+            Title = _lockClose ? "Timer" : "Your screen";
             return;
         }
         _active.Text = "Active  " + ReportText.FormatDuration(status.ActiveSeconds);
@@ -129,8 +130,16 @@ public class AlarmWindow : Window
             ? new SolidColorBrush(Color.Parse("#C62828"))
             : Brushes.Black;
         _note.Text = running ? "" : (string.IsNullOrWhiteSpace(status.TimerNote) ? "Timer stopped" : status.TimerNote);
+        if (!_lockClose)
+        {
+            _note.Text = string.IsNullOrEmpty(_note.Text)
+                ? "This copy is only on your screen."
+                : _note.Text + Environment.NewLine + "This copy is only on your screen.";
+        }
         _note.IsVisible = _note.Text.Length > 0;
-        Title = working ? "Working" : running ? "Not working" : "Timer stopped";
+        Title = _lockClose
+            ? working ? "Working" : running ? "Not working" : "Timer stopped"
+            : "Your screen";
     }
 
     private void Place()

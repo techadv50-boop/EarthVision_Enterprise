@@ -312,18 +312,20 @@ public class MainWindow : Window
     {
         try
         {
-            var user = PilotSetup.ArmTimer(_ => { });
-            var message = "The employee timer is ready."
-                + Environment.NewLine + Environment.NewLine
-                + "Sign out on this computer. On the employee computer, open Remote Desktop."
-                + Environment.NewLine + Environment.NewLine
-                + "Computer: the 100. address shown in Tailscale on this computer"
-                + Environment.NewLine
-                + "User name: " + Environment.MachineName + "\\" + user
-                + Environment.NewLine
-                + "Password: WorkPilot1"
-                + Environment.NewLine + Environment.NewLine
-                + "The timer appears at the top-right about 15 seconds after sign-in.";
+            var (user, sent) = PilotSetup.ArmTimer(_ => { });
+            var message = sent
+                ? "The timer was sent to the employee desktop. Look at the top-right of the Remote Desktop screen. The small window on your own desktop is only for you."
+                : "The small window on your desktop is only for you."
+                    + Environment.NewLine + Environment.NewLine
+                    + "Sign out on this computer. On the employee computer, open Remote Desktop."
+                    + Environment.NewLine + Environment.NewLine
+                    + "Computer: the 100. address shown in Tailscale on this computer"
+                    + Environment.NewLine
+                    + "User name: " + Environment.MachineName + "\\" + user
+                    + Environment.NewLine
+                    + "Password: WorkPilot1"
+                    + Environment.NewLine + Environment.NewLine
+                    + "Wait 15 seconds. The employee timer appears at the top-right of that remote screen.";
             Dispatcher.UIThread.Post(() => WindowsAdmin.Show(message));
         }
         catch (Exception ex)

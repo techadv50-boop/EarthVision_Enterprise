@@ -529,7 +529,7 @@ The administrator receives a report after you sign out.
         log("Remote Desktop is on for this login.");
     }
 
-    public static string ArmTimer(Action<string> log)
+    public static (string User, bool SentToEmployee) ArmTimer(Action<string> log)
     {
         var config = PilotConfigStore.LoadOrReplace(PilotPaths.Config, new PilotConfig
         {
@@ -564,8 +564,11 @@ The administrator receives a report after you sign out.
         WindowsCommand.Run("icacls.exe", PilotPaths.Logs, "/grant", $"{user}:(OI)(CI)M");
         WindowsCommand.Run("icacls.exe", PilotPaths.LiveDirectory, "/grant", $"{user}:(OI)(CI)M");
         WindowsCommand.Run("icacls.exe", PilotPaths.Days, "/grant", $"{user}:(OI)(CI)M");
-        log("The timer starts when " + user + " signs in.");
-        return user;
+        var started = WindowsCommand.Run(WindowsCommand.SystemTool("schtasks.exe"), "/Run", "/TN", PilotPaths.TrackerTask);
+        log(started.Code == 0
+            ? "Timer sent to the signed-in employee desktop."
+            : "The employee is not signed in yet. " + started.Output);
+        return (user, started.Code == 0);
     }
 
     private static void RegisterTasks(string userName, Action<string> log)
