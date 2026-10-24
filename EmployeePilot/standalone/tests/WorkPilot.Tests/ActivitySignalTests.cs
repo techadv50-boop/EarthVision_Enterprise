@@ -154,6 +154,25 @@ public class ActivitySignalTests
     }
 
     [Fact]
+    public void DamagedSetupFileIsReplaced()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "workpilot-config-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var path = Path.Combine(folder, "pilot.json");
+            File.WriteAllText(path, "{ this is not json");
+            var config = PilotConfigStore.LoadOrReplace(path, new PilotConfig { UserName = "employee1", AlarmAfterSeconds = 30 });
+            Assert.Equal("employee1", config.UserName);
+            Assert.Equal(30, PilotConfigStore.Load(path)!.AlarmAfterSeconds);
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
     public void LivePictureFitsInsideTheWatchPage()
     {
         Assert.Equal((1280, 720), ScreenFrame.Fit(1920, 1080, 1280));

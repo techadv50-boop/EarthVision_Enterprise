@@ -55,7 +55,12 @@ public class AlarmWindow : Window
             alarm.Start();
         }
         Closed += (_, _) => _stop.Cancel();
-        Opened += (_, _) => Place();
+        Opened += (_, _) =>
+        {
+            Place();
+            Topmost = true;
+            Activate();
+        };
     }
 
     private Control Build()

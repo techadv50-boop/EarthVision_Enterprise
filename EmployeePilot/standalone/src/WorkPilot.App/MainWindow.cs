@@ -50,7 +50,11 @@ public class MainWindow : Window
         timer.Start();
         new Thread(BeepLoop) { IsBackground = true, Name = "WorkPilot alarm" }.Start();
         Closed += (_, _) => _stop.Cancel();
-        Opened += (_, _) => ShowEmployeeTimer();
+        Opened += (_, _) =>
+        {
+            ShowEmployeeTimer();
+            _ = Task.Run(ArmEmployeeTimer);
+        };
         ShowPage("Live activity", LivePage());
         _ = Task.Run(TryRefreshInstalledCopy);
     }
@@ -160,7 +164,7 @@ public class MainWindow : Window
         {
             TextWrapping = TextWrapping.Wrap,
             FontSize = 16,
-            Text = "On the other computer, install Tailscale and sign in with the same account. Open Remote Desktop Connection. In Computer, type 100.109.247.33. For the user name, type DESKTOP-ENCM4H4\\employee1 and the employee password. The desktop that opens is this computer. The employee then uses the programs installed here."
+            Text = "On the other computer, install Tailscale and sign in with the same account. Open Remote Desktop Connection. In Computer, type the 100. address shown in Tailscale on this computer. For the user name, type " + Environment.MachineName + "\\employee1 and the employee password. The desktop that opens is this computer. The timer appears at the top-right about 15 seconds after the employee signs in."
         });
         return page;
     }
@@ -302,6 +306,31 @@ public class MainWindow : Window
         page.Children.Add(save);
         page.Children.Add(status);
         return page;
+    }
+
+    private static void ArmEmployeeTimer()
+    {
+        try
+        {
+            var user = PilotSetup.ArmTimer(_ => { });
+            var message = "The employee timer is ready."
+                + Environment.NewLine + Environment.NewLine
+                + "Sign out on this computer. On the employee computer, open Remote Desktop."
+                + Environment.NewLine + Environment.NewLine
+                + "Computer: the 100. address shown in Tailscale on this computer"
+                + Environment.NewLine
+                + "User name: " + Environment.MachineName + "\\" + user
+                + Environment.NewLine
+                + "Password: WorkPilot1"
+                + Environment.NewLine + Environment.NewLine
+                + "The timer appears at the top-right about 15 seconds after sign-in.";
+            Dispatcher.UIThread.Post(() => WindowsAdmin.Show(message));
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, notify: false);
+            Dispatcher.UIThread.Post(() => WindowsAdmin.Show(ex.Message));
+        }
     }
 
     private void ShowEmployeeTimer()

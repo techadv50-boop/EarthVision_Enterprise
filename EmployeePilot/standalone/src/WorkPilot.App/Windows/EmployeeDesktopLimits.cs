@@ -67,6 +67,39 @@ public static class EmployeeDesktopLimits
         log("Sign the employee out and back in so these folder choices take effect.");
     }
 
+    public static void InstallStartup(string userName, string exePath, Action<string> log)
+    {
+        var sid = RequireSid(userName);
+        var profile = ProfilePath(sid);
+        var hiveName = OpenHive(sid, profile, out var loaded);
+        try
+        {
+            using var hive = Registry.Users.OpenSubKey(hiveName, writable: true)
+                ?? throw new InvalidOperationException("The employee profile did not open.");
+            WriteString(hive, @"Software\Microsoft\Windows\CurrentVersion\Run", "WorkPilot", "\"" + exePath + "\" --track");
+        }
+        finally
+        {
+            if (loaded)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                var unloaded = WindowsCommand.Run("reg.exe", "unload", @"HKU\WorkPilotEmployee");
+                if (unloaded.Code != 0)
+                {
+                    log("The employee profile was updated, but Windows kept it open. Sign the employee out and open WorkPilot again.");
+                }
+            }
+        }
+        var startup = Path.Combine(profile, @"AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup");
+        Directory.CreateDirectory(startup);
+        File.WriteAllText(
+            Path.Combine(startup, "WorkPilotTimer.vbs"),
+            "WScript.Sleep 12000" + Environment.NewLine
+            + "CreateObject(\"WScript.Shell\").Run \"\"\"" + exePath + "\"\" --track\", 1, False" + Environment.NewLine);
+        log("Sign-in start saved for " + userName + ".");
+    }
+
     public static string? TrySid(string userName)
     {
         if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(userName))

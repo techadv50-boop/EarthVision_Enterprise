@@ -529,6 +529,45 @@ The administrator receives a report after you sign out.
         log("Remote Desktop is on for this login.");
     }
 
+    public static string ArmTimer(Action<string> log)
+    {
+        var config = PilotConfigStore.LoadOrReplace(PilotPaths.Config, new PilotConfig
+        {
+            EmployeeName = "Employee",
+            UserName = "employee1",
+            IdleThresholdSeconds = 60,
+            AlarmAfterSeconds = 30,
+            PollSeconds = 5,
+            QuotaGB = 80,
+            Volume = "C:",
+            WorkFolder = @"C:\WorkPilot\employee1",
+            AllowedFolders = new List<string> { "Desktop", "Documents", "Downloads" }
+        });
+        var user = string.IsNullOrWhiteSpace(config.UserName) ? "employee1" : config.UserName;
+        if (!WindowsAccount.Exists(user))
+        {
+            throw new InvalidOperationException("The login " + user + " does not exist on this computer.");
+        }
+        Directory.CreateDirectory(PilotPaths.Root);
+        Directory.CreateDirectory(PilotPaths.Journal);
+        Directory.CreateDirectory(PilotPaths.Reports);
+        Directory.CreateDirectory(PilotPaths.Logs);
+        Directory.CreateDirectory(PilotPaths.LiveDirectory);
+        Directory.CreateDirectory(PilotPaths.Days);
+        CopyProgram(log);
+        RegisterTasks(user, log);
+        EmployeeDesktopLimits.InstallStartup(user, PilotPaths.Exe, log);
+        WindowsCommand.Run("icacls.exe", PilotPaths.Root, "/grant", $"{user}:(OI)(CI)RX");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Exe, "/grant", $"{user}:RX");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Config, "/grant", $"{user}:R");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Journal, "/grant", $"{user}:(OI)(CI)M");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Logs, "/grant", $"{user}:(OI)(CI)M");
+        WindowsCommand.Run("icacls.exe", PilotPaths.LiveDirectory, "/grant", $"{user}:(OI)(CI)M");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Days, "/grant", $"{user}:(OI)(CI)M");
+        log("The timer starts when " + user + " signs in.");
+        return user;
+    }
+
     private static void RegisterTasks(string userName, Action<string> log)
     {
         var exe = PilotPaths.Exe;
@@ -539,7 +578,7 @@ The administrator receives a report after you sign out.
             "LeastPrivilege",
             exe,
             "--track",
-            "<LogonTrigger><Enabled>true</Enabled><UserId>" + SecurityElement.Escape(userId) + "</UserId></LogonTrigger>",
+            "<LogonTrigger><Enabled>true</Enabled><Delay>PT15S</Delay><UserId>" + SecurityElement.Escape(userId) + "</UserId></LogonTrigger>",
             "P7D",
             restart: true);
         var start = DateTime.Now.AddMinutes(1).ToString("yyyy-MM-ddTHH:mm:ss");

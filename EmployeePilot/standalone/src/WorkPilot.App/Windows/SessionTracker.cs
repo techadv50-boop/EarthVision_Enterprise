@@ -11,16 +11,23 @@ public static class SessionTracker
 {
     public static bool Run()
     {
-        var config = PilotConfigStore.Load(PilotPaths.Config);
-        if (config is null)
+        Log("Tracker process started.");
+        PilotConfig config;
+        try
         {
-            return false;
+            config = PilotConfigStore.LoadOrReplace(PilotPaths.Config, DefaultConfig());
+        }
+        catch (Exception ex)
+        {
+            Log("The setup file could not be repaired. " + ex.Message);
+            config = DefaultConfig();
         }
         Directory.CreateDirectory(PilotPaths.Journal);
         Directory.CreateDirectory(PilotPaths.Logs);
         _mutex = new Mutex(false, @"Local\WorkPilotSessionTracker");
         if (!_mutex.WaitOne(0))
         {
+            Log("Tracker is already running in this sign-in.");
             return false;
         }
         var sessionId = DateTime.Now.ToString("yyyyMMdd-HHmmss");
@@ -290,6 +297,19 @@ public static class SessionTracker
     }
 
     private readonly record struct Sample(int IdleSeconds, bool Locked, string Process, string Title, string Line);
+
+    private static PilotConfig DefaultConfig() => new()
+    {
+        EmployeeName = "Employee",
+        UserName = "employee1",
+        IdleThresholdSeconds = 60,
+        AlarmAfterSeconds = 30,
+        PollSeconds = 5,
+        QuotaGB = 80,
+        Volume = "C:",
+        WorkFolder = @"C:\WorkPilot\employee1",
+        AllowedFolders = new List<string> { "Desktop", "Documents", "Downloads" }
+    };
 
     private static void Log(string message)
     {
