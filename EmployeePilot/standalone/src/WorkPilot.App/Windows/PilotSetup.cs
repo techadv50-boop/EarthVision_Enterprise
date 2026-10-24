@@ -554,6 +554,7 @@ The administrator receives a report after you sign out.
         Directory.CreateDirectory(PilotPaths.Logs);
         Directory.CreateDirectory(PilotPaths.LiveDirectory);
         Directory.CreateDirectory(PilotPaths.Days);
+        AllowWatch(log);
         CopyProgram(log);
         RegisterTasks(user, log);
         EmployeeDesktopLimits.InstallStartup(user, PilotPaths.Exe, log);
@@ -565,9 +566,15 @@ The administrator receives a report after you sign out.
         WindowsCommand.Run("icacls.exe", PilotPaths.LiveDirectory, "/grant", $"{user}:(OI)(CI)M");
         WindowsCommand.Run("icacls.exe", PilotPaths.Days, "/grant", $"{user}:(OI)(CI)M");
         var started = WindowsCommand.Run(WindowsCommand.SystemTool("schtasks.exe"), "/Run", "/TN", PilotPaths.TrackerTask);
-        log(started.Code == 0
-            ? "Timer sent to the signed-in employee desktop."
-            : "The employee is not signed in yet. " + started.Output);
+        if (started.Code != 0)
+        {
+            StatusServer.Start();
+            log("The employee is not signed in yet. " + started.Output);
+        }
+        else
+        {
+            log("Timer sent to the signed-in employee desktop.");
+        }
         return (user, started.Code == 0);
     }
 

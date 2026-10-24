@@ -313,19 +313,15 @@ public class MainWindow : Window
         try
         {
             var (user, sent) = PilotSetup.ArmTimer(_ => { });
+            if (!sent)
+            {
+                StatusServer.Start();
+            }
+            var page = "The watch page is on. Leave WorkPilot open. On this computer open http://127.0.0.1:8777/ . From the other computer open http:// and the 100. address in Tailscale, then :8777/ .";
             var message = sent
-                ? "The timer was sent to the employee desktop. Look at the top-right of the Remote Desktop screen. The small window on your own desktop is only for you."
-                : "The small window on your desktop is only for you."
-                    + Environment.NewLine + Environment.NewLine
-                    + "Sign out on this computer. On the employee computer, open Remote Desktop."
-                    + Environment.NewLine + Environment.NewLine
-                    + "Computer: the 100. address shown in Tailscale on this computer"
-                    + Environment.NewLine
-                    + "User name: " + Environment.MachineName + "\\" + user
-                    + Environment.NewLine
-                    + "Password: WorkPilot1"
-                    + Environment.NewLine + Environment.NewLine
-                    + "Wait 15 seconds. The employee timer appears at the top-right of that remote screen.";
+                ? page
+                : page + Environment.NewLine + Environment.NewLine
+                    + "The small window on your desktop is only for you. For the employee timer, sign out and connect with Remote Desktop as " + Environment.MachineName + "\\" + user + " and password WorkPilot1. Wait 15 seconds.";
             Dispatcher.UIThread.Post(() => WindowsAdmin.Show(message));
         }
         catch (Exception ex)

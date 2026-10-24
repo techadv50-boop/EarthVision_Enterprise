@@ -7,8 +7,14 @@ namespace WorkPilot.Windows;
 
 public static class StatusServer
 {
+    private static int _started;
+
     public static void Start()
     {
+        if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
+        {
+            return;
+        }
         var thread = new Thread(Listen)
         {
             IsBackground = true,
@@ -32,6 +38,7 @@ public static class StatusServer
         }
         catch (Exception ex)
         {
+            Interlocked.Exchange(ref _started, 0);
             try
             {
                 Directory.CreateDirectory(PilotPaths.Logs);
