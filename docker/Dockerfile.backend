@@ -6,12 +6,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY backend/requirements.txt .
+# Host-shared RS/GIS stack is in requirements.txt (sateye-rs-2026.10). Do not
+# install competing geospatial wheels inside plugin zips.
 RUN pip install --no-cache-dir -r requirements.txt \
     || pip install --no-cache-dir fastapi uvicorn[standard] pydantic pydantic-settings \
        sqlalchemy[asyncio] alembic asyncpg aiosqlite python-jose[cryptography] \
        'passlib[bcrypt]' bcrypt==4.2.1 python-multipart httpx loguru redis \
-       shapely pyproj numpy pillow scikit-learn openpyxl reportlab aiofiles \
-       orjson email-validator greenlet tenacity
+       shapely pyproj numpy scipy pillow rasterio scikit-learn scikit-image \
+       opencv-python-headless geopandas pyogrio xarray rioxarray pyshp \
+       openpyxl reportlab aiofiles orjson email-validator greenlet tenacity
 
 COPY backend/ .
 # Image default publishers: EMPTY (fail-closed). Never bake preview-dev into production trust.

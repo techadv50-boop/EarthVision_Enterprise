@@ -7,5 +7,7 @@
 5. Upload via Admin → Tool Tree → Upload Tool Plugin
 6. Choose category + execution slot → Install → Activate
 
-**Required reading:** `docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md`  
-Also: `docs/PLUGIN_FIRST_TOOL_SPEC.md`.
+**Required reading:**
+- `docs/HOST_GEOSPATIAL_INFRASTRUCTURE.md` — Host-shared RS/GIS stack (do not vendor libs)
+- `docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md` — map presentation modes
+- `docs/PLUGIN_FIRST_TOOL_SPEC.md`

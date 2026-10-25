@@ -1315,7 +1315,7 @@ def test_p2b_audit_redacts_secrets_and_health_has_no_tokens(plugin_volume, tmp_p
     assert "password" not in blob.lower() or health.get("ok")
     assert "EV_PLUGIN_WORKER_AUTH_TOKEN" not in blob
     assert health["loading_model"] == "sandboxed_iframe_srcdoc"
-    assert health["host_sdk_version"] == "1.3.0"
+    assert health["host_sdk_version"] == "1.4.0"
 
 
 def test_p2b_sandboxed_iframe_requires_panel_and_plugin_js(plugin_volume, tmp_path):

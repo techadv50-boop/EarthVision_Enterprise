@@ -47,18 +47,37 @@ class HostSdkBridgeBody(BaseModel):
 
 @router.get("/slots")
 async def plugin_slots(user: CurrentUser) -> dict:
+    from app.host_capabilities import host_capabilities_document
+
+    geo = host_capabilities_document()
     return {
         "host_api_version": HOST_SDK_VERSION,
         "plugin_host_sdk_version": PLUGIN_HOST_SDK_VERSION,
         "plugin_host_sdk_protocol": PLUGIN_HOST_SDK_PROTOCOL,
         "supported_slots": sorted(SUPPORTED_SLOTS),
         "loading_model": "sandboxed_iframe_srcdoc",
+        "geo_profile": {
+            "profile_id": geo["profile_id"],
+            "profile_version": geo["profile_version"],
+            "approach": geo["approach"],
+            "all_ready": geo["all_ready"],
+            "map_presentation_modes": geo["map_presentation_modes"],
+        },
         "notes": (
             "Independent plugin UI loads only inside a sandboxed iframe (srcdoc) "
             "via a validated postMessage Host SDK. Uploaded JS never runs in the "
-            "privileged React Host Shell."
+            "privileged React Host Shell. Geospatial libs are Host-shared "
+            "(sateye-rs-2026.10) — plugins must not vendor GDAL/numpy/opencv."
         ),
     }
+
+
+@router.get("/capabilities")
+async def plugin_host_capabilities(user: CurrentUser) -> dict:
+    """Frozen Host RS/GIS capability profile (same as host.getCapabilities)."""
+    from app.host_capabilities import host_capabilities_document
+
+    return host_capabilities_document()
 
 
 @router.get("/active")
@@ -197,6 +216,10 @@ async def plugin_host_sdk_bridge(
         elif method == "host.getAnalysisResult":
             stored = load_analysis_result(plugin_id)
             result = stored or {"result": None}
+        elif method == "host.getCapabilities":
+            from app.host_capabilities import host_capabilities_document
+
+            result = host_capabilities_document()
         elif method == "host.getSceneContext":
             # Host Shell fulfills with live scene; bridge may echo forwarded snapshot.
             scene = envelope["params"].get("scene")

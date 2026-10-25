@@ -13,11 +13,25 @@ python-multipart==0.0.20
 httpx==0.28.1
 loguru==0.7.3
 redis==5.2.1
+
+# --- Frozen Host geospatial stack (sateye-rs-2026.10) ---
+# Plugins MUST NOT vendor these. See docs/HOST_GEOSPATIAL_INFRASTRUCTURE.md
+numpy==2.2.1
+scipy==1.15.1
+pillow==11.1.0
+rasterio==1.5.0
 shapely==2.0.6
 pyproj==3.7.0
-numpy==2.2.1
-pillow==11.1.0
+pyshp==2.3.1
+geopandas==1.0.1
+pyogrio==0.10.0
 scikit-learn==1.6.0
+scikit-image==0.25.0
+opencv-python-headless==4.11.0.86
+xarray==2025.1.1
+rioxarray==0.18.1
+
+# App / report
 openpyxl==3.1.5
 reportlab==4.2.5
 aiofiles==24.1.0
@@ -25,8 +39,6 @@ orjson==3.10.12
 email-validator==2.2.0
 greenlet==3.1.1
 tenacity==9.0.0
-# Optional heavy deps (install in production as needed):
+
+# Optional GPU deep learning — NOT part of the frozen RS profile (install only when authorized):
 # torch==2.5.1
-rasterio==1.5.0
-# geopandas==1.0.1
-pyshp==2.3.1

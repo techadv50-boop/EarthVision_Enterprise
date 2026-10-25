@@ -6,8 +6,8 @@
  */
 
 export const PLUGIN_HOST_SDK_PROTOCOL = 1 as const;
-/** 1.3: permanent map presentation + host.clearMapLayer (additive). */
-export const PLUGIN_HOST_SDK_VERSION = '1.3.0';
+/** 1.4: frozen geospatial capability profile + getCapabilities. */
+export const PLUGIN_HOST_SDK_VERSION = '1.4.0';
 
 export type HostSdkMethod =
   | 'host.meta'
@@ -16,6 +16,7 @@ export type HostSdkMethod =
   | 'host.getAoiBounds'
   | 'host.setAnalysisResult'
   | 'host.getAnalysisResult'
+  | 'host.getCapabilities'
   | 'host.getSceneContext'
   | 'host.renderTrueColor'
   | 'host.clearMapLayer'
@@ -29,6 +30,7 @@ const ALLOWED_METHODS = new Set<string>([
   'host.getAoiBounds',
   'host.setAnalysisResult',
   'host.getAnalysisResult',
+  'host.getCapabilities',
   'host.getSceneContext',
   'host.renderTrueColor',
   'host.clearMapLayer',
