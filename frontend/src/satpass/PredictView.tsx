@@ -15,11 +15,11 @@ import PredictMap, { type AoiDrawMode } from './PredictMap';
 import PredictLayerLibrary from './PredictLayerLibrary';
 import PredictReport from './PredictReport';
 import { colorForSatellite, describeSensor, inferSatelliteKind, noradFromLine1, knownSensor } from './predict/catalog';
-import { PERMANENT_SATS, preferredSatName } from './predict/permanentSats';
+import { preferredSatName } from './predict/permanentSats';
 import { parseKmlToGeoJSON } from './predict/kml';
 import { uploadGeometryFiles } from './predict/export';
 import { downloadAoiMapPng } from './predict/mapExport';
-import { computePasses, targetFromGeometry, validateTle } from './predict/passes';
+import { computePasses, targetFromGeometry, trackAsDisplayed, validateTle } from './predict/passes';
 import {
   DEFAULT_TARGET_BUFFER_KM,
   lookupGazetteer,
@@ -122,7 +122,7 @@ export default function PredictView({
   const [adminCountry, setAdminCountry] = useState<'pak' | 'ind' | null>(null);
   const [adminLevel, setAdminLevel] = useState<0 | 1 | 2 | null>(null);
   const [adminGeojson, setAdminGeojson] = useState<GeoJSON.FeatureCollection | null>(null);
-  const [seriesNote, setSeriesNote] = useState('');
+  const [aoiPassesOnly, setAoiPassesOnly] = useState(false);
 
   const startDate = startLocal.slice(0, 10);
   const endDate = endLocal.slice(0, 10);
@@ -154,7 +154,9 @@ export default function PredictView({
     try {
       await downloadAoiMapPng({
         target,
-        result,
+        result: result
+          ? { ...result, tracks: result.tracks.map((track) => trackAsDisplayed(track, aoiPassesOnly)) }
+          : result,
         hiddenSats,
         hiddenPasses,
         timeZone,
@@ -198,60 +200,6 @@ export default function PredictView({
   }, [layerId]);
 
   const usedColors = useMemo(() => new Set(sats.map((s) => s.color)), [sats]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const loaded = await Promise.all(
-        PERMANENT_SATS.map(async (spec) => {
-          try {
-            const { data } = await satelliteApi.fetch(String(spec.norad));
-            const hit = data.find((row) => row.norad_id === spec.norad) ?? data[0];
-            if (!hit?.line1 || !hit.line2) return { spec, hit: null };
-            return { spec, hit };
-          } catch {
-            return { spec, hit: null };
-          }
-        }),
-      );
-      if (cancelled) return;
-      const missing = loaded.filter((row) => !row.hit).map((row) => row.spec.name);
-      const used = new Set<string>();
-      const rows = loaded.flatMap(({ spec, hit }) => {
-        if (!hit) return [];
-        const known = knownSensor(spec.name, spec.norad);
-        const color = colorForSatellite(spec.name, used);
-        used.add(color);
-        return [
-          {
-            id: `perm-${spec.norad}`,
-            name: spec.name,
-            line1: hit.line1.trim(),
-            line2: hit.line2.trim(),
-            color,
-            kind: spec.kind,
-            noradId: spec.norad,
-            sensor: known ?? undefined,
-            paramsKnown: Boolean(known),
-            sensorSource: known ? ('catalog' as const) : ('none' as const),
-          },
-        ];
-      });
-      setSats((prev) => {
-        const have = new Set(prev.map((sat) => sat.noradId));
-        const fresh = rows.filter((sat) => !have.has(sat.noradId));
-        return fresh.length ? [...fresh, ...prev] : prev;
-      });
-      setSeriesNote(
-        missing.length
-          ? `No current orbit for ${missing.join(', ')}.`
-          : 'Cartosat and SAR series are kept in the satellite list.',
-      );
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!adminCountry || adminLevel == null) {
@@ -942,8 +890,10 @@ export default function PredictView({
             <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-cyan-400">
               B. Satellite selection (TLE)
             </h2>
-            {seriesNote && <p className="mb-2 text-[10px] text-gray-500">{seriesNote}</p>}
-            {trackedSats.length > 0 && (
+            <p className="mb-2 text-[11px] text-gray-500">
+              Prediction starts empty. Click a satellite from Track to load its latest TLE.
+            </p>
+            {trackedSats.length > 0 ? (
               <div className="mb-2">
                 <p className="mb-1 text-[11px] text-gray-500">From live tracker</p>
                 <div className="flex flex-wrap gap-1">
@@ -959,6 +909,10 @@ export default function PredictView({
                   ))}
                 </div>
               </div>
+            ) : (
+              <p className="mb-2 text-[11px] text-gray-500">
+                Nothing is in the tracking window yet. Add satellites on the Track tab first.
+              </p>
             )}
             <div className="flex gap-2">
               <input
@@ -1051,7 +1005,9 @@ export default function PredictView({
             </button>
             <div className="mt-2 space-y-1">
               {sats.length === 0 && (
-                <p className="text-[11px] text-gray-500">No satellites selected yet.</p>
+                <p className="text-[11px] text-gray-500">
+                  No satellites selected. Click one from the tracking window above.
+                </p>
               )}
               {sats.map((s) => {
                 const known = knownSensor(s.name, s.noradId ?? null);
@@ -1308,6 +1264,7 @@ export default function PredictView({
                 showTarget={showTarget}
                 showFootprints={showFootprints}
                 timeZone={timeZone}
+                aoiPassesOnly={aoiPassesOnly}
                 onCursor={setCursor}
                 libraryGeojson={libraryGeojson}
                 selectedFeatureIds={selectedFeatureIds}
@@ -1318,6 +1275,18 @@ export default function PredictView({
               />
               <div className="pointer-events-auto absolute right-3 top-3 z-[1000] max-h-[calc(100%-1.5rem)] w-64 overflow-y-auto space-y-2 rounded bg-gray-950/90 p-2 text-[11px] ring-1 ring-white/10">
                 <p className="font-semibold uppercase tracking-wide text-gray-300">Layers</p>
+                <label className="flex items-start gap-1.5 text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={aoiPassesOnly}
+                    onChange={() => setAoiPassesOnly((v) => !v)}
+                    className="mt-0.5 accent-cyan-500"
+                  />
+                  <span>Passes over the AOI only</span>
+                </label>
+                <p className="text-[10px] leading-snug text-gray-500">
+                  Off keeps the full pole-to-pole track. On draws only the pass across the selected area.
+                </p>
                 <label className="flex items-center gap-1.5 text-gray-300">
                   <input
                     type="checkbox"

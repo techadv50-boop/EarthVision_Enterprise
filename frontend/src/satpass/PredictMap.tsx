@@ -7,7 +7,7 @@ import type { PassRow, PredictResult, PredictTarget } from './predict/types';
 import { formatPassPopup, leafletDashArray } from './predict/catalog';
 import { durationLabel, formatInZone, formatUtc } from './predict/time';
 import { libraryFeatureId, targetFromLatLon } from './predict/places';
-import { targetFromGeometry } from './predict/passes';
+import { targetFromGeometry, trackAsDisplayed } from './predict/passes';
 
 export type AoiDrawMode = 'off' | 'point' | 'polygon';
 
@@ -32,6 +32,8 @@ interface Props {
   onCursor?: (text: string) => void;
   onAoiDrawn?: (target: PredictTarget) => void;
   onAoiCancel?: () => void;
+  /** Add-on. Off keeps the full pole-to-pole ground track. */
+  aoiPassesOnly?: boolean;
 }
 
 function ringFromLatLngs(pts: L.LatLng[]): GeoJSON.Polygon {
@@ -97,6 +99,7 @@ export default function PredictMap({
   onCursor,
   onAoiDrawn,
   onAoiCancel,
+  aoiPassesOnly = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -112,6 +115,13 @@ export default function PredictMap({
   onAoiDrawnRef.current = onAoiDrawn;
   onAoiCancelRef.current = onAoiCancel;
   const [leafletMap, setLeafletMap] = useState<L.Map | null>(null);
+  const [pinnedPassId, setPinnedPassId] = useState<string | null>(null);
+  const pinnedPass = (result?.passes || []).find((p) => p.passId === pinnedPassId) ?? null;
+  useEffect(() => {
+    if (pinnedPassId && !result?.passes.some((p) => p.passId === pinnedPassId)) setPinnedPassId(null);
+  }, [result, pinnedPassId]);
+  const onLibraryFeatureClickRef = useRef(onLibraryFeatureClick);
+  onLibraryFeatureClickRef.current = onLibraryFeatureClick;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -204,7 +214,7 @@ export default function PredictMap({
           layer.bindTooltip(name, { sticky: true });
           layer.on('click', (ev) => {
             L.DomEvent.stopPropagation(ev);
-            if (fid) onLibraryFeatureClick?.(fid);
+            if (fid) onLibraryFeatureClickRef.current?.(fid);
           });
         },
       });
@@ -233,15 +243,20 @@ export default function PredictMap({
       overlay.addLayer(layer);
     }
 
-    const visibleTracks = (result?.tracks || []).filter(
-      (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
-    );
+    const visibleTracks = (result?.tracks || [])
+      .filter((tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId))
+      .map((tr) => trackAsDisplayed(tr, aoiPassesOnly));
     const labeledPassId = visibleTracks[0]?.passId;
+
+    const pinPass = (passId: string) => (ev: L.LeafletEvent) => {
+      L.DomEvent.stopPropagation(ev);
+      setPinnedPassId(passId);
+    };
 
     for (const track of visibleTracks) {
       const pass = passById.get(track.passId);
       const dash = leafletDashArray(track.dash);
-      const html = popupHtml(pass, timeZone, `${track.satelliteName} ${track.passId}`);
+      const selected = track.passId === pinnedPassId;
       const fillOpacity = 0.22 + ((pass?.passNumber ?? 1) % 3) * 0.06;
       const trackOpacity = pass?.imagingEligible === false ? 0.55 : 0.95;
 
@@ -250,14 +265,13 @@ export default function PredictMap({
           pane: 'overlayPane',
           style: {
             color: track.color,
-            weight: 2,
+            weight: selected ? 3 : 2,
             dashArray: dash,
             fillColor: track.color,
-            fillOpacity,
+            fillOpacity: selected ? Math.min(0.45, fillOpacity + 0.12) : fillOpacity,
           },
         });
-        poly.bindPopup(html);
-        poly.bindTooltip(track.passId, { sticky: true, opacity: 0.9 });
+        poly.on('click', pinPass(track.passId));
         overlay.addLayer(poly);
       }
 
@@ -265,9 +279,15 @@ export default function PredictMap({
         if (seg.length < 2) continue;
         const line = L.polyline(
           seg.map((p) => L.latLng(p.lat, p.lon)),
-          { pane: 'overlayPane', color: track.color, weight: 2.5, opacity: trackOpacity, dashArray: dash },
+          {
+            pane: 'overlayPane',
+            color: track.color,
+            weight: selected ? 5 : 2.5,
+            opacity: trackOpacity,
+            dashArray: dash,
+          },
         );
-        line.bindPopup(html);
+        line.on('click', pinPass(track.passId));
         overlay.addLayer(line);
       }
 
@@ -284,7 +304,7 @@ export default function PredictMap({
       }
     }
 
-    const fitKey = `${target?.kind}:${target?.name}:${target?.lat}:${target?.lon}:${target?.bufferKm ?? ''}:${result?.passes.map((p) => p.passId).join(',') || 'none'}`;
+    const fitKey = `${aoiPassesOnly ? 'aoi' : 'full'}:${target?.kind}:${target?.name}:${target?.lat}:${target?.lon}:${target?.bufferKm ?? ''}:${result?.passes.map((p) => p.passId).join(',') || 'none'}`;
     if (target && fitKey !== fittedKeyRef.current) {
       const pts: L.LatLng[] = [];
       const gb = L.geoJSON(target.geometry as GeoJSON.GeoJsonObject).getBounds();
@@ -293,8 +313,7 @@ export default function PredictMap({
       } else {
         pts.push(L.latLng(target.lat, target.lon));
       }
-      for (const track of result?.tracks || []) {
-        if (hiddenSats.has(track.satelliteId) || hiddenPasses.has(track.passId)) continue;
+      for (const track of visibleTracks) {
         for (const s of track.samples) {
           if (Math.abs(s.lat) > 78) continue;
           let lon = s.lon;
@@ -312,17 +331,16 @@ export default function PredictMap({
         }
       }
       if (pts.length) {
-        const hasTrack = (result?.tracks || []).some(
-          (tr) => !hiddenSats.has(tr.satelliteId) && !hiddenPasses.has(tr.passId),
-        );
-        const bounds = hasTrack
-          ? L.latLngBounds(
-              [85, Math.min(...pts.map((p) => p.lng), target.lon) - 6],
-              [-85, Math.max(...pts.map((p) => p.lng), target.lon) + 6],
-            )
-          : L.latLngBounds(pts);
-        const maxZoom = hasTrack ? 3 : 8;
-        const padded = bounds.pad(hasTrack ? 0.02 : 0.35);
+        const hasTrack = visibleTracks.length > 0;
+        const bounds =
+          hasTrack && !aoiPassesOnly
+            ? L.latLngBounds(
+                [85, Math.min(...pts.map((p) => p.lng), target.lon) - 6],
+                [-85, Math.max(...pts.map((p) => p.lng), target.lon) + 6],
+              )
+            : L.latLngBounds(pts);
+        const maxZoom = hasTrack && !aoiPassesOnly ? 3 : 8;
+        const padded = bounds.pad(hasTrack && !aoiPassesOnly ? 0.02 : hasTrack ? 0.25 : 0.35);
         lastFitRef.current = { bounds: padded, maxZoom };
         const apply = () => {
           map.invalidateSize();
@@ -355,9 +373,10 @@ export default function PredictMap({
     libraryGeojson,
     selectedFeatureIds,
     showLibrary,
-    onLibraryFeatureClick,
     adminGeojson,
     aoiDraw,
+    aoiPassesOnly,
+    pinnedPassId,
   ]);
 
   useEffect(() => {
@@ -475,6 +494,12 @@ export default function PredictMap({
             Cancel
           </button>
         </div>
+      ) : null}
+      {pinnedPass ? (
+        <div
+          className="pointer-events-auto absolute bottom-3 left-3 z-[1000] max-h-[min(70%,28rem)] w-72 overflow-y-auto rounded bg-gray-950/95 p-2.5 text-gray-100 shadow-lg ring-1 ring-cyan-500/50"
+          dangerouslySetInnerHTML={{ __html: popupHtml(pinnedPass, timeZone, pinnedPass.passId) }}
+        />
       ) : null}
     </>
   );
