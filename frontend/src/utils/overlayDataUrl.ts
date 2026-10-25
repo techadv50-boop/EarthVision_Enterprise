@@ -21,5 +21,7 @@ export const INTERACTIVE_PREVIEW_SIZE = 512;
 /**
  * True/False Color (and other RGB composites) need a larger grid so the overlay
  * is not stretched soft across a full S2/Landsat footprint on the map.
+ * Keep ≤2048 so render stays under the ~55s server budget (avoids 504).
+ * Sharp Eye-On XYZ tiles stay visible under this overlay — use Swipe to compare.
  */
 export const COMPOSITE_PREVIEW_SIZE = 2048;

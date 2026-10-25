@@ -288,9 +288,8 @@ class CompositeService:
             raise ValidationError(f"Unknown composite preset: {preset_id}")
 
         # True/false color: mix satellite-accurate R/G/B (or FCC) bands, tone-map,
-        # then encode as a map overlay. Cap raised to 2048 so full-scene footprints
-        # are not soft when a small preview is stretched across the globe.
-        size = max(64, min(int(request.size or 2048), 2048))
+        # then encode as a map overlay. Default 2048 stays under ~55s render budget.
+        size = max(64, min(int(request.size or 2048), 4096))
         footprint: dict[str, Any] | None = None
 
         if preset_id == "true_color" and request.scene_id:
