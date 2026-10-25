@@ -14,6 +14,11 @@ services:
       EV_PACK_PUBLISHERS: /app/pack_publishers/approved_publishers.json
       EV_PACK_REQUIRE_SIGNATURE: "1"
       EV_PACK_AUDIT_LOG: /data/tool_packs/audit/promotions.jsonl
+      # Admin-uploaded Host Python libs (no image rebuild for plugin prerequisites)
+      EV_PYTHON_EXTRAS_DIR: /data/tool_packs/python_extras
+      PYTHONPATH: /data/tool_packs/python_extras
+      # Optional: allow allowlisted pip from PyPI (default off — prefer .whl upload)
+      # EV_HOST_LIBS_ALLOW_PIP: "1"
     volumes:
       - tool_packs_data:/data/tool_packs
 

@@ -40,11 +40,15 @@ services:
       IMAGERY_DIR: /data/imagery
       UPLOADS_DIR: /data/uploads
       LOGS_DIR: /data/logs
+      EV_TOOL_PACKS_ROOT: /data/tool_packs
+      EV_PYTHON_EXTRAS_DIR: /data/tool_packs/python_extras
+      PYTHONPATH: /data/tool_packs/python_extras
     volumes:
       - ./cache:/data/cache
       - ./imagery:/data/imagery
       - ./uploads:/data/uploads
       - ./logs:/data/logs
+      - ./tool_packs:/data/tool_packs
     ports:
       - "8000:8000"
     depends_on:

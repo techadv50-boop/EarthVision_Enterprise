@@ -30,6 +30,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     settings = get_settings()
     logger.info("Starting {} v{}", settings.app_name, settings.app_version)
+    # Persistent Host Python extras (admin-installed libs) — no image rebuild.
+    try:
+        from app.host_libraries import ensure_extras_on_sys_path
+
+        ensure_extras_on_sys_path()
+    except Exception as exc:  # noqa: BLE001 — never block boot on extras path
+        logger.warning("Host Python extras path not ready: {}", exc)
     await init_db()
     yield
     logger.info("Shutting down {}", settings.app_name)

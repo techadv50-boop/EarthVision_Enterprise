@@ -21,10 +21,14 @@ COPY backend/ .
 # Preview overrides via EV_PACK_PUBLISHERS → approved_publishers.preview.json mount.
 COPY tools/publishers/approved_publishers.image_default.json /app/pack_publishers/approved_publishers.json
 COPY tools/manifest.json /app/tools_manifest/manifest.json
-RUN mkdir -p /data/cache /data/imagery /data/uploads /data/logs /data/tool_packs/artifacts /data/tool_packs/audit /data/tool_packs/staging /data/tool_packs/publishers
+RUN mkdir -p /data/cache /data/imagery /data/uploads /data/logs \
+    /data/tool_packs/artifacts /data/tool_packs/audit /data/tool_packs/staging \
+    /data/tool_packs/publishers /data/tool_packs/python_extras
 
 # Docker-safe Tool Pack defaults. Production compose MUST set EV_PACK_PUBLISHERS to a
 # volume allowlist without preview-dev, and EV_PACK_TRUST_PROFILE=production.
+# EV_PYTHON_EXTRAS_DIR: admin-uploaded Host libraries (pip --target) — survives
+# container recreate; does NOT require image rebuild for new plugin prerequisites.
 ENV EV_RUNTIME_PINS=/data/tool_packs/runtime_pins.json \
     EV_ARTIFACTS_ROOT=/data/tool_packs/artifacts \
     EV_TOOL_PACKS_ROOT=/data/tool_packs \
@@ -32,6 +36,8 @@ ENV EV_RUNTIME_PINS=/data/tool_packs/runtime_pins.json \
     EV_PACK_TRUST_PROFILE=production \
     EV_TOOLS_MANIFEST=/app/tools_manifest/manifest.json \
     EV_PACK_REQUIRE_SIGNATURE=1 \
+    EV_PYTHON_EXTRAS_DIR=/data/tool_packs/python_extras \
+    PYTHONPATH=/data/tool_packs/python_extras \
     PYTHONUNBUFFERED=1
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "3", "--timeout-keep-alive", "75"]
