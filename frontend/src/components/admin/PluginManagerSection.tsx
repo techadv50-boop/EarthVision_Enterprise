@@ -15,6 +15,7 @@ import {
   type PluginSystemHealth,
 } from '../../services/pluginService';
 import { getErrorMessage } from '../../services/api';
+import { HostLibrariesSection } from './HostLibrariesSection';
 
 function statusBadge(text: string, tone: 'ok' | 'warn' | 'muted' | 'bad') {
   const cls =
@@ -149,6 +150,8 @@ export function PluginManagerSection() {
           <p className="text-[10px] text-amber-800">Worker: {worker.error}</p>
         )}
       </section>
+
+      <HostLibrariesSection />
 
       {(message || error) && (
         <div

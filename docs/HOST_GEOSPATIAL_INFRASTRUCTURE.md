@@ -49,6 +49,13 @@ Map presentation modes (unchanged): `prefer_scene_tiles` | `processed_preview` |
 
 **Plugin worker image** stays stdlib + cryptography only.
 
+### Adding a library later without rebuilding the image
+
+Use **Admin → Plugins → Host libraries (no rebuild)** to upload a `.whl` into  
+`/data/tool_packs/python_extras`. See `docs/HOST_LIBRARY_INSTALL.md`.
+
+That is the supported “Visual Studio / pip” path: persistent Host volume, **no** `docker compose build`.
+
 ## Plugin compatibility rules (append-only Host)
 
 1. Declare `map_presentation` in `tool-meta.json`.  
