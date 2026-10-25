@@ -2343,7 +2343,8 @@ function WorkspacePageInner() {
                           displayName: placement.display_name,
                           status: 'failed',
                           message:
-                            err instanceof Error ? err.message : 'Could not apply tool',
+                            getErrorMessage(err) ||
+                            (err instanceof Error ? err.message : 'Could not apply tool'),
                           updatedAt: new Date().toISOString(),
                         });
                       }
