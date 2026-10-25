@@ -6,12 +6,14 @@
   "ui_strategy": "sandboxed_iframe",
   "entry_html": "ui/panel.html",
   "frontend_slot": "right_analysis_panel",
+  "map_presentation": "prefer_scene_tiles",
   "permissions": [
     "synthetic_data",
     "ui.slot.right_analysis_panel",
     "host.sdk.read_meta",
     "host.sdk.read_scene",
     "host.sdk.render_true_color",
+    "host.sdk.clear_map_layer",
     "host.sdk.export_geotiff",
     "host.sdk.export_map_jpeg",
     "host.sdk.set_analysis_result",
@@ -19,7 +21,7 @@
   ],
   "host_sdk": {
     "protocol": 1,
-    "version": ">=1.2.0,<2",
+    "version": ">=1.3.0,<2",
     "react": "forbidden",
     "leaflet": "forbidden",
     "remote_bundle": false,
@@ -33,5 +35,5 @@
     "LANDSAT-7",
     "MODIS"
   ],
-  "notes": "Active only for optical scenes. Uses host.getSceneContext for band recipes, host.renderTrueColor for composite, host.exportGeotiff / host.exportMapJpeg for exports."
+  "notes": "Active only for optical scenes. Map presentation is Host-owned (prefer_scene_tiles). Plugin calls host.renderTrueColor / host.clearMapLayer / exports — never Leaflet."
 }

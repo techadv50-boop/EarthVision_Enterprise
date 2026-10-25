@@ -226,6 +226,7 @@ ${pluginJs}
         const METHOD_PERMS: Record<string, string> = {
           'host.getSceneContext': 'host.sdk.read_scene',
           'host.renderTrueColor': 'host.sdk.render_true_color',
+          'host.clearMapLayer': 'host.sdk.clear_map_layer',
           'host.exportGeotiff': 'host.sdk.export_geotiff',
           'host.exportMapJpeg': 'host.sdk.export_map_jpeg',
         };
@@ -245,6 +246,51 @@ ${pluginJs}
             }),
             '*',
           );
+          return;
+        }
+
+        if (msg.method === 'host.clearMapLayer') {
+          void (async () => {
+            try {
+              const handlers = hostRef.current.getImageryHandlers();
+              if (!handlers?.clearMapLayer && !handlers?.clearTrueColor) {
+                throw new Error('Host map clear handler not registered');
+              }
+              if (handlers.clearMapLayer) {
+                await handlers.clearMapLayer({
+                  layer_id:
+                    typeof msg.params.layer_id === 'string'
+                      ? msg.params.layer_id
+                      : undefined,
+                  label_includes:
+                    typeof msg.params.label_includes === 'string'
+                      ? msg.params.label_includes
+                      : undefined,
+                  restore_scenes: msg.params.restore_scenes !== false,
+                });
+              } else {
+                await handlers.clearTrueColor?.();
+              }
+              hostRef.current.setToolRunStatus({
+                pluginId: msg.plugin_id,
+                status: 'idle',
+                message: 'Map layer cleared',
+                updatedAt: new Date().toISOString(),
+              });
+              frame.contentWindow?.postMessage(replyOk({ ok: true, cleared: true }), '*');
+            } catch (err: unknown) {
+              const reply: HostToPluginMessage = {
+                v: 1,
+                type: 'error',
+                id: msg.id,
+                plugin_id: pluginId,
+                ok: false,
+                error: err instanceof Error ? err.message : 'clear map layer failed',
+                code: 'imagery_error',
+              };
+              frame.contentWindow?.postMessage(reply, '*');
+            }
+          })();
           return;
         }
 

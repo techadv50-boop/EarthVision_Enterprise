@@ -6,18 +6,20 @@ Your Admin health showed:
 
 | Badge | Meaning |
 |-------|---------|
-| **HOST SDK 1.1.0** | This plugin needs **Host SDK ≥ 1.2.0** (scene / true-color / export APIs) |
+| **HOST SDK &lt; 1.3.0** | Needs **Host SDK ≥ 1.3.0** (map presentation contract + clearMapLayer; 1.2 true-color APIs still work) |
 | **SIGNATURES REQUIRED** + **TRUST PRODUCTION** | Zip must include `SIGNATURE.json` from an allowlisted production publisher |
 
-Unsigned zip + SDK 1.1 Host → validate rejects.
+Unsigned zip + old Host → validate rejects.
+
+**Map presentation is Host-owned** (`prefer_scene_tiles`). See `docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md` — do not patch FE/BE per tool for blur/z-order.
 
 ## Steps (in order)
 
-### 1. Deploy Host with SDK 1.2
+### 1. Deploy Host with SDK 1.3
 
-Merge / deploy PR stack including [#90](https://github.com/techadv50-boop/EarthVision_Enterprise/pull/90) so Admin health shows **HOST SDK 1.2.0**.
+Deploy Host so Admin health shows **HOST SDK 1.3.0** (presentation contract frozen).
 
-Until then, install cannot succeed even with a perfect zip.
+Until then, packs requiring `>=1.3.0` cannot install.
 
 ### 2. Allowlist the pack publisher (production volume)
 

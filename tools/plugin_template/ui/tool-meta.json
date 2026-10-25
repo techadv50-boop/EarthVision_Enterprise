@@ -1,6 +1,27 @@
 {
   "plugin_id": "my_custom_tool",
-  "name": "My Custom Tool",
+  "tool_id": "my_custom_tool",
+  "label": "My Custom Tool",
+  "description": "Replace with your tool description.",
+  "ui_strategy": "sandboxed_iframe",
+  "entry_html": "ui/panel.html",
   "frontend_slot": "right_analysis_panel",
-  "permissions": ["synthetic_data", "ui.slot.right_analysis_panel", "host.sdk.read_meta"]
+  "map_presentation": "processed_preview",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result",
+    "host.sdk.clear_map_layer"
+  ],
+  "host_sdk": {
+    "protocol": 1,
+    "version": ">=1.3.0,<2",
+    "react": "forbidden",
+    "leaflet": "forbidden",
+    "remote_bundle": false,
+    "execution": "sandboxed_iframe_srcdoc"
+  },
+  "notes": "Pick map_presentation: prefer_scene_tiles | processed_preview | vector_geojson. See docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md. Do not touch Leaflet."
 }
