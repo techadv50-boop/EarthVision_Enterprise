@@ -58,7 +58,7 @@ export function LayersPanel({
         </button>
       </div>
       <p className="mb-1.5 text-[10px] text-[var(--muted)]">
-        Check to show · Up/Down to stack · Swipe compares top layer to those below
+        Check to show · Up/Down to stack · True Color uses sharp tiles when available
       </p>
       <label className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
         Opacity

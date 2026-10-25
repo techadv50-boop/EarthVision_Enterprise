@@ -1039,7 +1039,7 @@ export function LightMap({
 
         return (
           <Fragment key={`${overlay.id}-z${zIndex}`}>
-            {overlay.kind === 'scene' && overlay.tileUrl ? (
+            {overlay.tileUrl ? (
               <TileLayer
                 url={overlay.tileUrl}
                 bounds={leafletBounds}
