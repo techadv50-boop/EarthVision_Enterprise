@@ -1,7 +1,8 @@
 # Permanent Host Map Presentation Contract (Host SDK 1.3)
 
 **Status:** frozen for Host Shell presentation  
-**Goal:** new tools change **only the plugin pack** — not frontend/backend presentation code.
+**Goal:** new tools change **only the plugin pack** — not frontend/backend presentation code.  
+**Also see:** `docs/HOST_GEOSPATIAL_INFRASTRUCTURE.md` (Host-shared RS/GIS library profile `sateye-rs-2026.10`).
 
 ## Why True Color blur was a Host bug (not a plugin bug)
 

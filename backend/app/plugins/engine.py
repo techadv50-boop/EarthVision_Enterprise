@@ -119,6 +119,46 @@ def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
             list(ui_meta.get("permissions") or meta.get("permissions") or [])
         )
 
+        from app.host_capabilities import (
+            HOST_CAPABILITIES,
+            assert_capabilities,
+        )
+
+        map_presentation = ui_meta.get("map_presentation")
+        if map_presentation is not None:
+            allowed_modes = {
+                "prefer_scene_tiles",
+                "processed_preview",
+                "vector_geojson",
+            }
+            if map_presentation not in allowed_modes:
+                raise PackOpsError(
+                    f"invalid map_presentation {map_presentation!r}; "
+                    f"allowed: {sorted(allowed_modes)}"
+                )
+
+        required_caps = ui_meta.get("requires_host_capabilities")
+        if required_caps is not None:
+            if not isinstance(required_caps, list) or not all(
+                isinstance(x, str) and x for x in required_caps
+            ):
+                raise PackOpsError(
+                    "requires_host_capabilities must be a list of capability id strings"
+                )
+            unknown = [c for c in required_caps if c not in HOST_CAPABILITIES]
+            if unknown:
+                raise PackOpsError(
+                    f"unknown host capabilities: {unknown}. "
+                    "See docs/HOST_GEOSPATIAL_INFRASTRUCTURE.md"
+                )
+            missing_ready = assert_capabilities(required_caps)
+            if missing_ready:
+                raise PackOpsError(
+                    f"host capabilities not ready on this Host: {missing_ready}. "
+                    "Install the frozen sateye-rs-2026.10 stack "
+                    "(backend/requirements.txt) before installing this plugin."
+                )
+
         req = str(meta.get("host_sdk") or meta.get("compatible_host_api") or "")
         if not host_sdk_compatible(req or None):
             raise PackOpsError(
@@ -185,6 +225,8 @@ def validate_plugin_package(source_dir: Path) -> dict[str, Any]:
         "publisher_id": publisher_id,
         "host_api_version": HOST_SDK_VERSION,
         "ui_strategy": ui_strategy,
+        "map_presentation": map_presentation,
+        "requires_host_capabilities": list(required_caps or []),
         "execution_model": "static_synthetic_only",
     }
     _audit(result)
@@ -662,7 +704,10 @@ def plugin_system_health() -> dict[str, Any]:
         worker["available"] = False
         worker["skipped"] = True
 
+    from app.host_capabilities import host_capabilities_document
+
     active = [p for p in list_plugins() if p.get("activation_status") == "active"]
+    geo = host_capabilities_document()
     return {
         "ok": True,
         "host_sdk_version": PLUGIN_HOST_SDK_VERSION,
@@ -671,6 +716,14 @@ def plugin_system_health() -> dict[str, Any]:
         "trust_profile": trust_profile(),
         "require_signature": _require_signature(),
         "worker": worker,
+        "geo_profile": {
+            "profile_id": geo["profile_id"],
+            "profile_version": geo["profile_version"],
+            "approach": geo["approach"],
+            "all_ready": geo["all_ready"],
+            "ready_count": len(geo["ready"]),
+            "not_ready": geo["not_ready"],
+        },
         "active_count": len(active),
         "active_plugins": [
             {

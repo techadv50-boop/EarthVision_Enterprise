@@ -7,21 +7,27 @@
   "entry_html": "ui/panel.html",
   "frontend_slot": "right_analysis_panel",
   "map_presentation": "processed_preview",
+  "requires_host_capabilities": [
+    "host.math.numpy",
+    "host.raster.rasterio",
+    "host.map.processed_preview"
+  ],
   "permissions": [
     "synthetic_data",
     "ui.slot.right_analysis_panel",
     "host.sdk.read_meta",
+    "host.sdk.read_capabilities",
     "host.sdk.set_analysis_result",
     "host.sdk.read_analysis_result",
     "host.sdk.clear_map_layer"
   ],
   "host_sdk": {
     "protocol": 1,
-    "version": ">=1.3.0,<2",
+    "version": ">=1.4.0,<2",
     "react": "forbidden",
     "leaflet": "forbidden",
     "remote_bundle": false,
     "execution": "sandboxed_iframe_srcdoc"
   },
-  "notes": "Pick map_presentation: prefer_scene_tiles | processed_preview | vector_geojson. See docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md. Do not touch Leaflet."
+  "notes": "Host-shared RS stack only. See docs/HOST_GEOSPATIAL_INFRASTRUCTURE.md and docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md. Never vendor GDAL/numpy in the zip."
 }

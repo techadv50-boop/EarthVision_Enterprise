@@ -32,14 +32,16 @@ my_tool/
 | `entry.backend` | path | |
 | `entry.ui_entry` | path | |
 
-## tool-meta.json (map presentation — required for map tools)
+## tool-meta.json (map + Host capabilities — required for map/RS tools)
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `map_presentation` | enum | **Required for any tool that affects the map:** `prefer_scene_tiles` \| `processed_preview` \| `vector_geojson` |
+| `map_presentation` | enum | **Required for map tools:** `prefer_scene_tiles` \| `processed_preview` \| `vector_geojson` |
+| `requires_host_capabilities` | string[] | Capability ids from `host.getCapabilities` / `sateye-rs-2026.10` profile |
 
-Host Shell owns tiles vs ImageOverlay, z-order, and Swipe. Plugins never call Leaflet.  
-See **`docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md`** (Host SDK 1.3 frozen contract).
+Host Shell owns tiles vs ImageOverlay, z-order, Swipe, and the shared geospatial library stack.  
+Plugins never call Leaflet and never vendor GDAL/numpy/opencv.  
+See **`docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md`** and **`docs/HOST_GEOSPATIAL_INFRASTRUCTURE.md`** (Host SDK ≥1.4).
 
 Optional placement hints (non-binding; admin configures in wizard):
 

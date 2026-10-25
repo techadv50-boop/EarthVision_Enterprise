@@ -12,8 +12,8 @@ import time
 from typing import Any
 
 # Semver for the plugin frontend Host SDK (postMessage).
-# 1.3.0: permanent map presentation contract + host.clearMapLayer (additive).
-PLUGIN_HOST_SDK_VERSION = "1.3.0"
+# 1.3: map presentation + clearMapLayer · 1.4: host.getCapabilities (geo profile lock)
+PLUGIN_HOST_SDK_VERSION = "1.4.0"
 PLUGIN_HOST_SDK_PROTOCOL = 1
 
 HOST_SDK_METHODS: dict[str, str] = {
@@ -23,6 +23,8 @@ HOST_SDK_METHODS: dict[str, str] = {
     "host.getAoiBounds": "host.sdk.read_aoi",
     "host.setAnalysisResult": "host.sdk.set_analysis_result",
     "host.getAnalysisResult": "host.sdk.read_analysis_result",
+    # Frozen Host geospatial profile (libs + tool families)
+    "host.getCapabilities": "host.sdk.read_capabilities",
     # Optical true-color plugin (Host Shell fulfills; bridge echoes / gates only)
     "host.getSceneContext": "host.sdk.read_scene",
     "host.renderTrueColor": "host.sdk.render_true_color",
