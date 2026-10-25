@@ -12,7 +12,8 @@ import time
 from typing import Any
 
 # Semver for the plugin frontend Host SDK (postMessage).
-PLUGIN_HOST_SDK_VERSION = "1.2.0"
+# 1.3.0: permanent map presentation contract + host.clearMapLayer (additive).
+PLUGIN_HOST_SDK_VERSION = "1.3.0"
 PLUGIN_HOST_SDK_PROTOCOL = 1
 
 HOST_SDK_METHODS: dict[str, str] = {
@@ -25,6 +26,8 @@ HOST_SDK_METHODS: dict[str, str] = {
     # Optical true-color plugin (Host Shell fulfills; bridge echoes / gates only)
     "host.getSceneContext": "host.sdk.read_scene",
     "host.renderTrueColor": "host.sdk.render_true_color",
+    # Permanent clear for any host-presented layer (plugins never touch Leaflet)
+    "host.clearMapLayer": "host.sdk.clear_map_layer",
     "host.exportGeotiff": "host.sdk.export_geotiff",
     "host.exportMapJpeg": "host.sdk.export_map_jpeg",
 }

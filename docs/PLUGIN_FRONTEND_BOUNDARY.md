@@ -10,7 +10,7 @@ integrity-covered pack assets (`ui/panel.html`, `ui/plugin.js`, …).
 | No privileged React execution | Uploaded JS never `import()`’d / `eval`’d in Host Shell |
 | Opaque origin | `sandbox="allow-scripts"` **without** `allow-same-origin` + `srcdoc` |
 | Digest binding | FE manifest + assets require active registry `version` + `digest` |
-| Host SDK | Versioned postMessage protocol `v=1` (`PLUGIN_HOST_SDK_VERSION=1.2.0`) |
+| Host SDK | Versioned postMessage protocol `v=1` (`PLUGIN_HOST_SDK_VERSION=1.3.0`) — map presentation frozen in `docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md` |
 | Permissions | Methods gated by pack permission declarations |
 | Secrets | Never injected into iframe boot; audit redacts token/secret fields |
 

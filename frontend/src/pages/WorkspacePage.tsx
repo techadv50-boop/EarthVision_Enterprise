@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LogOut, Shield, Wrench } from 'lucide-react';
 import { LightMap } from '../map/LightMap';
+import {
+  clearMapLayer,
+  presentMapLayer,
+  resolveMapPresentation,
+} from '../map/presentMapLayer';
 import { MapToolbar } from '../components/map/MapToolbar';
 import { MapLegend } from '../components/map/MapLegend';
 import {
@@ -1320,67 +1325,25 @@ function WorkspacePageInner() {
       });
       setCompositeResult(result);
       setLastLegend((result.legend as LegendInfo | null) ?? null);
-      setLastMessage(
-        `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
-      );
-      // Soft 2048px ImageOverlay on top looks extremely blurry when zoomed.
-      // True Color shares Eye-On TCI tiles — draw those on the composite instead.
-      const store = useWorkflowStore.getState();
-      const opacity = Math.max(store.layerOpacity, 0.85);
-      const sharpTileUrl =
-        preset === 'true_color' ? sceneOverlay?.tileUrl : undefined;
-      const hasSharpTiles = Boolean(sharpTileUrl);
-      if (sceneOverlay) {
-        store.setOverlayVisible(sceneOverlay.id, true);
-      }
-      for (const o of store.overlays) {
-        if (o.sceneId !== focusScene.id) continue;
-        if (
-          (o.kind === 'composite' || o.id.startsWith('composite-')) &&
-          o.id !== `composite-${preset}` &&
-          o.visible !== false
-        ) {
-          store.setOverlayVisible(o.id, false);
-        }
-      }
       const fp =
         (result.footprint as GeoJSON.Polygon | null | undefined) ??
         sceneOverlay?.footprint ??
         null;
-      const compositeId = `composite-${preset}`;
-      upsertOverlay({
-        id: compositeId,
+      const presented = presentMapLayer({
+        id: `composite-${preset}`,
         kind: 'composite',
         sceneId: focusScene.id,
-        // Keep PNG for GeoTIFF export; tileUrl (when present) is what the map draws.
+        label: result.label,
         url: compositeService.toDataUrl(result.overlay_base64),
-        ...(sharpTileUrl ? { tileUrl: sharpTileUrl } : {}),
-        // Prefer backend bounds (STAC envelope) so outline matches the image.
         bounds: (result.bounds as [number, number, number, number]) ?? bounds,
         footprint: fp,
-        opacity,
-        label: result.label,
-        visible: true,
+        presentation: resolveMapPresentation(preset),
+        hideSiblingKinds: true,
       });
-      if (hasSharpTiles && sceneOverlay) {
-        // Hide duplicate scene tiles so the APPLIED True Color layer is the crisp one.
-        const s = useWorkflowStore.getState();
-        const sceneId = sceneOverlay.id;
-        const rest = s.overlays.filter((o) => o.id !== compositeId && o.id !== sceneId);
-        const comp = s.overlays.find((o) => o.id === compositeId);
-        const scene = s.overlays.find((o) => o.id === sceneId);
-        if (comp && scene) {
-          useWorkflowStore.setState({
-            overlays: [...rest, { ...scene, visible: false }, { ...comp, visible: true }],
-          });
-        }
-        store.setMapChrome({ swipe: false });
-        setLastMessage(
-          `${result.message || result.label} · map shows sharp Eye-On tiles (not the 2048px preview)`,
-        );
-      } else {
-        store.setMapChrome({ swipe: true });
-      }
+      setLastMessage(
+        `${result.message || `${result.label} · ${result.formula}`} · ${presented.messageSuffix}`,
+      );
+      const store = useWorkflowStore.getState();
       store.setExpandedToolbox('image');
       store.setToolboxOpen(true);
     } catch (err) {
@@ -1552,22 +1515,23 @@ function WorkspacePageInner() {
   useEffect(() => {
     setImageryHandlers({
       clearTrueColor: () => {
-        const store = useWorkflowStore.getState();
-        for (const o of store.overlays) {
-          if (
-            o.id === 'composite-true_color' ||
-            (o.kind === 'composite' &&
-              (o.label || '').toLowerCase().includes('true color'))
-          ) {
-            store.setOverlayVisible(o.id, false);
-          }
-          if (o.kind === 'scene') {
-            store.setOverlayVisible(o.id, true);
-          }
-        }
-        store.setMapChrome({ swipe: false });
+        clearMapLayer({
+          id: 'composite-true_color',
+          labelIncludes: 'true color',
+          restoreScenes: true,
+        });
         setActiveToolId(null);
         setToolStatus(null);
+      },
+      clearMapLayer: (params) => {
+        clearMapLayer({
+          id: typeof params?.layer_id === 'string' ? params.layer_id : undefined,
+          labelIncludes:
+            typeof params?.label_includes === 'string'
+              ? params.label_includes
+              : undefined,
+          restoreScenes: params?.restore_scenes !== false,
+        });
       },
       renderTrueColor: async () => {
         if (!focusScene) {
@@ -1602,70 +1566,31 @@ function WorkspacePageInner() {
           });
           setCompositeResult(result);
           setLastLegend((result.legend as LegendInfo | null) ?? null);
-          setLastMessage(
-            `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
-          );
-          const store = useWorkflowStore.getState();
-          // Soft 2048px ImageOverlay on top is what looked extremely blurry when
-          // zoomed (Swipe ~95% made it worse). Drive the map with Eye-On XYZ tiles.
-          const sharpTileUrl = sceneOverlay?.tileUrl;
-          const hasSharpTiles = Boolean(sharpTileUrl);
-          if (sceneOverlay) {
-            store.setOverlayVisible(sceneOverlay.id, true);
-          }
-          for (const o of store.overlays) {
-            if (o.sceneId !== focusScene.id) continue;
-            if (o.kind === 'composite' || o.id.startsWith('composite-')) {
-              if (o.id !== 'composite-true_color' && o.visible !== false) {
-                store.setOverlayVisible(o.id, false);
-              }
-            }
-          }
           const fp =
             (result.footprint as GeoJSON.Polygon | null | undefined) ??
             sceneOverlay?.footprint ??
             null;
-          const compositeId = 'composite-true_color';
-          upsertOverlay({
-            id: compositeId,
+          const presented = presentMapLayer({
+            id: 'composite-true_color',
             kind: 'composite',
             sceneId: focusScene.id,
+            label: result.label,
             url: compositeService.toDataUrl(result.overlay_base64),
-            ...(sharpTileUrl ? { tileUrl: sharpTileUrl } : {}),
             bounds: (result.bounds as [number, number, number, number]) ?? bounds,
             footprint: fp,
-            opacity: Math.max(store.layerOpacity, 0.85),
-            label: result.label,
-            visible: true,
+            presentation: resolveMapPresentation('optical_true_color'),
+            hideSiblingKinds: true,
           });
-          if (hasSharpTiles && sceneOverlay) {
-            const s = useWorkflowStore.getState();
-            const sceneId = sceneOverlay.id;
-            const rest = s.overlays.filter((o) => o.id !== compositeId && o.id !== sceneId);
-            const comp = s.overlays.find((o) => o.id === compositeId);
-            const scene = s.overlays.find((o) => o.id === sceneId);
-            if (comp && scene) {
-              useWorkflowStore.setState({
-                overlays: [
-                  ...rest,
-                  { ...scene, visible: false },
-                  { ...comp, visible: true },
-                ],
-              });
-            }
-            store.setMapChrome({ swipe: false });
-          } else {
-            store.setMapChrome({ swipe: true });
-          }
+          const message = `${result.message || result.formula} · ${presented.messageSuffix}`;
+          setLastMessage(message);
           return {
             ok: true,
             preset: 'true_color',
             label: result.label,
             formula: result.formula,
             band_recipe: recipe,
-            message: hasSharpTiles
-              ? `${result.message || result.formula} · map shows sharp Eye-On tiles (not the 2048px preview)`
-              : result.message || result.formula,
+            presentation: 'prefer_scene_tiles',
+            message,
             bounds: result.bounds,
           };
         } finally {

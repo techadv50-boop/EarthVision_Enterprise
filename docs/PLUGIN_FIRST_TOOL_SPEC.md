@@ -25,12 +25,21 @@ my_tool/
 | `description` | string | |
 | `version` | semver | |
 | `digest` | `sha256:…` | Of SHA256SUMS |
-| `compatible_host_api` | range | e.g. `>=1.1.0,<2` |
+| `compatible_host_api` | range | e.g. `>=1.3.0,<2` |
 | `frontend_slot` | enum | Preferred default slot (admin may override) |
 | `permissions` | string[] | Host SDK + slot permissions |
 | `ui_strategy` | string | `sandboxed_iframe` |
 | `entry.backend` | path | |
 | `entry.ui_entry` | path | |
+
+## tool-meta.json (map presentation — required for map tools)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `map_presentation` | enum | **Required for any tool that affects the map:** `prefer_scene_tiles` \| `processed_preview` \| `vector_geojson` |
+
+Host Shell owns tiles vs ImageOverlay, z-order, and Swipe. Plugins never call Leaflet.  
+See **`docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md`** (Host SDK 1.3 frozen contract).
 
 Optional placement hints (non-binding; admin configures in wizard):
 

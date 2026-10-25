@@ -43,12 +43,20 @@ export type ExportMapJpegParams = {
   title?: string;
 };
 
+export type ClearMapLayerParams = {
+  layer_id?: string;
+  label_includes?: string;
+  restore_scenes?: boolean;
+};
+
 export type PluginImageryHandlers = {
   renderTrueColor: () => Promise<Record<string, unknown>>;
   exportGeotiff: () => Promise<Record<string, unknown>>;
   exportMapJpeg: (params: ExportMapJpegParams) => Promise<Record<string, unknown>>;
   /** Optional: remove host-applied true-color overlay when tool is unchecked. */
   clearTrueColor?: () => Promise<void> | void;
+  /** Permanent Host SDK clear — any presented layer by id / label. */
+  clearMapLayer?: (params?: ClearMapLayerParams) => Promise<void> | void;
 };
 
 /** Workspace tool-row status (selected / processing / applied / failed). */

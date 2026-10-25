@@ -15,7 +15,7 @@ _LOCK = threading.RLock()
 _CACHE: dict[str, Any] = {"mtime": None, "data": None}
 
 # Host SDK semver declared for pack compatibility checks (1.2: optical scene/render/export)
-HOST_SDK_VERSION = "1.2.0"
+HOST_SDK_VERSION = "1.3.0"
 
 # Re-export for callers that imported pins_path/repo_root from here
 __all__ = [

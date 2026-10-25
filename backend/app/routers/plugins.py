@@ -208,6 +208,7 @@ async def plugin_host_sdk_bridge(
                 result = {"scene": scene, "source": "host"}
         elif method in {
             "host.renderTrueColor",
+            "host.clearMapLayer",
             "host.exportGeotiff",
             "host.exportMapJpeg",
         }:

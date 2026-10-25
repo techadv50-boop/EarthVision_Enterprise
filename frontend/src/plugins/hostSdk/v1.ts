@@ -6,7 +6,8 @@
  */
 
 export const PLUGIN_HOST_SDK_PROTOCOL = 1 as const;
-export const PLUGIN_HOST_SDK_VERSION = '1.2.0';
+/** 1.3: permanent map presentation + host.clearMapLayer (additive). */
+export const PLUGIN_HOST_SDK_VERSION = '1.3.0';
 
 export type HostSdkMethod =
   | 'host.meta'
@@ -17,6 +18,7 @@ export type HostSdkMethod =
   | 'host.getAnalysisResult'
   | 'host.getSceneContext'
   | 'host.renderTrueColor'
+  | 'host.clearMapLayer'
   | 'host.exportGeotiff'
   | 'host.exportMapJpeg';
 
@@ -29,6 +31,7 @@ const ALLOWED_METHODS = new Set<string>([
   'host.getAnalysisResult',
   'host.getSceneContext',
   'host.renderTrueColor',
+  'host.clearMapLayer',
   'host.exportGeotiff',
   'host.exportMapJpeg',
 ]);
