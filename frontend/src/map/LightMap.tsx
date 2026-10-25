@@ -177,21 +177,79 @@ function MiniMapPanel({ enabled }: { enabled: boolean }) {
   );
 }
 
+/**
+ * Sliding-window compare: clips the topmost visible imagery layer so the left
+ * side shows layers below (e.g. sharp Eye-On tiles) and the right shows the
+ * processed overlay (e.g. True Color composite).
+ */
 function SwipeMask({ enabled, overlays }: { enabled: boolean; overlays: MapOverlay[] }) {
+  const map = useMap();
   const [pct, setPct] = useState(50);
+
+  const imagery = useMemo(
+    () =>
+      overlays.filter(
+        (o) =>
+          o.visible !== false &&
+          (o.kind === 'scene' ||
+            o.kind === 'composite' ||
+            o.kind === 'index' ||
+            o.kind === 'change' ||
+            o.id.startsWith('composite-')),
+      ),
+    [overlays],
+  );
+
+  // Store order is bottom→top; last imagery layer is the swipe "top" (clipped).
+  const topId = imagery.length >= 2 ? imagery[imagery.length - 1]?.id : null;
+
+  useEffect(() => {
+    const pane = map.getPane('evStackPane');
+    if (!pane) return;
+
+    const apply = () => {
+      const nodes = pane.querySelectorAll<HTMLElement>('[data-ev-id]');
+      nodes.forEach((el) => {
+        const id = el.dataset.evId;
+        if (!enabled || !topId || id !== topId) {
+          el.style.clipPath = '';
+          (el.style as CSSStyleDeclaration & { webkitClipPath?: string }).webkitClipPath = '';
+          return;
+        }
+        // Show only the left `pct`% of the top layer.
+        const clip = `inset(0 ${100 - pct}% 0 0)`;
+        el.style.clipPath = clip;
+        (el.style as CSSStyleDeclaration & { webkitClipPath?: string }).webkitClipPath = clip;
+      });
+    };
+
+    apply();
+    map.on('zoomend moveend layeradd', apply);
+    return () => {
+      map.off('zoomend moveend layeradd', apply);
+      const nodes = pane.querySelectorAll<HTMLElement>('[data-ev-id]');
+      nodes.forEach((el) => {
+        el.style.clipPath = '';
+        (el.style as CSSStyleDeclaration & { webkitClipPath?: string }).webkitClipPath = '';
+      });
+    };
+  }, [map, enabled, pct, topId, imagery]);
+
   if (!enabled) return null;
-  const scenes = overlays.filter((o) => o.kind === 'scene' && o.visible !== false);
-  if (scenes.length < 2) {
+
+  if (imagery.length < 2) {
     return (
       <div className="pointer-events-none absolute top-16 left-1/2 z-[1000] -translate-x-1/2 rounded-full bg-white/95 px-3 py-1 text-[11px] text-[var(--muted)] shadow">
-        Swipe needs 2+ visible scenes
+        Swipe needs 2 visible layers (Eye-On scene + processed overlay)
       </div>
     );
   }
+
   return (
     <div className="pointer-events-auto absolute inset-x-0 bottom-20 z-[1000] flex justify-center px-6">
       <label className="flex w-full max-w-md items-center gap-2 rounded-xl border border-[var(--line)] bg-white/95 px-3 py-2 text-[11px] shadow">
-        Swipe
+        <span className="shrink-0 font-semibold">Swipe</span>
+        <span className="shrink-0 text-[10px] text-[var(--muted)]">Below|Top</span>
         <input
           type="range"
           min={5}
@@ -199,13 +257,10 @@ function SwipeMask({ enabled, overlays }: { enabled: boolean; overlays: MapOverl
           value={pct}
           onChange={(e) => setPct(Number(e.target.value))}
           className="w-full accent-[var(--accent)]"
+          data-testid="swipe-slider"
         />
-        <span className="font-mono">{pct}%</span>
+        <span className="w-10 font-mono">{pct}%</span>
       </label>
-      <div
-        className="pointer-events-none absolute inset-y-0 left-0 border-r-2 border-[var(--accent)]"
-        style={{ width: `${pct}%`, top: '-40vh', height: '80vh' }}
-      />
     </div>
   );
 }

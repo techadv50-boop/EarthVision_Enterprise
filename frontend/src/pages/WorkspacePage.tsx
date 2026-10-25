@@ -10,6 +10,7 @@ import {
 } from '../components/workflow/PlaceStep';
 import { ScenesStep } from '../components/workflow/ScenesStep';
 import { PluginFirstToolsPanel } from '../components/workflow/PluginFirstToolsPanel';
+import { LayersPanel } from '../components/workflow/LayersPanel';
 import { AdminPanel, type AdminTab } from '../components/admin/AdminPanel';
 import { PluginAnalysisResultsHost } from '../plugins/PluginAnalysisResultsHost';
 import { PluginHostProvider, usePluginHost } from '../plugins/PluginHostContext';
@@ -302,6 +303,7 @@ function WorkspacePageInner() {
     renameOverlay,
     moveOverlay,
     reorderOverlaysDisplay,
+    setMapChrome,
     patchOverlay,
     duplicateOverlay,
     setLayerOpacity,
@@ -1321,20 +1323,20 @@ function WorkspacePageInner() {
       setLastMessage(
         `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
       );
-      // Hide eye TileLayer + any prior composites so FCC/True Color is the only imagery.
-      // Stacking soft ImageOverlay on sharp XYZ tiles caused blur / “still true color”.
+      // Keep Eye-On tiles under the composite so the map stays sharp; swipe to compare.
       const store = useWorkflowStore.getState();
-      const opacity = store.layerOpacity;
+      const opacity = Math.max(store.layerOpacity, 0.85);
+      if (sceneOverlay) {
+        store.setOverlayVisible(sceneOverlay.id, true);
+      }
       for (const o of store.overlays) {
         if (o.sceneId !== focusScene.id) continue;
         if (
-          o.kind === 'scene' ||
-          o.kind === 'composite' ||
-          o.id.startsWith('composite-')
+          (o.kind === 'composite' || o.id.startsWith('composite-')) &&
+          o.id !== `composite-${preset}` &&
+          o.visible !== false
         ) {
-          if (o.visible !== false) {
-            store.setOverlayVisible(o.id, false);
-          }
+          store.setOverlayVisible(o.id, false);
         }
       }
       const fp =
@@ -1353,8 +1355,9 @@ function WorkspacePageInner() {
         label: result.label,
         visible: true,
       });
-      useWorkflowStore.getState().setExpandedToolbox('image');
-      useWorkflowStore.getState().setToolboxOpen(true);
+      store.setMapChrome({ swipe: true });
+      store.setExpandedToolbox('image');
+      store.setToolboxOpen(true);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -1526,13 +1529,18 @@ function WorkspacePageInner() {
       clearTrueColor: () => {
         const store = useWorkflowStore.getState();
         for (const o of store.overlays) {
-          if (o.id === 'composite-true_color' || (o.kind === 'composite' && o.label?.toLowerCase().includes('true color'))) {
+          if (
+            o.id === 'composite-true_color' ||
+            (o.kind === 'composite' &&
+              (o.label || '').toLowerCase().includes('true color'))
+          ) {
             store.setOverlayVisible(o.id, false);
           }
-          if (o.kind === 'scene' && o.visible === false) {
+          if (o.kind === 'scene') {
             store.setOverlayVisible(o.id, true);
           }
         }
+        store.setMapChrome({ swipe: false });
         setActiveToolId(null);
         setToolStatus(null);
       },
@@ -1573,15 +1581,15 @@ function WorkspacePageInner() {
             `${result.message || `${result.label} · ${result.formula}`} · map overlay updated`,
           );
           const store = useWorkflowStore.getState();
-          const opacity = store.layerOpacity;
+          // Keep sharp Eye-On tiles visible under the composite. Hiding the
+          // scene made the map look blurry (2048px ImageOverlay vs XYZ tiles).
+          if (sceneOverlay) {
+            store.setOverlayVisible(sceneOverlay.id, true);
+          }
           for (const o of store.overlays) {
             if (o.sceneId !== focusScene.id) continue;
-            if (
-              o.kind === 'scene' ||
-              o.kind === 'composite' ||
-              o.id.startsWith('composite-')
-            ) {
-              if (o.visible !== false) {
+            if (o.kind === 'composite' || o.id.startsWith('composite-')) {
+              if (o.id !== 'composite-true_color' && o.visible !== false) {
                 store.setOverlayVisible(o.id, false);
               }
             }
@@ -1597,17 +1605,21 @@ function WorkspacePageInner() {
             url: compositeService.toDataUrl(result.overlay_base64),
             bounds: (result.bounds as [number, number, number, number]) ?? bounds,
             footprint: fp,
-            opacity,
+            opacity: Math.max(store.layerOpacity, 0.85),
             label: result.label,
             visible: true,
           });
+          // Sliding window: compare sharp tiles (below) vs processed overlay (top).
+          store.setMapChrome({ swipe: true });
           return {
             ok: true,
             preset: 'true_color',
             label: result.label,
             formula: result.formula,
             band_recipe: recipe,
-            message: result.message || result.formula,
+            message:
+              (result.message || result.formula) +
+              ' · sharp Eye-On kept under overlay — use Swipe / Layers to compare',
             bounds: result.bounds,
           };
         } finally {
@@ -2197,6 +2209,15 @@ function WorkspacePageInner() {
             />
           </div>
           <MapLegend legend={legend} />
+          <LayersPanel
+            overlays={overlays}
+            layerOpacity={layerOpacity}
+            swipeEnabled={Boolean(mapChrome.swipe)}
+            onOpacity={setLayerOpacity}
+            onToggle={(id, visible) => setOverlayVisible(id, visible)}
+            onMove={(id, dir) => moveOverlay(id, dir)}
+            onToggleSwipe={() => toggleMapChrome('swipe')}
+          />
           {mapChrome.splitView && hasVisibleScene && (
             <div className="pointer-events-none absolute inset-y-0 left-1/2 z-[400] w-px bg-[var(--accent)]/70" />
           )}

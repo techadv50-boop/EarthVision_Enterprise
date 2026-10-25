@@ -21,5 +21,7 @@ export const INTERACTIVE_PREVIEW_SIZE = 512;
 /**
  * True/False Color (and other RGB composites) need a larger grid so the overlay
  * is not stretched soft across a full S2/Landsat footprint on the map.
+ * Capped by backend schema (4096). Sharp Eye-On XYZ tiles should stay visible
+ * under this overlay; use Swipe to compare.
  */
-export const COMPOSITE_PREVIEW_SIZE = 2048;
+export const COMPOSITE_PREVIEW_SIZE = 3072;
