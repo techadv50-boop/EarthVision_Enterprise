@@ -201,6 +201,7 @@ _LIB_IMPORT_NAME = {
     "scikit-learn": "sklearn",
     "opencv-python-headless": "cv2",
     "gdal": "osgeo.gdal",
+    "pyshp": "shapefile",
 }
 
 
