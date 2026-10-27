@@ -4,8 +4,29 @@ import WatchMap from './WatchMap';
 import { catalogSourceNote, loadActiveCatalog, type ActiveSat } from './watch/catalog';
 import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
 
-type Country = 'pak' | 'ind';
+type Scope = 'world' | 'pak' | 'ind';
 type Level = 0 | 1 | 2;
+
+interface WorldProps {
+  NAME?: string;
+}
+
+function worldBoundaries(data: GeoJSON.FeatureCollection): GeoJSON.FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: data.features
+      .filter((feature) => feature.geometry)
+      .map((feature) => {
+        const name = String((feature.properties as WorldProps | null)?.NAME || 'Area');
+        return {
+          type: 'Feature' as const,
+          properties: { name, country: name, level: 0 },
+          geometry: feature.geometry,
+        };
+      })
+      .sort((a, b) => String(a.properties.name).localeCompare(String(b.properties.name))),
+  };
+}
 
 const RELATION_LABEL: Record<WatchRelation, string> = {
   overhead: 'Over the area',
@@ -18,8 +39,8 @@ export default function WatchView({
 }: {
   onTrack?: (name: string, line1: string, line2: string, noradId: number | null) => void;
 }) {
-  const [country, setCountry] = useState<Country | null>(null);
-  const [level, setLevel] = useState<Level | null>(null);
+  const [scope, setScope] = useState<Scope>('world');
+  const [level, setLevel] = useState<Level>(0);
   const [areas, setAreas] = useState<GeoJSON.FeatureCollection | null>(null);
   const [areaName, setAreaName] = useState('');
   const [catalog, setCatalog] = useState<ActiveSat[] | null>(null);
@@ -57,32 +78,30 @@ export default function WatchView({
   }, []);
 
   useEffect(() => {
-    if (!country || level == null) {
-      setAreas(null);
-      return;
-    }
     let cancelled = false;
     setAreas(null);
     setAreaError('');
-    void fetch(`/aoi/${country}-${level}.geojson`)
+    const url = scope === 'world' ? '/world-countries-110m.geojson' : `/aoi/${scope}-${level}.geojson`;
+    void fetch(url)
       .then((resp) => {
         if (!resp.ok) throw new Error('missing');
         return resp.json();
       })
       .then((data: GeoJSON.FeatureCollection) => {
-        if (!cancelled) setAreas(data);
+        if (cancelled) return;
+        setAreas(scope === 'world' ? worldBoundaries(data) : data);
       })
       .catch(() => {
-        if (!cancelled) setAreaError('Could not load that area level.');
+        if (!cancelled) setAreaError('Could not load those boundaries.');
       });
     return () => {
       cancelled = true;
     };
-  }, [country, level]);
+  }, [scope, level]);
 
-  const choose = (nextCountry: Country, nextLevel: Level) => {
-    setCountry(nextCountry);
-    setLevel(nextLevel);
+  const choose = (nextScope: Scope, nextLevel: Level) => {
+    setScope(nextScope);
+    setLevel(nextScope === 'world' ? 0 : nextLevel);
     setHits([]);
     setAreaName('');
   };
@@ -140,16 +159,16 @@ export default function WatchView({
       <aside className="flex h-full w-[380px] max-w-[92vw] shrink-0 flex-col border-r border-white/10 bg-gray-950">
         <div className="space-y-3 overflow-y-auto px-4 py-4">
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-cyan-400">Who is watching you</h2>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-cyan-400">Who is overhead</h2>
             <p className="mt-1 text-[11px] leading-relaxed text-gray-400">
-              Every satellite Celestrak lists as active is checked. Pick a country level, then click an area.
-              The list is who is over that area right now.
+              The catalog is every satellite Celestrak lists as active. Click a country, province, or district.
+              The list below is only the satellites over that shape, not the whole catalog.
             </p>
             <p className="mt-1 text-[11px] text-gray-500">
               {catalogLoading
                 ? 'Loading the active catalog…'
                 : catalog
-                  ? `${catalog.length.toLocaleString()} active satellites loaded.`
+                  ? `Catalog: ${catalog.length.toLocaleString()} active satellites.`
                   : 'Active catalog not loaded.'}
             </p>
             {catalogNote && <p className="mt-1 text-[11px] text-gray-500">{catalogNote}</p>}
@@ -157,21 +176,23 @@ export default function WatchView({
           </div>
 
           <div>
-            <p className="text-[11px] font-medium text-gray-300">Area levels</p>
+            <p className="text-[11px] font-medium text-gray-300">Boundaries</p>
             <p className="mt-0.5 text-[10px] text-gray-500">
-              Level 0 is the whole country, level 1 provinces, level 2 districts. Pakistan includes Kashmir.
+              All countries are drawn the same way. Pakistan and India also open as provinces and districts.
+              Pakistan includes Kashmir.
             </p>
             <div className="mt-1 flex flex-wrap gap-1">
               {([
+                ['world', 'All countries'],
                 ['pak', 'Pakistan'],
                 ['ind', 'India'],
               ] as const).map(([id, label]) => (
                 <button
                   key={id}
                   type="button"
-                  onClick={() => choose(id, level ?? 0)}
+                  onClick={() => choose(id, id === 'world' ? 0 : level)}
                   className={`rounded px-2 py-0.5 text-[11px] ring-1 ${
-                    country === id
+                    scope === id
                       ? 'bg-cyan-600 text-white ring-cyan-500'
                       : 'bg-white/5 text-gray-300 ring-white/10 hover:bg-white/10'
                   }`}
@@ -180,26 +201,53 @@ export default function WatchView({
                 </button>
               ))}
             </div>
-            <div className="mt-1 flex flex-wrap gap-1">
-              {([
-                [0, 'Level 0'],
-                [1, 'Level 1'],
-                [2, 'Level 2'],
-              ] as const).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => choose(country ?? 'pak', id)}
-                  className={`rounded px-2 py-0.5 text-[11px] ring-1 ${
-                    level === id
-                      ? 'bg-cyan-600 text-white ring-cyan-500'
-                      : 'bg-white/5 text-gray-300 ring-white/10 hover:bg-white/10'
-                  }`}
+            {scope !== 'world' && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {([
+                  [0, 'Level 0'],
+                  [1, 'Level 1'],
+                  [2, 'Level 2'],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => choose(scope, id)}
+                    className={`rounded px-2 py-0.5 text-[11px] ring-1 ${
+                      level === id
+                        ? 'bg-cyan-600 text-white ring-cyan-500'
+                        : 'bg-white/5 text-gray-300 ring-white/10 hover:bg-white/10'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {scope === 'world' && areas && areas.features.length > 0 && (
+              <label className="mt-2 block text-[11px] text-gray-400">
+                Country
+                <select
+                  value={areaName}
+                  onChange={(event) => {
+                    const feature = areas.features.find(
+                      (item) => String((item.properties as { name?: string } | null)?.name || '') === event.target.value,
+                    );
+                    if (feature) inspect(feature);
+                  }}
+                  className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm text-gray-100 outline-none ring-1 ring-white/10"
                 >
-                  {label}
-                </button>
-              ))}
-            </div>
+                  <option value="">Choose a country</option>
+                  {areas.features.map((feature) => {
+                    const name = String((feature.properties as { name?: string } | null)?.name || '');
+                    return (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+            )}
             {areaError && <p className="mt-1 text-[11px] text-red-400">{areaError}</p>}
           </div>
 
@@ -210,8 +258,10 @@ export default function WatchView({
               </p>
               <p className="mt-0.5 text-[11px] text-gray-400">
                 {scanning
-                  ? `Checking satellites… ${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}`
-                  : `${overhead} over the area · ${watching} with swath on it · ${inView} above the horizon`}
+                  ? `Checking the catalog… ${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}`
+                  : catalog
+                    ? `${overhead.toLocaleString()} of ${catalog.length.toLocaleString()} are over this shape · ${watching.toLocaleString()} with swath on it · ${inView.toLocaleString()} above the horizon`
+                    : `${overhead.toLocaleString()} over this shape · ${watching.toLocaleString()} with swath on it · ${inView.toLocaleString()} above the horizon`}
               </p>
               <label className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-400">
                 <input
@@ -265,14 +315,26 @@ export default function WatchView({
             ))}
             {matched.length > visible.length && (
               <p className="text-[11px] text-gray-500">
-                Showing the closest {visible.length} of {matched.length}.
+                Showing the closest {visible.length.toLocaleString()} of {matched.length.toLocaleString()} satellites over this shape.
+              </p>
+            )}
+            {!scanning && areaName && matched.length > 0 && matched.length <= visible.length && (
+              <p className="text-[11px] text-gray-500">
+                This list is {matched.length.toLocaleString()} satellite{matched.length === 1 ? '' : 's'} over {areaName}.
               </p>
             )}
             {!scanning && areaName && visible.length === 0 && (
-              <p className="text-[11px] text-gray-500">No active satellite is over that area right now.</p>
+              <p className="text-[11px] text-gray-500">
+                None of the {catalog ? catalog.length.toLocaleString() : 'active'} satellites are over {areaName} right now.
+              </p>
             )}
             {!areaName && (
-              <p className="text-[11px] text-gray-500">Click a shape on the map to see who is above it.</p>
+              <p className="text-[11px] text-gray-500">
+                Click a boundary on the map.
+                {areas
+                  ? ` ${areas.features.length.toLocaleString()} ${scope === 'world' ? 'countries' : 'areas'} are drawn.`
+                  : ''}
+              </p>
             )}
           </div>
         </div>

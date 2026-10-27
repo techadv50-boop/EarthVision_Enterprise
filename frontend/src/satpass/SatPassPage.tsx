@@ -269,13 +269,13 @@ export default function SatPassPage() {
         <nav className="ml-2 flex items-center gap-1 rounded-md bg-white/5 p-0.5 ring-1 ring-white/10">
           {tabBtn('track', 'Track')}
           {tabBtn('predict', 'Predict')}
-          {tabBtn('watch', 'Who is watching you')}
+          {tabBtn('watch', 'Who is overhead')}
         </nav>
         <p className="hidden truncate text-[11px] text-gray-500 lg:block">
           {mode === 'predict'
             ? 'When will this satellite pass over a location or area?'
             : mode === 'watch'
-              ? 'Which active satellites are over a selected area right now?'
+              ? 'Which active satellites are overhead a selected country right now?'
               : 'satpass.xdgen.com · live satellite tracker'}
         </p>
         <div className="ml-auto flex items-center gap-1">
