@@ -7,11 +7,17 @@ import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
 
 type BoundaryLevel = 1 | 2 | 3;
 
-const BOUNDARY_URL: Record<BoundaryLevel, string> = {
-  1: '/world-countries-110m.geojson',
-  2: '/boundaries/world-provinces.geojson',
-  3: '/boundaries/world-districts.geojson',
-};
+interface CountryPack {
+  provinces?: GeoJSON.Feature[];
+  districts?: GeoJSON.Feature[];
+}
+
+async function loadFeatures(url: string): Promise<GeoJSON.Feature[]> {
+  const resp = await fetch(url);
+  if (!resp.ok) return [];
+  const data = (await resp.json()) as GeoJSON.Feature[];
+  return Array.isArray(data) ? data : [];
+}
 
 interface WorldProps {
   NAME?: string;
@@ -22,11 +28,6 @@ interface AreaProps {
   country?: string;
   level?: number;
   province?: string;
-}
-
-interface CountryLink {
-  province: string | null;
-  district: string | null;
 }
 
 function areaProps(feature: GeoJSON.Feature): { name: string; country: string; level: number; province: string } {
@@ -73,9 +74,9 @@ export default function WatchView({
 }) {
   const [level, setLevel] = useState<BoundaryLevel>(1);
   const [countries, setCountries] = useState<GeoJSON.FeatureCollection | null>(null);
-  const [countryIndex, setCountryIndex] = useState<Record<string, CountryLink> | null>(null);
-  const [provinces, setProvinces] = useState<GeoJSON.FeatureCollection | null>(null);
-  const [districts, setDistricts] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [packs, setPacks] = useState<Record<string, CountryPack>>({});
+  const packsRef = useRef(packs);
+  packsRef.current = packs;
   const [countryName, setCountryName] = useState('');
   const [provinceName, setProvinceName] = useState('');
   const [areaName, setAreaName] = useState('');
@@ -117,20 +118,14 @@ export default function WatchView({
   useEffect(() => {
     let cancelled = false;
     setAreaError('');
-    void Promise.all([
-      fetch(BOUNDARY_URL[1]).then((resp) => {
+    void fetch('/world-countries-110m.geojson')
+      .then((resp) => {
         if (!resp.ok) throw new Error('missing');
         return resp.json() as Promise<GeoJSON.FeatureCollection>;
-      }),
-      fetch('/boundaries/country-index.json').then((resp) => {
-        if (!resp.ok) throw new Error('missing');
-        return resp.json() as Promise<Record<string, CountryLink>>;
-      }),
-    ])
-      .then(([data, index]) => {
+      })
+      .then((data) => {
         if (cancelled) return;
         setCountries(worldBoundaries(data));
-        setCountryIndex(index);
       })
       .catch(() => {
         if (!cancelled) setAreaError('Could not load country boundaries.');
@@ -141,78 +136,58 @@ export default function WatchView({
   }, []);
 
   useEffect(() => {
-    if (level < 2 || provinces) return;
+    if (level < 2 || !countryName) return;
+    const current = packsRef.current[countryName];
+    const needProvinces = !current?.provinces;
+    const needDistricts = level === 3 && !current?.districts;
+    if (!needProvinces && !needDistricts) return;
     let cancelled = false;
-    void fetch(BOUNDARY_URL[2])
-      .then((resp) => {
-        if (!resp.ok) throw new Error('missing');
-        return resp.json() as Promise<GeoJSON.FeatureCollection>;
-      })
-      .then((data) => {
-        if (!cancelled) setProvinces(data);
-      })
-      .catch(() => {
-        if (!cancelled) setAreaError('Could not load province boundaries.');
-      });
+    const file = encodeURIComponent(countryName);
+    void (async () => {
+      try {
+        const [provinces, districts] = await Promise.all([
+          needProvinces ? loadFeatures(`/boundaries/provinces/${file}.json`) : Promise.resolve(current?.provinces || []),
+          needDistricts ? loadFeatures(`/boundaries/districts/${file}.json`) : Promise.resolve(current?.districts),
+        ]);
+        if (cancelled) return;
+        setPacks((prev) => ({
+          ...prev,
+          [countryName]: {
+            provinces,
+            districts: needDistricts ? districts : prev[countryName]?.districts,
+          },
+        }));
+        setAreaError('');
+      } catch {
+        if (!cancelled) setAreaError('Could not load those boundaries.');
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [level, provinces]);
+  }, [level, countryName]);
 
-  useEffect(() => {
-    if (level < 3 || districts) return;
-    let cancelled = false;
-    void fetch(BOUNDARY_URL[3])
-      .then((resp) => {
-        if (!resp.ok) throw new Error('missing');
-        return resp.json() as Promise<GeoJSON.FeatureCollection>;
-      })
-      .then((data) => {
-        if (!cancelled) setDistricts(data);
-      })
-      .catch(() => {
-        if (!cancelled) setAreaError('Could not load district boundaries.');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [level, districts]);
-
-  const countryProvinces = useMemo(() => {
-    if (!countryName || !countryIndex || !provinces) return [];
-    const key = countryIndex[countryName]?.province;
-    if (!key) return [];
-    return provinces.features
-      .filter((feature) => areaProps(feature).country === key)
-      .slice()
-      .sort((a, b) => areaProps(a).name.localeCompare(areaProps(b).name));
-  }, [countryName, countryIndex, provinces]);
+  const countryProvinces = useMemo(() => packs[countryName]?.provinces || [], [packs, countryName]);
 
   const provinceDistricts = useMemo(() => {
-    if (level !== 3 || !countryName || !provinceName || !countryIndex || !districts) return [];
-    const key = countryIndex[countryName]?.district;
-    if (!key) return [];
-    return districts.features
-      .filter((feature) => {
-        const props = areaProps(feature);
-        return props.country === key && props.province === provinceName;
-      })
-      .slice()
-      .sort((a, b) => areaProps(a).name.localeCompare(areaProps(b).name));
-  }, [level, countryName, provinceName, countryIndex, districts]);
+    const list = packs[countryName]?.districts;
+    if (level !== 3 || !provinceName || !list) return [];
+    return list.filter((feature) => areaProps(feature).province === provinceName);
+  }, [level, countryName, provinceName, packs]);
 
   const showingWorld = level === 1 || !countryName;
+  const pack = countryName ? packs[countryName] : undefined;
   const boundariesLoading =
     !countries ||
-    (level >= 2 && !!countryName && !provinces) ||
-    (level === 3 && !!provinceName && !districts);
+    (level >= 2 && !!countryName && !pack?.provinces) ||
+    (level === 3 && !!provinceName && !pack?.districts);
 
   const layers = useMemo((): WatchLayer[] => {
     if (!countries) return [];
     if (level === 1) return [{ role: 'select', data: countries }];
     if (level === 2) {
       if (!countryName) return [{ role: 'select', data: countries }];
-      if (!provinces) return [];
+      if (!pack?.provinces) return [];
       if (countryProvinces.length) return [{ role: 'select', data: collection(countryProvinces) }];
       const country = countries.features.find((feature) => areaProps(feature).name === countryName);
       return country ? [{ role: 'select', data: collection([country]) }] : [];
@@ -222,11 +197,11 @@ export default function WatchView({
     const country = countries.features.find((feature) => areaProps(feature).name === countryName);
     if (country) guides.push({ role: 'guide-country', data: collection([country]) });
     if (countryProvinces.length) guides.push({ role: 'guide-province', data: collection(countryProvinces) });
-    if (provinceName && districts && provinceDistricts.length) {
+    if (provinceName && pack?.districts && provinceDistricts.length) {
       guides.push({ role: 'select', data: collection(provinceDistricts) });
     }
     return guides;
-  }, [countries, level, countryName, provinces, countryProvinces, provinceName, districts, provinceDistricts]);
+  }, [countries, level, countryName, pack, countryProvinces, provinceName, provinceDistricts]);
 
   const choose = (nextLevel: BoundaryLevel) => {
     setHits([]);
