@@ -19,7 +19,7 @@ import SatPassUsersModal from './SatPassUsersModal';
 import SatPassLayersModal from './SatPassLayersModal';
 import PredictView from './PredictView';
 import WatchView from './WatchView';
-import type { SatState } from './orbit';
+import { compassPoint, type SatState } from './orbit';
 import { catalogSensor } from './predict/catalog';
 import { PERMANENT_SATS, preferredSatName } from './predict/permanentSats';
 
@@ -145,7 +145,7 @@ export default function SatPassPage() {
         ...prev.filter((s) => !existing || s.id !== existing.id),
         toTracked(data, color),
       ]);
-      return true;
+      return data.id;
     } catch {
       setError('Could not add satellite (check the TLE lines).');
       return false;
@@ -315,7 +315,12 @@ export default function SatPassPage() {
       ) : mode === 'watch' ? (
         <WatchView
           onTrack={(name, line1, line2, noradId) => {
-            void addFromTle(name, line1, line2, noradId);
+            void (async () => {
+              const id = await addFromTle(name, line1, line2, noradId);
+              if (!id) return;
+              setFocusId(id);
+              setMode('track');
+            })();
           }}
         />
       ) : (
@@ -506,11 +511,17 @@ export default function SatPassPage() {
                       </button>
                     </div>
                     {st && (
-                      <div className="mt-1 grid grid-cols-4 gap-1 pl-6 text-[11px] text-gray-400">
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-[11px] text-gray-400">
                         <span title="Latitude">LAT {st.lat.toFixed(2)}</span>
                         <span title="Longitude">LNG {st.lon.toFixed(2)}</span>
-                        <span title="Altitude (km)">ALT {st.altKm.toFixed(0)}</span>
-                        <span title="Speed (km/s)">SPD {st.speedKmS.toFixed(2)}</span>
+                        <span title="Altitude (km)">ALT {st.altKm.toFixed(0)} km</span>
+                        <span title="Speed (km/s)">SPD {st.speedKmS.toFixed(2)} km/s</span>
+                        <span title="Direction of travel">
+                          HDG{' '}
+                          {st.headingDeg == null
+                            ? '—'
+                            : `${st.headingDeg.toFixed(0)}° ${compassPoint(st.headingDeg)}`}
+                        </span>
                       </div>
                     )}
                     <div className="mt-1 flex items-center gap-1.5 pl-6 text-[11px] text-gray-400">

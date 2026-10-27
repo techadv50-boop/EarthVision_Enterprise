@@ -18,6 +18,14 @@ export interface SatState {
   lat: number; // degrees
   altKm: number; // km above the surface
   speedKmS: number; // km/s
+  /** Direction of travel along the ground track, degrees clockwise from north. */
+  headingDeg?: number | null;
+}
+
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] as const;
+
+export function compassPoint(headingDeg: number): string {
+  return COMPASS[Math.round(((headingDeg % 360) + 360) % 360 / 45) % 8];
 }
 
 export function parseTle(line1: string, line2: string): SatRec {

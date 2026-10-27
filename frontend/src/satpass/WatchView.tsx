@@ -5,8 +5,13 @@ import { catalogSourceNote, loadActiveCatalog, satelliteType, type ActiveSat } f
 import { exportOverheadCsv } from './watch/export';
 import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
 
-type Scope = 'world' | 'pak' | 'ind';
-type Level = 0 | 1 | 2;
+type BoundaryLevel = 1 | 2 | 3;
+
+const BOUNDARY_URL: Record<BoundaryLevel, string> = {
+  1: '/world-countries-110m.geojson',
+  2: '/boundaries/world-provinces.geojson',
+  3: '/boundaries/world-districts.geojson',
+};
 
 interface WorldProps {
   NAME?: string;
@@ -40,8 +45,8 @@ export default function WatchView({
 }: {
   onTrack?: (name: string, line1: string, line2: string, noradId: number | null) => void;
 }) {
-  const [scope, setScope] = useState<Scope>('world');
-  const [level, setLevel] = useState<Level>(0);
+  const [level, setLevel] = useState<BoundaryLevel>(1);
+  const [placeQuery, setPlaceQuery] = useState('');
   const [areas, setAreas] = useState<GeoJSON.FeatureCollection | null>(null);
   const [areaName, setAreaName] = useState('');
   const [catalog, setCatalog] = useState<ActiveSat[] | null>(null);
@@ -83,15 +88,14 @@ export default function WatchView({
     let cancelled = false;
     setAreas(null);
     setAreaError('');
-    const url = scope === 'world' ? '/world-countries-110m.geojson' : `/aoi/${scope}-${level}.geojson`;
-    void fetch(url)
+    void fetch(BOUNDARY_URL[level])
       .then((resp) => {
         if (!resp.ok) throw new Error('missing');
         return resp.json();
       })
       .then((data: GeoJSON.FeatureCollection) => {
         if (cancelled) return;
-        setAreas(scope === 'world' ? worldBoundaries(data) : data);
+        setAreas(level === 1 ? worldBoundaries(data) : data);
       })
       .catch(() => {
         if (!cancelled) setAreaError('Could not load those boundaries.');
@@ -99,14 +103,27 @@ export default function WatchView({
     return () => {
       cancelled = true;
     };
-  }, [scope, level]);
+  }, [level]);
 
-  const choose = (nextScope: Scope, nextLevel: Level) => {
-    setScope(nextScope);
-    setLevel(nextScope === 'world' ? 0 : nextLevel);
+  const choose = (nextLevel: BoundaryLevel) => {
+    setLevel(nextLevel);
     setHits([]);
     setAreaName('');
     setCheckedAt(null);
+    setPlaceQuery('');
+  };
+
+  const findPlace = (query: string) => {
+    const q = query.trim().toLowerCase();
+    if (!q || !areas) return;
+    const named = areas.features.map((feature) => ({
+      feature,
+      name: String((feature.properties as { name?: string } | null)?.name || ''),
+    }));
+    const exact = named.find((item) => item.name.toLowerCase() === q);
+    const partial = named.find((item) => item.name.toLowerCase().includes(q));
+    const hit = exact || partial;
+    if (hit) inspect(hit.feature);
   };
 
   const inspect = (feature: GeoJSON.Feature) => {
@@ -183,21 +200,21 @@ export default function WatchView({
           <div>
             <p className="text-[11px] font-medium text-gray-300">Boundaries</p>
             <p className="mt-0.5 text-[10px] text-gray-500">
-              All countries are drawn the same way. Pakistan and India also open as provinces and districts.
-              Pakistan includes Kashmir.
+              Level 1 is the country, the same outlines as now. Level 2 is the province. Level 3 is the district or
+              division. Pakistan includes Kashmir. Province and district outlines use Natural Earth and geoBoundaries.
             </p>
             <div className="mt-1 flex flex-wrap gap-1">
               {([
-                ['world', 'All countries'],
-                ['pak', 'Pakistan'],
-                ['ind', 'India'],
+                [1, 'Level 1'],
+                [2, 'Level 2'],
+                [3, 'Level 3'],
               ] as const).map(([id, label]) => (
                 <button
                   key={id}
                   type="button"
-                  onClick={() => choose(id, id === 'world' ? 0 : level)}
+                  onClick={() => choose(id)}
                   className={`rounded px-2 py-0.5 text-[11px] ring-1 ${
-                    scope === id
+                    level === id
                       ? 'bg-cyan-600 text-white ring-cyan-500'
                       : 'bg-white/5 text-gray-300 ring-white/10 hover:bg-white/10'
                   }`}
@@ -206,39 +223,12 @@ export default function WatchView({
                 </button>
               ))}
             </div>
-            {scope !== 'world' && (
-              <div className="mt-1 flex flex-wrap gap-1">
-                {([
-                  [0, 'Level 0'],
-                  [1, 'Level 1'],
-                  [2, 'Level 2'],
-                ] as const).map(([id, label]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => choose(scope, id)}
-                    className={`rounded px-2 py-0.5 text-[11px] ring-1 ${
-                      level === id
-                        ? 'bg-cyan-600 text-white ring-cyan-500'
-                        : 'bg-white/5 text-gray-300 ring-white/10 hover:bg-white/10'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
-            {scope === 'world' && areas && areas.features.length > 0 && (
+            {level === 1 && areas && areas.features.length > 0 && (
               <label className="mt-2 block text-[11px] text-gray-400">
                 Country
                 <select
                   value={areaName}
-                  onChange={(event) => {
-                    const feature = areas.features.find(
-                      (item) => String((item.properties as { name?: string } | null)?.name || '') === event.target.value,
-                    );
-                    if (feature) inspect(feature);
-                  }}
+                  onChange={(event) => findPlace(event.target.value)}
                   className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm text-gray-100 outline-none ring-1 ring-white/10"
                 >
                   <option value="">Choose a country</option>
@@ -251,6 +241,20 @@ export default function WatchView({
                     );
                   })}
                 </select>
+              </label>
+            )}
+            {level !== 1 && (
+              <label className="mt-2 block text-[11px] text-gray-400">
+                {level === 2 ? 'Province' : 'District'}
+                <input
+                  value={placeQuery}
+                  onChange={(event) => setPlaceQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') findPlace(placeQuery);
+                  }}
+                  placeholder={level === 2 ? 'Type a province and press Enter' : 'Type a district and press Enter'}
+                  className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm text-gray-100 outline-none ring-1 ring-white/10"
+                />
               </label>
             )}
             {areaError && <p className="mt-1 text-[11px] text-red-400">{areaError}</p>}
@@ -350,7 +354,7 @@ export default function WatchView({
               <p className="text-[11px] text-gray-500">
                 Click a boundary on the map.
                 {areas
-                  ? ` ${areas.features.length.toLocaleString()} ${scope === 'world' ? 'countries' : 'areas'} are drawn.`
+                  ? ` ${areas.features.length.toLocaleString()} ${level === 1 ? 'countries' : level === 2 ? 'provinces' : 'districts'} are drawn.`
                   : ''}
               </p>
             )}

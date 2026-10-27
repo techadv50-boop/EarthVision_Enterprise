@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { parseTle, getState, groundTrack, footprintRadiusMeters, type SatState } from './orbit';
+import { parseTle, getState, groundTrack, footprintRadiusMeters, compassPoint, type SatState } from './orbit';
+import { bearingDeg, destinationPoint } from './predict/footprint';
 import { addBaseMap } from './baseMap';
 import MapMeasureTools from './MapMeasureTools';
 import type { SatRec } from 'satellite.js';
@@ -32,6 +33,7 @@ interface SatRuntime {
   marker: L.Marker;
   swath: L.Circle;
   vis: L.Circle;
+  arrow: L.Polyline;
   trackLayers: L.Polyline[];
 }
 
@@ -107,14 +109,23 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
       runtime.forEach((rt, id) => {
         const s = getState(rt.satrec, date);
         if (!s) return;
+        const ahead = getState(rt.satrec, new Date(date.getTime() + 20_000));
+        const heading = ahead ? bearingDeg(s.lat, s.lon, ahead.lat, ahead.lon) : null;
+        s.headingDeg = heading;
         states[id] = s;
         const ll = L.latLng(s.lat, s.lon);
         rt.marker.setLatLng(ll);
+        const course =
+          heading == null ? '' : `<br>${s.speedKmS.toFixed(2)} km/s · heading ${heading.toFixed(0)}° ${compassPoint(heading)}`;
         rt.marker.setTooltipContent(
-          `<b>${rt.name}</b><br>${s.lat.toFixed(2)}, ${s.lon.toFixed(2)} · ${s.altKm.toFixed(0)} km`,
+          `<b>${rt.name}</b><br>${s.lat.toFixed(2)}, ${s.lon.toFixed(2)} · ${s.altKm.toFixed(0)} km${course}`,
         );
         rt.swath.setLatLng(ll);
         rt.vis.setLatLng(ll).setRadius(footprintRadiusMeters(s.altKm));
+        if (heading != null) {
+          const tip = destinationPoint(s.lat, s.lon, heading, Math.max(80, s.altKm * 0.04));
+          rt.arrow.setLatLngs([ll, L.latLng(tip.lat, tip.lon)]);
+        }
         if (refreshTracks && mapRef.current) {
           try {
             refreshTrack(mapRef.current, rt, date);
@@ -147,9 +158,9 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
     const runtime = runtimeRef.current;
     const wanted = new Set(sats.map((s) => s.id));
 
-    runtime.forEach((rt, id) => {
+      runtime.forEach((rt, id) => {
       if (!wanted.has(id)) {
-        [rt.marker, rt.swath, rt.vis, ...rt.trackLayers].forEach((l) => map.removeLayer(l));
+        [rt.marker, rt.swath, rt.vis, rt.arrow, ...rt.trackLayers].forEach((l) => map.removeLayer(l));
         runtime.delete(id);
       }
     });
@@ -188,6 +199,12 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
           fillColor: sat.color,
           fillOpacity: 0.08,
         });
+        const arrow = L.polyline([ll, ll], {
+          pane: 'overlayPane',
+          color: sat.color,
+          weight: 3,
+          opacity: 0.95,
+        });
         rt = {
           satrec,
           name: sat.name,
@@ -196,6 +213,7 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
           marker,
           swath,
           vis,
+          arrow,
           trackLayers: [],
         };
         runtime.set(sat.id, rt);
@@ -208,19 +226,25 @@ export default function SatPassMap({ sats, onStates, focusId, showVisibility = f
 
       setLayerVisible(map, rt.marker, sat.visible);
       setLayerVisible(map, rt.swath, sat.visible);
+      setLayerVisible(map, rt.arrow, sat.visible);
       rt.trackLayers.forEach((l) => setLayerVisible(map, l, sat.visible));
       setLayerVisible(map, rt.vis, sat.visible && showVisibility);
     }
   }, [sats, showVisibility]);
 
   // Fly to a satellite.
+  const fittedFocusRef = useRef<number | null>(null);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || focusId == null) return;
     const rt = runtimeRef.current.get(focusId);
-    if (!rt) return;
-    map.setView(rt.marker.getLatLng(), 3, { animate: true });
-  }, [focusId]);
+    if (!rt || fittedFocusRef.current === focusId) return;
+    fittedFocusRef.current = focusId;
+    const bounds = L.latLngBounds([]);
+    rt.trackLayers.forEach((line) => bounds.extend(line.getBounds()));
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [32, 32], maxZoom: 4, animate: false });
+    else map.setView(rt.marker.getLatLng(), 3, { animate: false });
+  }, [focusId, sats]);
 
   return (
     <>
