@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import WatchMap from './WatchMap';
-import { loadActiveCatalog, type ActiveSat } from './watch/catalog';
+import { catalogSourceNote, loadActiveCatalog, type ActiveSat } from './watch/catalog';
 import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
 
 type Country = 'pak' | 'ind';
@@ -23,6 +23,7 @@ export default function WatchView({
   const [areas, setAreas] = useState<GeoJSON.FeatureCollection | null>(null);
   const [areaName, setAreaName] = useState('');
   const [catalog, setCatalog] = useState<ActiveSat[] | null>(null);
+  const [catalogNote, setCatalogNote] = useState('');
   const [catalogError, setCatalogError] = useState('');
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -38,7 +39,11 @@ export default function WatchView({
     setCatalogError('');
     loadActiveCatalog()
       .then((sats) => {
-        if (!cancelled) setCatalog(sats);
+        if (!cancelled) {
+          setCatalog(sats);
+          setCatalogNote(catalogSourceNote());
+          setCatalogError('');
+        }
       })
       .catch(() => {
         if (!cancelled) setCatalogError('Could not load the live catalog of active satellites.');
@@ -88,13 +93,17 @@ export default function WatchView({
     setAreaName(name);
     const id = ++scanId.current;
     setScanning(true);
+    setCatalogError('');
     setHits([]);
     setProgress({ done: 0, total: catalog?.length ?? 0 });
     void (async () => {
       try {
         const sats = catalog ?? (await loadActiveCatalog());
         if (id !== scanId.current) return;
-        if (!catalog) setCatalog(sats);
+        if (!catalog) {
+          setCatalog(sats);
+          setCatalogNote(catalogSourceNote());
+        }
         const found = await scanActive(
           sats,
           feature.geometry as GeoJSON.Geometry,
@@ -108,8 +117,12 @@ export default function WatchView({
         );
         if (id !== scanId.current) return;
         setHits(found);
-      } catch {
-        if (id === scanId.current) setCatalogError('Could not check satellites over that area.');
+        setCatalogError('');
+      } catch (err) {
+        if (id === scanId.current) {
+          const detail = err instanceof Error && err.message ? ` ${err.message}` : '';
+          setCatalogError(`Could not check satellites over that area.${detail}`);
+        }
       } finally {
         if (id === scanId.current) setScanning(false);
       }
@@ -139,6 +152,7 @@ export default function WatchView({
                   ? `${catalog.length.toLocaleString()} active satellites loaded.`
                   : 'Active catalog not loaded.'}
             </p>
+            {catalogNote && <p className="mt-1 text-[11px] text-gray-500">{catalogNote}</p>}
             {catalogError && <p className="mt-1 text-[11px] text-red-400">{catalogError}</p>}
           </div>
 
