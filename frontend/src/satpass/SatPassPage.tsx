@@ -18,6 +18,7 @@ import SatPassMap, { type TrackedSat } from './SatPassMap';
 import SatPassUsersModal from './SatPassUsersModal';
 import SatPassLayersModal from './SatPassLayersModal';
 import PredictView from './PredictView';
+import WatchView from './WatchView';
 import type { SatState } from './orbit';
 import { catalogSensor } from './predict/catalog';
 import { PERMANENT_SATS, preferredSatName } from './predict/permanentSats';
@@ -88,7 +89,7 @@ function parseTleBlock(text: string): { name: string | null; line1: string; line
 }
 
 export default function SatPassPage() {
-  const [mode, setMode] = useState<'track' | 'predict'>('predict');
+  const [mode, setMode] = useState<'track' | 'predict' | 'watch'>('predict');
   const [sats, setSats] = useState<TrackedSat[]>([]);
   const [states, setStates] = useState<Record<number, SatState>>({});
   const [focusId, setFocusId] = useState<number | null>(null);
@@ -247,10 +248,10 @@ export default function SatPassPage() {
     }
   };
 
-  const tabBtn = (id: 'track' | 'predict', label: string) => (
+  const tabBtn = (id: 'track' | 'predict' | 'watch', label: string) => (
     <button
       onClick={() => setMode(id)}
-      className={`rounded px-3 py-1.5 text-sm font-medium ${
+      className={`whitespace-nowrap rounded px-2.5 py-1.5 text-[13px] font-medium ${
         mode === id ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10 hover:text-white'
       }`}
     >
@@ -268,11 +269,14 @@ export default function SatPassPage() {
         <nav className="ml-2 flex items-center gap-1 rounded-md bg-white/5 p-0.5 ring-1 ring-white/10">
           {tabBtn('track', 'Track')}
           {tabBtn('predict', 'Predict')}
+          {tabBtn('watch', 'Who is watching you')}
         </nav>
-        <p className="hidden truncate text-[11px] text-gray-500 sm:block">
+        <p className="hidden truncate text-[11px] text-gray-500 lg:block">
           {mode === 'predict'
             ? 'When will this satellite pass over a location or area?'
-            : 'satpass.xdgen.com · live satellite tracker'}
+            : mode === 'watch'
+              ? 'Which active satellites are over a selected area right now?'
+              : 'satpass.xdgen.com · live satellite tracker'}
         </p>
         <div className="ml-auto flex items-center gap-1">
           {admin && (
@@ -308,6 +312,12 @@ export default function SatPassPage() {
 
       {mode === 'predict' ? (
         <PredictView key={user?.id ?? 'predict'} trackedSats={sats} layersEpoch={layersEpoch} />
+      ) : mode === 'watch' ? (
+        <WatchView
+          onTrack={(name, line1, line2, noradId) => {
+            void addFromTle(name, line1, line2, noradId);
+          }}
+        />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* Control panel (sidebar) */}
