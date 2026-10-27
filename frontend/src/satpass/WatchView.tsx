@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import WatchMap from './WatchMap';
-import { catalogSourceNote, loadActiveCatalog, type ActiveSat } from './watch/catalog';
+import { catalogSourceNote, loadActiveCatalog, satelliteType, type ActiveSat } from './watch/catalog';
+import { exportOverheadCsv } from './watch/export';
 import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
 
 type Scope = 'world' | 'pak' | 'ind';
@@ -52,6 +53,7 @@ export default function WatchView({
   const [hits, setHits] = useState<WatchHit[]>([]);
   const [showInView, setShowInView] = useState(true);
   const [areaError, setAreaError] = useState('');
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null);
   const scanId = useRef(0);
 
   useEffect(() => {
@@ -104,6 +106,7 @@ export default function WatchView({
     setLevel(nextScope === 'world' ? 0 : nextLevel);
     setHits([]);
     setAreaName('');
+    setCheckedAt(null);
   };
 
   const inspect = (feature: GeoJSON.Feature) => {
@@ -114,6 +117,7 @@ export default function WatchView({
     setScanning(true);
     setCatalogError('');
     setHits([]);
+    setCheckedAt(null);
     setProgress({ done: 0, total: catalog?.length ?? 0 });
     void (async () => {
       try {
@@ -136,6 +140,7 @@ export default function WatchView({
         );
         if (id !== scanId.current) return;
         setHits(found);
+        setCheckedAt(new Date());
         setCatalogError('');
       } catch (err) {
         if (id === scanId.current) {
@@ -272,6 +277,18 @@ export default function WatchView({
                 />
                 Include satellites that are only above the horizon
               </label>
+              <button
+                type="button"
+                disabled={scanning || matched.length === 0}
+                onClick={() => exportOverheadCsv(areaName, matched, checkedAt ?? new Date())}
+                className="mt-2 rounded bg-cyan-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-cyan-500 disabled:opacity-40"
+              >
+                Export list{matched.length > 0 ? ` (${matched.length.toLocaleString()})` : ''}
+              </button>
+              <p className="mt-1 text-[10px] text-gray-500">
+                CSV with name, location, swath, and type (optical, SAR, communication, and others).
+                {matched.length > visible.length ? ' The file includes every match, not only the rows on screen.' : ''}
+              </p>
             </div>
           )}
 
@@ -293,6 +310,7 @@ export default function WatchView({
                     <div className="truncate text-sm font-medium">{hit.name}</div>
                     <div className="text-[10px] text-gray-500">
                       {hit.constellation}
+                      {` · ${satelliteType(hit.name)}`}
                       {hit.noradId != null ? ` · ${hit.noradId}` : ''}
                       {hit.swathKm != null ? ` · ${hit.swathKm} km swath` : ''}
                     </div>

@@ -62,6 +62,24 @@ export function constellationOf(name: string): string {
   return token || 'Other';
 }
 
+const COMMUNICATION_NAME =
+  /starlink|oneweb|iridium|globalstar|orbcomm|intelsat|eutelsat|viasat|\bo3b\b|inmarsat|thuraya|telesat|\bses[- ]?\d|starone/i;
+const NAVIGATION_NAME = /\bgps\b|navstar|glonass|galileo|beidou|\bqzss\b|irnss/i;
+const SAR_TYPE_NAME =
+  /risat|iceye|capella|umbra|terrasar|radarsat|yaogan|\bnisar\b|\bpaz\b|tandem|cosmo-skymed|gaofen-3|\bsar\b|sentinel[- ]?1|alos[- ]?2|\bsaral\b/i;
+const WEATHER_NAME = /noaa|\bgoes\b|metop|fengyun|\bfy-\d|himawari|\bmeteo/i;
+
+/** Optical, SAR, communication, navigation, weather, or other. Unknown satellites stay Other. */
+export function satelliteType(name: string): 'Optical' | 'SAR' | 'Communication' | 'Navigation' | 'Weather' | 'Other' {
+  const n = name || '';
+  if (COMMUNICATION_NAME.test(n)) return 'Communication';
+  if (NAVIGATION_NAME.test(n)) return 'Navigation';
+  if (SAR_TYPE_NAME.test(n)) return 'SAR';
+  if (WEATHER_NAME.test(n)) return 'Weather';
+  if (IMAGING_NAME.test(n)) return 'Optical';
+  return 'Other';
+}
+
 /** Catalog swath, or a typical imaging swath when the name is an Earth-observation satellite. */
 export function imagingSwathKm(name: string, catalogSwathKm: number | null): number | null {
   if (catalogSwathKm != null && catalogSwathKm > 0) return catalogSwathKm;
