@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import WatchMap from './WatchMap';
 import { catalogSourceNote, loadActiveCatalog, satelliteType, type ActiveSat } from './watch/catalog';
@@ -15,6 +15,30 @@ const BOUNDARY_URL: Record<BoundaryLevel, string> = {
 
 interface WorldProps {
   NAME?: string;
+}
+
+interface AreaProps {
+  name?: string;
+  country?: string;
+  level?: number;
+}
+
+interface CountryLink {
+  province: string | null;
+  district: string | null;
+}
+
+function areaProps(feature: GeoJSON.Feature): { name: string; country: string; level: number } {
+  const props = (feature.properties || {}) as AreaProps;
+  return {
+    name: String(props.name || ''),
+    country: String(props.country || ''),
+    level: Number(props.level || 0),
+  };
+}
+
+function collection(features: GeoJSON.Feature[]): GeoJSON.FeatureCollection {
+  return { type: 'FeatureCollection', features };
 }
 
 function worldBoundaries(data: GeoJSON.FeatureCollection): GeoJSON.FeatureCollection {
@@ -46,8 +70,11 @@ export default function WatchView({
   onTrack?: (name: string, line1: string, line2: string, noradId: number | null) => void;
 }) {
   const [level, setLevel] = useState<BoundaryLevel>(1);
-  const [placeQuery, setPlaceQuery] = useState('');
-  const [areas, setAreas] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [countries, setCountries] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [countryIndex, setCountryIndex] = useState<Record<string, CountryLink> | null>(null);
+  const [provinces, setProvinces] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [districts, setDistricts] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [countryName, setCountryName] = useState('');
   const [areaName, setAreaName] = useState('');
   const [catalog, setCatalog] = useState<ActiveSat[] | null>(null);
   const [catalogNote, setCatalogNote] = useState('');
@@ -86,44 +113,125 @@ export default function WatchView({
 
   useEffect(() => {
     let cancelled = false;
-    setAreas(null);
     setAreaError('');
-    void fetch(BOUNDARY_URL[level])
-      .then((resp) => {
+    void Promise.all([
+      fetch(BOUNDARY_URL[1]).then((resp) => {
         if (!resp.ok) throw new Error('missing');
-        return resp.json();
-      })
-      .then((data: GeoJSON.FeatureCollection) => {
+        return resp.json() as Promise<GeoJSON.FeatureCollection>;
+      }),
+      fetch('/boundaries/country-index.json').then((resp) => {
+        if (!resp.ok) throw new Error('missing');
+        return resp.json() as Promise<Record<string, CountryLink>>;
+      }),
+    ])
+      .then(([data, index]) => {
         if (cancelled) return;
-        setAreas(level === 1 ? worldBoundaries(data) : data);
+        setCountries(worldBoundaries(data));
+        setCountryIndex(index);
       })
       .catch(() => {
-        if (!cancelled) setAreaError('Could not load those boundaries.');
+        if (!cancelled) setAreaError('Could not load country boundaries.');
       });
     return () => {
       cancelled = true;
     };
-  }, [level]);
+  }, []);
+
+  useEffect(() => {
+    if (level < 2 || provinces) return;
+    let cancelled = false;
+    void fetch(BOUNDARY_URL[2])
+      .then((resp) => {
+        if (!resp.ok) throw new Error('missing');
+        return resp.json() as Promise<GeoJSON.FeatureCollection>;
+      })
+      .then((data) => {
+        if (!cancelled) setProvinces(data);
+      })
+      .catch(() => {
+        if (!cancelled) setAreaError('Could not load province boundaries.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [level, provinces]);
+
+  useEffect(() => {
+    if (level < 3 || districts) return;
+    let cancelled = false;
+    void fetch(BOUNDARY_URL[3])
+      .then((resp) => {
+        if (!resp.ok) throw new Error('missing');
+        return resp.json() as Promise<GeoJSON.FeatureCollection>;
+      })
+      .then((data) => {
+        if (!cancelled) setDistricts(data);
+      })
+      .catch(() => {
+        if (!cancelled) setAreaError('Could not load district boundaries.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [level, districts]);
+
+  const subAreas = useMemo(() => {
+    if (level === 1 || !countryName || !countryIndex) return null;
+    const link = countryIndex[countryName];
+    const source = level === 2 ? provinces : districts;
+    const key = level === 2 ? link?.province : link?.district;
+    if (!source || !key) return null;
+    return source.features
+      .filter((feature) => areaProps(feature).country === key)
+      .slice()
+      .sort((a, b) => areaProps(a).name.localeCompare(areaProps(b).name));
+  }, [level, countryName, countryIndex, provinces, districts]);
+
+  const showingWorld = level === 1 || !countryName;
+  const boundariesLoading =
+    !countries || (level === 2 && !!countryName && !provinces) || (level === 3 && !!countryName && !districts);
+
+  const mapAreas = useMemo(() => {
+    if (!countries) return null;
+    if (showingWorld) return countries;
+    if ((level === 2 && !provinces) || (level === 3 && !districts)) return null;
+    if (!subAreas || subAreas.length === 0) {
+      const country = countries.features.find((feature) => areaProps(feature).name === countryName);
+      return country ? collection([country]) : collection([]);
+    }
+    return collection(subAreas);
+  }, [countries, showingWorld, subAreas, countryName, level, provinces, districts]);
 
   const choose = (nextLevel: BoundaryLevel) => {
-    setLevel(nextLevel);
     setHits([]);
-    setAreaName('');
     setCheckedAt(null);
-    setPlaceQuery('');
+    setAreaName('');
+    if (level === 1 && areaName) setCountryName(areaName);
+    setLevel(nextLevel);
   };
 
-  const findPlace = (query: string) => {
-    const q = query.trim().toLowerCase();
-    if (!q || !areas) return;
-    const named = areas.features.map((feature) => ({
-      feature,
-      name: String((feature.properties as { name?: string } | null)?.name || ''),
-    }));
-    const exact = named.find((item) => item.name.toLowerCase() === q);
-    const partial = named.find((item) => item.name.toLowerCase().includes(q));
-    const hit = exact || partial;
-    if (hit) inspect(hit.feature);
+  const pickCountry = (name: string) => {
+    setHits([]);
+    setCheckedAt(null);
+    setAreaName('');
+    setCountryName(name);
+    if (level === 1 && name && countries) {
+      const feature = countries.features.find((item) => areaProps(item).name === name);
+      if (feature) inspect(feature);
+    }
+  };
+
+  const pickSubArea = (name: string) => {
+    const feature = subAreas?.find((item) => areaProps(item).name === name);
+    if (feature) inspect(feature);
+  };
+
+  const onMapArea = (feature: GeoJSON.Feature) => {
+    if (level !== 1 && !countryName) {
+      pickCountry(areaProps(feature).name);
+      return;
+    }
+    inspect(feature);
   };
 
   const inspect = (feature: GeoJSON.Feature) => {
@@ -200,8 +308,8 @@ export default function WatchView({
           <div>
             <p className="text-[11px] font-medium text-gray-300">Boundaries</p>
             <p className="mt-0.5 text-[10px] text-gray-500">
-              Level 1 is the country, the same outlines as now. Level 2 is the province. Level 3 is the district or
-              division. Pakistan includes Kashmir. Province and district outlines use Natural Earth and geoBoundaries.
+              Pick a country from the list, the same way on every level. Level 1 uses the country outline. Level 2
+              then lists that country’s provinces. Level 3 lists its districts or divisions. Pakistan includes Kashmir.
             </p>
             <div className="mt-1 flex flex-wrap gap-1">
               {([
@@ -223,17 +331,17 @@ export default function WatchView({
                 </button>
               ))}
             </div>
-            {level === 1 && areas && areas.features.length > 0 && (
+            {countries && countries.features.length > 0 && (
               <label className="mt-2 block text-[11px] text-gray-400">
                 Country
                 <select
-                  value={areaName}
-                  onChange={(event) => findPlace(event.target.value)}
+                  value={level === 1 ? areaName : countryName}
+                  onChange={(event) => pickCountry(event.target.value)}
                   className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm text-gray-100 outline-none ring-1 ring-white/10"
                 >
                   <option value="">Choose a country</option>
-                  {areas.features.map((feature) => {
-                    const name = String((feature.properties as { name?: string } | null)?.name || '');
+                  {countries.features.map((feature) => {
+                    const name = areaProps(feature).name;
                     return (
                       <option key={name} value={name}>
                         {name}
@@ -243,19 +351,30 @@ export default function WatchView({
                 </select>
               </label>
             )}
-            {level !== 1 && (
+            {level !== 1 && countryName && subAreas && subAreas.length > 0 && (
               <label className="mt-2 block text-[11px] text-gray-400">
-                {level === 2 ? 'Province' : 'District'}
-                <input
-                  value={placeQuery}
-                  onChange={(event) => setPlaceQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') findPlace(placeQuery);
-                  }}
-                  placeholder={level === 2 ? 'Type a province and press Enter' : 'Type a district and press Enter'}
+                {level === 2 ? 'Province' : 'District or division'}
+                <select
+                  value={areaName}
+                  onChange={(event) => pickSubArea(event.target.value)}
                   className="mt-0.5 w-full rounded bg-gray-900 px-2 py-1.5 text-sm text-gray-100 outline-none ring-1 ring-white/10"
-                />
+                >
+                  <option value="">{level === 2 ? 'Choose a province' : 'Choose a district'}</option>
+                  {subAreas.map((feature, index) => {
+                    const name = areaProps(feature).name;
+                    return (
+                      <option key={`${name}-${index}`} value={name}>
+                        {name}
+                      </option>
+                    );
+                  })}
+                </select>
               </label>
+            )}
+            {level !== 1 && countryName && !boundariesLoading && (!subAreas || subAreas.length === 0) && (
+              <p className="mt-1 text-[11px] text-gray-500">
+                {countryName} is shown with its country outline.
+              </p>
             )}
             {areaError && <p className="mt-1 text-[11px] text-red-400">{areaError}</p>}
           </div>
@@ -352,23 +471,26 @@ export default function WatchView({
             )}
             {!areaName && (
               <p className="text-[11px] text-gray-500">
-                Click a boundary on the map.
-                {areas
-                  ? ` ${areas.features.length.toLocaleString()} ${level === 1 ? 'countries' : level === 2 ? 'provinces' : 'districts'} are drawn.`
-                  : ''}
+                {showingWorld
+                  ? 'Choose a country from the list, or click one on the map.'
+                  : subAreas && subAreas.length > 0
+                    ? `${subAreas.length.toLocaleString()} ${level === 2 ? 'provinces' : 'districts'} of ${countryName} are on the map. Choose one from the list, or click it.`
+                    : boundariesLoading
+                      ? 'Loading boundaries…'
+                      : `The outline of ${countryName} is on the map.`}
               </p>
             )}
           </div>
         </div>
       </aside>
       <div className="relative z-0 min-h-0 flex-1">
-        {(catalogLoading || scanning) && (
+        {(catalogLoading || scanning || boundariesLoading) && (
           <div className="pointer-events-none absolute left-3 top-3 z-[1000] inline-flex items-center gap-2 rounded bg-gray-950/90 px-2 py-1 text-[11px] text-cyan-200 ring-1 ring-white/10">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            {catalogLoading ? 'Loading active satellites' : 'Checking who is overhead'}
+            {catalogLoading ? 'Loading active satellites' : boundariesLoading ? 'Loading boundaries' : 'Checking who is overhead'}
           </div>
         )}
-        <WatchMap adminGeojson={areas} selectedName={areaName || null} hits={visible} onArea={inspect} />
+        <WatchMap adminGeojson={mapAreas} selectedName={areaName || null} hits={visible} onArea={onMapArea} />
       </div>
     </div>
   );
