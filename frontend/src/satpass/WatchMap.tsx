@@ -4,9 +4,17 @@ import 'leaflet/dist/leaflet.css';
 import { addBaseMap, createSatPassMap } from './baseMap';
 import type { WatchHit } from './watch/scan';
 
+export type WatchLayerRole = 'select' | 'guide-country' | 'guide-province';
+
+export interface WatchLayer {
+  role: WatchLayerRole;
+  data: GeoJSON.FeatureCollection;
+}
+
 interface Props {
-  adminGeojson: GeoJSON.FeatureCollection | null;
+  layers: WatchLayer[];
   selectedName: string | null;
+  guideName: string | null;
   hits: WatchHit[];
   onArea: (feature: GeoJSON.Feature) => void;
 }
@@ -31,7 +39,23 @@ function boundaryStyle(name: string, selectedName: string | null): L.PathOptions
   };
 }
 
-export default function WatchMap({ adminGeojson, selectedName, hits, onArea }: Props) {
+function layerStyle(role: WatchLayerRole, name: string, selectedName: string | null, guideName: string | null): L.PathOptions {
+  if (role === 'guide-country') {
+    return { color: '#e2e8f0', weight: 1.8, opacity: 0.9, fillOpacity: 0 };
+  }
+  if (role === 'guide-province') {
+    const on = Boolean(guideName && name === guideName);
+    return {
+      color: on ? '#fbbf24' : '#38bdf8',
+      weight: on ? 2.2 : 1,
+      opacity: 0.95,
+      fillOpacity: 0,
+    };
+  }
+  return boundaryStyle(name, selectedName);
+}
+
+export default function WatchMap({ layers, selectedName, guideName, hits, onArea }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const areasRef = useRef<L.GeoJSON | null>(null);
@@ -40,6 +64,8 @@ export default function WatchMap({ adminGeojson, selectedName, hits, onArea }: P
   onAreaRef.current = onArea;
   const selectedRef = useRef(selectedName);
   selectedRef.current = selectedName;
+  const guideRef = useRef(guideName);
+  guideRef.current = guideName;
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -73,33 +99,44 @@ export default function WatchMap({ adminGeojson, selectedName, hits, onArea }: P
     const areas = areasRef.current;
     if (!map || !areas || !ready) return;
     areas.clearLayers();
-    if (!adminGeojson?.features?.length) return;
-    const layer = L.geoJSON(adminGeojson as GeoJSON.GeoJsonObject, {
-      pane: 'overlayPane',
-      style: (feat) => boundaryStyle(featureName(feat as GeoJSON.Feature), selectedRef.current),
-      onEachFeature: (feat, shape) => {
-        const name = featureName(feat as GeoJSON.Feature) || 'Area';
-        shape.bindTooltip(name, { sticky: true });
-        shape.on('click', (ev) => {
-          L.DomEvent.stopPropagation(ev);
-          onAreaRef.current(feat as GeoJSON.Feature);
-        });
-      },
-    });
-    layer.eachLayer((child) => areas.addLayer(child));
-    const bounds = layer.getBounds();
-    if (bounds.isValid()) map.fitBounds(bounds, { padding: [28, 28], maxZoom: 6, animate: false });
-  }, [adminGeojson, ready]);
+    let focus: L.GeoJSON | null = null;
+    for (const entry of layers) {
+      if (!entry.data.features.length) continue;
+      const layer = L.geoJSON(entry.data as GeoJSON.GeoJsonObject, {
+        pane: 'overlayPane',
+        interactive: true,
+        style: (feat) =>
+          layerStyle(entry.role, featureName(feat as GeoJSON.Feature), selectedRef.current, guideRef.current),
+        onEachFeature: (feat, shape) => {
+          const feature = feat as GeoJSON.Feature;
+          const name = featureName(feature) || 'Area';
+          shape.bindTooltip(name, { sticky: true });
+          (shape as L.Path & { feature?: GeoJSON.Feature; watchRole?: WatchLayerRole }).feature = feature;
+          (shape as L.Path & { watchRole?: WatchLayerRole }).watchRole = entry.role;
+          shape.on('click', (ev) => {
+            L.DomEvent.stopPropagation(ev);
+            onAreaRef.current(feature);
+          });
+        },
+      });
+      layer.eachLayer((child) => areas.addLayer(child));
+      if (entry.data.features.length) focus = layer;
+    }
+    if (focus) {
+      const bounds = focus.getBounds();
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [28, 28], maxZoom: 6, animate: false });
+    }
+  }, [layers, ready]);
 
   useEffect(() => {
     const areas = areasRef.current;
     if (!areas || !ready) return;
     areas.eachLayer((layer) => {
-      const path = layer as L.Path & { feature?: GeoJSON.Feature };
-      if (!path.setStyle || !path.feature) return;
-      path.setStyle(boundaryStyle(featureName(path.feature), selectedName));
+      const path = layer as L.Path & { feature?: GeoJSON.Feature; watchRole?: WatchLayerRole };
+      if (!path.setStyle || !path.feature || !path.watchRole) return;
+      path.setStyle(layerStyle(path.watchRole, featureName(path.feature), selectedName, guideName));
     });
-  }, [selectedName, ready, adminGeojson]);
+  }, [selectedName, guideName, ready, layers]);
 
   useEffect(() => {
     const marks = marksRef.current;
