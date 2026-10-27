@@ -212,13 +212,27 @@ export default function WatchView({
     setLevel(nextLevel);
   };
 
+  const clearSelection = () => {
+    scanId.current += 1;
+    setScanning(false);
+    setHits([]);
+    setCheckedAt(null);
+    setAreaName('');
+    setProvinceName('');
+    setCountryName('');
+  };
+
   const pickCountry = (name: string) => {
+    if (!name) {
+      clearSelection();
+      return;
+    }
     setHits([]);
     setCheckedAt(null);
     setAreaName('');
     setProvinceName('');
     setCountryName(name);
-    if (level === 1 && name && countries) {
+    if (level === 1 && countries) {
       const feature = countries.features.find((item) => areaProps(item).name === name);
       if (feature) inspect(feature);
     }
@@ -327,7 +341,18 @@ export default function WatchView({
           </div>
 
           <div>
-            <p className="text-[11px] font-medium text-gray-300">Boundaries</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-medium text-gray-300">Boundaries</p>
+              {(areaName || countryName || provinceName) && (
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="rounded bg-white/5 px-2 py-0.5 text-[11px] text-gray-200 ring-1 ring-white/15 hover:bg-white/10"
+                >
+                  Clear selection
+                </button>
+              )}
+            </div>
             <p className="mt-0.5 text-[10px] text-gray-500">
               Level 1 lists countries. Level 2 lists the provinces of the country you pick. Level 3 draws that country
               and its provinces so you can see them, then lists the districts of the province you pick. Pakistan
@@ -421,9 +446,18 @@ export default function WatchView({
 
           {areaName && (
             <div>
-              <p className="text-[11px] text-gray-300">
-                <span className="text-gray-500">Selected:</span> {areaName}
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] text-gray-300">
+                  <span className="text-gray-500">Selected:</span> {areaName}
+                </p>
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="shrink-0 rounded bg-white/5 px-2 py-0.5 text-[11px] text-gray-200 ring-1 ring-white/15 hover:bg-white/10"
+                >
+                  Clear selection
+                </button>
+              </div>
               <p className="mt-0.5 text-[11px] text-gray-400">
                 {scanning
                   ? `Checking the catalog… ${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}`
