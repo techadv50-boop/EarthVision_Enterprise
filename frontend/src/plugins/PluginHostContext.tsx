@@ -49,9 +49,32 @@ export type ClearMapLayerParams = {
   restore_scenes?: boolean;
 };
 
+export type RenderCompositeParams = {
+  preset?: string;
+  plugin_id?: string;
+};
+
+export type RenderIndexParams = {
+  index?: string;
+  colormap?: string | null;
+  plugin_id?: string;
+};
+
+export type ExportGeotiffParams = {
+  layer_id?: string;
+  preset?: string;
+  index?: string;
+  filename?: string;
+  title?: string;
+};
+
 export type PluginImageryHandlers = {
   renderTrueColor: () => Promise<Record<string, unknown>>;
-  exportGeotiff: () => Promise<Record<string, unknown>>;
+  /** Permanent optical RGB composites (FCC IR/agri/urban, SWIR, …). */
+  renderComposite?: (params?: RenderCompositeParams) => Promise<Record<string, unknown>>;
+  /** Permanent spectral indices (NDVI, NDWI, NDBI, …). */
+  renderIndex?: (params?: RenderIndexParams) => Promise<Record<string, unknown>>;
+  exportGeotiff: (params?: ExportGeotiffParams) => Promise<Record<string, unknown>>;
   exportMapJpeg: (params: ExportMapJpegParams) => Promise<Record<string, unknown>>;
   /** Optional: remove host-applied true-color overlay when tool is unchecked. */
   clearTrueColor?: () => Promise<void> | void;

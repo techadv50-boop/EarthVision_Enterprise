@@ -1,0 +1,12 @@
+{
+  "kind": "optical_ndbi",
+  "plugin_id": "optical_ndbi",
+  "version": "1.0.0",
+  "message": "Normalized Difference Built-up Index for Sentinel-2 and Landsat 7/8/9.",
+  "optical_only": true,
+  "default_index": "NDBI",
+  "indices": [
+    "NDBI"
+  ],
+  "note": "Prefer host.renderIndex when a scene is selected."
+}

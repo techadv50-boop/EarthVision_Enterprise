@@ -23,7 +23,7 @@ This matches how ENVI / ERDAS Imagine / ArcGIS Pro work: one professional runtim
 | Code | `backend/app/host_capabilities.py` |
 | Python deps | `backend/requirements.txt` (geospatial block) |
 | Map presentation | `docs/PLUGIN_MAP_PRESENTATION_CONTRACT.md` |
-| Host SDK | `≥1.4.0` (`host.getCapabilities`, map clear/present, optical render/export) |
+| Host SDK | `≥1.5.0` (`host.getCapabilities`, map clear/present, `renderTrueColor` / `renderComposite` / `renderIndex`, export) |
 
 ## What the Host can support (tool families)
 

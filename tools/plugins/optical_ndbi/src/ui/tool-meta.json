@@ -1,0 +1,48 @@
+{
+  "plugin_id": "optical_ndbi",
+  "tool_id": "optical_ndbi",
+  "label": "NDBI (Optical)",
+  "description": "Normalized Difference Built-up Index for Sentinel-2 and Landsat 7/8/9.",
+  "ui_strategy": "sandboxed_iframe",
+  "entry_html": "ui/panel.html",
+  "frontend_slot": "right_analysis_panel",
+  "map_presentation": "processed_preview",
+  "requires_host_capabilities": [
+    "host.math.numpy",
+    "host.raster.rasterio",
+    "host.raster.pillow",
+    "host.analytics.indices",
+    "host.map.processed_preview",
+    "host.raster.geotiff_export"
+  ],
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.read_capabilities",
+    "host.sdk.read_scene",
+    "host.sdk.render_index",
+    "host.sdk.clear_map_layer",
+    "host.sdk.export_geotiff",
+    "host.sdk.export_map_jpeg",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result"
+  ],
+  "host_sdk": {
+    "protocol": 1,
+    "version": ">=1.5.0,<2",
+    "react": "forbidden",
+    "leaflet": "forbidden",
+    "remote_bundle": false,
+    "execution": "sandboxed_iframe_srcdoc"
+  },
+  "optical_only": true,
+  "applicable_satellites": [
+    "SENTINEL-2",
+    "LANDSAT-8",
+    "LANDSAT-9",
+    "LANDSAT-7",
+    "MODIS"
+  ],
+  "notes": "Uses host.renderIndex. Indices: NDBI. Landsat 7/8/9 + Sentinel-2."
+}

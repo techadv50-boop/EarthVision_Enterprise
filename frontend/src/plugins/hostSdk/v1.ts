@@ -6,8 +6,8 @@
  */
 
 export const PLUGIN_HOST_SDK_PROTOCOL = 1 as const;
-/** 1.4: frozen geospatial capability profile + getCapabilities. */
-export const PLUGIN_HOST_SDK_VERSION = '1.4.0';
+/** 1.5: renderComposite + renderIndex for optical FCC / spectral indices. */
+export const PLUGIN_HOST_SDK_VERSION = '1.5.0';
 
 export type HostSdkMethod =
   | 'host.meta'
@@ -19,6 +19,8 @@ export type HostSdkMethod =
   | 'host.getCapabilities'
   | 'host.getSceneContext'
   | 'host.renderTrueColor'
+  | 'host.renderComposite'
+  | 'host.renderIndex'
   | 'host.clearMapLayer'
   | 'host.exportGeotiff'
   | 'host.exportMapJpeg';
@@ -33,6 +35,8 @@ const ALLOWED_METHODS = new Set<string>([
   'host.getCapabilities',
   'host.getSceneContext',
   'host.renderTrueColor',
+  'host.renderComposite',
+  'host.renderIndex',
   'host.clearMapLayer',
   'host.exportGeotiff',
   'host.exportMapJpeg',

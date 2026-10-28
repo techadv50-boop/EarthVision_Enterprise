@@ -1,0 +1,16 @@
+{
+  "kind": "optical_spectral_indices",
+  "plugin_id": "optical_spectral_indices",
+  "version": "1.0.0",
+  "message": "Additional optical indices (SAVI, EVI, NDMI, NBR, BSI) for Landsat 7/8/9 and Sentinel-2.",
+  "optical_only": true,
+  "default_index": "SAVI",
+  "indices": [
+    "SAVI",
+    "EVI",
+    "NDMI",
+    "NBR",
+    "BSI"
+  ],
+  "note": "Prefer host.renderIndex when a scene is selected."
+}
