@@ -241,8 +241,8 @@ export default function WatchView() {
     const key = satKey(hit);
     setTracks((prev) =>
       prev.some((item) => item.key === key)
-        ? []
-        : [{ key, name: hit.name, line1: hit.line1, line2: hit.line2 }],
+        ? prev.filter((item) => item.key !== key)
+        : [...prev, { key, name: hit.name, line1: hit.line1, line2: hit.line2 }],
     );
   };
 
