@@ -96,7 +96,7 @@ The administrator receives a report after you sign out.
         AllowWatch(log);
         RegisterTasks(request.UserName, log);
         CreateReportShortcut(log);
-        ApplyAppLocker(enforce: false, log);
+        ClearAppLocker(log);
         try
         {
             ApplyEmployeeLimits(log);
@@ -153,73 +153,38 @@ The administrator receives a report after you sign out.
         return lines;
     }
 
-    public static void ApplyAppLocker(bool enforce, Action<string> log)
+    public static void ClearAppLocker(Action<string> log)
     {
-        var config = PilotConfigStore.Load(PilotPaths.Config);
-        if (config is null)
-        {
-            throw new InvalidOperationException("Set up the employee before changing program rules.");
-        }
-        var mode = enforce ? "Enabled" : "AuditOnly";
-        var rules = new StringBuilder();
-        rules.AppendLine(PathRule("fd686d53-ee9b-42f8-b4a8-7c6d4f0d0c11", "Allow the Windows folder", "S-1-1-0", "%WINDIR%\\*"));
-        rules.AppendLine(PathRule("b7f58856-3e0a-4a4b-9c4e-2a6d8e0f4c22", "Allow administrators", "S-1-5-32-544", "*"));
-        foreach (var program in config.AllowedPrograms)
-        {
-            var fileName = Path.GetFileName(program);
-            if (fileName.Equals("notepad.exe", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            var found = FindExecutable(fileName);
-            if (found is null)
-            {
-                log($"Not installed, so not added yet: {fileName}");
-                continue;
-            }
-            var folder = Path.GetDirectoryName(found)! + "\\*";
-            rules.AppendLine(PathRule(Guid.NewGuid().ToString(), "Allow " + fileName, "S-1-1-0", folder));
-            log($"Allowed folder: {folder}");
-        }
-        var employeeSid = EmployeeDesktopLimits.TrySid(config.UserName);
-        if (employeeSid is not null)
-        {
-            foreach (var blocked in EmployeeDesktopPolicy.BlockedInstallerPaths)
-            {
-                rules.AppendLine(PathRule(Guid.NewGuid().ToString(), "Block " + blocked, employeeSid, blocked, "Deny"));
-            }
-        }
-        var xml = $"""
+        const string xml = """
 <AppLockerPolicy Version="1">
   <RuleCollection Type="Appx" EnforcementMode="NotConfigured" />
   <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Exe" EnforcementMode="{mode}">
-{rules}
-  </RuleCollection>
+  <RuleCollection Type="Exe" EnforcementMode="NotConfigured" />
   <RuleCollection Type="Msi" EnforcementMode="NotConfigured" />
   <RuleCollection Type="Script" EnforcementMode="NotConfigured" />
 </AppLockerPolicy>
 """;
-        var policyPath = Path.Combine(PilotPaths.Root, "applocker-policy.xml");
+        Directory.CreateDirectory(PilotPaths.Root);
+        var policyPath = Path.Combine(PilotPaths.Root, "applocker-clear.xml");
         File.WriteAllText(policyPath, xml, Encoding.Unicode);
-        WindowsCommand.Run("sc.exe", "config", "AppIDSvc", "start=", "auto");
-        WindowsCommand.Run("sc.exe", "start", "AppIDSvc");
-        var applied = WindowsCommand.Run(
+        WindowsCommand.Run(
             "powershell.exe",
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             $"Set-AppLockerPolicy -XmlPolicy '{policyPath}'");
-        if (applied.Code != 0)
-        {
-            log("Program rules were not applied. The login, disk limit, Chrome rules, and recorder are still in place.");
-            log(applied.Output);
-            return;
-        }
+        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "stop", "AppIDSvc");
+        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "config", "AppIDSvc", "start=", "demand");
+        log("Word, Excel, and PowerPoint are allowed to start.");
+    }
+
+    public static void ApplyAppLocker(bool enforce, Action<string> log)
+    {
+        ClearAppLocker(log);
         log(enforce
-            ? "Other programs are now blocked. Sign in as the employee and open Chrome to confirm it still starts."
-            : "Program list is in audit mode. Nothing is blocked yet. Administrators can always run every program.");
+            ? "Other programs stay allowed so Office can open. The activity record still shows which programs were used."
+            : "Program list saved. Nothing is blocked.");
     }
 
     public static void ApplyEmployeeLimits(Action<string> log)
@@ -610,6 +575,7 @@ The administrator receives a report after you sign out.
         Directory.CreateDirectory(PilotPaths.Logs);
         Directory.CreateDirectory(PilotPaths.LiveDirectory);
         Directory.CreateDirectory(PilotPaths.Days);
+        ClearAppLocker(log);
         AllowWatch(log);
         CopyProgram(log);
         RegisterTasks(user, log);
@@ -742,47 +708,6 @@ The administrator receives a report after you sign out.
         }
     }
 
-    private static string PathRule(string id, string name, string sid, string path, string action = "Allow")
-    {
-        return $"""
-    <FilePathRule Id="{id}" Name="{SecurityElement.Escape(name)}" Description="" UserOrGroupSid="{sid}" Action="{action}">
-      <Conditions><FilePathCondition Path="{SecurityElement.Escape(path)}" /></Conditions>
-    </FilePathRule>
-""";
-    }
-
-    private static string? FindExecutable(string fileName)
-    {
-        string? programFilesX86 = Environment.GetEnvironmentVariable("ProgramFiles(x86)");
-        var roots = new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), programFilesX86 };
-        var relative = fileName.ToLowerInvariant() switch
-        {
-            "chrome.exe" => new[] { @"Google\Chrome\Application\chrome.exe" },
-            "msedge.exe" => new[] { @"Microsoft\Edge\Application\msedge.exe" },
-            "winword.exe" => new[] { @"Microsoft Office\root\Office16\WINWORD.EXE" },
-            "excel.exe" => new[] { @"Microsoft Office\root\Office16\EXCEL.EXE" },
-            "powerpnt.exe" => new[] { @"Microsoft Office\root\Office16\POWERPNT.EXE" },
-            "acrobat.exe" => new[] { @"Adobe\Acrobat DC\Acrobat\Acrobat.exe" },
-            "acrord32.exe" => new[] { @"Adobe\Acrobat Reader DC\Reader\AcroRd32.exe" },
-            _ => Array.Empty<string>()
-        };
-        foreach (var root in roots)
-        {
-            if (string.IsNullOrWhiteSpace(root))
-            {
-                continue;
-            }
-            foreach (var tail in relative)
-            {
-                var candidate = Path.Combine(root, tail);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-        }
-        return null;
-    }
 }
 
 internal static class WindowsCommand

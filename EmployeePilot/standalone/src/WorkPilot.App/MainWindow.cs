@@ -198,7 +198,7 @@ public class MainWindow : Window
         var config = PilotConfigStore.Load(PilotPaths.Config);
         var allowed = new HashSet<string>(config?.AllowedPrograms ?? new List<string>(PilotDefaults.AllowedPrograms), StringComparer.OrdinalIgnoreCase);
         var boxes = new List<CheckBox>();
-        var page = Page("Programs", "Tick the programs the employee may use. Save the list, then block the others only after a real work day looks right.");
+        var page = Page("Programs", "Tick the programs the employee uses. The list is for the activity record. Word, Excel, and PowerPoint are allowed to start.");
         foreach (var program in KnownPrograms)
         {
             var box = new CheckBox { Content = program.Label, IsChecked = allowed.Contains(program.Name), FontSize = 16, Margin = new Avalonia.Thickness(0, 4) };
@@ -234,7 +234,7 @@ public class MainWindow : Window
         };
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
         var save = new Button { Content = "Save allowed programs", MinHeight = 40 };
-        var block = new Button { Content = "Save and block other programs", MinHeight = 40 };
+        var block = new Button { Content = "Save list and allow Office", MinHeight = 40 };
         save.Click += async (_, _) =>
         {
             var programs = Selected(boxes);
