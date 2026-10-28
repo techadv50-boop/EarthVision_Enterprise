@@ -52,6 +52,11 @@ public class MainWindow : Window
         Closed += (_, _) => _stop.Cancel();
         Opened += (_, _) =>
         {
+            if (PilotSetup.NeedsSetup())
+            {
+                ShowPage("Employee login", EmployeePage());
+                return;
+            }
             ShowEmployeeTimer();
             _ = Task.Run(ArmEmployeeTimer);
         };
@@ -510,10 +515,10 @@ public class MainWindow : Window
 
     private Control EmployeePage()
     {
-        var fullName = new TextBox { Text = "Pilot Employee" };
+        var fullName = new TextBox { Text = "Employee" };
         var userName = new TextBox { Text = "employee1" };
-        var password = new TextBox { PasswordChar = '●' };
-        var confirm = new TextBox { PasswordChar = '●' };
+        var password = new TextBox { PasswordChar = '●', Text = "WorkPilot1" };
+        var confirm = new TextBox { PasswordChar = '●', Text = "WorkPilot1" };
         var quota = new TextBox { Text = "80" };
         var idle = new TextBox { Text = "1" };
         var alarm = new TextBox { Text = "30" };
@@ -530,11 +535,25 @@ public class MainWindow : Window
                 throw new InvalidOperationException("Enter storage, idle minutes, and beep seconds as whole numbers.");
             }
             var request = new PilotRequest((fullName.Text ?? "").Trim(), (userName.Text ?? "").Trim(), password.Text ?? "", quotaGb, idleMinutes, alarmSeconds);
+            var chosenPassword = password.Text ?? "";
             password.Text = "";
             confirm.Text = "";
-            return Task.Run(() => PilotSetup.Run(request, line => Post(log, line)));
+            return Task.Run(() =>
+            {
+                PilotSetup.Run(request, line => Post(log, line));
+                var ready = "Employee login created."
+                    + Environment.NewLine + Environment.NewLine
+                    + "User name: " + Environment.MachineName + "\\" + request.UserName
+                    + Environment.NewLine
+                    + "Password: " + chosenPassword
+                    + Environment.NewLine + Environment.NewLine
+                    + "On the employee computer, open Remote Desktop. Computer is the 100. address in Tailscale on this computer. Use the user name and password above."
+                    + Environment.NewLine
+                    + "Leave WorkPilot open on this computer. The watch page is http://127.0.0.1:8777/ here, and http:// plus that 100. address plus :8777/ from the other computer.";
+                Dispatcher.UIThread.Post(() => WindowsAdmin.Show(ready));
+            });
         });
-        var page = Page("Employee login", "Use this when the employee login still needs to be created. The password needs 8 characters, a capital letter, a small letter, and a number, with no spaces.");
+        var page = Page("Employee login", "The boxes are already filled in. Click Set up this computer. It creates the employee login, turns on Remote Desktop, and starts the timer and the watch page. The password already in the boxes is WorkPilot1.");
         page.Children.Add(Label("Employee full name"));
         page.Children.Add(fullName);
         page.Children.Add(Label("Windows login"));

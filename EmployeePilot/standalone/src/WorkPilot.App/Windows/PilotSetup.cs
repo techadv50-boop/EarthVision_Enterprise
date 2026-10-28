@@ -97,7 +97,16 @@ The administrator receives a report after you sign out.
         RegisterTasks(request.UserName, log);
         CreateReportShortcut(log);
         ApplyAppLocker(enforce: false, log);
-        ApplyEmployeeLimits(log);
+        try
+        {
+            ApplyEmployeeLimits(log);
+        }
+        catch (InvalidOperationException ex)
+        {
+            File.WriteAllText(Path.Combine(PilotPaths.Root, "NOTICE.txt"), Notice);
+            log("The login is created. Folder limits apply after the employee signs in once.");
+            log(ex.Message);
+        }
         log("");
         log("Pilot is ready for one employee.");
         log("1. Sign in as " + request.UserName + " at this computer and confirm the recording message.");
@@ -526,7 +535,34 @@ The administrator receives a report after you sign out.
     {
         RequiredReg(@"HKLM\System\CurrentControlSet\Control\Terminal Server", "fDenyTSConnections", 0);
         WindowsCommand.Run("netsh.exe", "advfirewall", "firewall", "set", "rule", "group=remote desktop", "new", "enable=Yes");
+        WindowsCommand.Run(
+            WindowsCommand.SystemTool("netsh.exe"),
+            "advfirewall", "firewall", "add", "rule",
+            "name=Remote Desktop Tailscale", "dir=in", "action=allow", "protocol=TCP", "localport=3389", "profile=any");
+        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "start", "TermService");
         log("Remote Desktop is on for this login.");
+    }
+
+    public static bool NeedsSetup()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+        PilotConfig? config = null;
+        try
+        {
+            config = PilotConfigStore.Load(PilotPaths.Config);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return true;
+        }
+        if (config is null || string.IsNullOrWhiteSpace(config.UserName))
+        {
+            return true;
+        }
+        return !WindowsAccount.Exists(config.UserName);
     }
 
     public static (string User, bool SentToEmployee) ArmTimer(Action<string> log)
