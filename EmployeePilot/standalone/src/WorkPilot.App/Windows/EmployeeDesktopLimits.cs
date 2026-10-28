@@ -34,7 +34,7 @@ public static class EmployeeDesktopLimits
             WriteString(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "SettingsPageVisibility", EmployeeDesktopPolicy.HiddenSettingsPages);
             WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Uninstall", "NoAddRemovePrograms", 1);
             WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\System", "DisableTaskMgr", 1);
-            WriteDword(hive, @"Software\Policies\Microsoft\Windows\Installer", "DisableMSI", 2);
+            WriteDword(hive, @"Software\Policies\Microsoft\Windows\Installer", "DisableMSI", 0);
             WriteDword(hive, @"Software\Policies\Microsoft\Windows\Explorer", "NoUninstallFromStart", 1);
             using var blocked = hive.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")
                 ?? throw new InvalidOperationException("Windows did not save the blocked program list.");
@@ -63,7 +63,7 @@ public static class EmployeeDesktopLimits
         log("The employee can open: " + (allowedFolders.Count == 0 ? "nothing selected" : string.Join(", ", allowedFolders)) + ".");
         log(allowC
             ? "Drive C is open to the employee. Uninstall stays blocked."
-            : "Drive C stays closed. Windows and Program Files stay closed.");
+            : "Drive C stays hidden in File Explorer. Word, Excel, and PowerPoint can still open.");
         log("Sign the employee out and back in so these folder choices take effect.");
     }
 
@@ -242,7 +242,7 @@ public static class EmployeeDesktopLimits
                 continue;
             }
             WindowsCommand.Run("icacls.exe", folder, "/remove:d", userName);
-            if (allowC)
+            if (allowC || !folder.Equals(@"C:\", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }

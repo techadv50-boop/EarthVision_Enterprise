@@ -35,14 +35,20 @@ function Find-AllowedExecutable {
             "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
         )
         "WINWORD.EXE"   = @(
+            "$env:ProgramFiles\Microsoft Office\Office16\WINWORD.EXE",
+            "${env:ProgramFiles(x86)}\Microsoft Office\Office16\WINWORD.EXE",
             "$env:ProgramFiles\Microsoft Office\root\Office16\WINWORD.EXE",
             "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16\WINWORD.EXE"
         )
         "EXCEL.EXE"     = @(
+            "$env:ProgramFiles\Microsoft Office\Office16\EXCEL.EXE",
+            "${env:ProgramFiles(x86)}\Microsoft Office\Office16\EXCEL.EXE",
             "$env:ProgramFiles\Microsoft Office\root\Office16\EXCEL.EXE",
             "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16\EXCEL.EXE"
         )
         "POWERPNT.EXE"  = @(
+            "$env:ProgramFiles\Microsoft Office\Office16\POWERPNT.EXE",
+            "${env:ProgramFiles(x86)}\Microsoft Office\Office16\POWERPNT.EXE",
             "$env:ProgramFiles\Microsoft Office\root\Office16\POWERPNT.EXE",
             "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16\POWERPNT.EXE"
         )

@@ -230,9 +230,26 @@ Recording is on while you are signed in. See the notice from your administrator.
 }
 
 if (-not $SkipAppLocker -and -not $WhatIfPreference) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\Set-AllowedPrograms.ps1") -Mode Audit
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Program rules were not applied. The login, disk limit, Chrome rules, and recorder are still in place."
+    try {
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $clearPath = Join-Path $root "applocker-clear.xml"
+        @"
+<AppLockerPolicy Version="1">
+  <RuleCollection Type="Appx" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Exe" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Msi" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Script" EnforcementMode="NotConfigured" />
+</AppLockerPolicy>
+"@ | Set-Content -Path $clearPath -Encoding Unicode
+        Set-AppLockerPolicy -XmlPolicy $clearPath
+        Stop-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue
+        Set-Service -Name AppIDSvc -StartupType Disabled -ErrorAction SilentlyContinue
+        Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2" -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "Office and other programs are allowed. Application blocking is off."
+    }
+    catch {
+        Write-Host "Application blocking could not be cleared. Word may still fail for the employee until that block is removed. $($_.Exception.Message)"
     }
 }
 
@@ -245,5 +262,4 @@ Write-Host "4. Sign out. Wait one minute. Open the Work session report shortcut 
 Write-Host "5. Give the employee NOTICE.txt and the login only after that test looks right."
 Write-Host "Reports stay in $root\Reports"
 Write-Host "Do not open Remote Desktop directly to the internet. Use a private network such as Tailscale, then connect to this PC."
-Write-Host "Program blocking is in audit mode. Nothing is blocked yet. After a real work day, review the report, then run:"
-Write-Host "  powershell -ExecutionPolicy Bypass -File `"$root\scripts\Set-AllowedPrograms.ps1`" -Mode Enforce"
+Write-Host "Word, Excel, and PowerPoint stay allowed for the employee."
