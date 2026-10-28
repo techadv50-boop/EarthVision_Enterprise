@@ -48,12 +48,16 @@ class Handler(BaseHTTPRequestHandler):
         payload = self.rfile.read(length) if length else None
         headers = {}
         for key, value in self.headers.items():
-            if key.lower() in ("host", "content-length", "transfer-encoding", "connection", "accept-encoding"):
+            # The journal rejects the tunnel hostname. Ask for it as journal.50sea.com
+            # and drop forwarded-host headers that would override that.
+            if key.lower() in (
+                "host", "content-length", "transfer-encoding", "connection",
+                "accept-encoding", "x-forwarded-host", "x-forwarded-server",
+                "x-forwarded-proto", "forwarded",
+            ):
                 continue
             headers[key] = value
         headers["Host"] = HOST
-        headers["X-Forwarded-Proto"] = "https"
-        headers["X-Forwarded-Host"] = "journal50.drxdhr.store"
         request = urllib.request.Request(UPSTREAM + self.path, data=payload, headers=headers, method=self.command)
         try:
             response = OPENER.open(request, timeout=120)
