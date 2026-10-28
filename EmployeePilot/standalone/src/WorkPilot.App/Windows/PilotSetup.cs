@@ -362,7 +362,7 @@ The administrator receives a report after you sign out.
 
     public static void WriteTimerCommand(string action)
     {
-        if (action is not ("stop" or "reset"))
+        if (action is not ("stop" or "reset" or "clear"))
         {
             throw new InvalidOperationException("The timer command was not recognised.");
         }

@@ -12,13 +12,13 @@ public sealed class TimerControl
     {
         ReportDue = false;
         BeginSession = false;
-        if (string.Equals(command, "reset", StringComparison.Ordinal))
+        if (string.Equals(command, "reset", StringComparison.Ordinal) || string.Equals(command, "clear", StringComparison.Ordinal))
         {
             Running = true;
             StoppedByCeo = false;
             ReportDue = true;
             BeginSession = true;
-            Note = "";
+            Note = string.Equals(command, "clear", StringComparison.Ordinal) ? "Records cleared." : "";
             return;
         }
         if (string.Equals(command, "stop", StringComparison.Ordinal))
@@ -67,7 +67,7 @@ public static class TimerCommand
         {
             return false;
         }
-        if (parts[0] is not ("stop" or "reset"))
+        if (parts[0] is not ("stop" or "reset" or "clear"))
         {
             return false;
         }

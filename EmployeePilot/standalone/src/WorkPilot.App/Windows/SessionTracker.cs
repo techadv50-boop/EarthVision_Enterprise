@@ -120,12 +120,22 @@ public static class SessionTracker
                 }
                 var sessionConnected = disconnectedSince is null || (now - disconnectedSince.Value).TotalSeconds < 15;
                 var command = ReadCommand(ref appliedCommand);
-                if (string.Equals(command, "reset", StringComparison.Ordinal))
+                if (string.Equals(command, "reset", StringComparison.Ordinal) || string.Equals(command, "clear", StringComparison.Ordinal))
                 {
                     totals = new DayTotals { Date = PakistanClock.Key(PakistanClock.Today(now)) };
                     activeSeconds = 0;
                     idleSeconds = 0;
-                    DayLedger.Save(PilotPaths.Days, totals);
+                    if (string.Equals(command, "clear", StringComparison.Ordinal))
+                    {
+                        clicks = 0;
+                        recent.Clear();
+                        lastLine = "";
+                        RecordStore.Clear(PilotPaths.Journal, PilotPaths.Days, PilotPaths.Reports, PilotPaths.LiveFile);
+                    }
+                    else
+                    {
+                        DayLedger.Save(PilotPaths.Days, totals);
+                    }
                 }
                 clock.Tick(sessionConnected, command);
                 if ((clock.Running && !clock.BeginSession) || clock.ReportDue)

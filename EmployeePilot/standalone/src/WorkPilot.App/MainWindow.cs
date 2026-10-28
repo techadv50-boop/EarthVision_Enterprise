@@ -107,10 +107,13 @@ public class MainWindow : Window
         var actions = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         var stopTimer = new Button { Content = "Stop timer", MinWidth = 120, MinHeight = 40 };
         var resetTimer = new Button { Content = "Reset timer", MinWidth = 120, MinHeight = 40 };
+        var clearRecords = new Button { Content = "Clear records", MinWidth = 120, MinHeight = 40 };
         stopTimer.Click += (_, _) => SendTimer("stop");
         resetTimer.Click += (_, _) => SendTimer("reset");
+        clearRecords.Click += (_, _) => ClearRecords();
         actions.Children.Add(stopTimer);
         actions.Children.Add(resetTimer);
+        actions.Children.Add(clearRecords);
         var row = new Grid
         {
             ColumnDefinitions =
@@ -662,6 +665,28 @@ public class MainWindow : Window
         var note = string.IsNullOrWhiteSpace(status.TimerNote) ? "" : status.TimerNote + "\n";
         _liveState.Text = running ? (working ? "Working" : "Not working") : "Timer stopped";
         _liveDetail.Text = $"{note}Active {ReportText.FormatDuration(status.ActiveSeconds)}    Idle {ReportText.FormatDuration(status.SessionIdleSeconds)}    Idle now {status.IdleSeconds} s\nProgram: {status.Program}    {place}: {project}\nStarted {started}    Time on computer {elapsed}";
+    }
+
+    private void ClearRecords()
+    {
+        try
+        {
+            RecordStore.Clear(PilotPaths.Journal, PilotPaths.Days, PilotPaths.Reports, PilotPaths.LiveFile);
+            PilotSetup.WriteTimerCommand("clear");
+            LiveBoard.Publish(new LiveStatus
+            {
+                SessionOpen = false,
+                TimerNote = "Records cleared.",
+                UpdatedUtc = DateTime.UtcNow
+            });
+            _liveState.Text = "Records cleared";
+            _liveDetail.Text = "The activity log, day totals, saved reports, and live cache are cleared. The employee login is unchanged.";
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, notify: false);
+            _liveDetail.Text = ex.Message;
+        }
     }
 
     private void SendTimer(string action)

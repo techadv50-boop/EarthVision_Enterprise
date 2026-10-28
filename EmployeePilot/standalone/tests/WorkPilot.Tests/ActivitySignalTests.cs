@@ -84,6 +84,8 @@ public class ActivitySignalTests
         Assert.Equal("stop", action);
         Assert.Equal(issued, parsed.ToUniversalTime());
         Assert.False(TimerCommand.TryParse("close|now", out _, out _));
+        Assert.True(TimerCommand.TryParse(TimerCommand.Format("clear", issued), out var cleared, out _));
+        Assert.Equal("clear", cleared);
     }
 
     [Fact]
@@ -151,6 +153,36 @@ public class ActivitySignalTests
         Assert.Equal(0, view & (1 << 2));
         Assert.NotEqual(0, view & (1 << 3));
         Assert.True(FolderAccess.AllowsProfileFolder(new[] { "Documents" }));
+    }
+
+    [Fact]
+    public void ClearRecordsRemovesTheLinkedFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "workpilot-records-" + Guid.NewGuid().ToString("N"));
+        var journal = Path.Combine(root, "journal");
+        var days = Path.Combine(root, "days");
+        var reports = Path.Combine(root, "reports");
+        Directory.CreateDirectory(journal);
+        Directory.CreateDirectory(days);
+        Directory.CreateDirectory(reports);
+        var live = Path.Combine(root, "status.json");
+        File.WriteAllText(Path.Combine(journal, "employee1-1.jsonl"), "{}");
+        File.WriteAllText(Path.Combine(days, "2026-10-27.json"), "{}");
+        File.WriteAllText(Path.Combine(reports, "latest.html"), "<p>report</p>");
+        File.WriteAllText(live, "{}");
+        try
+        {
+            var removed = RecordStore.Clear(journal, days, reports, live);
+            Assert.Equal(4, removed);
+            Assert.Empty(Directory.GetFiles(journal));
+            Assert.Empty(Directory.GetFiles(days));
+            Assert.Empty(Directory.GetFiles(reports));
+            Assert.False(File.Exists(live));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     [Fact]
