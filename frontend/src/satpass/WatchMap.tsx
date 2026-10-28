@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { addBaseMap, createSatPassMap } from './baseMap';
+import { compassPoint } from './orbit';
+import { destinationPoint } from './predict/footprint';
 import type { WatchHit } from './watch/scan';
 
 export type WatchLayerRole = 'select' | 'guide-country' | 'guide-province';
@@ -11,12 +13,32 @@ export interface WatchLayer {
   data: GeoJSON.FeatureCollection;
 }
 
+export interface WatchTrackLine {
+  key: string;
+  name: string;
+  color: string;
+  segments: { lat: number; lon: number }[][];
+}
+
+export interface WatchTrackMotion {
+  key: string;
+  name: string;
+  color: string;
+  lat: number;
+  lon: number;
+  altKm: number;
+  speedKmS: number;
+  headingDeg: number | null;
+}
+
 interface Props {
   layers: WatchLayer[];
   selectedName: string | null;
   guideName: string | null;
   hits: WatchHit[];
   onArea: (feature: GeoJSON.Feature) => void;
+  trackLines: WatchTrackLine[];
+  trackMotion: WatchTrackMotion[];
 }
 
 function markerColor(relation: WatchHit['relation']): string {
@@ -55,11 +77,21 @@ function layerStyle(role: WatchLayerRole, name: string, selectedName: string | n
   return boundaryStyle(name, selectedName);
 }
 
-export default function WatchMap({ layers, selectedName, guideName, hits, onArea }: Props) {
+export default function WatchMap({
+  layers,
+  selectedName,
+  guideName,
+  hits,
+  onArea,
+  trackLines,
+  trackMotion,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const areasRef = useRef<L.GeoJSON | null>(null);
   const marksRef = useRef<L.LayerGroup | null>(null);
+  const tracksRef = useRef<L.LayerGroup | null>(null);
+  const motionRef = useRef<L.LayerGroup | null>(null);
   const onAreaRef = useRef(onArea);
   onAreaRef.current = onArea;
   const selectedRef = useRef(selectedName);
@@ -74,6 +106,8 @@ export default function WatchMap({ layers, selectedName, guideName, hits, onArea
     map.setMaxZoom(8);
     mapRef.current = map;
     areasRef.current = L.geoJSON(undefined, { pane: 'overlayPane' }).addTo(map);
+    tracksRef.current = L.layerGroup().addTo(map);
+    motionRef.current = L.layerGroup().addTo(map);
     marksRef.current = L.layerGroup().addTo(map);
     addBaseMap(map);
     setReady(true);
@@ -89,6 +123,8 @@ export default function WatchMap({ layers, selectedName, guideName, hits, onArea
       map.remove();
       mapRef.current = null;
       areasRef.current = null;
+      tracksRef.current = null;
+      motionRef.current = null;
       marksRef.current = null;
       setReady(false);
     };
@@ -137,6 +173,60 @@ export default function WatchMap({ layers, selectedName, guideName, hits, onArea
       path.setStyle(layerStyle(path.watchRole, featureName(path.feature), selectedName, guideName));
     });
   }, [selectedName, guideName, ready, layers]);
+
+  useEffect(() => {
+    const tracks = tracksRef.current;
+    if (!tracks || !ready) return;
+    tracks.clearLayers();
+    for (const line of trackLines) {
+      for (const segment of line.segments) {
+        if (segment.length < 2) continue;
+        tracks.addLayer(
+          L.polyline(
+            segment.map((point) => L.latLng(point.lat, point.lon)),
+            { pane: 'overlayPane', color: line.color, weight: 2.5, opacity: 0.95 },
+          ),
+        );
+      }
+    }
+  }, [trackLines, ready]);
+
+  useEffect(() => {
+    const motionLayer = motionRef.current;
+    if (!motionLayer || !ready) return;
+    motionLayer.clearLayers();
+    for (const motion of trackMotion) {
+      const here = L.latLng(motion.lat, motion.lon);
+      const heading =
+        motion.headingDeg == null
+          ? ''
+          : `<br>${motion.speedKmS.toFixed(2)} km/s · heading ${motion.headingDeg.toFixed(0)}° ${compassPoint(motion.headingDeg)}`;
+      motionLayer.addLayer(
+        L.circleMarker(here, {
+          pane: 'markerPane',
+          radius: 7,
+          color: '#fff',
+          weight: 2,
+          fillColor: motion.color,
+          fillOpacity: 1,
+        }).bindTooltip(
+          `<b>${motion.name}</b><br>${motion.lat.toFixed(2)}, ${motion.lon.toFixed(2)} · ${motion.altKm.toFixed(0)} km${heading}`,
+          { permanent: true, direction: 'top', offset: [0, -8] },
+        ),
+      );
+      if (motion.headingDeg != null) {
+        const tip = destinationPoint(motion.lat, motion.lon, motion.headingDeg, Math.max(180, motion.altKm * 0.2));
+        motionLayer.addLayer(
+          L.polyline([here, L.latLng(tip.lat, tip.lon)], {
+            pane: 'overlayPane',
+            color: motion.color,
+            weight: 3,
+            opacity: 1,
+          }),
+        );
+      }
+    }
+  }, [trackMotion, ready]);
 
   useEffect(() => {
     const marks = marksRef.current;

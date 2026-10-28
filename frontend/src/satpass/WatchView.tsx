@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import WatchMap, { type WatchLayer } from './WatchMap';
+import WatchMap, { type WatchLayer, type WatchTrackLine, type WatchTrackMotion } from './WatchMap';
+import { compassPoint, getState, groundTrack, parseTle } from './orbit';
+import { bearingDeg } from './predict/footprint';
 import { catalogSourceNote, loadActiveCatalog, satelliteType, type ActiveSat } from './watch/catalog';
 import { exportOverheadCsv } from './watch/export';
 import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
@@ -61,17 +63,26 @@ function worldBoundaries(data: GeoJSON.FeatureCollection): GeoJSON.FeatureCollec
   };
 }
 
+const TRACK_COLORS = ['#fbbf24', '#fb7185', '#a3e635', '#c084fc', '#22d3ee', '#f472b6'];
+
+interface TrackPick {
+  key: string;
+  name: string;
+  line1: string;
+  line2: string;
+}
+
+function satKey(hit: { noradId: number | null; line1: string }): string {
+  return hit.noradId != null ? `n${hit.noradId}` : hit.line1;
+}
+
 const RELATION_LABEL: Record<WatchRelation, string> = {
   overhead: 'Over the area',
   watching: 'Swath covers the area',
   'in-view': 'Above the horizon',
 };
 
-export default function WatchView({
-  onTrack,
-}: {
-  onTrack?: (name: string, line1: string, line2: string, noradId: number | null) => void;
-}) {
+export default function WatchView() {
   const [level, setLevel] = useState<BoundaryLevel>(1);
   const [countries, setCountries] = useState<GeoJSON.FeatureCollection | null>(null);
   const [packs, setPacks] = useState<Record<string, CountryPack>>({});
@@ -90,6 +101,8 @@ export default function WatchView({
   const [showInView, setShowInView] = useState(true);
   const [areaError, setAreaError] = useState('');
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
+  const [tracks, setTracks] = useState<TrackPick[]>([]);
+  const [trackMotion, setTrackMotion] = useState<Record<string, WatchTrackMotion>>({});
   const scanId = useRef(0);
 
   useEffect(() => {
@@ -220,7 +233,71 @@ export default function WatchView({
     setAreaName('');
     setProvinceName('');
     setCountryName('');
+    setTracks([]);
+    setTrackMotion({});
   };
+
+  const toggleTrack = (hit: WatchHit) => {
+    const key = satKey(hit);
+    setTracks((prev) =>
+      prev.some((item) => item.key === key)
+        ? []
+        : [{ key, name: hit.name, line1: hit.line1, line2: hit.line2 }],
+    );
+  };
+
+  const trackLines = useMemo((): WatchTrackLine[] => {
+    return tracks.flatMap((track, index) => {
+      try {
+        const satrec = parseTle(track.line1, track.line2);
+        return [
+          {
+            key: track.key,
+            name: track.name,
+            color: TRACK_COLORS[index % TRACK_COLORS.length],
+            segments: groundTrack(satrec, new Date()),
+          },
+        ];
+      } catch {
+        return [];
+      }
+    });
+  }, [tracks]);
+
+  useEffect(() => {
+    if (!tracks.length) {
+      setTrackMotion({});
+      return;
+    }
+    const tick = () => {
+      const now = new Date();
+      const next: Record<string, WatchTrackMotion> = {};
+      tracks.forEach((track, index) => {
+        try {
+          const satrec = parseTle(track.line1, track.line2);
+          const state = getState(satrec, now);
+          if (!state) return;
+          const ahead = getState(satrec, new Date(now.getTime() + 20_000));
+          next[track.key] = {
+            key: track.key,
+            name: track.name,
+            color: TRACK_COLORS[index % TRACK_COLORS.length],
+            lat: state.lat,
+            lon: state.lon,
+            altKm: state.altKm,
+            speedKmS: state.speedKmS,
+            headingDeg: ahead ? bearingDeg(state.lat, state.lon, ahead.lat, ahead.lon) : null,
+          };
+        } catch {
+          /* a bad TLE stays off the map */
+        }
+      });
+      setTrackMotion(next);
+    };
+    tick();
+    const timer = window.setInterval(tick, 2000);
+    return () => window.clearInterval(timer);
+  }, [tracks]);
 
   const pickCountry = (name: string) => {
     if (!name) {
@@ -490,7 +567,10 @@ export default function WatchView({
           )}
 
           <div className="space-y-1.5">
-            {visible.map((hit) => (
+            {visible.map((hit) => {
+              const motion = trackMotion[satKey(hit)];
+              const heading = motion?.headingDeg;
+              return (
               <div
                 key={`${hit.noradId ?? hit.name}-${hit.line1.slice(2, 7)}`}
                 className="rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
@@ -515,19 +595,28 @@ export default function WatchView({
                       {RELATION_LABEL[hit.relation]} · {hit.altKm.toFixed(0)} km · el {hit.elevationDeg.toFixed(0)}° ·{' '}
                       {hit.distanceKm < 1 ? 'over the shape' : `${hit.distanceKm.toFixed(0)} km from the area`}
                     </div>
+                    {motion && (
+                      <div className="mt-0.5 text-[10px] text-cyan-200">
+                        {motion.speedKmS.toFixed(2)} km/s · heading{' '}
+                        {heading == null ? '—' : `${Math.round(heading)}° ${compassPoint(heading)}`}
+                      </div>
+                    )}
                   </div>
-                  {onTrack && (
-                    <button
-                      type="button"
-                      onClick={() => onTrack(hit.name, hit.line1, hit.line2, hit.noradId)}
-                      className="shrink-0 rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-cyan-300 ring-1 ring-cyan-500/40 hover:bg-white/10"
-                    >
-                      Track
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => toggleTrack(hit)}
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ring-1 ${
+                      tracks.some((item) => item.key === satKey(hit))
+                        ? 'bg-cyan-600 text-white ring-cyan-500'
+                        : 'bg-white/5 text-cyan-300 ring-cyan-500/40 hover:bg-white/10'
+                    }`}
+                  >
+                    {tracks.some((item) => item.key === satKey(hit)) ? 'Track off' : 'Track'}
+                  </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
             {matched.length > visible.length && (
               <p className="text-[11px] text-gray-500">
                 Showing the closest {visible.length.toLocaleString()} of {matched.length.toLocaleString()} satellites over this shape.
@@ -584,6 +673,8 @@ export default function WatchView({
           guideName={level === 3 ? provinceName || null : null}
           hits={visible}
           onArea={onMapArea}
+          trackLines={trackLines}
+          trackMotion={Object.values(trackMotion)}
         />
       </div>
     </div>

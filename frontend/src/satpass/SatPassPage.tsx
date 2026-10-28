@@ -313,16 +313,7 @@ export default function SatPassPage() {
       {mode === 'predict' ? (
         <PredictView key={user?.id ?? 'predict'} trackedSats={sats} layersEpoch={layersEpoch} />
       ) : mode === 'watch' ? (
-        <WatchView
-          onTrack={(name, line1, line2, noradId) => {
-            void (async () => {
-              const id = await addFromTle(name, line1, line2, noradId);
-              if (!id) return;
-              setFocusId(id);
-              setMode('track');
-            })();
-          }}
-        />
+        <WatchView />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* Control panel (sidebar) */}
