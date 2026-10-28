@@ -7,6 +7,8 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM nginx:alpine
+RUN mkdir -p /var/cache/nginx/celestrak && chown -R nginx:nginx /var/cache/nginx
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY docker/nginx-frontend.conf /etc/nginx/conf.d/default.conf
+COPY docker/nginx-celestrak-cache.conf /etc/nginx/conf.d/00-celestrak-cache.conf
 EXPOSE 80

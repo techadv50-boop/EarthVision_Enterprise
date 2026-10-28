@@ -6,7 +6,7 @@ export default function AppLayout() {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
   const admin = isCitationAdmin(user);
-  const home = admin ? '/' : '/manuscripts';
+  const home = '/';
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">

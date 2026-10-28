@@ -44,7 +44,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
   if (!isCitationAdmin(user)) {
-    return <Navigate to="/manuscripts" replace />;
+    return <Navigate to="/" replace />;
   }
   return <>{children}</>;
 }
@@ -52,7 +52,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 function HomeRoute() {
   const user = useAuthStore((s) => s.user);
   if (!isCitationAdmin(user)) {
-    return <Navigate to="/manuscripts" replace />;
+    return <Navigate to="/" replace />;
   }
   return <DashboardPage />;
 }

@@ -18,6 +18,11 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/celestrak': {
+        target: 'https://celestrak.org',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/celestrak/, ''),
+      },
     },
   },
   build: {
