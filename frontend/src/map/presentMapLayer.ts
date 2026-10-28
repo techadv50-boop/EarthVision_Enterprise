@@ -29,8 +29,24 @@ export type MapPresentationMode = (typeof MAP_PRESENTATION_MODES)[number];
 export const TOOL_MAP_PRESENTATION: Record<string, MapPresentationMode> = {
   optical_true_color: 'prefer_scene_tiles',
   true_color: 'prefer_scene_tiles',
+  optical_false_color: 'processed_preview',
   false_color_infrared: 'processed_preview',
+  false_color_agriculture: 'processed_preview',
+  false_color_urban: 'processed_preview',
+  swir_composite: 'processed_preview',
   false_color: 'processed_preview',
+  optical_ndvi: 'processed_preview',
+  optical_ndwi: 'processed_preview',
+  optical_ndbi: 'processed_preview',
+  optical_spectral_indices: 'processed_preview',
+  NDVI: 'processed_preview',
+  NDWI: 'processed_preview',
+  NDBI: 'processed_preview',
+  SAVI: 'processed_preview',
+  EVI: 'processed_preview',
+  NDMI: 'processed_preview',
+  NBR: 'processed_preview',
+  BSI: 'processed_preview',
 };
 
 export function resolveMapPresentation(

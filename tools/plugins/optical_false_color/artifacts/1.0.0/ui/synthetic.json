@@ -1,0 +1,15 @@
+{
+  "kind": "optical_false_color",
+  "plugin_id": "optical_false_color",
+  "version": "1.0.0",
+  "message": "Optical false-color RGB composites for Sentinel-2 and Landsat 7/8/9 (NIR-R-G, agriculture, urban, SWIR). Host presents via processed_preview.",
+  "optical_only": true,
+  "default_preset": "false_color_infrared",
+  "presets": [
+    "false_color_infrared",
+    "false_color_agriculture",
+    "false_color_urban",
+    "swir_composite"
+  ],
+  "note": "Prefer host.renderComposite when a scene is selected."
+}

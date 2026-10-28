@@ -226,6 +226,8 @@ ${pluginJs}
         const METHOD_PERMS: Record<string, string> = {
           'host.getSceneContext': 'host.sdk.read_scene',
           'host.renderTrueColor': 'host.sdk.render_true_color',
+          'host.renderComposite': 'host.sdk.render_composite',
+          'host.renderIndex': 'host.sdk.render_index',
           'host.clearMapLayer': 'host.sdk.clear_map_layer',
           'host.exportGeotiff': 'host.sdk.export_geotiff',
           'host.exportMapJpeg': 'host.sdk.export_map_jpeg',
@@ -296,6 +298,8 @@ ${pluginJs}
 
         if (
           msg.method === 'host.renderTrueColor' ||
+          msg.method === 'host.renderComposite' ||
+          msg.method === 'host.renderIndex' ||
           msg.method === 'host.exportGeotiff' ||
           msg.method === 'host.exportMapJpeg'
         ) {
@@ -306,25 +310,70 @@ ${pluginJs}
                 throw new Error('Host imagery handlers not registered');
               }
               let result: Record<string, unknown>;
-              if (msg.method === 'host.renderTrueColor') {
+              const markProcessing = (label: string) => {
                 hostRef.current.setToolRunStatus({
                   pluginId: msg.plugin_id,
                   status: 'processing',
-                  message: 'Rendering true color…',
+                  message: label,
                   updatedAt: new Date().toISOString(),
                 });
-                result = await handlers.renderTrueColor();
+              };
+              const markApplied = (res: Record<string, unknown>, fallback: string) => {
                 hostRef.current.setToolRunStatus({
                   pluginId: msg.plugin_id,
                   status: 'applied',
-                  message:
-                    typeof result.message === 'string'
-                      ? result.message
-                      : 'True color applied on map',
+                  message: typeof res.message === 'string' ? res.message : fallback,
                   updatedAt: new Date().toISOString(),
                 });
+              };
+              if (msg.method === 'host.renderTrueColor') {
+                markProcessing('Rendering true color…');
+                result = await handlers.renderTrueColor();
+                markApplied(result, 'True color applied on map');
+              } else if (msg.method === 'host.renderComposite') {
+                if (!handlers.renderComposite) {
+                  throw new Error('Host composite render handler not registered');
+                }
+                const preset =
+                  typeof msg.params.preset === 'string' ? msg.params.preset : '';
+                markProcessing(`Rendering ${preset || 'composite'}…`);
+                result = await handlers.renderComposite({
+                  preset,
+                  plugin_id: msg.plugin_id,
+                });
+                markApplied(result, 'Composite applied on map');
+              } else if (msg.method === 'host.renderIndex') {
+                if (!handlers.renderIndex) {
+                  throw new Error('Host index render handler not registered');
+                }
+                const index =
+                  typeof msg.params.index === 'string' ? msg.params.index : '';
+                const colormap =
+                  typeof msg.params.colormap === 'string' ? msg.params.colormap : null;
+                markProcessing(`Computing ${index || 'index'}…`);
+                result = await handlers.renderIndex({
+                  index,
+                  colormap,
+                  plugin_id: msg.plugin_id,
+                });
+                markApplied(result, 'Index applied on map');
               } else if (msg.method === 'host.exportGeotiff') {
-                result = await handlers.exportGeotiff();
+                result = await handlers.exportGeotiff({
+                  layer_id:
+                    typeof msg.params.layer_id === 'string'
+                      ? msg.params.layer_id
+                      : undefined,
+                  preset:
+                    typeof msg.params.preset === 'string' ? msg.params.preset : undefined,
+                  index:
+                    typeof msg.params.index === 'string' ? msg.params.index : undefined,
+                  filename:
+                    typeof msg.params.filename === 'string'
+                      ? msg.params.filename
+                      : undefined,
+                  title:
+                    typeof msg.params.title === 'string' ? msg.params.title : undefined,
+                });
               } else {
                 const dpiRaw = msg.params.dpi;
                 const dpi: 300 | 600 = dpiRaw === 600 ? 600 : 300;
@@ -334,7 +383,11 @@ ${pluginJs}
               }
               frame.contentWindow?.postMessage(replyOk(result), '*');
             } catch (err: unknown) {
-              if (msg.method === 'host.renderTrueColor') {
+              if (
+                msg.method === 'host.renderTrueColor' ||
+                msg.method === 'host.renderComposite' ||
+                msg.method === 'host.renderIndex'
+              ) {
                 hostRef.current.setToolRunStatus({
                   pluginId: msg.plugin_id,
                   status: 'failed',

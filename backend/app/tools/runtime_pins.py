@@ -16,7 +16,7 @@ _CACHE: dict[str, Any] = {"mtime": None, "data": None}
 
 # Host SDK semver declared for pack compatibility checks
 # 1.3 map presentation · 1.4 frozen geospatial capability profile
-HOST_SDK_VERSION = "1.4.0"
+HOST_SDK_VERSION = "1.5.0"
 
 # Re-export for callers that imported pins_path/repo_root from here
 __all__ = [

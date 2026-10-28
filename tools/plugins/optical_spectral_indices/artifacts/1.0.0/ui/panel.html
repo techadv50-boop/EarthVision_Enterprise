@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Spectral Indices (Optical)</title>
+  <style>
+    body { margin: 0; font: 12px/1.45 "IBM Plex Sans", system-ui, sans-serif; color: #0f2a22; background: #f4f7f5; }
+    .wrap { padding: 10px 12px; }
+    h1 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.02em; }
+    .meta { color: #5d7368; font-size: 10px; margin-top: 2px; }
+    .status { margin-top: 8px; padding: 8px; border-radius: 4px; border: 1px solid #c5d4cb; background: #fff; font-size: 11px; }
+    .status.warn { border-color: #e8c07a; background: #fffbeb; color: #92400e; }
+    .status.ok { border-color: #86b89a; background: #ecf8f1; }
+    .bands { margin-top: 8px; font-size: 11px; }
+    .bands code { font: 10px/1.4 "IBM Plex Mono", monospace; background: #e8efeA; padding: 1px 4px; border-radius: 2px; }
+    .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    select { width: 100%; margin-top: 8px; padding: 6px; border: 1px solid #c5d4cb; border-radius: 4px; font-size: 12px; background: #fff; }
+    button { border: 1px solid #1f6f54; background: #1f6f54; color: #fff; border-radius: 4px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    button.secondary { background: #fff; color: #0f2a22; border-color: #c5d4cb; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .dpi { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 11px; }
+    .dpi label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    .err { color: #b91c1c; margin-top: 8px; font-size: 11px; }
+    .out { margin-top: 8px; padding: 8px; border: 1px solid #e2e8f0; border-radius: 4px; background: #fff; font-size: 11px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Spectral Indices (Optical)</h1>
+    <div class="meta" id="meta">sandboxed · Host SDK 1.5</div>
+    <div class="status warn" id="gate">Checking scene…</div>
+    <select id="index" aria-label="Spectral index">
+      <option value="SAVI" selected>SAVI — ((NIR - RED) * (1 + L)) / (NIR + RED + L)</option>
+      <option value="EVI">EVI — 2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1)</option>
+      <option value="NDMI">NDMI — (NIR - SWIR) / (NIR + SWIR)</option>
+      <option value="NBR">NBR — (NIR - SWIR2) / (NIR + SWIR2)</option>
+      <option value="BSI">BSI — ((SWIR + RED) - (NIR + GREEN)) / ((SWIR + RED) + (NIR + GREEN))</option>
+    </select>
+    <div class="bands" id="bands" hidden></div>
+    <div class="row">
+      <button type="button" id="render" disabled>Apply index</button>
+      <button type="button" id="geotiff" class="secondary" disabled>Export GeoTIFF</button>
+    </div>
+    <div class="dpi">
+      <span>Map JPEG:</span>
+      <label><input type="radio" name="dpi" value="300" checked /> 300 DPI</label>
+      <label><input type="radio" name="dpi" value="600" /> 600 DPI</label>
+      <button type="button" id="jpeg" class="secondary" disabled>Export map JPG</button>
+    </div>
+    <div class="out" id="out">Result: —</div>
+    <div class="err" id="err" hidden></div>
+  </div>
+  <script src="./plugin.js"></script>
+</body>
+</html>

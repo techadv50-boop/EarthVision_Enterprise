@@ -1,0 +1,12 @@
+{
+  "kind": "optical_ndvi",
+  "plugin_id": "optical_ndvi",
+  "version": "1.0.0",
+  "message": "Normalized Difference Vegetation Index for Sentinel-2 and Landsat 7/8/9.",
+  "optical_only": true,
+  "default_index": "NDVI",
+  "indices": [
+    "NDVI"
+  ],
+  "note": "Prefer host.renderIndex when a scene is selected."
+}

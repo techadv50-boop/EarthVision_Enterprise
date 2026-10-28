@@ -31,6 +31,8 @@ Map draw rule: `frontend/src/map/LightMap.tsx` — `tileUrl` → TileLayer, else
 |--------|------------|------|
 | `host.getSceneContext` | `host.sdk.read_scene` | Read active scene / optical gate / band recipe |
 | `host.renderTrueColor` | `host.sdk.render_true_color` | Host computes true color **and** presents via `prefer_scene_tiles` |
+| `host.renderComposite` | `host.sdk.render_composite` | Host computes FCC / RGB composite (`preset`) via `processed_preview` (SDK ≥1.5) |
+| `host.renderIndex` | `host.sdk.render_index` | Host computes spectral index (`index`) via `processed_preview` (SDK ≥1.5) |
 | `host.clearMapLayer` | `host.sdk.clear_map_layer` | Hide presented layer(s); restore scenes |
 | `host.exportGeotiff` / `host.exportMapJpeg` | export perms | Host owns export chrome |
 | `host.setAnalysisResult` | `host.sdk.set_analysis_result` | Results panel text only (**no map pixels**) |

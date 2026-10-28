@@ -25,6 +25,8 @@ ALLOWED_PERMISSIONS = frozenset(
         "host.sdk.read_scene",
         "host.sdk.read_capabilities",
         "host.sdk.render_true_color",
+        "host.sdk.render_composite",
+        "host.sdk.render_index",
         "host.sdk.clear_map_layer",
         "host.sdk.export_geotiff",
         "host.sdk.export_map_jpeg",

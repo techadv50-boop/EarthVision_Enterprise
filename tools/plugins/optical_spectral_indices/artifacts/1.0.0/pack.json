@@ -1,0 +1,41 @@
+{
+  "plugin_id": "optical_spectral_indices",
+  "tool_id": "optical_spectral_indices",
+  "name": "Spectral Indices (Optical)",
+  "description": "Additional optical indices (SAVI, EVI, NDMI, NBR, BSI) for Landsat 7/8/9 and Sentinel-2.",
+  "version": "1.0.0",
+  "digest": "sha256:fe3440df1b50413b5de8037c699b3f55de3507de69770a01859d88e528563939",
+  "created_at": "2026-10-28T06:56:19Z",
+  "host_sdk": ">=1.5.0,<2",
+  "compatible_host_api": ">=1.5.0,<2",
+  "ui_strategy": "sandboxed_iframe",
+  "frontend_slot": "right_analysis_panel",
+  "permissions": [
+    "synthetic_data",
+    "ui.slot.right_analysis_panel",
+    "host.sdk.read_meta",
+    "host.sdk.read_capabilities",
+    "host.sdk.read_scene",
+    "host.sdk.render_index",
+    "host.sdk.clear_map_layer",
+    "host.sdk.export_geotiff",
+    "host.sdk.export_map_jpeg",
+    "host.sdk.set_analysis_result",
+    "host.sdk.read_analysis_result"
+  ],
+  "entry": {
+    "backend": "backend/plugin.py",
+    "ui_meta": "ui/tool-meta.json",
+    "ui_entry": "ui/panel.html"
+  },
+  "execution_model": "static_synthetic_only",
+  "optical_only": true,
+  "applicable_satellites": [
+    "SENTINEL-2",
+    "LANDSAT-8",
+    "LANDSAT-9",
+    "LANDSAT-7",
+    "MODIS"
+  ],
+  "map_presentation": "processed_preview"
+}

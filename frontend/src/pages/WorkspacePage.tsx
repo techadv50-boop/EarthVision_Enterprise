@@ -1511,8 +1511,31 @@ function WorkspacePageInner() {
     }
   };
 
-  // Host SDK imagery actions for optical_true_color (and future optical plugins)
+  // Host SDK imagery actions for optical plugins (true color, FCC, indices)
   useEffect(() => {
+    const COMPOSITE_ALLOW = new Set<string>([
+      'true_color',
+      'false_color_infrared',
+      'false_color_agriculture',
+      'false_color_urban',
+      'swir_composite',
+      'geology',
+      'atmospheric_penetration',
+      'land_water',
+      'vegetation_health',
+      'burn_severity',
+    ]);
+    const INDEX_ALLOW = new Set<string>([
+      'NDVI',
+      'NDWI',
+      'NDBI',
+      'SAVI',
+      'EVI',
+      'NDMI',
+      'NBR',
+      'BSI',
+    ]);
+
     setImageryHandlers({
       clearTrueColor: () => {
         clearMapLayer({
@@ -1586,6 +1609,7 @@ function WorkspacePageInner() {
           return {
             ok: true,
             preset: 'true_color',
+            layer_id: 'composite-true_color',
             label: result.label,
             formula: result.formula,
             band_recipe: recipe,
@@ -1598,7 +1622,153 @@ function WorkspacePageInner() {
           setToolStatus(null);
         }
       },
-      exportGeotiff: async () => {
+      renderComposite: async (params) => {
+        if (!focusScene) {
+          throw new Error('Select an optical satellite scene first (eye icon).');
+        }
+        const blocked =
+          pluginOpticalBlockReason(focusScene.collection) ||
+          opticalProcessingBlockReason(focusScene.collection);
+        if (blocked) {
+          throw new Error(blocked);
+        }
+        const presetRaw = String(params?.preset || '').trim();
+        if (!COMPOSITE_ALLOW.has(presetRaw)) {
+          throw new Error(`Unsupported composite preset: ${presetRaw || '(empty)'}`);
+        }
+        const preset = presetRaw as CompositePreset;
+        const toolKey = String(params?.plugin_id || preset);
+        setToolLoading(true);
+        setActiveToolId(`composite-${preset}`);
+        setToolStatus(`Rendering ${preset.replaceAll('_', ' ')}…`);
+        setError(null);
+        try {
+          const sceneOverlay = overlays.find(
+            (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+          );
+          const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+          const stretch =
+            preset === 'true_color'
+              ? { p_low: 2, p_high: 98, gamma: 1.0, brightness: 1.0, contrast: 1.0 }
+              : stretchParams;
+          const result = await compositeService.render({
+            preset,
+            scene_id: focusScene.id,
+            collection: focusScene.collection,
+            bbox: [...bounds],
+            ...stretch,
+          });
+          setCompositeResult(result);
+          setLastLegend((result.legend as LegendInfo | null) ?? null);
+          const fp =
+            (result.footprint as GeoJSON.Polygon | null | undefined) ??
+            sceneOverlay?.footprint ??
+            null;
+          const layerId = `composite-${preset}`;
+          const presented = presentMapLayer({
+            id: layerId,
+            kind: 'composite',
+            sceneId: focusScene.id,
+            label: result.label,
+            url: compositeService.toDataUrl(result.overlay_base64),
+            bounds: (result.bounds as [number, number, number, number]) ?? bounds,
+            footprint: fp,
+            presentation: resolveMapPresentation(toolKey),
+            hideSiblingKinds: true,
+          });
+          const message = `${result.message || result.formula} · ${presented.messageSuffix}`;
+          setLastMessage(message);
+          return {
+            ok: true,
+            preset,
+            layer_id: layerId,
+            label: result.label,
+            formula: result.formula,
+            presentation: resolveMapPresentation(toolKey),
+            message,
+            bounds: result.bounds,
+          };
+        } finally {
+          setToolLoading(false);
+          setToolStatus(null);
+        }
+      },
+      renderIndex: async (params) => {
+        if (!focusScene) {
+          throw new Error('Select an optical satellite scene first (eye icon).');
+        }
+        const blocked =
+          pluginOpticalBlockReason(focusScene.collection) ||
+          opticalProcessingBlockReason(focusScene.collection);
+        if (blocked) {
+          throw new Error(blocked);
+        }
+        const indexRaw = String(params?.index || '')
+          .trim()
+          .toUpperCase();
+        if (!INDEX_ALLOW.has(indexRaw)) {
+          throw new Error(`Unsupported spectral index: ${indexRaw || '(empty)'}`);
+        }
+        const index = indexRaw as IndexName;
+        const toolKey = String(params?.plugin_id || index);
+        setToolLoading(true);
+        setActiveToolId(`index-${index}`);
+        setToolStatus(`Computing ${index}…`);
+        setError(null);
+        try {
+          const sceneOverlay = overlays.find(
+            (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
+          );
+          const bounds = sceneOverlay?.bounds ?? sceneBounds(focusScene, place);
+          const ramp =
+            (typeof params?.colormap === 'string' && params.colormap
+              ? (params.colormap as ColormapName)
+              : null) ?? selectedColormap;
+          const result = await analyticsService.computeIndex(
+            index,
+            focusScene.id,
+            bounds,
+            ramp,
+          );
+          setIndexResult(result);
+          setSelectedIndex(index);
+          if (result.colormap) {
+            setSelectedColormap(result.colormap as ColormapName);
+          }
+          setLastLegend(result.legend ?? null);
+          const layerId = `index-${focusScene.id}-${index}`;
+          if (result.overlay_base64 && result.bounds) {
+            presentMapLayer({
+              id: layerId,
+              kind: 'index',
+              sceneId: focusScene.id,
+              label: `${index}${result.colormap ? ` (${result.colormap})` : ''}`,
+              url: analyticsService.toDataUrl(result.overlay_base64),
+              bounds: result.bounds as [number, number, number, number],
+              footprint: sceneOverlay?.footprint ?? null,
+              presentation: resolveMapPresentation(toolKey),
+              hideSiblingKinds: true,
+            });
+          }
+          const message = `${result.formula || index} · ramp ${result.colormap || ramp || 'default'}`;
+          setLastMessage(message);
+          return {
+            ok: true,
+            index,
+            layer_id: layerId,
+            formula: result.formula,
+            colormap: result.colormap,
+            legend: result.legend ?? null,
+            presentation: resolveMapPresentation(toolKey),
+            message,
+            bounds: result.bounds,
+          };
+        } finally {
+          setToolLoading(false);
+          setToolStatus(null);
+        }
+      },
+      exportGeotiff: async (params) => {
         if (!focusScene) {
           throw new Error('Select an optical satellite scene first (eye icon).');
         }
@@ -1609,11 +1779,24 @@ function WorkspacePageInner() {
           throw new Error(blocked);
         }
         const store = useWorkflowStore.getState();
-        let layer = store.overlays.find(
-          (o) => o.id === 'composite-true_color' && o.visible !== false,
-        );
-        if (!layer?.url) {
-          // Regenerate then export
+        const preferredId =
+          (typeof params?.layer_id === 'string' && params.layer_id) ||
+          (typeof params?.preset === 'string' && params.preset
+            ? `composite-${params.preset}`
+            : null) ||
+          (typeof params?.index === 'string' && params.index
+            ? `index-${focusScene.id}-${String(params.index).toUpperCase()}`
+            : null) ||
+          'composite-true_color';
+        let layer =
+          store.overlays.find((o) => o.id === preferredId && o.visible !== false) ||
+          store.overlays.find(
+            (o) =>
+              (o.kind === 'composite' || o.kind === 'index') &&
+              o.visible !== false &&
+              o.sceneId === focusScene.id,
+          );
+        if (!layer?.url && preferredId === 'composite-true_color') {
           const sceneOverlay = store.overlays.find(
             (o) => o.kind === 'scene' && o.sceneId === focusScene.id,
           );
@@ -1649,44 +1832,51 @@ function WorkspacePageInner() {
             .overlays.find((o) => o.id === 'composite-true_color');
         }
         if (!layer?.url) {
-          throw new Error('True color overlay not available for GeoTIFF export');
+          throw new Error('Overlay not available for GeoTIFF export — render first');
         }
         const overlay_base64 = await compositeService.overlayUrlToBase64(layer.url);
-        const filename = `True_Color_${focusScene.id}.tif`;
+        const safeLabel = (params?.filename || layer.label || 'optical')
+          .replace(/\W+/g, '_')
+          .slice(0, 48);
+        const filename = `${safeLabel}_${focusScene.id}.tif`;
+        const procedure = layer.kind === 'index' ? 'index' : 'composite';
+        const preset =
+          (typeof params?.preset === 'string' && params.preset) ||
+          (layer.id.startsWith('composite-')
+            ? layer.id.replace(/^composite-/, '')
+            : 'true_color');
         await compositeService.downloadGeotiff({
           bounds: [...layer.bounds],
           filename,
           overlay_base64,
-          procedure: 'composite',
-          preset: 'true_color',
+          procedure,
+          preset,
           scene_id: focusScene.id,
         });
-        setLastMessage(`Downloaded GeoTIFF · True Color`);
-        return { ok: true, filename, format: 'geotiff' };
+        setLastMessage(`Downloaded GeoTIFF · ${layer.label}`);
+        return { ok: true, filename, format: 'geotiff', layer_id: layer.id };
       },
       exportMapJpeg: async ({ dpi = 300, title }) => {
         const host = mapHostRef.current;
         if (!host) {
           throw new Error('Map host not ready');
         }
-        // Ensure north arrow + scale bar chrome for map export
         const chrome = useWorkflowStore.getState().mapChrome;
         useWorkflowStore.setState({
           mapChrome: { ...chrome, scaleBar: true, compass: true, grid: true },
         });
-        // Allow chrome to paint
         await new Promise((r) => setTimeout(r, 120));
         const mapElement =
           (host.querySelector('.leaflet-container') as HTMLElement | null) || host;
         const legend =
           lastLegend || changeResult?.legend || indexResult?.legend || null;
         const safeName = (place?.name || 'map').replace(/\W+/g, '_').slice(0, 40);
-        const filename = `sateye-truecolor-${safeName}-${dpi}dpi.jpg`;
+        const filename = `sateye-optical-${safeName}-${dpi}dpi.jpg`;
         setExporting(true);
         try {
           await exportMapJpeg({
             mapElement,
-            title: title || 'SAT EYE True Color Map',
+            title: title || 'SAT EYE Optical Map',
             placeName: place?.name,
             legend,
             filename,
@@ -1707,6 +1897,8 @@ function WorkspacePageInner() {
     lastLegend,
     changeResult,
     indexResult,
+    stretchParams,
+    selectedColormap,
     setImageryHandlers,
     upsertOverlay,
   ]);
