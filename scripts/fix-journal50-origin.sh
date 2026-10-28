@@ -4,8 +4,13 @@
 # Run as root: curl -fsSL <this-url> | sudo bash
 set -u
 HOST="journal50.drxdhr.store"
-LOG=/tmp/journal50-cloudflared.log
-BODY=/tmp/journal50-body.txt
+# /tmp files left by the unprivileged run cannot be overwritten by root
+# (sticky directory + protected_regular). Keep this run's files elsewhere.
+WORK=/var/lib/journal50-repair
+LOG=$WORK/cloudflared.log
+BODY=$WORK/body.txt
+ERR=$WORK/curl.err
+UP=$WORK/upstream.txt
 
 say() { printf '%s\n' "$*"; }
 
@@ -13,9 +18,12 @@ if [ "$(id -u)" -ne 0 ]; then
   say "Docker on this host needs root. Re-run with: curl -fsSL <script-url> | sudo bash"
   exit 1
 fi
+mkdir -p "$WORK"
+chmod 700 "$WORK"
+rm -f /tmp/journal50-cloudflared.log /tmp/journal50-body.txt /tmp/journal50-curl.err /tmp/journal50-up.txt || true
 
 public_code() {
-  curl -sS -m 20 -o "$BODY" -w '%{http_code}' "https://${HOST}/" 2>/tmp/journal50-curl.err || echo ERR
+  curl -sS -m 20 -o "$BODY" -w '%{http_code}' "https://${HOST}/" 2>"$ERR" || echo ERR
 }
 
 redact() {
@@ -29,9 +37,9 @@ port_open() {
 http_code() {
   # $1 url, optional $2 Host header
   if [ -n "${2:-}" ]; then
-    curl -sS -m 8 -o /tmp/journal50-up.txt -w '%{http_code}' -H "Host: $2" "$1" || echo ERR
+    curl -sS -m 8 -o "$UP" -w '%{http_code}' -H "Host: $2" "$1" || echo ERR
   else
-    curl -sS -m 8 -o /tmp/journal50-up.txt -w '%{http_code}' "$1" || echo ERR
+    curl -sS -m 8 -o "$UP" -w '%{http_code}' "$1" || echo ERR
   fi
 }
 
@@ -46,7 +54,12 @@ say "host=$(hostname) user=$(id -un) date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 code=$(public_code)
 snip=$(head -c 80 "$BODY" 2>/dev/null | tr '\n' ' ')
 say "before ${code} ${snip}"
-if [ "$code" != "502" ] || ! grep -q 'error code: 502' "$BODY" 2>/dev/null; then
+if [ "$code" = "502" ] && grep -q 'error code: 502' "$BODY" 2>/dev/null; then
+  say "confirmed cloudflared origin failure"
+elif [ "$code" = "ERR" ]; then
+  say "public check failed; continuing from the cloudflared log"
+  sed -n '1,3p' "$ERR" 2>/dev/null || true
+else
   say "public response is not the cloudflared origin failure; no changes made"
   exit 0
 fi
