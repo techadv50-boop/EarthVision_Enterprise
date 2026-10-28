@@ -192,10 +192,6 @@ public static class EmployeeDesktopLimits
             WindowsCommand.Run("icacls.exe", path, "/remove:d", userName);
             if (!allowed.Contains(folder.Key))
             {
-                if (!folder.Key.Equals("Desktop", StringComparison.OrdinalIgnoreCase))
-                {
-                    WindowsCommand.Run("icacls.exe", path, "/deny", $"{userName}:(OI)(CI)(RD)");
-                }
                 continue;
             }
             var granted = WindowsCommand.Run("icacls.exe", path, "/grant:r", $"{userName}:(OI)(CI)M");

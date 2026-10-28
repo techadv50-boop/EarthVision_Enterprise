@@ -6,7 +6,9 @@ internal static class WindowsCommand
 {
     public static string SystemTool(string name) => Path.Combine(Environment.SystemDirectory, name);
 
-    public static (int Code, string Output) Run(string file, params string[] args)
+    public static (int Code, string Output) Run(string file, params string[] args) => Run(file, 60000, args);
+
+    public static (int Code, string Output) Run(string file, int timeoutMs, params string[] args)
     {
         var start = new ProcessStartInfo(file)
         {
@@ -25,7 +27,7 @@ internal static class WindowsCommand
         var stderr = process.StandardError.ReadToEndAsync();
         // Windows tools such as net.exe wait forever when input is left open.
         process.StandardInput.Close();
-        if (!process.WaitForExit(60000))
+        if (!process.WaitForExit(timeoutMs))
         {
             try
             {
@@ -35,7 +37,7 @@ internal static class WindowsCommand
             {
                 // The step already failed. Report that instead of the kill error.
             }
-            throw new InvalidOperationException($"{Path.GetFileName(file)} did not finish within one minute.");
+            throw new InvalidOperationException($"{Path.GetFileName(file)} did not finish within {timeoutMs / 1000} seconds.");
         }
         var output = (stdout.Result + stderr.Result).Trim();
         return (process.ExitCode, output);
