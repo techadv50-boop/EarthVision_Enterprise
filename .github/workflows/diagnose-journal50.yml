@@ -1,0 +1,95 @@
+name: Diagnose journal50 origin
+
+# Read-only check on the live host. Prints service status only.
+# Never prints tokens, env files, or database passwords.
+on:
+  push:
+    branches:
+      - cursor/journal50-502-70ff
+    paths:
+      - .github/workflows/diagnose-journal50.yml
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    name: Read-only journal50 origin check
+    runs-on: [self-hosted, Linux, X64, sateye-live]
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Inspect origin without secrets
+        run: |
+          set +e
+          echo "host=$(hostname) user=$(id -un) date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "--- listeners ---"
+          if command -v ss >/dev/null 2>&1; then
+            ss -ltn | awk 'NR==1 || /LISTEN/ {print}' | head -120
+          else
+            netstat -ltn | head -120
+          fi
+          echo "--- processes (tokens stripped) ---"
+          ps -eo user,pid,cmd | grep -Ei 'cloudflared|nginx|traefik|dokploy|caddy' | grep -v grep \
+            | sed -E 's/(--token[= ]+)[^ ]+/\1REDACTED/g; s/(TUNNEL_TOKEN=)[^ ]+/\1REDACTED/g' \
+            | head -80
+          echo "--- docker ---"
+          if command -v docker >/dev/null 2>&1; then
+            docker ps -a --format '{{.Names}} | {{.Status}} | {{.Ports}}' | head -150
+          else
+            echo "docker not installed"
+          fi
+          echo "--- units ---"
+          systemctl list-units --type=service --all --no-legend 2>/dev/null \
+            | grep -Ei 'cloud|nginx|dokploy|traefik|caddy|journal|ojs' \
+            | head -40
+          echo "--- nginx server names ---"
+          grep -R -n -E 'server_name|proxy_pass|listen ' \
+            /etc/nginx/sites-enabled /etc/nginx/conf.d /etc/nginx/nginx.conf \
+            2>/dev/null \
+            | grep -Ei 'server_name|proxy_pass|listen |journal|drxdhr|50sea|xdgen' \
+            | sed -E 's#((password|token|secret|key)[^;[:space:]]*)#REDACTED#Ig' \
+            | head -250
+          echo "--- cloudflared ingress (no credentials) ---"
+          python3 - <<'PY'
+          import glob, os
+          paths = []
+          for pattern in (
+              "/etc/cloudflared/*.yml",
+              "/etc/cloudflared/*.yaml",
+              "/home/*/.cloudflared/config.yml",
+              "/root/.cloudflared/config.yml",
+              "/opt/*/.cloudflared/config.yml",
+          ):
+              paths.extend(glob.glob(pattern))
+          print("config_files", paths or "none")
+          keys = ("hostname", "service", "ingress", "tunnel", "protocol", "originrequest")
+          secret = ("token", "secret", "password", "credential", "account")
+          for path in paths:
+              print("---", path)
+              try:
+                  lines = open(path, errors="replace").read().splitlines()
+              except OSError as exc:
+                  print("unreadable", exc)
+                  continue
+              for line in lines:
+                  low = line.lower()
+                  if any(word in low for word in secret):
+                      continue
+                  if any(word in low for word in keys) or line.strip().startswith("-"):
+                      print(line)
+          PY
+          echo "--- local host-header probes ---"
+          probe() {
+            url="$1"
+            host="$2"
+            code=$(curl -sS -m 6 -o /tmp/j50-probe.body -w '%{http_code}' -H "Host: ${host}" "$url" 2>/tmp/j50-probe.err || echo ERR)
+            snippet=$(head -c 80 /tmp/j50-probe.body 2>/dev/null | tr '\n' ' ')
+            err=$(head -c 120 /tmp/j50-probe.err 2>/dev/null | tr '\n' ' ')
+            echo "${host} ${url} -> ${code} | ${snippet} | ${err}"
+          }
+          for port in 80 443 8080 8087 3000 8000 8787 5173 5174 8443; do
+            probe "http://127.0.0.1:${port}/" "journal50.drxdhr.store"
+          done
+          probe "http://127.0.0.1/" "journal.50sea.com"
+          probe "http://127.0.0.1/" "journal.xdgen.com"
+          echo "--- done ---"
