@@ -21,27 +21,7 @@ public static class EmployeeDesktopLimits
             using var hive = Registry.Users.OpenSubKey(hiveName, writable: true)
                 ?? throw new InvalidOperationException("The employee profile did not open.");
             profileFolders = ReadProfileFolders(hive, profile);
-            var drives = DriveInfo.GetDrives()
-                .Where(drive => drive.DriveType == DriveType.Fixed && drive.Name.Length > 0)
-                .Select(drive => drive.Name[0])
-                .Append('C');
-            var hidden = FolderAccess.HiddenDriveMask(allowedFolders, drives);
-            var view = FolderAccess.ExplorerViewMask(hidden, FolderAccess.AllowsProfileFolder(allowedFolders));
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoDrives", hidden);
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoViewOnDrive", view);
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "NoRun", 1);
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "DisallowRun", 1);
-            WriteString(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer", "SettingsPageVisibility", EmployeeDesktopPolicy.HiddenSettingsPages);
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\Uninstall", "NoAddRemovePrograms", 1);
-            WriteDword(hive, @"Software\Microsoft\Windows\CurrentVersion\Policies\System", "DisableTaskMgr", 1);
-            WriteDword(hive, @"Software\Policies\Microsoft\Windows\Installer", "DisableMSI", 2);
-            WriteDword(hive, @"Software\Policies\Microsoft\Windows\Explorer", "NoUninstallFromStart", 1);
-            using var blocked = hive.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun")
-                ?? throw new InvalidOperationException("Windows did not save the blocked program list.");
-            for (var index = 0; index < EmployeeDesktopPolicy.BlockedTools.Length; index++)
-            {
-                blocked.SetValue((index + 1).ToString(), EmployeeDesktopPolicy.BlockedTools[index], RegistryValueKind.String);
-            }
+            ReleaseOfficePolicies(hive);
         }
         finally
         {
@@ -56,14 +36,11 @@ public static class EmployeeDesktopLimits
                 }
             }
         }
-        var allowC = allowedFolders.Any(folder => folder.StartsWith("C:", StringComparison.OrdinalIgnoreCase));
-        HideSystemFolders(userName, allowC, log);
+        HideSystemFolders(userName);
         GrantProfileFolders(userName, profileFolders, allowedFolders, log);
         PlaceShortcuts(profile, workFolder, allowedFolders, log);
         log("The employee can open: " + (allowedFolders.Count == 0 ? "nothing selected" : string.Join(", ", allowedFolders)) + ".");
-        log(allowC
-            ? "Drive C is open to the employee. Uninstall stays blocked."
-            : "Drive C stays closed. Windows and Program Files stay closed.");
+        log("Word, Excel, and PowerPoint can open. Office folders are not blocked.");
         log("Sign the employee out and back in so these folder choices take effect.");
     }
 
@@ -215,10 +192,6 @@ public static class EmployeeDesktopLimits
             WindowsCommand.Run("icacls.exe", path, "/remove:d", userName);
             if (!allowed.Contains(folder.Key))
             {
-                if (!folder.Key.Equals("Desktop", StringComparison.OrdinalIgnoreCase))
-                {
-                    WindowsCommand.Run("icacls.exe", path, "/deny", $"{userName}:(OI)(CI)(RD)");
-                }
                 continue;
             }
             var granted = WindowsCommand.Run("icacls.exe", path, "/grant:r", $"{userName}:(OI)(CI)M");
@@ -233,7 +206,61 @@ public static class EmployeeDesktopLimits
         }
     }
 
-    private static void HideSystemFolders(string userName, bool allowC, Action<string> log)
+    public static void ReleaseOffice(string userName, Action<string> log)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var sid = RequireSid(userName);
+        var profile = ProfilePath(sid);
+        var hiveName = OpenHive(sid, profile, out var loaded);
+        try
+        {
+            using var hive = Registry.Users.OpenSubKey(hiveName, writable: true)
+                ?? throw new InvalidOperationException("The employee profile did not open.");
+            ReleaseOfficePolicies(hive);
+        }
+        finally
+        {
+            if (loaded)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                var unloaded = WindowsCommand.Run("reg.exe", "unload", @"HKU\WorkPilotEmployee");
+                if (unloaded.Code != 0)
+                {
+                    log("The employee profile was updated, but Windows kept it open. Sign the employee out and open the program again.");
+                }
+            }
+        }
+        HideSystemFolders(userName);
+        var startup = Path.Combine(profile, @"AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup", "WorkPilotTimer.vbs");
+        if (File.Exists(startup))
+        {
+            File.Delete(startup);
+        }
+        log("Removed the employee limits that stopped Office from opening.");
+    }
+
+    public static void ReleaseOfficePolicies(RegistryKey hive)
+    {
+        const string explorer = @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+        DeleteValue(hive, explorer, "NoRun");
+        DeleteValue(hive, explorer, "DisallowRun");
+        DeleteValue(hive, explorer, "NoDrives");
+        DeleteValue(hive, explorer, "NoViewOnDrive");
+        hive.DeleteSubKeyTree(explorer + @"\DisallowRun", throwOnMissingSubKey: false);
+        DeleteValue(hive, @"Software\Policies\Microsoft\Windows\Installer", "DisableMSI");
+    }
+
+    private static void DeleteValue(RegistryKey root, string subKey, string name)
+    {
+        using var key = root.OpenSubKey(subKey, writable: true);
+        key?.DeleteValue(name, throwOnMissingValue: false);
+    }
+
+    private static void HideSystemFolders(string userName)
     {
         foreach (var folder in new[] { @"C:\", @"C:\Windows", @"C:\Program Files", @"C:\Program Files (x86)", @"C:\ProgramData" })
         {
@@ -242,15 +269,6 @@ public static class EmployeeDesktopLimits
                 continue;
             }
             WindowsCommand.Run("icacls.exe", folder, "/remove:d", userName);
-            if (allowC)
-            {
-                continue;
-            }
-            var denied = WindowsCommand.Run("icacls.exe", folder, "/deny", $"{userName}:(RD)");
-            if (denied.Code != 0)
-            {
-                log($"Could not hide listing of {folder}. {denied.Output}");
-            }
         }
     }
 

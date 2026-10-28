@@ -229,13 +229,7 @@ Recording is on while you are signed in. See the notice from your administrator.
     $shortcut.Save()
 }
 
-if (-not $SkipAppLocker -and -not $WhatIfPreference) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\Set-AllowedPrograms.ps1") -Mode Audit
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Program rules were not applied. The login, disk limit, Chrome rules, and recorder are still in place."
-    }
-}
-
+Write-Host "Word, Excel, and PowerPoint stay allowed. This installer does not block programs."
 Write-Host ""
 Write-Host "Pilot is ready for one employee."
 Write-Host "1. Update Windows if this PC is still on an old Windows 11 build, then restart."
@@ -245,5 +239,4 @@ Write-Host "4. Sign out. Wait one minute. Open the Work session report shortcut 
 Write-Host "5. Give the employee NOTICE.txt and the login only after that test looks right."
 Write-Host "Reports stay in $root\Reports"
 Write-Host "Do not open Remote Desktop directly to the internet. Use a private network such as Tailscale, then connect to this PC."
-Write-Host "Program blocking is in audit mode. Nothing is blocked yet. After a real work day, review the report, then run:"
-Write-Host "  powershell -ExecutionPolicy Bypass -File `"$root\scripts\Set-AllowedPrograms.ps1`" -Mode Enforce"
+Write-Host "Word, Excel, and PowerPoint stay allowed for the employee. Program blocking is not used."

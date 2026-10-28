@@ -52,6 +52,18 @@ public class MainWindow : Window
         Closed += (_, _) => _stop.Cancel();
         Opened += (_, _) =>
         {
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var name = PilotConfigStore.Load(PilotPaths.Config)?.UserName;
+                    OfficeRepair.AllowOffice(string.IsNullOrWhiteSpace(name) ? "employee1" : name, _ => { });
+                }
+                catch (Exception ex)
+                {
+                    CrashLog.Write(ex, notify: false);
+                }
+            });
             if (PilotSetup.NeedsSetup())
             {
                 ShowPage("Employee login", EmployeePage());

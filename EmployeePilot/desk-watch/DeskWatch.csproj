@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>WorkPilot</RootNamespace>
+    <AssemblyName>DeskWatch</AssemblyName>
+    <Version>1.0.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.7" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.7" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.7" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.2.7" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.11" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\standalone\src\WorkPilot.Core\WorkPilot.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\standalone\src\WorkPilot.App\AlarmWindow.cs" Link="Shared\AlarmWindow.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\CrashLog.cs" Link="Shared\CrashLog.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\EmployeeDesktopLimits.cs" Link="Shared\EmployeeDesktopLimits.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\LiveBoard.cs" Link="Shared\LiveBoard.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\OfficeRepair.cs" Link="Shared\OfficeRepair.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\PilotPaths.cs" Link="Shared\PilotPaths.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\ReportJob.cs" Link="Shared\ReportJob.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\ScreenGrab.cs" Link="Shared\ScreenGrab.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\SessionTracker.cs" Link="Shared\SessionTracker.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\StatusServer.cs" Link="Shared\StatusServer.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\SystemBeep.cs" Link="Shared\SystemBeep.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\WindowsAccount.cs" Link="Shared\WindowsAccount.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\WindowsAdmin.cs" Link="Shared\WindowsAdmin.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\WindowsCommand.cs" Link="Shared\WindowsCommand.cs" />
+  </ItemGroup>
+</Project>

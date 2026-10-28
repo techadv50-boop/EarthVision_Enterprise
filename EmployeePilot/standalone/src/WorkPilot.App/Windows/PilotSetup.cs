@@ -96,7 +96,7 @@ The administrator receives a report after you sign out.
         AllowWatch(log);
         RegisterTasks(request.UserName, log);
         CreateReportShortcut(log);
-        ClearAppLocker(log);
+        OfficeRepair.AllowOffice(request.UserName, log);
         try
         {
             ApplyEmployeeLimits(log);
@@ -153,41 +153,6 @@ The administrator receives a report after you sign out.
         return lines;
     }
 
-    public static void ClearAppLocker(Action<string> log)
-    {
-        const string xml = """
-<AppLockerPolicy Version="1">
-  <RuleCollection Type="Appx" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Exe" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Msi" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Script" EnforcementMode="NotConfigured" />
-</AppLockerPolicy>
-""";
-        Directory.CreateDirectory(PilotPaths.Root);
-        var policyPath = Path.Combine(PilotPaths.Root, "applocker-clear.xml");
-        File.WriteAllText(policyPath, xml, Encoding.Unicode);
-        WindowsCommand.Run(
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            $"Set-AppLockerPolicy -XmlPolicy '{policyPath}'");
-        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "stop", "AppIDSvc");
-        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "config", "AppIDSvc", "start=", "disabled");
-        WindowsCommand.Run("reg.exe", "delete", @"HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2", "/f");
-        log("Word, Excel, and PowerPoint are allowed to start. Restart the computer once if Word was already showing an error.");
-    }
-
-    public static void ApplyAppLocker(bool enforce, Action<string> log)
-    {
-        ClearAppLocker(log);
-        log(enforce
-            ? "Other programs stay allowed so Office can open. The activity record still shows which programs were used."
-            : "Program list saved. Nothing is blocked.");
-    }
-
     public static void ApplyEmployeeLimits(Action<string> log)
     {
         var config = PilotConfigStore.Load(PilotPaths.Config);
@@ -238,7 +203,8 @@ The administrator receives a report after you sign out.
         }
         PilotConfigStore.Save(PilotPaths.Config, config);
         log("Allowed programs: " + string.Join(", ", config.AllowedPrograms));
-        ApplyAppLocker(blockOthers, log);
+        log("The list is only for the activity record. Word, Excel, and PowerPoint are not blocked.");
+        _ = blockOthers;
     }
 
     public static void UpdateQuota(int quotaGb, Action<string> log)
@@ -576,7 +542,7 @@ The administrator receives a report after you sign out.
         Directory.CreateDirectory(PilotPaths.Logs);
         Directory.CreateDirectory(PilotPaths.LiveDirectory);
         Directory.CreateDirectory(PilotPaths.Days);
-        ClearAppLocker(log);
+        OfficeRepair.AllowOffice(user, log);
         AllowWatch(log);
         CopyProgram(log);
         RegisterTasks(user, log);
@@ -709,44 +675,4 @@ The administrator receives a report after you sign out.
         }
     }
 
-}
-
-internal static class WindowsCommand
-{
-    public static string SystemTool(string name) => Path.Combine(Environment.SystemDirectory, name);
-
-    public static (int Code, string Output) Run(string file, params string[] args)
-    {
-        var start = new ProcessStartInfo(file)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true
-        };
-        foreach (var arg in args)
-        {
-            start.ArgumentList.Add(arg);
-        }
-        using var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {file}.");
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        // Windows tools such as net.exe wait forever when input is left open.
-        process.StandardInput.Close();
-        if (!process.WaitForExit(60000))
-        {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch
-            {
-                // The step already failed. Report that instead of the kill error.
-            }
-            throw new InvalidOperationException($"{Path.GetFileName(file)} did not finish within one minute.");
-        }
-        var output = (stdout.Result + stderr.Result).Trim();
-        return (process.ExitCode, output);
-    }
 }

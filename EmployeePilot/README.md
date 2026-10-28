@@ -81,17 +81,9 @@ powershell -ExecutionPolicy Bypass -File C:\ProgramData\WorkPilot\scripts\Verify
 
 The report marks these as allowed work programs: Chrome, Edge, Word, Excel, PowerPoint, Notepad, and Adobe Acrobat. Edit the list in `C:\ProgramData\WorkPilot\pilot.json` if the real work uses different programs. Windows itself (File Explorer, the Start menu, the lock screen) is listed separately and is not treated as a violation.
 
-Blocking is off on the first day. AppLocker is in audit mode, so every program still runs, and administrators can always run everything. After one real work day, if the report only shows the programs you expect, turn blocking on:
+Program blocking is not used. Word, Excel, and PowerPoint open for the employee. The allowed list is only a label in the activity report.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\ProgramData\WorkPilot\scripts\Set-AllowedPrograms.ps1 -Mode Enforce
-```
-
-That blocks downloaded programs and anything installed outside the allowed folders. Programs that already live in the Windows folder, including Notepad and PowerShell, still run. Sign in as `employee1` and open Chrome immediately after you turn this on. If Chrome does not open, switch back:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\ProgramData\WorkPilot\scripts\Set-AllowedPrograms.ps1 -Mode Audit
-```
+Use DeskWatch when Office must stay available. Copy `EmployeePilot/desk-watch/DeskWatch.exe` to the employee computer and double-click it. It keeps the timer and the live page on port 8777, and it does not install program blocking.
 
 ## Where the files are
 
