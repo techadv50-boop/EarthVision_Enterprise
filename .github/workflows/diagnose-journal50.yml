@@ -1,0 +1,39 @@
+name: Repair journal50 origin
+
+# Runs on the live host. The script only adds a loopback proxy when
+# cloudflared logs show it cannot dial https://journal50.drxdhr.store.
+on:
+  push:
+    branches:
+      - cursor/journal50-502-70ff
+    paths:
+      - .github/workflows/diagnose-journal50.yml
+      - scripts/fix-journal50-origin.sh
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type fix to repair the journal50 tunnel origin"
+        required: true
+        default: ""
+        type: string
+
+jobs:
+  repair:
+    name: Repair journal50 tunnel origin
+    runs-on: [self-hosted, Linux, X64, sateye-live]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Require confirmation for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ inputs.confirm }}" != "fix" ]; then
+            echo "Refusing to run. Set confirm=fix."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Repair origin
+        run: bash scripts/fix-journal50-origin.sh
