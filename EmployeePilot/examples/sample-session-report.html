@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Work session report</title>
+<style>
+body { font-family: Segoe UI, sans-serif; margin: 2rem; color: #1c1c1c; }
+h1 { font-size: 1.5rem; margin-bottom: 0.2rem; }
+h2 { font-size: 1.1rem; margin-top: 2rem; }
+p.note { color: #444; max-width: 46rem; }
+.cards { display: flex; flex-wrap: wrap; gap: 0.8rem; margin: 1rem 0; }
+.card { border: 1px solid #ccc; padding: 0.8rem 1rem; min-width: 9rem; }
+.card span { display: block; font-size: 0.8rem; color: #555; }
+.card strong { font-size: 1.35rem; }
+table { border-collapse: collapse; width: 100%; max-width: 56rem; }
+th, td { border-bottom: 1px solid #ddd; text-align: left; padding: 0.35rem 0.5rem; vertical-align: top; }
+th { background: #f4f4f4; }
+tr.outside td { background: #fff6e8; }
+</style>
+</head>
+<body>
+<h1>Work session report</h1>
+<p class="note">This report lists programs in the foreground, how long each one was used, and idle time. It does not include keystrokes, screenshots, passwords, or the clipboard.</p>
+<p>Employee: <strong>Pilot Employee</strong><br>
+Windows login: <strong>employee1</strong><br>
+Computer: <strong>DESKTOP-ENCM4H4</strong><br>
+Session start: 2026-09-30 09:00:00 UTC<br>
+Session end: 2026-09-30 09:43:00 UTC</p>
+<div class="cards">
+<div class="card"><span>Session length</span><strong>43 min</strong></div>
+<div class="card"><span>Active time</span><strong>33 min</strong></div>
+<div class="card"><span>Idle time</span><strong>10 min</strong></div>
+<div class="card"><span>Longest idle stretch</span><strong>10 min</strong></div>
+<div class="card"><span>Active percent</span><strong>76.7%</strong></div>
+</div>
+<p class="note">Idle rule used for this report: 5 minutes without mouse or keyboard. That waiting period still counts as active, so reading and short pauses are not idle. After 5 minutes the time is idle. A locked screen counts as idle immediately. Locked time inside this session: 0 s.</p>
+<h2>Programs</h2>
+<table>
+<thead><tr><th>Program</th><th>Active time</th><th>Allocation</th></tr></thead>
+<tbody>
+<tr><td>WINWORD.EXE</td><td>16 min</td><td>Allowed</td></tr>
+<tr><td>chrome.exe</td><td>15 min</td><td>Allowed</td></tr>
+<tr><td>game.exe</td><td>2 min</td><td>Outside</td></tr>
+
+</tbody>
+</table>
+<h2>Outside the allowed list</h2>
+<table>
+<thead><tr><th>Program</th><th>Active time</th></tr></thead>
+<tbody>
+<tr><td>game.exe</td><td>2 min</td></tr>
+
+</tbody>
+</table>
+<h2>Timeline</h2>
+<table>
+<thead><tr><th>Start</th><th>Length</th><th>What was on screen</th></tr></thead>
+<tbody>
+<tr><td>2026-09-30 09:00:00 UTC</td><td>15 min</td><td>chrome.exe — Inbox - Chrome</td></tr>
+<tr><td>2026-09-30 09:15:00 UTC</td><td>10 min</td><td>Idle</td></tr>
+<tr><td>2026-09-30 09:25:00 UTC</td><td>16 min</td><td>WINWORD.EXE — Report.docx - Word</td></tr>
+<tr><td>2026-09-30 09:41:00 UTC</td><td>2 min</td><td>game.exe — Level 1</td></tr>
+
+</tbody>
+</table>
+</body>
+</html>

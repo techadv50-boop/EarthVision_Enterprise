@@ -1,0 +1,35 @@
+{
+  "employeeName": "Pilot Employee",
+  "userName": "employee1",
+  "idleThresholdSeconds": 300,
+  "pollSeconds": 5,
+  "quotaGB": 80,
+  "allowedPrograms": [
+    "chrome.exe",
+    "msedge.exe",
+    "WINWORD.EXE",
+    "EXCEL.EXE",
+    "POWERPNT.EXE",
+    "notepad.exe",
+    "AcroRd32.exe",
+    "Acrobat.exe"
+  ],
+  "systemPrograms": [
+    "explorer.exe",
+    "SearchHost.exe",
+    "StartMenuExperienceHost.exe",
+    "ShellExperienceHost.exe",
+    "TextInputHost.exe",
+    "LockApp.exe",
+    "LogonUI.exe",
+    "dwm.exe",
+    "ApplicationFrameHost.exe",
+    "SystemSettings.exe",
+    "taskmgr.exe",
+    "sihost.exe",
+    "PickerHost.exe",
+    "OpenWith.exe",
+    "CredentialUIBroker.exe",
+    "UserOOBEBroker.exe"
+  ]
+}

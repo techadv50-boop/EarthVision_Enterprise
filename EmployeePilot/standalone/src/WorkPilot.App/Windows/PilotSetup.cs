@@ -1,0 +1,752 @@
+using System.Diagnostics;
+using System.Security;
+using System.Text;
+using System.Xml;
+using WorkPilot.Core;
+
+namespace WorkPilot.Windows;
+
+public sealed record PilotRequest(string FullName, string UserName, string Password, int QuotaGb, int IdleMinutes, int AlarmAfterSeconds);
+
+public static class PilotSetup
+{
+    public const string Notice = """
+Work session recording
+
+This computer records your work session while you are signed in.
+
+What is recorded
+- The time you sign in and the time you sign out
+- The program in front of you, and the window title
+- Whether the mouse and keyboard are being used
+- Idle time, including a locked screen
+- The live screen, which the administrator can watch while you are signed in
+
+What is not recorded
+- Keys you type
+- Saved pictures of the screen
+- Passwords
+- Clipboard contents
+- The webcam or microphone
+
+Chrome
+- You can browse and search
+- Clearing browsing history, Incognito, and Guest mode are turned off
+- Page titles can appear in the session report because they are window titles
+
+A green light means you are working. A red light means you have stopped. The computer beeps while the red light is on, until you use the mouse or keyboard again.
+The time window shows how long you have worked and how long the computer was idle. Leave that window open.
+Save files in Documents, Downloads, or Desktop. Control Panel opens. Installed programs cannot be removed.
+The administrator receives a report after you sign out.
+""";
+
+    public static void Run(PilotRequest request, Action<string> log)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new InvalidOperationException("This program sets up a Windows 11 PC. Copy WorkPilot.exe to that computer and open it there.");
+        }
+        Validate(request);
+        var volume = SelectVolume();
+        var workFolder = Path.Combine(volume + "\\", "WorkPilot", request.UserName);
+        log($"Login: {request.UserName}");
+        log($"Work folder: {workFolder}");
+        log($"Disk limit: {request.QuotaGb} GB on {volume}");
+        log($"Idle after: {request.IdleMinutes} minutes");
+        log($"Red light and beep after: {request.AlarmAfterSeconds} seconds");
+        if (volume == "C:")
+        {
+            log("The limit includes this login's Windows profile and Chrome, not only documents.");
+        }
+
+        EnsureUser(request, log);
+        Directory.CreateDirectory(PilotPaths.Root);
+        Directory.CreateDirectory(PilotPaths.Journal);
+        Directory.CreateDirectory(PilotPaths.Reports);
+        Directory.CreateDirectory(PilotPaths.Logs);
+        Directory.CreateDirectory(PilotPaths.LiveDirectory);
+        Directory.CreateDirectory(workFolder);
+        CopyProgram(log);
+        ProtectFolder(workFolder, request.UserName, modify: true);
+        ProtectJournal(request.UserName);
+        ProtectFolder(PilotPaths.Logs, request.UserName, modify: false);
+        ProtectFolder(PilotPaths.LiveDirectory, request.UserName, modify: true);
+        ProtectFolder(PilotPaths.Reports, request.UserName, modify: false, employeeAccess: false);
+        File.WriteAllText(Path.Combine(workFolder, "READ-ME.txt"),
+            $"Save your work in this folder.{Environment.NewLine}Your space limit on drive {volume} is {request.QuotaGb} GB.{Environment.NewLine}Recording is on while you are signed in.{Environment.NewLine}");
+        File.WriteAllText(Path.Combine(PilotPaths.Root, "NOTICE.txt"), Notice);
+
+        var config = new PilotConfig
+        {
+            EmployeeName = request.FullName,
+            UserName = request.UserName,
+            IdleThresholdSeconds = request.IdleMinutes * 60,
+            AlarmAfterSeconds = request.AlarmAfterSeconds,
+            PollSeconds = 5,
+            QuotaGB = request.QuotaGb,
+            Volume = volume,
+            WorkFolder = workFolder,
+            AllowedPrograms = new List<string>(PilotDefaults.AllowedPrograms),
+            SystemPrograms = new List<string>(PilotDefaults.SystemPrograms)
+        };
+        PilotConfigStore.Save(PilotPaths.Config, config);
+        ApplyQuota(volume, request.UserName, request.QuotaGb, log);
+        ApplyChrome(log);
+        EnableRemoteDesktop(log);
+        AllowWatch(log);
+        RegisterTasks(request.UserName, log);
+        CreateReportShortcut(log);
+        ClearAppLocker(log);
+        try
+        {
+            ApplyEmployeeLimits(log);
+        }
+        catch (InvalidOperationException ex)
+        {
+            File.WriteAllText(Path.Combine(PilotPaths.Root, "NOTICE.txt"), Notice);
+            log("The login is created. Folder limits apply after the employee signs in once.");
+            log(ex.Message);
+        }
+        log("");
+        log("Pilot is ready for one employee.");
+        log("1. Sign in as " + request.UserName + " at this computer and confirm the recording message.");
+        log("2. Open Chrome and confirm history cannot be cleared.");
+        log("3. Sign out, wait one minute, then open Work session report on your desktop.");
+        log("4. Hand over the login only after that test looks right.");
+        log("Do not open Remote Desktop directly to the internet. Use a private network such as Tailscale.");
+    }
+
+    public static IReadOnlyList<string> Check()
+    {
+        var lines = new List<string>();
+        void Add(bool ok, string name, string detail) => lines.Add((ok ? "PASS  " : "FAIL  ") + name + "  " + detail);
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        Add(config is not null, "Config file", PilotPaths.Config);
+        if (config is null)
+        {
+            return lines;
+        }
+        var userExists = WindowsAccount.Exists(config.UserName);
+        Add(userExists, "Employee login", config.UserName);
+        var admins = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Administrators");
+        Add(userExists && admins.Output.IndexOf(config.UserName, StringComparison.OrdinalIgnoreCase) < 0, "Login is not an administrator", config.UserName);
+        var remote = WindowsCommand.Run(WindowsCommand.SystemTool("net.exe"), "localgroup", "Remote Desktop Users");
+        Add(remote.Output.IndexOf(config.UserName, StringComparison.OrdinalIgnoreCase) >= 0, "Remote Desktop allowed", config.UserName);
+        Add(File.Exists(config.WorkFolder), "Work folder", config.WorkFolder);
+        Add(Directory.Exists(PilotPaths.Reports), "Report folder", PilotPaths.Reports);
+        Add(WindowsCommand.Run("schtasks.exe", "/Query", "/TN", PilotPaths.TrackerTask).Code == 0, "Sign-in recorder", PilotPaths.TrackerTask);
+        Add(WindowsCommand.Run("schtasks.exe", "/Query", "/TN", PilotPaths.ReportTask).Code == 0, "Report task", PilotPaths.ReportTask);
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Google\Chrome");
+            var history = key?.GetValue("AllowDeletingBrowserHistory");
+            var incognito = key?.GetValue("IncognitoModeAvailability");
+            var guest = key?.GetValue("BrowserGuestModeEnabled");
+            Add(history is int h && h == 0, "Chrome history cannot be cleared", $"AllowDeletingBrowserHistory={history}");
+            Add(incognito is int i && i == 1, "Chrome Incognito is off", $"IncognitoModeAvailability={incognito}");
+            Add(guest is int g && g == 0, "Chrome Guest mode is off", $"BrowserGuestModeEnabled={guest}");
+        }
+        catch (Exception ex)
+        {
+            Add(false, "Chrome policy", ex.Message);
+        }
+        return lines;
+    }
+
+    public static void ClearAppLocker(Action<string> log)
+    {
+        const string xml = """
+<AppLockerPolicy Version="1">
+  <RuleCollection Type="Appx" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Exe" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Msi" EnforcementMode="NotConfigured" />
+  <RuleCollection Type="Script" EnforcementMode="NotConfigured" />
+</AppLockerPolicy>
+""";
+        Directory.CreateDirectory(PilotPaths.Root);
+        var policyPath = Path.Combine(PilotPaths.Root, "applocker-clear.xml");
+        File.WriteAllText(policyPath, xml, Encoding.Unicode);
+        WindowsCommand.Run(
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            $"Set-AppLockerPolicy -XmlPolicy '{policyPath}'");
+        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "stop", "AppIDSvc");
+        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "config", "AppIDSvc", "start=", "disabled");
+        WindowsCommand.Run("reg.exe", "delete", @"HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2", "/f");
+        log("Word, Excel, and PowerPoint are allowed to start. Restart the computer once if Word was already showing an error.");
+    }
+
+    public static void ApplyAppLocker(bool enforce, Action<string> log)
+    {
+        ClearAppLocker(log);
+        log(enforce
+            ? "Other programs stay allowed so Office can open. The activity record still shows which programs were used."
+            : "Program list saved. Nothing is blocked.");
+    }
+
+    public static void ApplyEmployeeLimits(Action<string> log)
+    {
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        if (config is null || string.IsNullOrWhiteSpace(config.UserName))
+        {
+            return;
+        }
+        var allowed = config.AllowedFolders is { Count: > 0 }
+            ? config.AllowedFolders
+            : new List<string> { "Desktop", "Documents", "Downloads" };
+        try
+        {
+            EmployeeDesktopLimits.Apply(config.UserName, config.WorkFolder, allowed, log);
+        }
+        catch (InvalidOperationException ex)
+        {
+            log("Folder limits apply after the employee signs in once.");
+            log(ex.Message);
+        }
+        Directory.CreateDirectory(PilotPaths.Root);
+        File.WriteAllText(Path.Combine(PilotPaths.Root, "NOTICE.txt"), Notice);
+    }
+
+    public static void UpdateFolders(IReadOnlyList<string> folders, Action<string> log)
+    {
+        var config = RequiredConfig();
+        config.AllowedFolders = folders
+            .Select(folder => folder.Trim())
+            .Where(folder => folder.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        PilotConfigStore.Save(PilotPaths.Config, config);
+        log("Allowed folders: " + (config.AllowedFolders.Count == 0 ? "none" : string.Join(", ", config.AllowedFolders)));
+        ApplyEmployeeLimits(log);
+    }
+
+    public static void UpdatePrograms(IReadOnlyList<string> programs, bool blockOthers, Action<string> log)
+    {
+        var config = RequiredConfig();
+        config.AllowedPrograms = programs
+            .Select(program => program.Trim())
+            .Where(program => program.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (config.AllowedPrograms.Count == 0)
+        {
+            throw new InvalidOperationException("Choose at least one program.");
+        }
+        PilotConfigStore.Save(PilotPaths.Config, config);
+        log("Allowed programs: " + string.Join(", ", config.AllowedPrograms));
+        ApplyAppLocker(blockOthers, log);
+    }
+
+    public static void UpdateQuota(int quotaGb, Action<string> log)
+    {
+        if (quotaGb < 20)
+        {
+            throw new InvalidOperationException("Use at least 20 GB so the Windows profile and Chrome still fit.");
+        }
+        var config = RequiredConfig();
+        ApplyQuota(config.Volume, config.UserName, quotaGb, log);
+        config.QuotaGB = quotaGb;
+        PilotConfigStore.Save(PilotPaths.Config, config);
+    }
+
+    public static void UpdateTimers(int idleMinutes, int alarmSeconds, Action<string> log)
+    {
+        if (idleMinutes is < 1 or > 60)
+        {
+            throw new InvalidOperationException("Idle minutes must be from 1 to 60.");
+        }
+        if (alarmSeconds is < 5 or > 3600)
+        {
+            throw new InvalidOperationException("The beep time must be from 5 to 3600 seconds.");
+        }
+        var config = RequiredConfig();
+        config.IdleThresholdSeconds = idleMinutes * 60;
+        config.AlarmAfterSeconds = alarmSeconds;
+        PilotConfigStore.Save(PilotPaths.Config, config);
+        log($"The beep and the red light start after {alarmSeconds} seconds with no mouse or keyboard.");
+        log($"The written activity report is separate. A pause shorter than {idleMinutes} minute(s) still counts as working there. A pause of {idleMinutes} minute(s) or more counts as idle in that report.");
+    }
+
+    public static string RefreshInstalledCopy()
+    {
+        var source = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(source) || !OperatingSystem.IsWindows())
+        {
+            return "";
+        }
+        Directory.CreateDirectory(PilotPaths.Root);
+        var destination = Path.GetFullPath(PilotPaths.Exe);
+        var fullSource = Path.GetFullPath(source);
+        if (string.Equals(fullSource, destination, StringComparison.OrdinalIgnoreCase))
+        {
+            return "";
+        }
+        var sourceInfo = new FileInfo(fullSource);
+        var destinationInfo = new FileInfo(destination);
+        var sameFile = destinationInfo.Exists
+            && destinationInfo.Length == sourceInfo.Length
+            && destinationInfo.LastWriteTimeUtc >= sourceInfo.LastWriteTimeUtc;
+        if (sameFile)
+        {
+            return "";
+        }
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        if (config is not null && !string.Equals(config.UserName, Environment.UserName, StringComparison.OrdinalIgnoreCase))
+        {
+            WindowsCommand.Run(WindowsCommand.SystemTool("taskkill.exe"), "/F", "/FI", "USERNAME eq " + config.UserName, "/IM", "WorkPilot.exe");
+            Thread.Sleep(500);
+        }
+        IOException? locked = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                File.Copy(fullSource, destination, true);
+                locked = null;
+                break;
+            }
+            catch (IOException ex)
+            {
+                locked = ex;
+                Thread.Sleep(500);
+            }
+        }
+        if (locked is not null)
+        {
+            return "";
+        }
+        if (config is not null)
+        {
+            WindowsCommand.Run(WindowsCommand.SystemTool("schtasks.exe"), "/Run", "/TN", PilotPaths.TrackerTask);
+        }
+        return destination;
+    }
+
+    public static void WriteTimerCommand(string action)
+    {
+        if (action is not ("stop" or "reset" or "clear"))
+        {
+            throw new InvalidOperationException("The timer command was not recognised.");
+        }
+        var config = RequiredConfig();
+        Directory.CreateDirectory(PilotPaths.CommandDirectory);
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/inheritance:r");
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/grant:r", "BUILTIN\\Administrators:(OI)(CI)F");
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)F");
+        WindowsCommand.Run("icacls.exe", PilotPaths.CommandDirectory, "/grant:r", $"{config.UserName}:(OI)(CI)RX");
+        File.WriteAllText(PilotPaths.CommandFile, TimerCommand.Format(action, DateTime.UtcNow));
+    }
+
+    private static PilotConfig RequiredConfig() =>
+        PilotConfigStore.Load(PilotPaths.Config)
+        ?? throw new InvalidOperationException("Set up the employee login first.");
+
+    private static void Validate(PilotRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.FullName))
+        {
+            throw new InvalidOperationException("Enter the employee name.");
+        }
+        if (!System.Text.RegularExpressions.Regex.IsMatch(request.UserName, "^[A-Za-z][A-Za-z0-9]{1,19}$"))
+        {
+            throw new InvalidOperationException("The Windows login must start with a letter and use only letters and digits, up to 20 characters.");
+        }
+        if (request.Password.Length < 8 || request.Password.Any(char.IsWhiteSpace)
+            || !request.Password.Any(char.IsUpper) || !request.Password.Any(char.IsLower) || !request.Password.Any(char.IsDigit))
+        {
+            throw new InvalidOperationException("Use a password of at least 8 characters with an uppercase letter, a lowercase letter, and a digit. Do not use spaces.");
+        }
+        if (request.QuotaGb < 20)
+        {
+            throw new InvalidOperationException("Use at least 20 GB so the Windows profile and Chrome still fit.");
+        }
+        if (request.IdleMinutes is < 1 or > 60)
+        {
+            throw new InvalidOperationException("Idle minutes must be from 1 to 60.");
+        }
+        if (request.AlarmAfterSeconds is < 5 or > 3600)
+        {
+            throw new InvalidOperationException("The red light time must be from 5 to 3600 seconds.");
+        }
+    }
+
+    private static void AllowWatch(Action<string> log)
+    {
+        WindowsCommand.Run(WindowsCommand.SystemTool("netsh.exe"), "http", "add", "urlacl", "url=http://+:8777/", "user=Everyone");
+        WindowsCommand.Run(
+            WindowsCommand.SystemTool("netsh.exe"),
+            "advfirewall", "firewall", "add", "rule",
+            "name=WorkPilot watch", "dir=in", "action=allow", "protocol=TCP", "localport=8777", "profile=any");
+        log("On your computer, click Watch employee and use http://127.0.0.1:8777/status while you are testing on this PC.");
+        log("From your other computer, use this PC's Tailscale address with port 8777, for example http://100.x.x.x:8777/status.");
+    }
+
+    private static string SelectVolume()
+    {
+        var data = DriveInfo.GetDrives()
+            .Where(drive => drive.IsReady && drive.DriveType == DriveType.Fixed)
+            .Where(drive => !drive.Name.StartsWith("C", StringComparison.OrdinalIgnoreCase))
+            .Where(drive => string.Equals(drive.DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(drive => drive.AvailableFreeSpace)
+            .FirstOrDefault();
+        if (data is null)
+        {
+            return "C:";
+        }
+        return data.Name.TrimEnd('\\');
+    }
+
+    private static void EnsureUser(PilotRequest request, Action<string> log)
+    {
+        log("Creating the Windows login...");
+        if (!WindowsAccount.Exists(request.UserName))
+        {
+            WindowsAccount.Create(request.UserName, request.Password, request.FullName);
+            log($"Created login {request.UserName}.");
+        }
+        else
+        {
+            log($"Login {request.UserName} already exists. The password was left unchanged.");
+            WindowsAccount.SetFullName(request.UserName, request.FullName);
+        }
+        WindowsAccount.AddToGroup(request.UserName, "Users");
+        WindowsAccount.RemoveFromGroup(request.UserName, "Administrators");
+        if (!WindowsAccount.TryAddToGroup(request.UserName, "Remote Desktop Users", out var remoteError))
+        {
+            log(remoteError);
+        }
+        log("Windows login is ready.");
+    }
+
+    private static void CopyProgram(Action<string> log)
+    {
+        var source = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            throw new InvalidOperationException("WorkPilot could not find its own program file.");
+        }
+        var fullSource = Path.GetFullPath(source);
+        var fullDest = Path.GetFullPath(PilotPaths.Exe);
+        if (!string.Equals(fullSource, fullDest, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                File.Copy(fullSource, fullDest, true);
+                log($"Copied the program to {fullDest}");
+            }
+            catch (IOException)
+            {
+                log("WorkPilot is already running, so the current program file was left in place.");
+            }
+        }
+    }
+
+    public static void RepairRecordingAccess()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        if (config is null)
+        {
+            return;
+        }
+        Directory.CreateDirectory(PilotPaths.Journal);
+        Directory.CreateDirectory(PilotPaths.LiveDirectory);
+        ProtectJournal(config.UserName);
+        ProtectFolder(PilotPaths.LiveDirectory, config.UserName, modify: true);
+        RefreshInstalledCopy();
+    }
+
+    private static void ProtectJournal(string user)
+    {
+        Directory.CreateDirectory(PilotPaths.Journal);
+        ProtectFolder(PilotPaths.Journal, user, modify: true);
+        WindowsCommand.Run("icacls.exe", PilotPaths.Journal, "/deny", $"{user}:(OI)(CI)(DE,DC)");
+    }
+
+    private static void ProtectFolder(string path, string user, bool modify, bool employeeAccess = true)
+    {
+        WindowsCommand.Run("icacls.exe", path, "/inheritance:r");
+        WindowsCommand.Run("icacls.exe", path, "/grant:r", "BUILTIN\\Administrators:(OI)(CI)F");
+        WindowsCommand.Run("icacls.exe", path, "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)F");
+        if (!employeeAccess)
+        {
+            return;
+        }
+        var rights = modify ? "(OI)(CI)M" : "(OI)(CI)(RX,AD,WA)";
+        WindowsCommand.Run("icacls.exe", path, "/grant:r", $"{user}:{rights}");
+    }
+
+    private static void ApplyQuota(string volume, string user, int quotaGb, Action<string> log)
+    {
+        var (soft, hard) = PilotDefaults.QuotaBytes(quotaGb);
+        var account = Environment.MachineName + "\\" + user;
+        WindowsCommand.Run("fsutil.exe", "quota", "track", volume);
+        var modified = WindowsCommand.Run("fsutil.exe", "quota", "modify", volume, soft.ToString(), hard.ToString(), account);
+        if (modified.Code != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(modified.Output)
+                ? "Disk quota could not be set."
+                : modified.Output);
+        }
+        WindowsCommand.Run("fsutil.exe", "quota", "enforce", volume);
+        log($"Disk limit is on: {quotaGb} GB for {account} on {volume}.");
+    }
+
+    private static void ApplyChrome(Action<string> log)
+    {
+        const string key = @"HKLM\SOFTWARE\Policies\Google\Chrome";
+        RequiredReg(key, "AllowDeletingBrowserHistory", PilotDefaults.AllowDeletingBrowserHistory);
+        RequiredReg(key, "IncognitoModeAvailability", PilotDefaults.IncognitoModeAvailability);
+        RequiredReg(key, "BrowserGuestModeEnabled", PilotDefaults.BrowserGuestModeEnabled);
+        log("Chrome policy: history cannot be cleared, Incognito is off, Guest mode is off.");
+    }
+
+    private static void RequiredReg(string key, string name, int value)
+    {
+        var result = WindowsCommand.Run("reg.exe", "add", key, "/v", name, "/t", "REG_DWORD", "/d", value.ToString(), "/f");
+        if (result.Code != 0)
+        {
+            throw new InvalidOperationException(result.Output);
+        }
+    }
+
+    private static void EnableRemoteDesktop(Action<string> log)
+    {
+        RequiredReg(@"HKLM\System\CurrentControlSet\Control\Terminal Server", "fDenyTSConnections", 0);
+        WindowsCommand.Run("netsh.exe", "advfirewall", "firewall", "set", "rule", "group=remote desktop", "new", "enable=Yes");
+        WindowsCommand.Run(
+            WindowsCommand.SystemTool("netsh.exe"),
+            "advfirewall", "firewall", "add", "rule",
+            "name=Remote Desktop Tailscale", "dir=in", "action=allow", "protocol=TCP", "localport=3389", "profile=any");
+        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "start", "TermService");
+        log("Remote Desktop is on for this login.");
+    }
+
+    public static bool NeedsSetup()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+        PilotConfig? config = null;
+        try
+        {
+            config = PilotConfigStore.Load(PilotPaths.Config);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return true;
+        }
+        if (config is null || string.IsNullOrWhiteSpace(config.UserName))
+        {
+            return true;
+        }
+        return !WindowsAccount.Exists(config.UserName);
+    }
+
+    public static (string User, bool SentToEmployee) ArmTimer(Action<string> log)
+    {
+        var config = PilotConfigStore.LoadOrReplace(PilotPaths.Config, new PilotConfig
+        {
+            EmployeeName = "Employee",
+            UserName = "employee1",
+            IdleThresholdSeconds = 60,
+            AlarmAfterSeconds = 30,
+            PollSeconds = 5,
+            QuotaGB = 80,
+            Volume = "C:",
+            WorkFolder = @"C:\WorkPilot\employee1",
+            AllowedFolders = new List<string> { "Desktop", "Documents", "Downloads" }
+        });
+        var user = string.IsNullOrWhiteSpace(config.UserName) ? "employee1" : config.UserName;
+        if (!WindowsAccount.Exists(user))
+        {
+            throw new InvalidOperationException("The login " + user + " does not exist on this computer.");
+        }
+        Directory.CreateDirectory(PilotPaths.Root);
+        Directory.CreateDirectory(PilotPaths.Journal);
+        Directory.CreateDirectory(PilotPaths.Reports);
+        Directory.CreateDirectory(PilotPaths.Logs);
+        Directory.CreateDirectory(PilotPaths.LiveDirectory);
+        Directory.CreateDirectory(PilotPaths.Days);
+        ClearAppLocker(log);
+        AllowWatch(log);
+        CopyProgram(log);
+        RegisterTasks(user, log);
+        EmployeeDesktopLimits.InstallStartup(user, PilotPaths.Exe, log);
+        WindowsCommand.Run("icacls.exe", PilotPaths.Root, "/grant", $"{user}:(OI)(CI)RX");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Exe, "/grant", $"{user}:RX");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Config, "/grant", $"{user}:R");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Journal, "/grant", $"{user}:(OI)(CI)M");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Logs, "/grant", $"{user}:(OI)(CI)M");
+        WindowsCommand.Run("icacls.exe", PilotPaths.LiveDirectory, "/grant", $"{user}:(OI)(CI)M");
+        WindowsCommand.Run("icacls.exe", PilotPaths.Days, "/grant", $"{user}:(OI)(CI)M");
+        var started = WindowsCommand.Run(WindowsCommand.SystemTool("schtasks.exe"), "/Run", "/TN", PilotPaths.TrackerTask);
+        if (started.Code != 0)
+        {
+            StatusServer.Start();
+            log("The employee is not signed in yet. " + started.Output);
+        }
+        else
+        {
+            log("Timer sent to the signed-in employee desktop.");
+        }
+        return (user, started.Code == 0);
+    }
+
+    private static void RegisterTasks(string userName, Action<string> log)
+    {
+        var exe = PilotPaths.Exe;
+        var userId = Environment.MachineName + "\\" + userName;
+        var trackerXml = TaskXml(
+            userId,
+            "InteractiveToken",
+            "LeastPrivilege",
+            exe,
+            "--track",
+            "<LogonTrigger><Enabled>true</Enabled><Delay>PT15S</Delay><UserId>" + SecurityElement.Escape(userId) + "</UserId></LogonTrigger>",
+            "P7D",
+            restart: true);
+        var start = DateTime.Now.AddMinutes(1).ToString("yyyy-MM-ddTHH:mm:ss");
+        var reportXml = TaskXml(
+            "S-1-5-18",
+            null,
+            "HighestAvailable",
+            exe,
+            "--report",
+            $"""
+            <TimeTrigger>
+              <Repetition>
+                <Interval>PT1M</Interval>
+                <StopAtDurationEnd>false</StopAtDurationEnd>
+              </Repetition>
+              <StartBoundary>{start}</StartBoundary>
+              <Enabled>true</Enabled>
+            </TimeTrigger>
+            """,
+            "PT5M",
+            restart: false);
+        WriteTask(PilotPaths.TrackerTask, trackerXml);
+        WriteTask(PilotPaths.ReportTask, reportXml);
+        log("Recording starts when the employee signs in. The report updates every minute.");
+    }
+
+    private static void WriteTask(string name, string xml)
+    {
+        var path = Path.Combine(PilotPaths.Root, name.Replace(' ', '-') + ".xml");
+        File.WriteAllText(path, xml, Encoding.Unicode);
+        var result = WindowsCommand.Run("schtasks.exe", "/Create", "/TN", name, "/XML", path, "/F");
+        if (result.Code != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.Output)
+                ? "Windows could not create the scheduled task " + name + "."
+                : result.Output);
+        }
+    }
+
+    private static string TaskXml(string userId, string? logonType, string runLevel, string command, string arguments, string triggers, string limit, bool restart)
+    {
+        var logon = logonType is null ? "" : $"<LogonType>{logonType}</LogonType>";
+        var restartXml = restart
+            ? """
+              <RestartOnFailure>
+                <Interval>PT1M</Interval>
+                <Count>999</Count>
+              </RestartOnFailure>
+              """
+            : "";
+        return $"""
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    {triggers}
+  </Triggers>
+  <Principals>
+    <Principal>
+      <UserId>{SecurityElement.Escape(userId)}</UserId>
+      {logon}
+      <RunLevel>{runLevel}</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>{limit}</ExecutionTimeLimit>
+    {restartXml}
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{SecurityElement.Escape(command)}</Command>
+      <Arguments>{SecurityElement.Escape(arguments)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+""";
+    }
+
+    private static void CreateReportShortcut(Action<string> log)
+    {
+        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        var link = Path.Combine(desktop, "Work session report.lnk");
+        var target = Path.Combine(PilotPaths.Reports, "latest.html");
+        var command = $"$s = New-Object -ComObject WScript.Shell; $l = $s.CreateShortcut('{link}'); $l.TargetPath = '{target}'; $l.Description = 'Latest employee work session report'; $l.Save()";
+        var result = WindowsCommand.Run("powershell.exe", "-NoProfile", "-Command", command);
+        if (result.Code == 0)
+        {
+            log("Shortcut on your desktop: Work session report");
+        }
+    }
+
+}
+
+internal static class WindowsCommand
+{
+    public static string SystemTool(string name) => Path.Combine(Environment.SystemDirectory, name);
+
+    public static (int Code, string Output) Run(string file, params string[] args)
+    {
+        var start = new ProcessStartInfo(file)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true
+        };
+        foreach (var arg in args)
+        {
+            start.ArgumentList.Add(arg);
+        }
+        using var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {file}.");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        // Windows tools such as net.exe wait forever when input is left open.
+        process.StandardInput.Close();
+        if (!process.WaitForExit(60000))
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // The step already failed. Report that instead of the kill error.
+            }
+            throw new InvalidOperationException($"{Path.GetFileName(file)} did not finish within one minute.");
+        }
+        var output = (stdout.Result + stderr.Result).Trim();
+        return (process.ExitCode, output);
+    }
+}
