@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Repair the Cloudflare Tunnel 502 for https://journal50.drxdhr.store/
-# The public body "error code: 502" is cloudflared failing to dial its origin.
-# This only starts a stopped journal container, or listens on the refused
-# loopback port and forwards it to the live OJS backend. It does not print
-# tokens, env files, or database passwords.
+# Repair https://journal50.drxdhr.store/ when cloudflared is up but its
+# origin port is closed. On raza that port is 127.0.0.1:8187.
+# Run as root: curl -fsSL <this-url> | sudo bash
 set -u
 HOST="journal50.drxdhr.store"
 LOG=/tmp/journal50-cloudflared.log
 BODY=/tmp/journal50-body.txt
-: >"$LOG"
 
 say() { printf '%s\n' "$*"; }
+
+if [ "$(id -u)" -ne 0 ]; then
+  say "Docker on this host needs root. Re-run with: curl -fsSL <script-url> | sudo bash"
+  exit 1
+fi
 
 public_code() {
   curl -sS -m 20 -o "$BODY" -w '%{http_code}' "https://${HOST}/" 2>/tmp/journal50-curl.err || echo ERR
@@ -18,6 +20,26 @@ public_code() {
 
 redact() {
   sed -E 's/(--token[= ]+)[^ ]+/\1REDACTED/g; s/(eyJ[A-Za-z0-9_-]{8,})/REDACTED/g'
+}
+
+port_open() {
+  ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${1}$"
+}
+
+http_code() {
+  # $1 url, optional $2 Host header
+  if [ -n "${2:-}" ]; then
+    curl -sS -m 8 -o /tmp/journal50-up.txt -w '%{http_code}' -H "Host: $2" "$1" || echo ERR
+  else
+    curl -sS -m 8 -o /tmp/journal50-up.txt -w '%{http_code}' "$1" || echo ERR
+  fi
+}
+
+good_code() {
+  case "$1" in
+    200|301|302|303) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 say "host=$(hostname) user=$(id -un) date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -29,184 +51,186 @@ if [ "$code" != "502" ] || ! grep -q 'error code: 502' "$BODY" 2>/dev/null; then
   exit 0
 fi
 
-if [ "$(id -u)" -eq 0 ]; then
-  SUDO=""
-else
-  SUDO="sudo"
+: >"$LOG"
+journalctl -u cloudflared --since '15 min ago' --no-pager 2>/dev/null | redact >>"$LOG" || true
+journalctl -u 'cloudflared*' --since '15 min ago' --no-pager 2>/dev/null | redact >>"$LOG" || true
+
+origin=$(grep -F 'journal50.drxdhr.store' "$LOG" | grep -Eo 'dial tcp [^ ]+:[0-9]+' | tail -1 || true)
+if [ -z "$origin" ]; then
+  origin=$(grep -F 'originService=http://127.0.0.1:' "$LOG" | grep -Eo '127\.0\.0\.1:[0-9]+' | tail -1 || true)
+  origin="dial tcp ${origin}"
+fi
+port=${origin##*:}
+port=${port%%[^0-9]*}
+say "parsed_dial=${origin:-none} port=${port:-none}"
+if ! printf '%s' "$port" | grep -Eq '^[0-9]+$'; then
+  say "cloudflared log did not name the refused port; no changes made"
+  exit 1
 fi
 
-say "--- journal containers ---"
+say "--- listeners ---"
+ss -ltnp | head -80 || true
+
+say "--- docker ---"
 if command -v docker >/dev/null 2>&1; then
-  docker ps -a --format '{{.Names}} | {{.Status}} | {{.Ports}}' | grep -Ei 'journal|cloudflared|nginx' || true
-  # Start a stopped OJS container only. Do not recreate it.
-  while read -r name state; do
-    [ -n "${name:-}" ] || continue
-    state=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
-    case "$state" in
-      exited*|created*|dead*)
-        say "starting stopped container ${name}"
-        docker start "$name" || say "could not start ${name}"
+  docker ps -a --format '{{.Names}} | {{.Status}} | {{.Ports}}' | head -80 || true
+  # Start stopped containers that are published on the refused port.
+  while read -r id; do
+    [ -n "$id" ] || continue
+    binding=$(docker inspect -f '{{json .HostConfig.PortBindings}} {{.Name}} {{.State.Status}}' "$id" 2>/dev/null || true)
+    printf '%s\n' "$binding" | grep -q "\"${port}/tcp\"" || continue
+    name=$(printf '%s' "$binding" | awk '{print $(NF-1)}')
+    state=$(printf '%s' "$binding" | awk '{print $NF}')
+    say "container ${name} binds ${port}/tcp (${state})"
+    case "$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')" in
+      running) ;;
+      *)
+        say "starting ${name}"
+        docker start "$id" || say "could not start ${name}"
         ;;
     esac
-  done < <(docker ps -a --filter name=journal50seacom --format '{{.Names}} {{.Status}}' | awk '{print $1, $2}')
+  done < <(docker ps -aq)
+else
+  say "docker is not installed"
 fi
 
-# Reproduce once so the connector logs this hostname.
-curl -sS -m 15 -o /dev/null "https://${HOST}/" || true
+# Compose projects that publish this port.
+if command -v docker >/dev/null 2>&1 && ! port_open "$port"; then
+  while read -r file; do
+    [ -n "$file" ] || continue
+    dir=$(dirname "$file")
+    say "compose mentions :${port} in ${file}"
+    (cd "$dir" && docker compose up -d) || say "compose up failed in ${dir}"
+  done < <(grep -R -l -E ":${port}\\b" /etc/dokploy /opt /home/zh /home/zhzh /etc/nginx /etc/systemd/system \
+    --include='*.yml' --include='*.yaml' 2>/dev/null | head -20)
+fi
+
 sleep 2
-
-if command -v journalctl >/dev/null 2>&1; then
-  journalctl -u cloudflared --since '5 min ago' --no-pager 2>/dev/null | redact >>"$LOG" || true
-  journalctl -u 'cloudflared*' --since '5 min ago' --no-pager 2>/dev/null | redact >>"$LOG" || true
-fi
-if command -v docker >/dev/null 2>&1; then
-  while read -r name; do
-    [ -n "$name" ] || continue
-    say "logs from ${name}"
-    docker logs --since 5m "$name" 2>&1 | redact >>"$LOG" || true
-  done < <(docker ps -a --format '{{.Names}} {{.Image}}' | awk 'BEGIN{IGNORECASE=1} /cloudflared/ {print $1}')
-fi
-
-say "--- origin errors ---"
-grep -Ei 'journal50|connection refused|unable to reach|origin' "$LOG" | tail -40 || true
-
-origin=$(grep -Ei 'journal50\.drxdhr\.store' "$LOG" | grep -Eo 'dial tcp [^ ]+:[0-9]+' | tail -1 || true)
-service=$(grep -Ei 'journal50\.drxdhr\.store' "$LOG" | grep -Eo 'https?://[^ "]+' | grep -v "$HOST" | tail -1 || true)
-say "parsed_dial=${origin:-none} parsed_service=${service:-none}"
-
-port=""
-if [ -n "$origin" ]; then
-  port=${origin##*:}
-fi
-if [ -z "$port" ] && [ -n "$service" ]; then
-  port=$(printf '%s' "$service" | sed -n 's#.*:\([0-9][0-9]*\).*#\1#p')
-  [ -n "$port" ] || port=80
-fi
-
-if [ -z "$port" ]; then
-  say "cloudflared log did not name ${HOST} and a refused port; no proxy added"
-  exit 0
-fi
-
-# Confirm the live journal answers before forwarding anything to it.
-journal_code=$(curl -sS -m 8 -o /tmp/journal50-ojs.txt -w '%{http_code}' -H 'Host: journal.50sea.com' http://127.0.0.1:8087/ || echo ERR)
-say "ojs_8087=${journal_code}"
-if [ "$journal_code" != "200" ] && [ "$journal_code" != "301" ] && [ "$journal_code" != "302" ]; then
-  say "OJS on 127.0.0.1:8087 is not answering; not attaching a new proxy"
-  exit 0
-fi
-
-if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then
-  say "port ${port} is already listening on this host; not binding over it"
+if port_open "$port"; then
+  local_code=$(http_code "http://127.0.0.1:${port}/" "$HOST")
+  say "local :${port} -> ${local_code}"
 else
-  say "port ${port} is free on the host"
-fi
-
-# Prefer the cloudflared network namespace when the tunnel runs in Docker,
-# because its localhost is not the host's localhost.
-cf_name=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk 'BEGIN{IGNORECASE=1} /cloudflared/ {print $1; exit}')
-cf_net=""
-if [ -n "$cf_name" ]; then
-  cf_net=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cf_name" 2>/dev/null || true)
-  say "cloudflared=${cf_name} network=${cf_net}"
-fi
-
-write_nginx() {
-  local dest=$1 upstream=$2
-  cat >"$dest" <<EOF
-events { worker_connections 128; }
-http {
-  server {
-    listen 127.0.0.1:${port};
-    listen [::1]:${port};
-    server_name ${HOST};
-    client_max_body_size 64m;
-    location / {
-      proxy_pass ${upstream};
-      proxy_http_version 1.1;
-      proxy_set_header Host \$host;
-      proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_read_timeout 120s;
-    }
-  }
-}
-EOF
-}
-
-if [ -n "$cf_name" ] && [ "$cf_net" != "host" ]; then
-  gateway=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $v.Gateway}}{{end}}' "$cf_name" | awk 'NF{print; exit}')
-  [ -n "$gateway" ] || gateway=host.docker.internal
-  say "sidecar upstream gateway=${gateway}"
-  conf=/tmp/journal50-sidecar-nginx.conf
-  write_nginx "$conf" "http://${gateway}:8087"
-  if docker ps --format '{{.Names}}' | grep -qx journal50-origin-proxy; then
-    say "sidecar already running"
-  else
-    docker rm -f journal50-origin-proxy >/dev/null 2>&1 || true
-    if docker run -d --name journal50-origin-proxy --restart unless-stopped \
-      --network "container:${cf_name}" \
-      -v "$conf:/etc/nginx/nginx.conf:ro" \
-      nginx:alpine; then
-      say "started sidecar on cloudflared loopback :${port}"
-    else
-      say "sidecar failed"
+  say "port ${port} is still closed; looking for the live journal"
+  upstream=""
+  for candidate in \
+    "http://127.0.0.1:8087/|" \
+    "http://127.0.0.1:80/|${HOST}" \
+    "http://127.0.0.1:80/|journal.50sea.com" \
+    "http://192.168.18.18:8087/|" \
+    "http://192.168.18.18:80/|journal.50sea.com" \
+    "http://192.168.18.18:8087/|journal.50sea.com"
+  do
+    url=${candidate%%|*}
+    hdr=${candidate#*|}
+    c=$(http_code "$url" "$hdr")
+    say "probe ${url} host=${hdr:-default} -> ${c}"
+    if good_code "$c"; then
+      upstream=$url
+      break
     fi
+  done
+
+  if [ -z "$upstream" ]; then
+    say "no journal is answering on this host or on 192.168.18.18; left ${port} closed"
+    exit 1
   fi
-else
-  conf=/etc/nginx/sites-available/journal50.drxdhr.store
-  if [ -d /etc/nginx/sites-available ] && command -v nginx >/dev/null 2>&1; then
-    listening=0
-    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then
-      listening=1
-    fi
-    if [ "$listening" -eq 0 ] && [ ! -f "$conf" ]; then
-      $SUDO tee "$conf" >/dev/null <<EOF
-server {
-    listen 127.0.0.1:${port};
-    listen [::1]:${port};
-    server_name ${HOST};
-    client_max_body_size 64m;
-    location / {
-        proxy_pass http://127.0.0.1:8087;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_read_timeout 120s;
-    }
-}
-EOF
-      $SUDO ln -sfn "$conf" /etc/nginx/sites-enabled/journal50.drxdhr.store
-    elif [ "$listening" -eq 1 ]; then
-      site=$(grep -R -l 'journal.50sea.com' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -1 || true)
-      if [ -n "$site" ] && ! grep -q "$HOST" "$site"; then
-        say "adding ${HOST} to ${site}"
-        $SUDO cp -a "$site" /tmp/journal50-nginx-site.bak
-        $SUDO sed -i "s/server_name journal.50sea.com;/server_name journal.50sea.com ${HOST};/" "$site"
-      fi
-    fi
-    if $SUDO nginx -t; then
-      $SUDO nginx -s reload || $SUDO systemctl reload nginx || true
-      say "nginx reloaded for ${HOST}"
-    else
-      say "nginx config test failed; restored the previous site"
-      $SUDO rm -f /etc/nginx/sites-enabled/journal50.drxdhr.store "$conf"
-      if [ -f /tmp/journal50-nginx-site.bak ] && [ -n "${site:-}" ]; then
-        $SUDO cp -a /tmp/journal50-nginx-site.bak "$site"
-      fi
-      $SUDO nginx -t >/dev/null 2>&1 || true
-    fi
-  else
-    say "no host nginx to attach; origin port was ${port}"
+
+  # upstream is http://host:port/
+  rest=${upstream#http://}
+  rest=${rest%/}
+  up_host=${rest%%:*}
+  up_port=${rest##*:}
+  if [ "$up_host" = "$up_port" ]; then
+    up_port=80
   fi
+  say "forwarding 127.0.0.1:${port} -> ${up_host}:${up_port}"
+
+  install -d /usr/local/sbin
+  cat >/usr/local/sbin/journal50-origin-proxy.py <<'PY'
+#!/usr/bin/env python3
+"""TCP proxy: cloudflared's loopback origin -> the live journal."""
+import os
+import socket
+import threading
+
+listen_port = int(os.environ["LISTEN_PORT"])
+up_host = os.environ["UP_HOST"]
+up_port = int(os.environ["UP_PORT"])
+
+
+def pipe(src, dst):
+    try:
+        while True:
+            data = src.recv(65536)
+            if not data:
+                break
+            dst.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for sock, how in ((src, socket.SHUT_RD), (dst, socket.SHUT_WR)):
+            try:
+                sock.shutdown(how)
+            except OSError:
+                pass
+
+
+def handle(client):
+    try:
+        upstream = socket.create_connection((up_host, up_port), timeout=10)
+    except OSError:
+        client.close()
+        return
+    upstream.settimeout(None)
+    left = threading.Thread(target=pipe, args=(client, upstream), daemon=True)
+    right = threading.Thread(target=pipe, args=(upstream, client), daemon=True)
+    left.start()
+    right.start()
+    left.join()
+    right.join()
+    client.close()
+    upstream.close()
+
+
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", listen_port))
+server.listen(64)
+while True:
+    client, _addr = server.accept()
+    threading.Thread(target=handle, args=(client,), daemon=True).start()
+PY
+  chmod 755 /usr/local/sbin/journal50-origin-proxy.py
+  cat >/etc/systemd/system/journal50-origin-proxy.service <<EOF
+[Unit]
+Description=Forward journal50.drxdhr.store origin to the live journal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=LISTEN_PORT=${port}
+Environment=UP_HOST=${up_host}
+Environment=UP_PORT=${up_port}
+ExecStart=/usr/bin/python3 /usr/local/sbin/journal50-origin-proxy.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now journal50-origin-proxy.service
+  sleep 1
+  systemctl --no-pager --full status journal50-origin-proxy.service | head -20 || true
+  local_code=$(http_code "http://127.0.0.1:${port}/" "$HOST")
+  say "local :${port} -> ${local_code}"
 fi
 
 sleep 2
 code=$(public_code)
-snip=$(head -c 80 "$BODY" 2>/dev/null | tr '\n' ' ')
+snip=$(head -c 100 "$BODY" 2>/dev/null | tr '\n' ' ')
 say "after ${code} ${snip}"
-if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
+if good_code "$code"; then
   exit 0
 fi
 exit 1
