@@ -229,30 +229,7 @@ Recording is on while you are signed in. See the notice from your administrator.
     $shortcut.Save()
 }
 
-if (-not $SkipAppLocker -and -not $WhatIfPreference) {
-    try {
-        New-Item -ItemType Directory -Path $root -Force | Out-Null
-        $clearPath = Join-Path $root "applocker-clear.xml"
-        @"
-<AppLockerPolicy Version="1">
-  <RuleCollection Type="Appx" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Exe" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Msi" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Script" EnforcementMode="NotConfigured" />
-</AppLockerPolicy>
-"@ | Set-Content -Path $clearPath -Encoding Unicode
-        Set-AppLockerPolicy -XmlPolicy $clearPath
-        Stop-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue
-        Set-Service -Name AppIDSvc -StartupType Disabled -ErrorAction SilentlyContinue
-        Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2" -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "Office and other programs are allowed. Application blocking is off."
-    }
-    catch {
-        Write-Host "Application blocking could not be cleared. Word may still fail for the employee until that block is removed. $($_.Exception.Message)"
-    }
-}
-
+Write-Host "Word, Excel, and PowerPoint stay allowed. This installer does not block programs."
 Write-Host ""
 Write-Host "Pilot is ready for one employee."
 Write-Host "1. Update Windows if this PC is still on an old Windows 11 build, then restart."
@@ -262,4 +239,4 @@ Write-Host "4. Sign out. Wait one minute. Open the Work session report shortcut 
 Write-Host "5. Give the employee NOTICE.txt and the login only after that test looks right."
 Write-Host "Reports stay in $root\Reports"
 Write-Host "Do not open Remote Desktop directly to the internet. Use a private network such as Tailscale, then connect to this PC."
-Write-Host "Word, Excel, and PowerPoint stay allowed for the employee."
+Write-Host "Word, Excel, and PowerPoint stay allowed for the employee. Program blocking is not used."

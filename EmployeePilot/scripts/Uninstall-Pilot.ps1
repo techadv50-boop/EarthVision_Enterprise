@@ -31,11 +31,8 @@ if ($PSCmdlet.ShouldProcess("WorkPilot", "Remove scheduled tasks and pilot polic
         }
     }
 
-    $backup = Join-Path $root "applocker-backup.xml"
-    if (Test-Path $backup) {
-        Set-AppLockerPolicy -XmlPolicy $backup
-        Write-Host "Restored the previous AppLocker policy."
-    }
+    Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2" -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Program blocking was removed so Office can open."
 
     if ($RemoveUser) {
         $user = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
