@@ -224,11 +224,24 @@ The administrator receives a report after you sign out.
 
     public static void ApplyEmployeeLimits(Action<string> log)
     {
-        var config = RequiredConfig();
+        var config = PilotConfigStore.Load(PilotPaths.Config);
+        if (config is null || string.IsNullOrWhiteSpace(config.UserName))
+        {
+            return;
+        }
         var allowed = config.AllowedFolders is { Count: > 0 }
             ? config.AllowedFolders
             : new List<string> { "Desktop", "Documents", "Downloads" };
-        EmployeeDesktopLimits.Apply(config.UserName, config.WorkFolder, allowed, log);
+        try
+        {
+            EmployeeDesktopLimits.Apply(config.UserName, config.WorkFolder, allowed, log);
+        }
+        catch (InvalidOperationException ex)
+        {
+            log("Folder limits apply after the employee signs in once.");
+            log(ex.Message);
+        }
+        Directory.CreateDirectory(PilotPaths.Root);
         File.WriteAllText(Path.Combine(PilotPaths.Root, "NOTICE.txt"), Notice);
     }
 

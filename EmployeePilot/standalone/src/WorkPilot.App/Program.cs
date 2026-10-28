@@ -11,8 +11,11 @@ public static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => CrashLog.Write(eventArgs.ExceptionObject as Exception);
         TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
         {
-            CrashLog.Write(eventArgs.Exception);
             eventArgs.SetObserved();
+            if (!IsClosedConnection(eventArgs.Exception))
+            {
+                CrashLog.Write(eventArgs.Exception, notify: false);
+            }
         };
         try
         {
@@ -67,4 +70,21 @@ public static class Program
 
     private static bool Has(string[] args, string flag) =>
         args.Any(arg => string.Equals(arg, flag, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsClosedConnection(Exception exception)
+    {
+        if (exception is AggregateException aggregate)
+        {
+            return aggregate.InnerExceptions.Count > 0 && aggregate.InnerExceptions.All(IsClosedConnection);
+        }
+        if (exception is System.Net.Sockets.SocketException socket && socket.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset)
+        {
+            return true;
+        }
+        if (exception is IOException && exception.Message.Contains("forcibly closed", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return exception.InnerException is not null && IsClosedConnection(exception.InnerException);
+    }
 }
