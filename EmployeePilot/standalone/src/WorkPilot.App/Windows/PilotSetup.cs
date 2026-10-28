@@ -175,8 +175,9 @@ The administrator receives a report after you sign out.
             "-Command",
             $"Set-AppLockerPolicy -XmlPolicy '{policyPath}'");
         WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "stop", "AppIDSvc");
-        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "config", "AppIDSvc", "start=", "demand");
-        log("Word, Excel, and PowerPoint are allowed to start.");
+        WindowsCommand.Run(WindowsCommand.SystemTool("sc.exe"), "config", "AppIDSvc", "start=", "disabled");
+        WindowsCommand.Run("reg.exe", "delete", @"HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2", "/f");
+        log("Word, Excel, and PowerPoint are allowed to start. Restart the computer once if Word was already showing an error.");
     }
 
     public static void ApplyAppLocker(bool enforce, Action<string> log)
