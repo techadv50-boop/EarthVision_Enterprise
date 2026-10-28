@@ -56,6 +56,11 @@ public static class Program
             WindowsAdmin.RelaunchElevated();
             return;
         }
+        using var alreadyOpen = new Mutex(true, @"Local\WorkPilotControl", out var created);
+        if (!created)
+        {
+            return;
+        }
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

@@ -332,7 +332,7 @@ public class MainWindow : Window
         catch (Exception ex)
         {
             CrashLog.Write(ex, notify: false);
-            if (ex is IOException && ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase))
+            if (ex is IOException)
             {
                 return;
             }
