@@ -351,7 +351,7 @@ The administrator receives a report after you sign out.
         }
         if (locked is not null)
         {
-            throw locked;
+            return "";
         }
         if (config is not null)
         {
@@ -467,8 +467,15 @@ The administrator receives a report after you sign out.
         var fullDest = Path.GetFullPath(PilotPaths.Exe);
         if (!string.Equals(fullSource, fullDest, StringComparison.OrdinalIgnoreCase))
         {
-            File.Copy(fullSource, fullDest, true);
-            log($"Copied the program to {fullDest}");
+            try
+            {
+                File.Copy(fullSource, fullDest, true);
+                log($"Copied the program to {fullDest}");
+            }
+            catch (IOException)
+            {
+                log("WorkPilot is already running, so the current program file was left in place.");
+            }
         }
     }
 
