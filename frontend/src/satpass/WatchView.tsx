@@ -246,6 +246,15 @@ export default function WatchView() {
     );
   };
 
+  const toggleTrackKey = (key: string) => {
+    const hit = hits.find((item) => satKey(item) === key);
+    if (hit) {
+      toggleTrack(hit);
+      return;
+    }
+    setTracks((prev) => prev.filter((item) => item.key !== key));
+  };
+
   const trackLines = useMemo((): WatchTrackLine[] => {
     return tracks.flatMap((track, index) => {
       try {
@@ -560,6 +569,9 @@ export default function WatchView() {
                 Export list{matched.length > 0 ? ` (${matched.length.toLocaleString()})` : ''}
               </button>
               <p className="mt-1 text-[10px] text-gray-500">
+                Click a satellite on the map to turn its track on or off. Each one stays on until you turn that one off.
+              </p>
+              <p className="mt-1 text-[10px] text-gray-500">
                 CSV with name, location, swath, and type (optical, SAR, communication, and others).
                 {matched.length > visible.length ? ' The file includes every match, not only the rows on screen.' : ''}
               </p>
@@ -673,6 +685,9 @@ export default function WatchView() {
           guideName={level === 3 ? provinceName || null : null}
           hits={visible}
           onArea={onMapArea}
+          onSat={toggleTrack}
+          onTrackKey={toggleTrackKey}
+          trackedKeys={tracks.map((item) => item.key)}
           trackLines={trackLines}
           trackMotion={Object.values(trackMotion)}
         />

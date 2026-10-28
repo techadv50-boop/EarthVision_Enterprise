@@ -37,6 +37,9 @@ interface Props {
   guideName: string | null;
   hits: WatchHit[];
   onArea: (feature: GeoJSON.Feature) => void;
+  onSat: (hit: WatchHit) => void;
+  onTrackKey: (key: string) => void;
+  trackedKeys: string[];
   trackLines: WatchTrackLine[];
   trackMotion: WatchTrackMotion[];
 }
@@ -83,6 +86,9 @@ export default function WatchMap({
   guideName,
   hits,
   onArea,
+  onSat,
+  onTrackKey,
+  trackedKeys,
   trackLines,
   trackMotion,
 }: Props) {
@@ -94,6 +100,10 @@ export default function WatchMap({
   const motionRef = useRef<L.LayerGroup | null>(null);
   const onAreaRef = useRef(onArea);
   onAreaRef.current = onArea;
+  const onSatRef = useRef(onSat);
+  onSatRef.current = onSat;
+  const onTrackKeyRef = useRef(onTrackKey);
+  onTrackKeyRef.current = onTrackKey;
   const selectedRef = useRef(selectedName);
   selectedRef.current = selectedName;
   const guideRef = useRef(guideName);
@@ -201,19 +211,24 @@ export default function WatchMap({
         motion.headingDeg == null
           ? ''
           : `<br>${motion.speedKmS.toFixed(2)} km/s · heading ${motion.headingDeg.toFixed(0)}° ${compassPoint(motion.headingDeg)}`;
-      motionLayer.addLayer(
-        L.circleMarker(here, {
-          pane: 'markerPane',
-          radius: 7,
-          color: '#fff',
-          weight: 2,
-          fillColor: motion.color,
-          fillOpacity: 1,
-        }).bindTooltip(
-          `<b>${motion.name}</b><br>${motion.lat.toFixed(2)}, ${motion.lon.toFixed(2)} · ${motion.altKm.toFixed(0)} km${heading}`,
-          { permanent: true, direction: 'top', offset: [0, -8] },
-        ),
+      const satMarker = L.circleMarker(here, {
+        pane: 'markerPane',
+        radius: 7,
+        color: '#fff',
+        weight: 2,
+        fillColor: motion.color,
+        fillOpacity: 1,
+      }).bindTooltip(
+        `<b>${motion.name}</b><br>${motion.lat.toFixed(2)}, ${motion.lon.toFixed(2)} · ${motion.altKm.toFixed(0)} km${heading}<br>Click to hide this track`,
+        { permanent: true, direction: 'top', offset: [0, -8] },
       );
+      satMarker.on('click', (ev) => {
+        L.DomEvent.stopPropagation(ev);
+        onTrackKeyRef.current(motion.key);
+      });
+      motionLayer.addLayer(satMarker);
+      const satEl = satMarker.getElement() as SVGElement | undefined;
+      if (satEl) satEl.style.cursor = 'pointer';
       if (motion.headingDeg != null) {
         const tip = destinationPoint(motion.lat, motion.lon, motion.headingDeg, Math.max(180, motion.altKm * 0.2));
         motionLayer.addLayer(
@@ -232,24 +247,33 @@ export default function WatchMap({
     const marks = marksRef.current;
     if (!marks || !ready) return;
     marks.clearLayers();
-    const plotted = hits.filter((hit) => hit.relation === 'overhead' || hit.relation === 'watching').slice(0, 80);
+    const plotted = hits.filter((hit) => hit.relation === 'overhead' || hit.relation === 'watching');
+    const tracked = new Set(trackedKeys);
     for (const hit of plotted) {
+      const key = hit.noradId != null ? `n${hit.noradId}` : hit.line1;
+      const on = tracked.has(key);
       const color = markerColor(hit.relation);
       const marker = L.circleMarker([hit.lat, hit.lon], {
         pane: 'markerPane',
         radius: hit.relation === 'overhead' ? 6 : 4,
-        color,
-        weight: 2,
+        color: on ? '#fff' : color,
+        weight: on ? 3 : 2,
         fillColor: color,
         fillOpacity: 0.9,
       });
       marker.bindTooltip(
-        `${hit.name}<br>${hit.constellation} · ${hit.relation === 'overhead' ? 'Over the area' : 'Swath covers the area'}`,
+        `${hit.name}<br>${hit.constellation} · ${hit.relation === 'overhead' ? 'Over the area' : 'Swath covers the area'}<br>${on ? 'Click to hide this track' : 'Click to show this track'}`,
         { direction: 'top', offset: [0, -4] },
       );
+      marker.on('click', (ev) => {
+        L.DomEvent.stopPropagation(ev);
+        onSatRef.current(hit);
+      });
       marks.addLayer(marker);
+      const el = marker.getElement() as SVGElement | undefined;
+      if (el) el.style.cursor = 'pointer';
     }
-  }, [hits, ready]);
+  }, [hits, trackedKeys, ready]);
 
   return <div ref={containerRef} className="absolute inset-0 h-full w-full" style={{ background: '#0b1622' }} />;
 }
