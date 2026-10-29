@@ -2,7 +2,8 @@
 
 **Host SDK:** `≥1.5.0`  
 **Satellites:** Sentinel-2, Landsat-7, Landsat-8, Landsat-9 (MODIS when catalogued)  
-**Presentation:** `processed_preview` (soft PNG + swipe; Host-owned)
+**Presentation:** `processed_preview` (soft PNG + swipe; Host-owned)  
+**Publisher:** `sateye-optical-indices` (production Ed25519)
 
 These packs extend the Host without per-tool frontend forks. Band recipes match `backend/app/services/satellite_bands.py`.
 
@@ -21,13 +22,31 @@ These packs extend the Host without per-tool frontend forks. Band recipes match 
 python3 scripts/tools/build_optical_indices_plugins.py
 ```
 
-Zips land in `tools/plugins/<id>/releases/<id>-1.0.0.zip`.
+Unsigned artifact trees land under `tools/plugins/<id>/artifacts/`. Production zips must include `SIGNATURE.json` (publisher `sateye-optical-indices`).
+
+## Production trust (required before Validate)
+
+Admin health shows **SIGNATURES REQUIRED** + **TRUST PRODUCTION**. The image-default publishers file is empty; install an allowlist:
+
+1. Copy `tools/publishers/approved_publishers.optical_indices.json` to the live volume:
+
+   `/data/tool_packs/publishers/approved_publishers.json`
+
+2. Set backend env:
+
+   - `EV_PACK_PUBLISHERS=/data/tool_packs/publishers/approved_publishers.json`
+   - `EV_PACK_TRUST_PROFILE=production`
+
+3. Recreate backend only (no image rebuild required for the allowlist file).
+
+Publisher ids in that file: `sateye-optical-tc` (true color) and `sateye-optical-indices` (FCC / NDVI / NDWI / NDBI / spectral). Public keys only.
 
 ## Install (Admin)
 
-1. Confirm Host health shows Host SDK **1.5.0+**.
-2. Admin → Plugins → Upload each zip → arrange in Tool Tree → Activate.
-3. Users only see tools after Admin activation / account tool grants.
+1. Confirm Host health shows Host SDK **1.5.0+** and trust is ready (no red production-trust banner).
+2. Upload each **signed** zip from `tools/plugins/<id>/releases/<id>-1.0.0.zip`.
+3. Arrange in Tool Tree → Activate.
+4. Users only see tools after Admin activation / account tool grants.
 
 ## Landsat / Sentinel band notes (examples)
 

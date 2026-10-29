@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "digest": "sha256:9465c7a9857a372111c1c5e209050ec05b9dfe1288db5c2115acad3f8f9f6ebe",
+  "algorithm": "ed25519",
+  "publisher_id": "sateye-optical-indices",
+  "signature": "duRhBqR7jhgsFJ0YnGuhx8GtjqrETej2ScciVijqDq3QO010rNszxOWPLYId5QbAxAjmp_ul4hPbbu3bCyYSAg"
+}

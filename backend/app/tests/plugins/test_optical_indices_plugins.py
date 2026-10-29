@@ -31,8 +31,11 @@ def test_optical_plugin_artifact_layout(plugin_id: str):
         pytest.skip(f"{plugin_id} artifact missing — run build_optical_indices_plugins.py")
     pack = json.loads((art / "pack.json").read_text(encoding="utf-8"))
     meta = json.loads((art / "ui" / "tool-meta.json").read_text(encoding="utf-8"))
+    sig = json.loads((art / "SIGNATURE.json").read_text(encoding="utf-8"))
     assert pack["plugin_id"] == plugin_id
     assert pack["digest"].startswith("sha256:")
+    assert sig["publisher_id"] == "sateye-optical-indices"
+    assert sig["digest"] == pack["digest"]
     assert meta["map_presentation"] == "processed_preview"
     assert meta["optical_only"] is True
     for sat in ("SENTINEL-2", "LANDSAT-7", "LANDSAT-8", "LANDSAT-9"):
