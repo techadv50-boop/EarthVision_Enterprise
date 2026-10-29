@@ -55,7 +55,7 @@ async def get_host_libraries(admin: AdminUser) -> dict:
     return list_installed()
 
 
-@router.post("/upload")
+@router.post("/upload", response_model=None)
 async def upload_host_libraries(admin: AdminUser, body: UploadWheelsBody) -> dict | JSONResponse:
     """Install uploaded .whl / .tar.gz into the Host extras volume (no rebuild)."""
     try:
@@ -72,7 +72,7 @@ async def upload_host_libraries(admin: AdminUser, body: UploadWheelsBody) -> dic
         return _err(exc)
 
 
-@router.post("/pip-install")
+@router.post("/pip-install", response_model=None)
 async def pip_install_host_library(
     admin: AdminUser, body: PipInstallBody
 ) -> dict | JSONResponse:
@@ -86,7 +86,7 @@ async def pip_install_host_library(
         return _err(exc)
 
 
-@router.post("/uninstall")
+@router.post("/uninstall", response_model=None)
 async def uninstall_host_library(
     admin: AdminUser, body: UninstallBody
 ) -> dict | JSONResponse:

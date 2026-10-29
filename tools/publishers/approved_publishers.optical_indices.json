@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "notes": "Merge into live EV_PACK_PUBLISHERS allowlist (production volume). Public keys only. Includes optical true-color + optical indices publishers.",
+  "publishers": [
+    {
+      "id": "sateye-optical-tc",
+      "name": "SATEYE Optical True Color Pack Publisher",
+      "environment": "production",
+      "enabled": true,
+      "public_key": "Ibo7OGTHRyFxOYbjuM47SEupOz2A0WtN29JNbCq-7UQ"
+    },
+    {
+      "id": "sateye-optical-indices",
+      "name": "SATEYE Optical Indices / FCC Pack Publisher",
+      "environment": "production",
+      "enabled": true,
+      "public_key": "9_USRffI40j0wMAGRbmGxNUJdmkQjP95EA3PGm2_pr0"
+    }
+  ]
+}

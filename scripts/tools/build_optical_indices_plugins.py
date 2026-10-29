@@ -777,13 +777,14 @@ def materialize(
     }
     write(dest / "pack.json", json.dumps(pack_meta, indent=2))
 
-    # Zip for Admin upload
+    # Zip for Admin upload. Do not use Path.with_suffix on x.y.z — it strips to x.y.zip.
     releases = PLUGINS / plugin_id / "releases"
     releases.mkdir(parents=True, exist_ok=True)
-    zip_base = releases / f"{plugin_id}-{version}"
-    if zip_base.with_suffix(".zip").exists():
-        zip_base.with_suffix(".zip").unlink()
-    shutil.make_archive(str(zip_base), "zip", root_dir=dest)
+    zip_base = str(releases / f"{plugin_id}-{version}")
+    zip_path = Path(zip_base + ".zip")
+    if zip_path.exists():
+        zip_path.unlink()
+    shutil.make_archive(zip_base, "zip", root_dir=dest)
 
     install = PLUGINS / plugin_id / "INSTALL.md"
     write(
@@ -794,14 +795,18 @@ def materialize(
 **Version:** `{version}`  
 **Host SDK:** `>=1.5.0,<2`  
 **Map presentation:** `processed_preview`  
-**Satellites:** Sentinel-2, Landsat-7, Landsat-8, Landsat-9 (MODIS when available)
+**Satellites:** Sentinel-2, Landsat-7, Landsat-8, Landsat-9 (MODIS when available)  
+**Publisher:** `sateye-optical-indices` (Ed25519 `SIGNATURE.json` required in production)
 
 ## Install (Admin only)
 
 1. Deploy Host Shell with SDK **1.5+** (includes `host.renderComposite` / `host.renderIndex`).
-2. Admin → Plugins → Upload Plugin → choose  
+2. Production trust: merge `tools/publishers/approved_publishers.optical_indices.json`  
+   into the live `EV_PACK_PUBLISHERS` file (volume  
+   `/data/tool_packs/publishers/approved_publishers.json`).
+3. Admin → Plugins → Upload Plugin → choose the **signed** zip  
    `tools/plugins/{plugin_id}/releases/{plugin_id}-{version}.zip`
-3. Place under Tool Tree → Activate.
+4. Place under Tool Tree → Activate.
 
 ## Behaviour
 
