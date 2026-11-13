@@ -94,19 +94,22 @@ export function QuietButton({
   children,
   onClick,
   disabled,
+  pressed = false,
   type = "button",
 }: {
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  pressed?: boolean;
   type?: "button" | "submit";
 }) {
   return (
     <button
       type={type}
       disabled={disabled}
+      aria-pressed={pressed}
       onClick={onClick}
-      className="rounded-xl border border-line bg-card px-3 py-2 text-sm font-medium disabled:opacity-50"
+      className={`rounded-xl border px-3 py-2 text-sm font-medium disabled:opacity-50 ${pressed ? "border-accent bg-accent text-accent-ink" : "border-line bg-card"}`}
     >
       {children}
     </button>

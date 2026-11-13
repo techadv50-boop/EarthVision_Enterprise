@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errorText } from "../api";
-import { Crumbs, EmptyState, Notice, PageHeader, PrimaryButton, QuietButton, inputClass } from "../components/ui";
-import { countNoun, formatClock } from "../format";
+import { PlanModeSwitch, TimeChoices, type PlanMode } from "../components/TestChoice";
+import { Crumbs, EmptyState, Notice, PageHeader, PrimaryButton, inputClass } from "../components/ui";
+import { countNoun, formatClock, formatDuration } from "../format";
 import { useStudent } from "../store";
-import { estimateSeconds, fitMix, useAll, type QuestionMix, type QuestionSeconds } from "../testPlan";
+import { MIX_LABELS, ORAL_TOPIC_SECONDS, estimateSeconds, fitMix, type QuestionMix, type QuestionSeconds } from "../testPlan";
 import type { BookSummary, ChapterSummary, ClassSummary, Proposal } from "../types";
-
-const ORAL_SECONDS = 180;
 const PENDING_ORAL = "study-recall-pending-oral";
 
 const emptyMix: QuestionMix = { fib: 0, mcq: 0, short: 0, long: 0, oral: 0 };
@@ -23,7 +22,9 @@ export function Written() {
   const [difficulty, setDifficulty] = useState("standard");
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [counts, setCounts] = useState<QuestionMix>(emptyMix);
-  const [seconds, setSeconds] = useState<QuestionSeconds>({ fib: 60, mcq: 45, short: 240, long: 600, oral: ORAL_SECONDS });
+  const [mode, setMode] = useState<PlanMode>("time");
+  const [minutes, setMinutes] = useState(30);
+  const [seconds, setSeconds] = useState<QuestionSeconds>({ fib: 60, mcq: 45, short: 240, long: 600, oral: ORAL_TOPIC_SECONDS });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -40,6 +41,8 @@ export function Written() {
     setProposal(null);
     setSelected([]);
     setCounts(emptyMix);
+    setMode("time");
+    setMinutes(30);
     api.listChapters(bookId, false).then(setChapters).catch((err) => setError(errorText(err)));
   }, [bookId]);
 
@@ -50,7 +53,7 @@ export function Written() {
         mcq: settings.mcqSeconds,
         short: settings.shortSeconds,
         long: settings.longSeconds,
-        oral: ORAL_SECONDS,
+        oral: ORAL_TOPIC_SECONDS,
       });
     }).catch(() => undefined);
   }, []);
@@ -68,13 +71,20 @@ export function Written() {
     api.proposeExam(student.id, bookId, selected, difficulty).then((next) => {
       if (!live) return;
       setProposal(next);
-      setCounts(fitMix(30 * 60, {
+      const caps = {
         fib: next.fibAvailable,
         mcq: next.mcqAvailable,
         short: next.shortAvailable,
         long: next.longAvailable,
         oral: capsOral,
-      }, seconds));
+      };
+      setCounts((current) => mode === "time" ? fitMix(minutes * 60, caps, seconds) : {
+        fib: Math.min(current.fib, caps.fib),
+        mcq: Math.min(current.mcq, caps.mcq),
+        short: Math.min(current.short, caps.short),
+        long: Math.min(current.long, caps.long),
+        oral: Math.min(current.oral, caps.oral),
+      });
       setError("");
     }).catch((err) => {
       if (live) setError(errorText(err));
@@ -82,7 +92,7 @@ export function Written() {
     return () => {
       live = false;
     };
-  }, [student, bookId, planKey, difficulty, selected, oralAvailable, seconds]);
+  }, [student, bookId, planKey, difficulty, selected, oralAvailable, seconds, mode, minutes]);
 
   async function start() {
     if (!student) return;
@@ -112,15 +122,24 @@ export function Written() {
     }
   }
 
-  function applyFit(minutes: number) {
-    if (!proposal) return;
-    setCounts(fitMix(minutes * 60, {
-      fib: proposal.fibAvailable,
-      mcq: proposal.mcqAvailable,
-      short: proposal.shortAvailable,
-      long: proposal.longAvailable,
+  function caps(): QuestionMix {
+    return {
+      fib: proposal?.fibAvailable ?? 0,
+      mcq: proposal?.mcqAvailable ?? 0,
+      short: proposal?.shortAvailable ?? 0,
+      long: proposal?.longAvailable ?? 0,
       oral: oralAvailable,
-    }, seconds));
+    };
+  }
+
+  function chooseTime(nextMinutes: number) {
+    setMode("time");
+    setMinutes(nextMinutes);
+    if (proposal) setCounts(fitMix(nextMinutes * 60, caps(), seconds));
+  }
+
+  function chooseCountMode() {
+    setMode("count");
   }
 
   if (!student) return <Notice>Create a student profile before starting a written test.</Notice>;
@@ -131,7 +150,7 @@ export function Written() {
     <div>
       <PageHeader
         title="Go for a Written Test"
-        lede="Choose the chapters, then choose how many questions of each type you want. A short time, such as 30 minutes, can be a small test. A longer time can use more questions. Questions still come only from your notes."
+        lede="Choose the chapters, then choose the test in one of two ways. Go by time, and the app lists how many of each question fit. Go by number of questions, and the app calculates the time that paper needs. Questions still come only from your notes."
       />
       {error ? <div className="mb-4"><Notice tone="error">{error}</Notice></div> : null}
       <Crumbs
@@ -181,37 +200,61 @@ export function Written() {
               <p className="text-sm text-muted">
                 These notes can support {proposal.fibAvailable} blanks, {proposal.mcqAvailable} multiple choice, {proposal.shortAvailable} short, {proposal.longAvailable} long, and {oralAvailable} oral topics.
               </p>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <CountField label="Fill in the blanks" max={proposal.fibAvailable} value={counts.fib} onChange={(fib) => setCounts({ ...counts, fib })} />
-                <CountField label="Multiple choice" max={proposal.mcqAvailable} value={counts.mcq} onChange={(mcq) => setCounts({ ...counts, mcq })} />
-                <CountField label="Short written questions" max={proposal.shortAvailable} value={counts.short} onChange={(short) => setCounts({ ...counts, short })} />
-                <CountField label="Long written questions" max={proposal.longAvailable} value={counts.long} onChange={(long) => setCounts({ ...counts, long })} />
-                <CountField label="Oral recall topics" max={oralAvailable} value={counts.oral} onChange={(oral) => setCounts({ ...counts, oral })} />
-              </div>
-              <p className="text-sm">
-                Estimated time {formatClock(estimateSeconds(counts, seconds) * 1000)}. Written questions use the timers in Settings. Each oral topic is planned as about 3 minutes and has no countdown.
-              </p>
+              <PlanModeSwitch mode={mode} onChange={(next) => next === "time" ? chooseTime(minutes) : chooseCountMode()} />
+              {mode === "time" ? (
+                <div className="space-y-3">
+                  <TimeChoices minutes={minutes} onChange={chooseTime} label="Time for the written test" />
+                  <QuestionBreakdown counts={counts} seconds={seconds} chosenMinutes={minutes} />
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <CountField label="Fill in the blanks" max={proposal.fibAvailable} value={counts.fib} onChange={(fib) => setCounts({ ...counts, fib })} />
+                    <CountField label="Multiple choice" max={proposal.mcqAvailable} value={counts.mcq} onChange={(mcq) => setCounts({ ...counts, mcq })} />
+                    <CountField label="Short written questions" max={proposal.shortAvailable} value={counts.short} onChange={(short) => setCounts({ ...counts, short })} />
+                    <CountField label="Long written questions" max={proposal.longAvailable} value={counts.long} onChange={(long) => setCounts({ ...counts, long })} />
+                    <CountField label="Oral recall topics" max={oralAvailable} value={counts.oral} onChange={(oral) => setCounts({ ...counts, oral })} />
+                  </div>
+                  <QuestionBreakdown counts={counts} seconds={seconds} />
+                </div>
+              )}
               <p className="text-sm text-muted">
-                Marks follow the questions you choose: 3 for each blank, 2 for each multiple-choice question, 5 for each short question, and 15 for each long question. Oral topics are scored separately.
+                Marks follow the questions: 3 for each blank, 2 for each multiple-choice question, 5 for each short question, and 15 for each long question. Oral topics are scored separately and have no countdown.
               </p>
-              <div className="flex flex-wrap gap-2">
-                <QuietButton onClick={() => applyFit(15)}>About 15 minutes</QuietButton>
-                <QuietButton onClick={() => applyFit(30)}>About 30 minutes</QuietButton>
-                <QuietButton onClick={() => applyFit(60)}>About 60 minutes</QuietButton>
-                <QuietButton onClick={() => setCounts(useAll({
-                  fib: proposal.fibAvailable,
-                  mcq: proposal.mcqAvailable,
-                  short: proposal.shortAvailable,
-                  long: proposal.longAvailable,
-                  oral: oralAvailable,
-                }))}>Use every available question</QuietButton>
-              </div>
               <PrimaryButton disabled={busy} onClick={() => void start()}>
                 {busy ? "Starting…" : "Start this test"}
               </PrimaryButton>
             </div>
           ) : null}
         </section>
+      ) : null}
+    </div>
+  );
+}
+
+function QuestionBreakdown({ counts, seconds, chosenMinutes }: { counts: QuestionMix; seconds: QuestionSeconds; chosenMinutes?: number }) {
+  const used = estimateSeconds(counts, seconds);
+  const rows = MIX_LABELS.filter((row) => counts[row.key] > 0);
+  const periodLabel = chosenMinutes == null ? "" : chosenMinutes >= 60 && chosenMinutes % 60 === 0
+    ? `${chosenMinutes / 60} ${chosenMinutes === 60 ? "hour" : "hours"}`
+    : `${chosenMinutes} minutes`;
+  return (
+    <div className="rounded-xl border border-line p-4">
+      <h3 className="font-semibold">
+        {chosenMinutes == null ? "Time allocated for this paper" : `Questions that fit in ${periodLabel}`}
+      </h3>
+      {rows.length === 0 ? <p className="mt-2 text-sm">These notes cannot support a question in this choice.</p> : (
+        <ul className="mt-2 space-y-1 text-sm">
+          {rows.map((row) => (
+            <li key={row.key}>
+              {countNoun(counts[row.key], row.singular, row.plural)} · {formatClock(seconds[row.key] * 1000)} each · {formatDuration(counts[row.key] * seconds[row.key])}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-3 text-sm font-medium">Time for this paper: {formatDuration(used)}.</p>
+      {chosenMinutes != null && used < chosenMinutes * 60 ? (
+        <p className="mt-1 text-sm text-muted">The notes run out before the full period. This is the longest mix they can support.</p>
       ) : null}
     </div>
   );

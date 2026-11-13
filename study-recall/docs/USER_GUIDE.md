@@ -41,7 +41,13 @@ The app does not invent facts. If a fact is not in the saved note, it will not b
 
 Choose Go for an Oral Test, then a class, book, and chapter.
 
-Choose how many topics to recall. A short study period can use a few topics, and a longer one can use every topic that has notes. The chosen topics are shuffled. A topic is not repeated in the same test. Skipping a topic records it as skipped. Plan about 3 minutes for each topic.
+Choose one of the two ways to size the test.
+
+Go by time, and choose 15 minutes, 30 minutes, 45 minutes, 1 hour, 2 hours, or 3 hours. The page shows how many topics fit in that period. Each topic is planned as 3 minutes. If the chapter has fewer topics than the period can hold, the sitting uses only those topics.
+
+Go by number of topics, and type how many topics to recall. The page then shows the time allocated for that sitting.
+
+The chosen topics are shuffled. A topic is not repeated in the same test. Skipping a topic records it as skipped.
 
 Explain the topic by speaking or typing. Choose Listen to hear the prompt with the Windows speaking voice. Submit the transcript you approve. The score looks at:
 
@@ -57,7 +63,11 @@ At the end you see attempted topics, the average, successful and partial recalls
 
 Choose Go for a Written Test, then a class and book. Tick one or more chapters. Choose a difficulty.
 
-Then choose how many questions you want of each type:
+Then choose one of the two ways to size the paper.
+
+Go by time. Choose 15 minutes, 30 minutes, 45 minutes, 1 hour, 2 hours, or 3 hours. The page lists how many fill-in-the-blank, multiple-choice, short, long, and oral questions fit in that period. If the notes run out first, it shows the longest mix those notes can support and the time that mix takes.
+
+Go by number of questions. Set how many of each type you want:
 
 - fill in the blanks
 - multiple choice
@@ -65,7 +75,7 @@ Then choose how many questions you want of each type:
 - long written questions
 - oral recall topics
 
-The page shows how many of each type the selected notes can support, and an estimated time from the timers in Settings. Choose About 15 minutes, About 30 minutes, or About 60 minutes when you want a size that fits that time, or type your own numbers. Use every available question when you want the longest test the notes can support.
+The page then calculates the time allocated for that paper from the timers in Settings. Each oral topic is planned as 3 minutes.
 
 The app does not add questions beyond the notes, and it does not pad a small choice up to 100 marks. Each blank is 3 marks, each multiple-choice question is 2, each short question is 5, and each long question is 15. If you also choose oral topics, those begin after the written result.
 
@@ -96,7 +106,7 @@ Print or save as PDF uses the system print dialog so Urdu text can use your inst
 
 Progress shows averages, recent scores, and results by class, subject, chapter, and topic. Topics are grouped as needs revision, developing, or well remembered, using the thresholds in Settings. The underlying percentages are shown.
 
-Topics needing revision can start another oral test. Choose how many of those topics to practice. Older results are kept.
+Topics needing revision can start another oral test. Go by time, or set how many of those topics to practice. The page shows the time for that practice. Older results are kept.
 
 ## Backup
 

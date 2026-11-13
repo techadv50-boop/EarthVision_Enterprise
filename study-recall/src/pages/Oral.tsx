@@ -3,8 +3,10 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, errorText } from "../api";
 import { Recorder } from "../components/Recorder";
 import { SpeakButton } from "../components/SpeakButton";
+import { PlanModeSwitch, TimeChoices, type PlanMode } from "../components/TestChoice";
 import { Crumbs, EmptyState, Notice, PageHeader, PrimaryButton, QuietButton, inputClass } from "../components/ui";
-import { countNoun, formatPercent, statusLabel } from "../format";
+import { countNoun, formatDuration, formatPercent, statusLabel } from "../format";
+import { ORAL_TOPIC_SECONDS, countWithinTime } from "../testPlan";
 import { useStudent } from "../store";
 import type { BookSummary, ChapterSummary, ClassSummary, OralPrompt, OralSummary, OralTopicResult } from "../types";
 
@@ -23,7 +25,9 @@ function OralPicker() {
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [chapters, setChapters] = useState<ChapterSummary[]>([]);
   const [readyCount, setReadyCount] = useState(0);
-  const [topicLimit, setTopicLimit] = useState(1);
+  const [topicLimit, setTopicLimit] = useState(0);
+  const [mode, setMode] = useState<PlanMode>("time");
+  const [minutes, setMinutes] = useState(30);
 
   useEffect(() => {
     if (!student) return;
@@ -45,7 +49,9 @@ function OralPicker() {
     api.listTopics(chapterId, false).then((topics) => {
       const ready = topics.filter((topic) => topic.hasReference).length;
       setReadyCount(ready);
-      setTopicLimit(ready);
+      setMode("time");
+      setMinutes(30);
+      setTopicLimit(countWithinTime(30, ready, ORAL_TOPIC_SECONDS));
     }).catch((err) => setError(errorText(err)));
   }, [chapterId]);
 
@@ -65,7 +71,7 @@ function OralPicker() {
 
   return (
     <div>
-      <PageHeader title="Go for an Oral Test" lede="Choose a chapter, then choose how many topics to recall. A short session can be a few topics. Every chosen topic is asked once." />
+      <PageHeader title="Go for an Oral Test" lede="Choose a chapter, then go by time or by number of topics. A time shows how many topics fit. A number of topics shows the time that sitting needs. Every chosen topic is asked once." />
       {error ? <div className="mb-4"><Notice tone="error">{error}</Notice></div> : null}
       <Crumbs
         items={[
@@ -81,24 +87,58 @@ function OralPicker() {
       {chapterId ? (
         <section className="rounded-2xl border border-line bg-card p-6">
           <p>{readyCount === 0 ? "This chapter has no topics with saved notes." : `${countNoun(readyCount, "topic")} with notes can be included.`}</p>
-          <label className="mt-4 block max-w-xs text-sm font-medium">
-            How many topics
-            <input
-              className={`${inputClass} mt-1`}
-              type="number"
-              min={1}
-              max={Math.max(1, readyCount)}
-              value={topicLimit}
-              disabled={readyCount === 0}
-              onChange={(event) => setTopicLimit(Math.min(readyCount, Math.max(1, Number(event.target.value) || 1)))}
-            />
-          </label>
-          <p className="mt-2 text-sm text-muted">Plan about 3 minutes for each topic. The topics are shuffled, and a topic is not repeated.</p>
-          <div className="mt-4">
-            <PrimaryButton disabled={readyCount === 0 || topicLimit < 1} onClick={() => void start()}>Start oral test</PrimaryButton>
-          </div>
+          {readyCount > 0 ? (
+            <div className="mt-4 space-y-4">
+              <PlanModeSwitch
+                mode={mode}
+                timeBody="Choose 15 minutes, 30 minutes, 45 minutes, 1 hour, 2 hours, or 3 hours. The number of topics that fit is shown for that period."
+                countTitle="Go by number of topics"
+                countBody="Set how many topics you want. The time for that sitting is calculated from those topics."
+                onChange={(next) => {
+                  setMode(next);
+                  if (next === "time") setTopicLimit(countWithinTime(minutes, readyCount, ORAL_TOPIC_SECONDS));
+                }}
+              />
+              {mode === "time" ? (
+                <TimeChoices
+                  minutes={minutes}
+                  label="Time for the oral test"
+                  onChange={(next) => {
+                    setMinutes(next);
+                    setTopicLimit(countWithinTime(next, readyCount, ORAL_TOPIC_SECONDS));
+                  }}
+                />
+              ) : (
+                <label className="block max-w-xs text-sm font-medium">
+                  How many topics
+                  <input
+                    className={`${inputClass} mt-1`}
+                    type="number"
+                    min={1}
+                    max={readyCount}
+                    value={topicLimit}
+                    onChange={(event) => setTopicLimit(Math.min(readyCount, Math.max(1, Number(event.target.value) || 1)))}
+                  />
+                </label>
+              )}
+              <TopicTime count={topicLimit} available={readyCount} chosenMinutes={mode === "time" ? minutes : undefined} />
+              <PrimaryButton disabled={topicLimit < 1} onClick={() => void start()}>Start oral test</PrimaryButton>
+            </div>
+          ) : null}
         </section>
       ) : null}
+    </div>
+  );
+}
+
+function TopicTime({ count, available, chosenMinutes }: { count: number; available: number; chosenMinutes?: number }) {
+  const used = count * ORAL_TOPIC_SECONDS;
+  return (
+    <div className="rounded-xl border border-line p-4 text-sm">
+      <p className="font-semibold">{count === 0 ? "No topic fits this choice." : `${countNoun(count, "topic")} in this sitting.`}</p>
+      <p className="mt-1">Each topic is planned as 3 minutes. Time for this sitting: {formatDuration(used)}.</p>
+      {chosenMinutes != null && used < chosenMinutes * 60 ? <p className="mt-1 text-muted">This chapter has {countNoun(available, "topic")} with notes, so the sitting ends before the full period.</p> : null}
+      <p className="mt-1 text-muted">The topics are shuffled, and a topic is not repeated. There is no countdown.</p>
     </div>
   );
 }

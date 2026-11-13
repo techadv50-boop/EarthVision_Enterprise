@@ -5,6 +5,18 @@ export function formatClock(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+export function formatDuration(totalSeconds: number): string {
+  const total = Math.max(0, Math.ceil(totalSeconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const parts: string[] = [];
+  if (hours > 0) parts.push(countNoun(hours, "hour"));
+  if (minutes > 0) parts.push(countNoun(minutes, "minute"));
+  if (seconds > 0 || parts.length === 0) parts.push(countNoun(seconds, "second"));
+  return parts.join(" ");
+}
+
 export function countNoun(count: number, singular: string, plural?: string): string {
   return `${count} ${count === 1 ? singular : (plural ?? `${singular}s`)}`;
 }
