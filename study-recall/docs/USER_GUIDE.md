@@ -41,7 +41,7 @@ The app does not invent facts. If a fact is not in the saved note, it will not b
 
 Choose Go for an Oral Test, then a class, book, and chapter.
 
-Start the test. Topics with saved notes are shuffled. A topic is not repeated in the same test. Skipping a topic records it as skipped.
+Choose how many topics to recall. A short study period can use a few topics, and a longer one can use every topic that has notes. The chosen topics are shuffled. A topic is not repeated in the same test. Skipping a topic records it as skipped. Plan about 3 minutes for each topic.
 
 Explain the topic by speaking or typing. Choose Listen to hear the prompt with the Windows speaking voice. Submit the transcript you approve. The score looks at:
 
@@ -55,15 +55,19 @@ At the end you see attempted topics, the average, successful and partial recalls
 
 ## Written test
 
-Choose Go for a Written Test, then a class and book. Tick one or more chapters. Choose a difficulty and review the paper sizes.
+Choose Go for a Written Test, then a class and book. Tick one or more chapters. Choose a difficulty.
 
-A standard paper is 100 marks:
+Then choose how many questions you want of each type:
 
-- Section A, fill in the blanks, 30 marks
-- Section B, multiple choice, 40 marks
-- Section C, short and long questions, 30 marks
+- fill in the blanks
+- multiple choice
+- short written questions
+- long written questions
+- oral recall topics
 
-If the notes cannot support that many distinct questions, the app says so and offers a smaller paper. It does not invent questions to fill the gap. Any rounding of the percentage split is shown before you start.
+The page shows how many of each type the selected notes can support, and an estimated time from the timers in Settings. Choose About 15 minutes, About 30 minutes, or About 60 minutes when you want a size that fits that time, or type your own numbers. Use every available question when you want the longest test the notes can support.
+
+The app does not add questions beyond the notes, and it does not pad a small choice up to 100 marks. Each blank is 3 marks, each multiple-choice question is 2, each short question is 5, and each long question is 15. If you also choose oral topics, those begin after the written result.
 
 The paper is saved as a snapshot. Later edits to your notes do not change an exam that has already been created.
 
@@ -92,7 +96,7 @@ Print or save as PDF uses the system print dialog so Urdu text can use your inst
 
 Progress shows averages, recent scores, and results by class, subject, chapter, and topic. Topics are grouped as needs revision, developing, or well remembered, using the thresholds in Settings. The underlying percentages are shown.
 
-Topics needing revision can start another oral test that contains only those topics. Older results are kept.
+Topics needing revision can start another oral test. Choose how many of those topics to practice. Older results are kept.
 
 ## Backup
 

@@ -85,6 +85,7 @@ pub fn run() {
             commands::save_topic_draft,
             commands::save_topic,
             commands::start_oral,
+            commands::start_oral_chapters,
             commands::start_revision_oral,
             commands::get_oral_prompt,
             commands::submit_oral,

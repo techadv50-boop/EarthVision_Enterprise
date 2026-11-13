@@ -23,6 +23,7 @@ function OralPicker() {
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [chapters, setChapters] = useState<ChapterSummary[]>([]);
   const [readyCount, setReadyCount] = useState(0);
+  const [topicLimit, setTopicLimit] = useState(1);
 
   useEffect(() => {
     if (!student) return;
@@ -41,13 +42,17 @@ function OralPicker() {
 
   useEffect(() => {
     if (!chapterId) return;
-    api.listTopics(chapterId, false).then((topics) => setReadyCount(topics.filter((topic) => topic.hasReference).length)).catch((err) => setError(errorText(err)));
+    api.listTopics(chapterId, false).then((topics) => {
+      const ready = topics.filter((topic) => topic.hasReference).length;
+      setReadyCount(ready);
+      setTopicLimit(ready);
+    }).catch((err) => setError(errorText(err)));
   }, [chapterId]);
 
   async function start() {
     if (!student) return;
     try {
-      const prompt = await api.startOral(student.id, chapterId);
+      const prompt = await api.startOral(student.id, chapterId, topicLimit);
       navigate(`/oral/session/${prompt.sessionId}`, { state: { prompt } });
     } catch (err) {
       setError(errorText(err));
@@ -60,7 +65,7 @@ function OralPicker() {
 
   return (
     <div>
-      <PageHeader title="Go for an Oral Test" lede="Choose a chapter. Topics are shuffled and each one is asked once." />
+      <PageHeader title="Go for an Oral Test" lede="Choose a chapter, then choose how many topics to recall. A short session can be a few topics. Every chosen topic is asked once." />
       {error ? <div className="mb-4"><Notice tone="error">{error}</Notice></div> : null}
       <Crumbs
         items={[
@@ -75,9 +80,22 @@ function OralPicker() {
       {bookId && !chapterId ? <ChoiceList empty="No chapters have been added to this book." items={chapters.map((item) => ({ id: item.id, title: item.title, meta: `${countNoun(item.studiedTopicCount, "topic")} with notes`, to: `/oral/${classId}/${bookId}/${item.id}` }))} /> : null}
       {chapterId ? (
         <section className="rounded-2xl border border-line bg-card p-6">
-          <p>{readyCount === 0 ? "This chapter has no topics with saved notes." : `${countNoun(readyCount, "topic")} with notes will be shuffled.`}</p>
+          <p>{readyCount === 0 ? "This chapter has no topics with saved notes." : `${countNoun(readyCount, "topic")} with notes can be included.`}</p>
+          <label className="mt-4 block max-w-xs text-sm font-medium">
+            How many topics
+            <input
+              className={`${inputClass} mt-1`}
+              type="number"
+              min={1}
+              max={Math.max(1, readyCount)}
+              value={topicLimit}
+              disabled={readyCount === 0}
+              onChange={(event) => setTopicLimit(Math.min(readyCount, Math.max(1, Number(event.target.value) || 1)))}
+            />
+          </label>
+          <p className="mt-2 text-sm text-muted">Plan about 3 minutes for each topic. The topics are shuffled, and a topic is not repeated.</p>
           <div className="mt-4">
-            <PrimaryButton disabled={readyCount === 0} onClick={() => void start()}>Start oral test</PrimaryButton>
+            <PrimaryButton disabled={readyCount === 0 || topicLimit < 1} onClick={() => void start()}>Start oral test</PrimaryButton>
           </div>
         </section>
       ) : null}

@@ -128,7 +128,7 @@ fn oral_shuffle_does_not_repeat_and_paraphrase_scores() {
             concept("fact", "", "Sodium ions enter the neuron during depolarization."),
         ],
     );
-    let prompt = db.start_oral(&student.id, &chapter_id, Some(42)).unwrap();
+    let prompt = db.start_oral(&student.id, &chapter_id, Some(42), None).unwrap();
     let mut seen = Vec::new();
     let mut session = prompt.session_id.clone();
     let mut current = Some(prompt);
@@ -161,7 +161,8 @@ fn oral_shuffle_does_not_repeat_and_paraphrase_scores() {
     assert_eq!(summary.skipped, 0);
     assert!(summary.average_percent.unwrap() >= 70.0);
     assert_eq!(summary.topics.len(), 3);
-    let again = db.start_oral(&student.id, &chapter_id, Some(7)).unwrap();
+    let again = db.start_oral(&student.id, &chapter_id, Some(7), Some(1)).unwrap();
+    assert_eq!(again.total, 1);
     let skipped = db.skip_oral(&again.session_id).unwrap();
     assert!(skipped.result.skipped);
     assert_ne!(skipped.result.category, "successful");
@@ -211,26 +212,23 @@ fn written_exam_timer_marking_backup_and_snapshot() {
     let proposal = db
         .propose_exam(&student.id, &book_id, &[chapter_a.clone()], "standard")
         .unwrap();
-    assert!(proposal.offers.iter().any(|o| o.feasible));
-    let full = proposal.offers.iter().find(|o| o.size_id == "full").unwrap();
-    assert!(!full.feasible);
-    let chosen = proposal
-        .offers
-        .iter()
-        .filter(|o| o.feasible)
-        .max_by_key(|o| o.total_marks)
-        .unwrap()
-        .clone();
+    assert!(proposal.fib_available >= 2);
+    assert!(proposal.mcq_available >= 2);
+    assert!(proposal.short_available >= 1);
     let created = db
         .create_exam(CreateExamRequest {
             student_id: student.id.clone(),
             book_id: book_id.clone(),
             chapter_ids: vec![chapter_a.clone()],
             difficulty: "standard".into(),
-            size_id: chosen.size_id.clone(),
+            fib_count: 2,
+            mcq_count: 2,
+            short_count: 1,
+            long_count: 0,
             seed: Some(42),
         })
         .unwrap();
+    assert_eq!(created.question_count, 5);
     let passages: Vec<(i64, String, String)> = {
         let mut stmt = db
             .conn
@@ -453,14 +451,15 @@ fn objective_wrong_answer_scores_zero() {
             ],
         );
     }
-    let proposal = db.propose_exam(&student.id, &book_id, &[chapter_id.clone()], "easy").unwrap();
-    let size = proposal.offers.iter().find(|o| o.feasible).unwrap().size_id.clone();
     let created = db.create_exam(CreateExamRequest {
         student_id: student.id,
         book_id,
         chapter_ids: vec![chapter_id],
         difficulty: "easy".into(),
-        size_id: size,
+        fib_count: 1,
+        mcq_count: 1,
+        short_count: 0,
+        long_count: 0,
         seed: Some(3),
     }).unwrap();
     db.start_exam(&created.exam_id, 5_000).unwrap();

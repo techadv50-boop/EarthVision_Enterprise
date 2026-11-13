@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errorText } from "../api";
-import { Crumbs, EmptyState, Notice, PageHeader, PrimaryButton, inputClass } from "../components/ui";
-import { countNoun } from "../format";
+import { Crumbs, EmptyState, Notice, PageHeader, PrimaryButton, QuietButton, inputClass } from "../components/ui";
+import { countNoun, formatClock } from "../format";
 import { useStudent } from "../store";
+import { estimateSeconds, fitMix, useAll, type QuestionMix, type QuestionSeconds } from "../testPlan";
 import type { BookSummary, ChapterSummary, ClassSummary, Proposal } from "../types";
+
+const ORAL_SECONDS = 180;
+const PENDING_ORAL = "study-recall-pending-oral";
+
+const emptyMix: QuestionMix = { fib: 0, mcq: 0, short: 0, long: 0, oral: 0 };
 
 export function Written() {
   const { classId = "", bookId = "" } = useParams();
@@ -16,6 +22,8 @@ export function Written() {
   const [selected, setSelected] = useState<string[]>([]);
   const [difficulty, setDifficulty] = useState("standard");
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [counts, setCounts] = useState<QuestionMix>(emptyMix);
+  const [seconds, setSeconds] = useState<QuestionSeconds>({ fib: 60, mcq: 45, short: 240, long: 600, oral: ORAL_SECONDS });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -31,32 +39,88 @@ export function Written() {
     if (!bookId) return;
     setProposal(null);
     setSelected([]);
+    setCounts(emptyMix);
     api.listChapters(bookId, false).then(setChapters).catch((err) => setError(errorText(err)));
   }, [bookId]);
 
-  async function preview() {
-    if (!student) return;
-    setBusy(true);
-    try {
-      setProposal(await api.proposeExam(student.id, bookId, selected, difficulty));
-      setError("");
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBusy(false);
-    }
-  }
+  useEffect(() => {
+    api.getSettings().then((settings) => {
+      setSeconds({
+        fib: settings.fibSeconds,
+        mcq: settings.mcqSeconds,
+        short: settings.shortSeconds,
+        long: settings.longSeconds,
+        oral: ORAL_SECONDS,
+      });
+    }).catch(() => undefined);
+  }, []);
 
-  async function create(sizeId: string) {
+  const oralAvailable = chapters.filter((chapter) => selected.includes(chapter.id)).reduce((sum, chapter) => sum + chapter.studiedTopicCount, 0);
+  const planKey = `${difficulty}:${[...selected].sort().join(",")}`;
+
+  useEffect(() => {
+    if (!student || selected.length === 0) {
+      setProposal(null);
+      return;
+    }
+    let live = true;
+    const capsOral = oralAvailable;
+    api.proposeExam(student.id, bookId, selected, difficulty).then((next) => {
+      if (!live) return;
+      setProposal(next);
+      setCounts(fitMix(30 * 60, {
+        fib: next.fibAvailable,
+        mcq: next.mcqAvailable,
+        short: next.shortAvailable,
+        long: next.longAvailable,
+        oral: capsOral,
+      }, seconds));
+      setError("");
+    }).catch((err) => {
+      if (live) setError(errorText(err));
+    });
+    return () => {
+      live = false;
+    };
+  }, [student, bookId, planKey, difficulty, selected, oralAvailable, seconds]);
+
+  async function start() {
     if (!student) return;
+    const written = counts.fib + counts.mcq + counts.short + counts.long;
+    if (written === 0 && counts.oral === 0) {
+      setError("Choose at least one question.");
+      return;
+    }
     setBusy(true);
     try {
-      const created = await api.createExam(student.id, bookId, selected, difficulty, sizeId);
+      if (written === 0) {
+        sessionStorage.removeItem(PENDING_ORAL);
+        const prompt = await api.startOralChapters(student.id, selected, counts.oral);
+        navigate(`/oral/session/${prompt.sessionId}`, { state: { prompt } });
+        return;
+      }
+      const created = await api.createExam(student.id, bookId, selected, difficulty, counts);
+      if (counts.oral > 0) {
+        sessionStorage.setItem(PENDING_ORAL, JSON.stringify({ chapterIds: selected, topicLimit: counts.oral }));
+      } else {
+        sessionStorage.removeItem(PENDING_ORAL);
+      }
       navigate(`/exam/${created.examId}`);
     } catch (err) {
       setError(errorText(err));
       setBusy(false);
     }
+  }
+
+  function applyFit(minutes: number) {
+    if (!proposal) return;
+    setCounts(fitMix(minutes * 60, {
+      fib: proposal.fibAvailable,
+      mcq: proposal.mcqAvailable,
+      short: proposal.shortAvailable,
+      long: proposal.longAvailable,
+      oral: oralAvailable,
+    }, seconds));
   }
 
   if (!student) return <Notice>Create a student profile before starting a written test.</Notice>;
@@ -67,7 +131,7 @@ export function Written() {
     <div>
       <PageHeader
         title="Go for a Written Test"
-        lede="Questions come only from the chapters you select. A full paper is 100 marks: 30% blanks, 40% multiple choice, and 30% short and long questions."
+        lede="Choose the chapters, then choose how many questions of each type you want. A short time, such as 30 minutes, can be a small test. A longer time can use more questions. Questions still come only from your notes."
       />
       {error ? <div className="mb-4"><Notice tone="error">{error}</Notice></div> : null}
       <Crumbs
@@ -110,38 +174,64 @@ export function Written() {
               <option value="hard">Hard</option>
             </select>
           </label>
-          <div className="mt-4">
-            <PrimaryButton disabled={busy || selected.length === 0} onClick={() => void preview()}>
-              {busy ? "Preparing…" : "Review paper sizes"}
-            </PrimaryButton>
-          </div>
           {proposal ? (
-            <div className="mt-5 space-y-3">
+            <div className="mt-5 space-y-4">
               <Notice>{proposal.materialNote}</Notice>
               {proposal.difficultyNote ? <p className="text-sm text-muted">{proposal.difficultyNote}</p> : null}
               <p className="text-sm text-muted">
-                Available from these notes: {proposal.fibAvailable} blanks, {proposal.mcqAvailable} multiple choice, {proposal.shortAvailable} short, {proposal.longAvailable} long.
+                These notes can support {proposal.fibAvailable} blanks, {proposal.mcqAvailable} multiple choice, {proposal.shortAvailable} short, {proposal.longAvailable} long, and {oralAvailable} oral topics.
               </p>
-              {proposal.offers.map((offer) => (
-                <article key={offer.sizeId} className="rounded-xl border border-line p-4">
-                  <h3 className="text-lg font-semibold">{offer.title}</h3>
-                  <p className="text-sm text-muted">
-                    {offer.fibCount} blanks ({offer.sectionAMarks} marks, {offer.percentA}%) · {offer.mcqCount} multiple choice ({offer.sectionBMarks} marks, {offer.percentB}%) · {offer.shortCount} short and {offer.longCount} long ({offer.sectionCMarks} marks, {offer.percentC}%) · {offer.totalMarks} marks
-                  </p>
-                  {offer.roundingNote ? <p className="mt-1 text-sm">{offer.roundingNote}</p> : null}
-                  <p className="mt-1 text-sm">{offer.feasible ? "This paper can be built from the selected notes." : offer.reason}</p>
-                  <div className="mt-3">
-                    <PrimaryButton disabled={!offer.feasible || busy} onClick={() => void create(offer.sizeId)}>
-                      Use this paper
-                    </PrimaryButton>
-                  </div>
-                </article>
-              ))}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <CountField label="Fill in the blanks" max={proposal.fibAvailable} value={counts.fib} onChange={(fib) => setCounts({ ...counts, fib })} />
+                <CountField label="Multiple choice" max={proposal.mcqAvailable} value={counts.mcq} onChange={(mcq) => setCounts({ ...counts, mcq })} />
+                <CountField label="Short written questions" max={proposal.shortAvailable} value={counts.short} onChange={(short) => setCounts({ ...counts, short })} />
+                <CountField label="Long written questions" max={proposal.longAvailable} value={counts.long} onChange={(long) => setCounts({ ...counts, long })} />
+                <CountField label="Oral recall topics" max={oralAvailable} value={counts.oral} onChange={(oral) => setCounts({ ...counts, oral })} />
+              </div>
+              <p className="text-sm">
+                Estimated time {formatClock(estimateSeconds(counts, seconds) * 1000)}. Written questions use the timers in Settings. Each oral topic is planned as about 3 minutes and has no countdown.
+              </p>
+              <p className="text-sm text-muted">
+                Marks follow the questions you choose: 3 for each blank, 2 for each multiple-choice question, 5 for each short question, and 15 for each long question. Oral topics are scored separately.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <QuietButton onClick={() => applyFit(15)}>About 15 minutes</QuietButton>
+                <QuietButton onClick={() => applyFit(30)}>About 30 minutes</QuietButton>
+                <QuietButton onClick={() => applyFit(60)}>About 60 minutes</QuietButton>
+                <QuietButton onClick={() => setCounts(useAll({
+                  fib: proposal.fibAvailable,
+                  mcq: proposal.mcqAvailable,
+                  short: proposal.shortAvailable,
+                  long: proposal.longAvailable,
+                  oral: oralAvailable,
+                }))}>Use every available question</QuietButton>
+              </div>
+              <PrimaryButton disabled={busy} onClick={() => void start()}>
+                {busy ? "Starting…" : "Start this test"}
+              </PrimaryButton>
             </div>
           ) : null}
         </section>
       ) : null}
     </div>
+  );
+}
+
+function CountField({ label, value, max, onChange }: { label: string; value: number; max: number; onChange: (value: number) => void }) {
+  return (
+    <label className="block text-sm font-medium">
+      {label}
+      <span className="ml-2 font-normal text-muted">up to {max}</span>
+      <input
+        className={`${inputClass} mt-1`}
+        type="number"
+        min={0}
+        max={max}
+        value={value}
+        disabled={max === 0}
+        onChange={(event) => onChange(Math.min(max, Math.max(0, Number(event.target.value) || 0)))}
+      />
+    </label>
   );
 }
 

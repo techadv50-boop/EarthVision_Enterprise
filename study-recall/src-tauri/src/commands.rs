@@ -348,8 +348,23 @@ pub fn start_oral(
     state: State<AppState>,
     student_id: String,
     chapter_id: String,
+    topic_limit: Option<u32>,
 ) -> Result<OralPrompt, String> {
-    with_db(&state, |db| db.start_oral(&student_id, &chapter_id, None))
+    with_db(&state, |db| {
+        db.start_oral(&student_id, &chapter_id, None, topic_limit.map(|value| value as usize))
+    })
+}
+
+#[tauri::command]
+pub fn start_oral_chapters(
+    state: State<AppState>,
+    student_id: String,
+    chapter_ids: Vec<String>,
+    topic_limit: u32,
+) -> Result<OralPrompt, String> {
+    with_db(&state, |db| {
+        db.start_oral_chapters(&student_id, &chapter_ids, None, Some(topic_limit as usize))
+    })
 }
 
 #[tauri::command]
@@ -357,8 +372,11 @@ pub fn start_revision_oral(
     state: State<AppState>,
     student_id: String,
     class_id: Option<String>,
+    topic_limit: Option<u32>,
 ) -> Result<OralPrompt, String> {
-    with_db(&state, |db| db.start_revision_oral(&student_id, class_id, None))
+    with_db(&state, |db| {
+        db.start_revision_oral(&student_id, class_id, None, topic_limit.map(|value| value as usize))
+    })
 }
 
 #[tauri::command]

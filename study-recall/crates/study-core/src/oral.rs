@@ -76,20 +76,59 @@ impl Database {
         student_id: &str,
         chapter_id: &str,
         seed: Option<u64>,
+        topic_limit: Option<usize>,
+    ) -> AppResult<OralPrompt> {
+        self.start_oral_chapters(student_id, &[chapter_id.to_string()], seed, topic_limit)
+    }
+
+    pub fn start_oral_chapters(
+        &mut self,
+        student_id: &str,
+        chapter_ids: &[String],
+        seed: Option<u64>,
+        topic_limit: Option<usize>,
     ) -> AppResult<OralPrompt> {
         self.ensure_profile(student_id)?;
-        let owner = self.student_of_chapter(chapter_id)?;
-        if owner != student_id {
-            return Err(AppError::Invalid("That chapter belongs to another profile.".into()));
+        if chapter_ids.is_empty() {
+            return Err(AppError::Invalid("Choose at least one chapter.".into()));
         }
-        let topics = self.topics_with_notes(chapter_id)?;
+        let mut topics = Vec::new();
+        let mut class_id = None;
+        let mut book_id = None;
+        for chapter_id in chapter_ids {
+            let owner = self.student_of_chapter(chapter_id)?;
+            if owner != student_id {
+                return Err(AppError::Invalid("That chapter belongs to another profile.".into()));
+            }
+            let (class, book) = self.chapter_parents(chapter_id)?;
+            class_id = Some(class);
+            book_id = Some(book);
+            for topic in self.topics_with_notes(chapter_id)? {
+                if !topics.contains(&topic) {
+                    topics.push(topic);
+                }
+            }
+        }
         if topics.is_empty() {
             return Err(AppError::Invalid(
-                "This chapter has no topics with saved reference notes. Add notes, then start the oral test.".into(),
+                "The selected chapters have no topics with saved reference notes. Add notes, then start the oral test.".into(),
             ));
         }
-        let (class_id, book_id) = self.chapter_parents(chapter_id)?;
-        self.insert_oral(student_id, Some(class_id), Some(book_id), Some(chapter_id.to_string()), "chapter", topics, seed)
+        let stored_chapter = if chapter_ids.len() == 1 {
+            Some(chapter_ids[0].clone())
+        } else {
+            None
+        };
+        self.insert_oral(
+            student_id,
+            class_id,
+            book_id,
+            stored_chapter,
+            "chapter",
+            topics,
+            seed,
+            topic_limit,
+        )
     }
 
     pub fn start_revision_oral(
@@ -97,6 +136,7 @@ impl Database {
         student_id: &str,
         class_id: Option<String>,
         seed: Option<u64>,
+        topic_limit: Option<usize>,
     ) -> AppResult<OralPrompt> {
         self.ensure_profile(student_id)?;
         let topics = self.weak_topics(student_id, class_id.as_deref())?;
@@ -105,7 +145,7 @@ impl Database {
                 "No topics are currently marked as needing revision. Complete an oral or written test first.".into(),
             ));
         }
-        self.insert_oral(student_id, class_id, None, None, "revision", topics, seed)
+        self.insert_oral(student_id, class_id, None, None, "revision", topics, seed, topic_limit)
     }
 
     pub fn get_oral_prompt(&self, session_id: &str) -> AppResult<Option<OralPrompt>> {
@@ -137,6 +177,7 @@ impl Database {
         kind: &str,
         topics: Vec<String>,
         seed: Option<u64>,
+        topic_limit: Option<usize>,
     ) -> AppResult<OralPrompt> {
         let mut order = topics;
         let mut rng = match seed {
@@ -144,6 +185,18 @@ impl Database {
             None => StdRng::from_entropy(),
         };
         shuffle(&mut order, &mut rng);
+        if let Some(limit) = topic_limit {
+            if limit == 0 {
+                return Err(AppError::Invalid("Choose at least one oral topic.".into()));
+            }
+            if limit > order.len() {
+                return Err(AppError::Invalid(format!(
+                    "These notes have {} topics ready for oral recall. You asked for {limit}.",
+                    order.len()
+                )));
+            }
+            order.truncate(limit);
+        }
         if order.len() != order.iter().collect::<std::collections::BTreeSet<_>>().len() {
             return Err(AppError::Invalid("The topic list contained a repeated topic.".into()));
         }

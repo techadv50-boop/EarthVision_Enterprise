@@ -8,8 +8,8 @@ import { Notice } from "../components/ui";
 
 const cards = [
   { to: "/study", title: "My Classes", body: "Add classes, books, chapters, and topic notes." },
-  { to: "/oral", title: "Go for an Oral Test", body: "Explain a chapter from memory, one topic at a time." },
-  { to: "/written", title: "Go for a Written Test", body: "Take a timed paper made only from your notes." },
+  { to: "/oral", title: "Go for an Oral Test", body: "Choose how many topics to explain from memory." },
+  { to: "/written", title: "Go for a Written Test", body: "Choose how many blanks, multiple-choice, short, long, and oral questions fit your time." },
   { to: "/progress", title: "My Results and Progress", body: "See scores, missed ideas, and how you are doing." },
   { to: "/revision", title: "Topics Needing Revision", body: "Return to topics that were skipped or only partly recalled." },
   { to: "/settings", title: "Settings and Backup", body: "Theme, timers, offline models, backup, and restore." },

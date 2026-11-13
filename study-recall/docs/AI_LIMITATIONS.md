@@ -32,7 +32,7 @@ Automated marks are not a teacher’s judgment. Use them to find what to revise,
 
 ## Question generation
 
-Questions are built from sentences, terms, and reference items in the saved notes. A question without support in that material is not kept. The app will not add filler questions to reach 100 marks.
+Questions are built from sentences, terms, and reference items in the saved notes. A question without support in that material is not kept. The student chooses how many blanks, multiple-choice, short, long, and oral questions to include. The app will not add filler questions to reach a larger paper.
 
 Distractors are drawn from other terms in the selected chapters. If the notes are too short to make four distinct choices or a useful blank, that question is skipped and a smaller paper is offered.
 

@@ -1,15 +1,32 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errorText, pickSavePath } from "../api";
 import { Notice, PageHeader, PrimaryButton, QuietButton } from "../components/ui";
 import { formatClock, formatMarks, formatPercent, questionLabel } from "../format";
+import { useStudent } from "../store";
 import type { ExamResult } from "../types";
+
+const PENDING_ORAL = "study-recall-pending-oral";
 
 export function Results() {
   const { examId = "" } = useParams();
+  const navigate = useNavigate();
+  const student = useStudent();
   const [result, setResult] = useState<ExamResult | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [pendingOral, setPendingOral] = useState<{ chapterIds: string[]; topicLimit: number } | null>(null);
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem(PENDING_ORAL);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as { chapterIds?: string[]; topicLimit?: number };
+      if (parsed.chapterIds?.length && parsed.topicLimit) setPendingOral({ chapterIds: parsed.chapterIds, topicLimit: parsed.topicLimit });
+    } catch {
+      sessionStorage.removeItem(PENDING_ORAL);
+    }
+  }, []);
 
   useEffect(() => {
     api.getExamResult(examId).then(setResult).catch((err) => setError(errorText(err)));
@@ -34,6 +51,16 @@ export function Results() {
       <div className="no-print mb-4 flex flex-wrap gap-2">
         <PrimaryButton onClick={() => window.print()}>Print or save as PDF</PrimaryButton>
         <QuietButton onClick={() => void exportHtml()}>Export HTML</QuietButton>
+        {pendingOral && student ? (
+          <PrimaryButton onClick={() => {
+            void api.startOralChapters(student.id, pendingOral.chapterIds, pendingOral.topicLimit).then((prompt) => {
+              sessionStorage.removeItem(PENDING_ORAL);
+              navigate(`/oral/session/${prompt.sessionId}`, { state: { prompt } });
+            }).catch((err) => setError(errorText(err)));
+          }}>
+            Start the {pendingOral.topicLimit} oral topics
+          </PrimaryButton>
+        ) : null}
       </div>
       {error ? <div className="no-print mb-4"><Notice tone="error">{error}</Notice></div> : null}
       {message ? <div className="no-print mb-4"><Notice tone="ok">{message}</Notice></div> : null}

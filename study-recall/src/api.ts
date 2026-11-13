@@ -110,18 +110,38 @@ export const api = {
     call<TopicDetail>("save_topic", { id, input: { title, language, referenceText, concepts } }),
   transcribe: (audioBase64: string, language: string) =>
     call<SpeechOutcome>("transcribe_audio", { audioBase64, language }),
-  startOral: (studentId: string, chapterId: string) =>
-    call<OralPrompt>("start_oral", { studentId, chapterId }),
-  startRevisionOral: (studentId: string, classId?: string) =>
-    call<OralPrompt>("start_revision_oral", { studentId, classId: classId ?? null }),
+  startOral: (studentId: string, chapterId: string, topicLimit: number) =>
+    call<OralPrompt>("start_oral", { studentId, chapterId, topicLimit }),
+  startOralChapters: (studentId: string, chapterIds: string[], topicLimit: number) =>
+    call<OralPrompt>("start_oral_chapters", { studentId, chapterIds, topicLimit }),
+  startRevisionOral: (studentId: string, topicLimit: number, classId?: string) =>
+    call<OralPrompt>("start_revision_oral", { studentId, classId: classId ?? null, topicLimit }),
   getOralPrompt: (sessionId: string) => call<OralPrompt | null>("get_oral_prompt", { sessionId }),
   submitOral: (sessionId: string, transcript: string) => call<OralStep>("submit_oral", { sessionId, transcript }),
   skipOral: (sessionId: string) => call<OralStep>("skip_oral", { sessionId }),
   oralSummary: (sessionId: string) => call<OralSummary>("oral_summary", { sessionId }),
   proposeExam: (studentId: string, bookId: string, chapterIds: string[], difficulty: string) =>
     call<Proposal>("propose_exam", { studentId, bookId, chapterIds, difficulty }),
-  createExam: (studentId: string, bookId: string, chapterIds: string[], difficulty: string, sizeId: string) =>
-    call<CreatedExam>("create_exam", { request: { studentId, bookId, chapterIds, difficulty, sizeId, seed: null } }),
+  createExam: (
+    studentId: string,
+    bookId: string,
+    chapterIds: string[],
+    difficulty: string,
+    counts: { fib: number; mcq: number; short: number; long: number },
+  ) =>
+    call<CreatedExam>("create_exam", {
+      request: {
+        studentId,
+        bookId,
+        chapterIds,
+        difficulty,
+        fibCount: counts.fib,
+        mcqCount: counts.mcq,
+        shortCount: counts.short,
+        longCount: counts.long,
+        seed: null,
+      },
+    }),
   startExam: (examId: string, wallNowMs: number) => call<ExamView>("start_exam", { examId, wallNowMs }),
   syncExam: (examId: string, wallNowMs: number, timerGeneration?: number, monotonicElapsedMs?: number) =>
     call<ExamView>("sync_exam", {

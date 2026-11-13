@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::{new_id, not_found, now_ts, Database, RECOVERY_POLICY};
 use crate::error::{AppError, AppResult};
 use crate::grading::{grade_descriptive, grade_fib, grade_mcq, ConceptRef};
-use crate::questions::{build_paper, propose, McqOption, PaperOffer, Proposal, TopicMaterial};
+use crate::questions::{build_chosen_paper, propose, ChosenCounts, McqOption, PaperOffer, Proposal, TopicMaterial};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,7 +16,10 @@ pub struct CreateExamRequest {
     pub book_id: String,
     pub chapter_ids: Vec<String>,
     pub difficulty: String,
-    pub size_id: String,
+    pub fib_count: usize,
+    pub mcq_count: usize,
+    pub short_count: usize,
+    pub long_count: usize,
     pub seed: Option<u64>,
 }
 
@@ -186,7 +189,17 @@ impl Database {
         let difficulty = normalize_difficulty(&request.difficulty)?;
         let topics = self.materials_for(&request.student_id, &request.book_id, &request.chapter_ids)?;
         let seed = request.seed.unwrap_or_else(rand::random) & (i64::MAX as u64);
-        let (offer, questions) = build_paper(&topics, difficulty, &request.size_id, seed)?;
+        let (offer, questions) = build_chosen_paper(
+            &topics,
+            difficulty,
+            ChosenCounts {
+                fib: request.fib_count,
+                mcq: request.mcq_count,
+                short_q: request.short_count,
+                long_q: request.long_count,
+            },
+            seed,
+        )?;
         let (class_id, class_name, book_title) = self.book_context(&request.book_id)?;
         let chapter_titles = self.chapter_titles(&request.chapter_ids)?;
         let settings = self.get_settings()?;

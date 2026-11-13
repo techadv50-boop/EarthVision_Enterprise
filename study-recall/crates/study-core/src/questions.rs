@@ -140,18 +140,89 @@ pub fn propose(topics: &[TopicMaterial], difficulty: &str) -> Proposal {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChosenCounts {
+    pub fib: usize,
+    pub mcq: usize,
+    pub short_q: usize,
+    pub long_q: usize,
+}
+
+/// Builds the exact number of each question type the student asked for.
+pub fn build_chosen_paper(
+    topics: &[TopicMaterial],
+    difficulty: &str,
+    counts: ChosenCounts,
+    seed: u64,
+) -> AppResult<(PaperOffer, Vec<ExamQuestion>)> {
+    if counts.fib + counts.mcq + counts.short_q + counts.long_q == 0 {
+        return Err(AppError::Invalid(
+            "Choose at least one written question, or choose oral questions only.".into(),
+        ));
+    }
+    if let Some(shape) = shapes().into_iter().find(|shape| {
+        shape.fib == counts.fib
+            && shape.mcq == counts.mcq
+            && shape.short_q == counts.short_q
+            && shape.long_q == counts.long_q
+    }) {
+        return build_paper(topics, difficulty, shape.id, seed);
+    }
+    let pool = build_pool(topics, difficulty);
+    if counts.fib > pool.fib.len()
+        || counts.mcq > pool.mcq.len()
+        || counts.short_q > pool.short_q.len()
+        || counts.long_q > pool.long_q.len()
+    {
+        return Err(AppError::Invalid(format!(
+            "The selected notes can support {} fill-in-the-blank, {} multiple-choice, {} short, and {} long questions. You asked for {}, {}, {}, and {}. Lower a number, or add notes that can support the extra questions.",
+            pool.fib.len(),
+            pool.mcq.len(),
+            pool.short_q.len(),
+            pool.long_q.len(),
+            counts.fib,
+            counts.mcq,
+            counts.short_q,
+            counts.long_q
+        )));
+    }
+    let section_a = counts.fib as i64 * 3;
+    let section_b = counts.mcq as i64 * 2;
+    let section_c = counts.short_q as i64 * 5 + counts.long_q as i64 * 15;
+    let total = section_a + section_b + section_c;
+    let offer = percentages(
+        "chosen",
+        "Your chosen test",
+        true,
+        "Built from the numbers you chose. No extra questions were added.".into(),
+        counts.fib,
+        counts.mcq,
+        counts.short_q,
+        counts.long_q,
+        section_a,
+        section_b,
+        section_c,
+        total,
+        "Each blank is 3 marks, each multiple-choice question is 2, each short question is 5, and each long question is 15. Types you set to zero are omitted.",
+    );
+    assemble(
+        topics,
+        difficulty,
+        seed,
+        offer,
+        vec![3; counts.fib],
+        vec![2; counts.mcq],
+        vec![5; counts.short_q],
+        vec![15; counts.long_q],
+    )
+}
+
 pub fn build_paper(
     topics: &[TopicMaterial],
     difficulty: &str,
     size_id: &str,
     seed: u64,
 ) -> AppResult<(PaperOffer, Vec<ExamQuestion>)> {
-    let mut pool = build_pool(topics, difficulty);
-    let mut rng = StdRng::seed_from_u64(seed);
-    shuffle(&mut pool.fib, &mut rng);
-    shuffle(&mut pool.mcq, &mut rng);
-    shuffle(&mut pool.short_q, &mut rng);
-    shuffle(&mut pool.long_q, &mut rng);
     let proposal = propose(topics, difficulty);
     let offer = proposal
         .offers
@@ -164,38 +235,40 @@ pub fn build_paper(
             )
         })?;
     let shape_marks = marks_for(&offer);
+    assemble(
+        topics,
+        difficulty,
+        seed,
+        offer,
+        shape_marks.0,
+        shape_marks.1,
+        shape_marks.2,
+        shape_marks.3,
+    )
+}
+
+fn assemble(
+    topics: &[TopicMaterial],
+    difficulty: &str,
+    seed: u64,
+    offer: PaperOffer,
+    fib_marks: Vec<i64>,
+    mcq_marks: Vec<i64>,
+    short_marks: Vec<i64>,
+    long_marks: Vec<i64>,
+) -> AppResult<(PaperOffer, Vec<ExamQuestion>)> {
+    let mut pool = build_pool(topics, difficulty);
+    let mut rng = StdRng::seed_from_u64(seed);
+    shuffle(&mut pool.fib, &mut rng);
+    shuffle(&mut pool.mcq, &mut rng);
+    shuffle(&mut pool.short_q, &mut rng);
+    shuffle(&mut pool.long_q, &mut rng);
     let mut questions = Vec::new();
-    push_section(
-        &mut questions,
-        &pool.fib,
-        offer.fib_count,
-        &shape_marks.0,
-        &mut rng,
-    );
-    push_section(
-        &mut questions,
-        &pool.mcq,
-        offer.mcq_count,
-        &shape_marks.1,
-        &mut rng,
-    );
-    push_section(
-        &mut questions,
-        &pool.short_q,
-        offer.short_count,
-        &shape_marks.2,
-        &mut rng,
-    );
-    push_section(
-        &mut questions,
-        &pool.long_q,
-        offer.long_count,
-        &shape_marks.3,
-        &mut rng,
-    );
-    if questions.len()
-        != offer.fib_count + offer.mcq_count + offer.short_count + offer.long_count
-    {
+    push_section(&mut questions, &pool.fib, offer.fib_count, &fib_marks, &mut rng);
+    push_section(&mut questions, &pool.mcq, offer.mcq_count, &mcq_marks, &mut rng);
+    push_section(&mut questions, &pool.short_q, offer.short_count, &short_marks, &mut rng);
+    push_section(&mut questions, &pool.long_q, offer.long_count, &long_marks, &mut rng);
+    if questions.len() != offer.fib_count + offer.mcq_count + offer.short_count + offer.long_count {
         return Err(AppError::Invalid(
             "The paper could not be filled without repeating unsupported questions.".into(),
         ));
@@ -371,7 +444,11 @@ fn percentages(
     let exact = (percent_a - 30.0).abs() < 0.051
         && (percent_b - 40.0).abs() < 0.051
         && (percent_c - 30.0).abs() < 0.051;
-    let rounding_note = if exact {
+    let rounding_note = if id == "chosen" {
+        format!(
+            "You chose this mix. Section A {section_a} marks ({percent_a:.1}%), Section B {section_b} marks ({percent_b:.1}%), Section C {section_c} marks ({percent_c:.1}%). {extra}"
+        )
+    } else if exact {
         format!(
             "Section A {section_a} marks (30%), Section B {section_b} marks (40%), Section C {section_c} marks (30%). {extra}"
         )
@@ -989,6 +1066,28 @@ mod tests {
         assert_eq!(fib.correct_answer.to_ascii_lowercase(), "axon");
         assert!(fib.source_passage.to_ascii_lowercase().contains("axon"));
         assert!(!fib.prompt.to_ascii_lowercase().contains("axon"));
+    }
+
+    #[test]
+    fn chosen_counts_stop_at_the_notes_and_are_not_padded() {
+        let topics: Vec<_> = (0..4).map(rich).collect();
+        let (offer, questions) = build_chosen_paper(
+            &topics,
+            "standard",
+            ChosenCounts { fib: 2, mcq: 1, short_q: 1, long_q: 0 },
+            11,
+        )
+        .unwrap();
+        assert_eq!(questions.len(), 4);
+        assert_eq!(offer.total_marks, 2 * 3 + 2 + 5);
+        assert!(offer.rounding_note.contains("You chose this mix"));
+        let too_many = build_chosen_paper(
+            &topics,
+            "standard",
+            ChosenCounts { fib: 99, mcq: 0, short_q: 0, long_q: 0 },
+            1,
+        );
+        assert!(too_many.is_err());
     }
 
     #[test]
