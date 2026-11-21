@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, Loader2 } from 'lucide-react';
-import { isCitationAdmin, useAuthStore } from '@/store/authStore';
+import { useAuthStore } from '@/store/authStore';
 import { authApi } from '@/services/api';
+import { QuietSecretInput, QuietTextInput } from '@/components/QuietField';
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('operator@satpass.xdgen.com');
-  const [password, setPassword] = useState('pak123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [masterPassword, setMasterPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [showReset, setShowReset] = useState(false);
@@ -22,8 +23,7 @@ export default function LoginPage() {
     setInfo('');
     try {
       await login(username, password);
-      const signedIn = useAuthStore.getState().user;
-      navigate(isCitationAdmin(signedIn) ? '/' : '/manuscripts');
+      navigate('/');
     } catch (err: unknown) {
       const detail =
         err && typeof err === 'object' && 'response' in err
@@ -32,7 +32,7 @@ export default function LoginPage() {
       setError(
         typeof detail === 'string'
           ? detail
-          : 'Invalid credentials. Use operator@satpass.xdgen.com / pak123',
+          : 'Invalid username, email, or password.',
       );
     }
   };
@@ -68,21 +68,30 @@ export default function LoginPage() {
         </div>
 
         {!showReset ? (
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="on">
             <div>
-              <label className="text-sm text-gray-400 mb-1 block">Email</label>
+              <label className="text-sm text-gray-400 mb-1 block" htmlFor="satpass-username">
+                Username or email
+              </label>
               <input
+                id="satpass-username"
+                name="username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="input-field"
                 autoComplete="username"
+                placeholder="Username or email"
                 required
               />
             </div>
             <div>
-              <label className="text-sm text-gray-400 mb-1 block">Password</label>
+              <label className="text-sm text-gray-400 mb-1 block" htmlFor="satpass-password">
+                Password
+              </label>
               <input
+                id="satpass-password"
+                name="password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -125,15 +134,13 @@ export default function LoginPage() {
             </p>
           </form>
         ) : (
-          <form onSubmit={handleReset} className="space-y-4">
+          <form onSubmit={handleReset} className="space-y-4" autoComplete="off">
             <p className="text-sm text-gray-400">
-              Enter the account email, the master reset password <span className="text-gray-200">NTZHSS</span>, and a
-              new login password.
+              Enter the account email, the master reset password, and a new login password.
             </p>
             <div>
               <label className="text-sm text-gray-400 mb-1 block">Email</label>
-              <input
-                type="text"
+              <QuietTextInput
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="input-field"
@@ -142,8 +149,7 @@ export default function LoginPage() {
             </div>
             <div>
               <label className="text-sm text-gray-400 mb-1 block">Master reset password</label>
-              <input
-                type="password"
+              <QuietSecretInput
                 value={masterPassword}
                 onChange={(e) => setMasterPassword(e.target.value)}
                 className="input-field"
@@ -152,8 +158,7 @@ export default function LoginPage() {
             </div>
             <div>
               <label className="text-sm text-gray-400 mb-1 block">New password</label>
-              <input
-                type="password"
+              <QuietSecretInput
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="input-field"

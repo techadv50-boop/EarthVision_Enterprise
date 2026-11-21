@@ -110,6 +110,10 @@ export interface SatelliteTrack {
   samples: TrackSample[];
   labels: TrackLabel[];
   footprint: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
+  /** Ground track limited to the time the swath covers the AOI. */
+  aoiSamples?: TrackSample[];
+  aoiLabels?: TrackLabel[];
+  aoiFootprint?: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
 }
 
 export interface PredictResult {

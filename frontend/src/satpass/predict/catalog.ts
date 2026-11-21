@@ -71,7 +71,127 @@ const CARTOSAT3_NORADS = new Set([44804]);
 const PRSS_NORADS = new Set([43530]);
 const NISAR_NORADS = new Set([65053]);
 
+const CARTOSAT2B_NORADS = new Set([36795]);
+const CARTOSAT2C_NORADS = new Set([41599]);
+const CARTOSAT2D_NORADS = new Set([41948]);
+const CARTOSAT2E_NORADS = new Set([42767]);
+const CARTOSAT2F_NORADS = new Set([43111]);
+const EOS8_NORADS = new Set([60454]);
+const EOS7_NORADS = new Set([55562]);
+const RISAT2B_NORADS = new Set([44233]);
+const RISAT2BR1_NORADS = new Set([44857]);
+const RISAT2BR2_NORADS = new Set([46905]);
+const RISAT1A_NORADS = new Set([51656]);
+const OCEANSAT3_NORADS = new Set([54361]);
+const SARAL_NORADS = new Set([39086]);
+const INSAT3DR_NORADS = new Set([41752]);
+const INSAT3DS_NORADS = new Set([58990]);
+const RESOURCESAT2A_NORADS = new Set([41877]);
+const HYSIS_NORADS = new Set([43719]);
+
 const CATALOG: CatalogEntry[] = [
+  {
+    test: (n, norad) => /cartosat[- ]?2b/i.test(n) || (norad != null && CARTOSAT2B_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 9.6, minElevationDeg: 20, spatialResolutionM: 0.8 },
+    slug: 'CARTOSAT-2B',
+  },
+  {
+    test: (n, norad) => /cartosat[- ]?2c/i.test(n) || (norad != null && CARTOSAT2C_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 10, minElevationDeg: 20, spatialResolutionM: 0.65 },
+    slug: 'CARTOSAT-2C',
+  },
+  {
+    test: (n, norad) => /cartosat[- ]?2d/i.test(n) || (norad != null && CARTOSAT2D_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 10, minElevationDeg: 20, spatialResolutionM: 0.65 },
+    slug: 'CARTOSAT-2D',
+  },
+  {
+    test: (n, norad) => /cartosat[- ]?2e/i.test(n) || (norad != null && CARTOSAT2E_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 10, minElevationDeg: 20, spatialResolutionM: 0.65 },
+    slug: 'CARTOSAT-2E',
+  },
+  {
+    test: (n, norad) => /cartosat[- ]?2f/i.test(n) || (norad != null && CARTOSAT2F_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 10, minElevationDeg: 20, spatialResolutionM: 0.65 },
+    slug: 'CARTOSAT-2F',
+  },
+  {
+    test: (n, norad) => /eos[- ]?0?8/i.test(n) || (norad != null && EOS8_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 20, minElevationDeg: 15, spatialResolutionM: 30 },
+    slug: 'EOS-8',
+  },
+  {
+    test: (n, norad) => /eos[- ]?0?7/i.test(n) || (norad != null && EOS7_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 10, minElevationDeg: 20, spatialResolutionM: 30 },
+    slug: 'EOS-7',
+  },
+  {
+    test: (n, norad) => /risat[- ]?2br1/i.test(n) || (norad != null && RISAT2BR1_NORADS.has(norad)),
+    kind: 'sar',
+    sensor: { swathKm: 50, minElevationDeg: 10 },
+    slug: 'RISAT-2BR1',
+  },
+  {
+    test: (n, norad) => /risat[- ]?2br2/i.test(n) || (norad != null && RISAT2BR2_NORADS.has(norad)),
+    kind: 'sar',
+    sensor: { swathKm: 50, minElevationDeg: 10 },
+    slug: 'RISAT-2BR2',
+  },
+  {
+    test: (n, norad) => /risat[- ]?2b(?!r)/i.test(n) || (norad != null && RISAT2B_NORADS.has(norad)),
+    kind: 'sar',
+    sensor: { swathKm: 50, minElevationDeg: 10 },
+    slug: 'RISAT-2B',
+  },
+  {
+    test: (n, norad) => /risat[- ]?1a|eos[- ]?0?4/i.test(n) || (norad != null && RISAT1A_NORADS.has(norad)),
+    kind: 'sar',
+    sensor: { swathKm: 100, minElevationDeg: 10 },
+    slug: 'RISAT-1A',
+  },
+  {
+    test: (n, norad) => /oceansat[- ]?3|eos[- ]?0?6/i.test(n) || (norad != null && OCEANSAT3_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 1440, minElevationDeg: 5, spatialResolutionM: 360 },
+    slug: 'OCEANSAT-3',
+  },
+  {
+    test: (n, norad) => /\bsaral\b/i.test(n) || (norad != null && SARAL_NORADS.has(norad)),
+    kind: 'sar',
+    sensor: { swathKm: 8, minElevationDeg: 45 },
+    slug: 'SARAL',
+  },
+  {
+    test: (n, norad) => /insat[- ]?3dr/i.test(n) || (norad != null && INSAT3DR_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 2000, minElevationDeg: 5 },
+    slug: 'INSAT-3DR',
+  },
+  {
+    test: (n, norad) => /insat[- ]?3ds/i.test(n) || (norad != null && INSAT3DS_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 2000, minElevationDeg: 5 },
+    slug: 'INSAT-3DS',
+  },
+  {
+    test: (n, norad) => /resourcesat[- ]?2a/i.test(n) || (norad != null && RESOURCESAT2A_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 141, minElevationDeg: 10, spatialResolutionM: 23.5 },
+    slug: 'RESOURCESAT-2A',
+  },
+  {
+    test: (n, norad) => /hys?is/i.test(n) || (norad != null && HYSIS_NORADS.has(norad)),
+    kind: 'optical',
+    sensor: { swathKm: 30, minElevationDeg: 15, spatialResolutionM: 30 },
+    slug: 'HYSIS',
+  },
   {
     test: (n, norad) => /\bnisar\b/i.test(n) || (norad != null && NISAR_NORADS.has(norad)),
     kind: 'sar',

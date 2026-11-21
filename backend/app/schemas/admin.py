@@ -86,6 +86,12 @@ class UserAdminUpdate(BaseModel):
     access_status: Optional[str] = Field(
         default=None, description="pending, approved, or restricted"
     )
+    password: Optional[str] = Field(
+        default=None,
+        min_length=8,
+        max_length=128,
+        description="New password set by an admin for this account.",
+    )
 
 
 class AdminStats(BaseModel):

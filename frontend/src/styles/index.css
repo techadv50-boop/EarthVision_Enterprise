@@ -24,6 +24,9 @@
   .input-field {
     @apply w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-earth-500 focus:border-transparent;
   }
+  .quiet-secret {
+    -webkit-text-security: disc;
+  }
 }
 
 .cesium-viewer-bottom,
@@ -35,4 +38,15 @@
 
 .cesium-widget-credits {
   display: none !important;
+}
+
+/* Dark panels hide the native date icon and popup. Force a white calendar. */
+.satpass-date {
+  color-scheme: light;
+  color: #f8fafc;
+}
+.satpass-date::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  filter: invert(1);
+  opacity: 1;
 }

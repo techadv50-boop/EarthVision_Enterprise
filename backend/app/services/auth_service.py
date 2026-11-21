@@ -1,6 +1,6 @@
 """User authentication and management service."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,18 +16,24 @@ class AuthService:
         self.db = db
 
     async def get_user_by_username(self, username: str) -> User | None:
+        ident = (username or "").strip().lower()
+        if not ident:
+            return None
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.roles).selectinload(Role.permissions))
-            .where(User.username == username)
+            .where(func.lower(User.username) == ident)
         )
         return result.scalar_one_or_none()
 
     async def get_user_by_email(self, email: str) -> User | None:
+        ident = (email or "").strip().lower()
+        if not ident:
+            return None
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.roles).selectinload(Role.permissions))
-            .where(User.email == email)
+            .where(func.lower(User.email) == ident)
         )
         return result.scalar_one_or_none()
 

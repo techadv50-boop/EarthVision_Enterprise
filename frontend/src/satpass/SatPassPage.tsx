@@ -18,8 +18,10 @@ import SatPassMap, { type TrackedSat } from './SatPassMap';
 import SatPassUsersModal from './SatPassUsersModal';
 import SatPassLayersModal from './SatPassLayersModal';
 import PredictView from './PredictView';
-import type { SatState } from './orbit';
+import WatchView from './WatchView';
+import { compassPoint, type SatState } from './orbit';
 import { catalogSensor } from './predict/catalog';
+import { PERMANENT_SATS, preferredSatName } from './predict/permanentSats';
 
 const PALETTE = [
   '#22d3ee',
@@ -87,7 +89,7 @@ function parseTleBlock(text: string): { name: string | null; line1: string; line
 }
 
 export default function SatPassPage() {
-  const [mode, setMode] = useState<'track' | 'predict'>('predict');
+  const [mode, setMode] = useState<'track' | 'predict' | 'watch'>('predict');
   const [sats, setSats] = useState<TrackedSat[]>([]);
   const [states, setStates] = useState<Record<number, SatState>>({});
   const [focusId, setFocusId] = useState<number | null>(null);
@@ -126,14 +128,53 @@ export default function SatPassPage() {
 
   const addFromTle = async (name: string, line1: string, line2: string, noradId?: number | null) => {
     setError('');
-    const color = nextColor;
+    const norad = noradId ?? noradFromLine1(line1);
+    const existing =
+      norad == null ? undefined : sats.find((s) => (s.noradId ?? noradFromLine1(s.line1)) === norad);
+    const color = existing?.color || nextColor;
     try {
-      const { data } = await satelliteApi.add({ name, line1, line2, norad_id: noradId, color });
-      setSats((prev) => [...prev, toTracked(data, color)]);
-      return true;
+      const { data } = await satelliteApi.add({ name, line1, line2, norad_id: norad, color });
+      if (existing) {
+        try {
+          await satelliteApi.remove(existing.id);
+        } catch {
+          /* the new TLE is saved; drop the old row from the list anyway */
+        }
+      }
+      setSats((prev) => [
+        ...prev.filter((s) => !existing || s.id !== existing.id),
+        toTracked(data, color),
+      ]);
+      return data.id;
     } catch {
       setError('Could not add satellite (check the TLE lines).');
       return false;
+    }
+  };
+
+  /** Fetch the current Celestrak TLE, then add or replace that NORAD id. */
+  const addLatest = async (q: string, preferredName?: string) => {
+    const term = q.trim();
+    if (!term) return false;
+    setSearching(true);
+    setError('');
+    try {
+      const { data } = await satelliteApi.fetch(term);
+      const noradGuess = /^\d+$/.test(term) ? Number(term) : null;
+      const hit =
+        (noradGuess != null ? data.find((row) => row.norad_id === noradGuess) : undefined) ?? data[0];
+      if (!hit?.line1 || !hit.line2) {
+        setError(`No current orbit for ${preferredName || term}.`);
+        return false;
+      }
+      const norad = hit.norad_id ?? noradGuess;
+      const name = preferredName || preferredSatName(norad, hit.name);
+      return await addFromTle(name, hit.line1, hit.line2, norad);
+    } catch {
+      setError(`No current orbit for ${preferredName || term}.`);
+      return false;
+    } finally {
+      setSearching(false);
     }
   };
 
@@ -149,19 +190,6 @@ export default function SatPassPage() {
       if (data.length === 0) setError(`No satellite found for "${term}".`);
     } catch {
       setError(`No satellite found for "${term}".`);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const addPreset = async (q: string) => {
-    setSearching(true);
-    setError('');
-    try {
-      const { data } = await satelliteApi.fetch(q);
-      if (data[0]) await addFromTle(data[0].name, data[0].line1, data[0].line2, data[0].norad_id);
-    } catch {
-      setError('Lookup failed. Try again.');
     } finally {
       setSearching(false);
     }
@@ -220,10 +248,10 @@ export default function SatPassPage() {
     }
   };
 
-  const tabBtn = (id: 'track' | 'predict', label: string) => (
+  const tabBtn = (id: 'track' | 'predict' | 'watch', label: string) => (
     <button
       onClick={() => setMode(id)}
-      className={`rounded px-3 py-1.5 text-sm font-medium ${
+      className={`whitespace-nowrap rounded px-2.5 py-1.5 text-[13px] font-medium ${
         mode === id ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10 hover:text-white'
       }`}
     >
@@ -241,11 +269,14 @@ export default function SatPassPage() {
         <nav className="ml-2 flex items-center gap-1 rounded-md bg-white/5 p-0.5 ring-1 ring-white/10">
           {tabBtn('track', 'Track')}
           {tabBtn('predict', 'Predict')}
+          {tabBtn('watch', 'Who is overhead')}
         </nav>
-        <p className="hidden truncate text-[11px] text-gray-500 sm:block">
+        <p className="hidden truncate text-[11px] text-gray-500 lg:block">
           {mode === 'predict'
             ? 'When will this satellite pass over a location or area?'
-            : 'satpass.xdgen.com · live satellite tracker'}
+            : mode === 'watch'
+              ? 'Which active satellites are overhead a selected country right now?'
+              : 'satpass.xdgen.com · live satellite tracker'}
         </p>
         <div className="ml-auto flex items-center gap-1">
           {admin && (
@@ -281,6 +312,8 @@ export default function SatPassPage() {
 
       {mode === 'predict' ? (
         <PredictView key={user?.id ?? 'predict'} trackedSats={sats} layersEpoch={layersEpoch} />
+      ) : mode === 'watch' ? (
+        <WatchView />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* Control panel (sidebar) */}
@@ -322,10 +355,27 @@ export default function SatPassPage() {
               {PRESETS.map((p) => (
                 <button
                   key={p.q}
-                  onClick={() => addPreset(p.q)}
-                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 ring-1 ring-white/10 hover:bg-white/10"
+                  disabled={searching}
+                  onClick={() => void addLatest(p.q, p.name)}
+                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
                 >
                   + {p.name}
+                </button>
+              ))}
+            </div>
+
+            <p className="mb-1 mt-3 text-[11px] text-gray-500">
+              Cartosat and SAR series — click loads the latest TLE
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {PERMANENT_SATS.map((sat) => (
+                <button
+                  key={sat.norad}
+                  disabled={searching}
+                  onClick={() => void addLatest(String(sat.norad), sat.name)}
+                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
+                >
+                  + {sat.name}
                 </button>
               ))}
             </div>
@@ -374,7 +424,12 @@ export default function SatPassPage() {
                   <button
                     key={`${r.norad_id}-${r.name}`}
                     onClick={async () => {
-                      const ok = await addFromTle(r.name, r.line1, r.line2, r.norad_id);
+                      const ok = await addFromTle(
+                        preferredSatName(r.norad_id, r.name),
+                        r.line1,
+                        r.line2,
+                        r.norad_id,
+                      );
                       if (ok) setResults([]);
                     }}
                     className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-white/10"
@@ -447,11 +502,17 @@ export default function SatPassPage() {
                       </button>
                     </div>
                     {st && (
-                      <div className="mt-1 grid grid-cols-4 gap-1 pl-6 text-[11px] text-gray-400">
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-[11px] text-gray-400">
                         <span title="Latitude">LAT {st.lat.toFixed(2)}</span>
                         <span title="Longitude">LNG {st.lon.toFixed(2)}</span>
-                        <span title="Altitude (km)">ALT {st.altKm.toFixed(0)}</span>
-                        <span title="Speed (km/s)">SPD {st.speedKmS.toFixed(2)}</span>
+                        <span title="Altitude (km)">ALT {st.altKm.toFixed(0)} km</span>
+                        <span title="Speed (km/s)">SPD {st.speedKmS.toFixed(2)} km/s</span>
+                        <span title="Direction of travel">
+                          HDG{' '}
+                          {st.headingDeg == null
+                            ? '—'
+                            : `${st.headingDeg.toFixed(0)}° ${compassPoint(st.headingDeg)}`}
+                        </span>
                       </div>
                     )}
                     <div className="mt-1 flex items-center gap-1.5 pl-6 text-[11px] text-gray-400">
@@ -477,8 +538,8 @@ export default function SatPassPage() {
         </div>
       </aside>
 
-      {/* Map play area */}
-      <div className="relative flex-1">
+      {/* Map play area. z-0 keeps Leaflet panes under page dialogs. */}
+      <div className="relative z-0 flex-1">
         <SatPassMap
           sats={sats}
           onStates={handleStates}

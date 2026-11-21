@@ -61,6 +61,17 @@ function noradOf(line1: string): string {
   return line1.slice(2, 7).trim();
 }
 
+/** Full pole-to-pole track, or only the segment that covers the AOI. */
+export function trackAsDisplayed(track: SatelliteTrack, aoiOnly: boolean): SatelliteTrack {
+  if (!aoiOnly || !track.aoiSamples || track.aoiSamples.length < 2) return track;
+  return {
+    ...track,
+    samples: track.aoiSamples,
+    labels: track.aoiLabels?.length ? track.aoiLabels : track.labels,
+    footprint: track.aoiFootprint ?? null,
+  };
+}
+
 export function validateTle(name: string, line1: string, line2: string): string | null {
   const l1 = line1.trim();
   const l2 = line2.trim();
@@ -443,6 +454,13 @@ export function computePasses(
       const samples = built.samples;
       if (samples.length < 2) continue;
       const labelsKept = spaceLabels(built.labels);
+      const aoiBuilt = buildTrack(
+        satrec,
+        rawStart,
+        rawEnd,
+        options.labelIntervalMin * 60_000,
+        options.timeZone,
+      );
 
       satPass += 1;
       const start = rawStart;
@@ -499,6 +517,9 @@ export function computePasses(
         samples,
         labels: labelsKept,
         footprint: orbitSwathPolygon(samples, sensor.swathKm),
+        aoiSamples: aoiBuilt.samples,
+        aoiLabels: aoiBuilt.labels,
+        aoiFootprint: orbitSwathPolygon(aoiBuilt.samples, sensor.swathKm),
       });
     }
 

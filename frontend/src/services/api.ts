@@ -224,6 +224,7 @@ export const adminApi = {
   roles: () => api.get('/admin/roles'),
   createUser: (data: Record<string, unknown>) => api.post('/admin/users', data),
   updateUser: (id: number, data: Record<string, unknown>) => api.patch(`/admin/users/${id}`, data),
+  deleteUser: (id: number) => api.delete(`/admin/users/${id}`),
   projects: {
     list: () => api.get('/admin/projects'),
     create: (data: Record<string, unknown>) => api.post('/admin/projects', data),
