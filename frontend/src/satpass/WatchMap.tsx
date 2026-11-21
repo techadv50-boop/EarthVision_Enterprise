@@ -219,7 +219,7 @@ export default function WatchMap({
         fillColor: motion.color,
         fillOpacity: 1,
       }).bindTooltip(
-        `<b>${motion.name}</b><br>${motion.lat.toFixed(2)}, ${motion.lon.toFixed(2)} · ${motion.altKm.toFixed(0)} km${heading}<br>Click to hide this track`,
+        `<b>${motion.name}</b><br>${motion.lat.toFixed(2)}, ${motion.lon.toFixed(2)} · ${motion.altKm.toFixed(0)} km${heading}<br>Click for details`,
         { permanent: true, direction: 'top', offset: [0, -8] },
       );
       satMarker.on('click', (ev) => {
@@ -262,7 +262,7 @@ export default function WatchMap({
         fillOpacity: 0.9,
       });
       marker.bindTooltip(
-        `${hit.name}<br>${hit.constellation} · ${hit.relation === 'overhead' ? 'Over the area' : 'Swath covers the area'}<br>${on ? 'Click to hide this track' : 'Click to show this track'}`,
+        `${hit.name}<br>${hit.constellation} · ${hit.relation === 'overhead' ? 'Over the area' : 'Swath covers the area'}<br>Click for details`,
         { direction: 'top', offset: [0, -4] },
       );
       marker.on('click', (ev) => {

@@ -3,7 +3,8 @@ import { Loader2 } from 'lucide-react';
 import WatchMap, { type WatchLayer, type WatchTrackLine, type WatchTrackMotion } from './WatchMap';
 import { compassPoint, getState, groundTrack, parseTle } from './orbit';
 import { bearingDeg } from './predict/footprint';
-import { catalogSourceNote, loadActiveCatalog, satelliteType, subscribeCatalog, type ActiveSat } from './watch/catalog';
+import { catalogSourceNote, constellationOf, loadActiveCatalog, satelliteType, subscribeCatalog, type ActiveSat } from './watch/catalog';
+import { formatPeriod, orbitFacts, originOf, yearsInOrbit } from './watch/details';
 import { exportOverheadCsv } from './watch/export';
 import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
 
@@ -72,6 +73,17 @@ interface TrackPick {
   line2: string;
 }
 
+interface PickedSat {
+  name: string;
+  noradId: number | null;
+  line1: string;
+  line2: string;
+  swathKm: number | null;
+  relation: WatchRelation | null;
+  elevationDeg: number | null;
+  distanceKm: number | null;
+}
+
 function satKey(hit: { noradId: number | null; line1: string }): string {
   return hit.noradId != null ? `n${hit.noradId}` : hit.line1;
 }
@@ -102,6 +114,7 @@ export default function WatchView() {
   const [areaError, setAreaError] = useState('');
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
   const [scanFeature, setScanFeature] = useState<GeoJSON.Feature | null>(null);
+  const [selected, setSelected] = useState<PickedSat | null>(null);
   const [tracks, setTracks] = useState<TrackPick[]>([]);
   const [trackMotion, setTrackMotion] = useState<Record<string, WatchTrackMotion>>({});
   const scanId = useRef(0);
@@ -245,9 +258,21 @@ export default function WatchView() {
     setCountryName('');
     setTracks([]);
     setTrackMotion({});
+    setSelected(null);
   };
 
-  const toggleTrack = (hit: WatchHit) => {
+  const pickSat = (hit: WatchHit): PickedSat => ({
+    name: hit.name,
+    noradId: hit.noradId,
+    line1: hit.line1,
+    line2: hit.line2,
+    swathKm: hit.swathKm,
+    relation: hit.relation,
+    elevationDeg: hit.elevationDeg,
+    distanceKm: hit.distanceKm,
+  });
+
+  const toggleTrack = (hit: { name: string; noradId: number | null; line1: string; line2: string }) => {
     const key = satKey(hit);
     setTracks((prev) =>
       prev.some((item) => item.key === key)
@@ -256,13 +281,25 @@ export default function WatchView() {
     );
   };
 
-  const toggleTrackKey = (key: string) => {
+  const showTrackKey = (key: string) => {
     const hit = hits.find((item) => satKey(item) === key);
     if (hit) {
-      toggleTrack(hit);
+      setSelected(pickSat(hit));
       return;
     }
-    setTracks((prev) => prev.filter((item) => item.key !== key));
+    const track = tracks.find((item) => item.key === key);
+    if (!track) return;
+    const norad = key.startsWith('n') ? Number(key.slice(1)) : null;
+    setSelected({
+      name: track.name,
+      noradId: Number.isFinite(norad) ? norad : null,
+      line1: track.line1,
+      line2: track.line2,
+      swathKm: null,
+      relation: null,
+      elevationDeg: null,
+      distanceKm: null,
+    });
   };
 
   const trackLines = useMemo((): WatchTrackLine[] => {
@@ -587,7 +624,7 @@ export default function WatchView() {
                 Export list{matched.length > 0 ? ` (${matched.length.toLocaleString()})` : ''}
               </button>
               <p className="mt-1 text-[10px] text-gray-500">
-                Click a satellite on the map to turn its track on or off. Each one stays on until you turn that one off.
+                Click a satellite for its type, country, launch, life, and orbit. Track draws its path.
               </p>
               <p className="mt-1 text-[10px] text-gray-500">
                 CSV with name, location, swath, and type (optical, SAR, communication, and others).
@@ -603,7 +640,9 @@ export default function WatchView() {
               return (
               <div
                 key={`${hit.noradId ?? hit.name}-${hit.line1.slice(2, 7)}`}
-                className="rounded bg-gray-900/70 p-2 ring-1 ring-white/10"
+                className={`rounded bg-gray-900/70 p-2 ring-1 ${
+                  selected && satKey(selected) === satKey(hit) ? 'ring-cyan-400' : 'ring-white/10'
+                }`}
               >
                 <div className="flex items-start gap-2">
                   <span
@@ -613,7 +652,11 @@ export default function WatchView() {
                         hit.relation === 'overhead' ? '#fbbf24' : hit.relation === 'watching' ? '#22d3ee' : '#94a3b8',
                     }}
                   />
-                  <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelected(pickSat(hit))}
+                    className="min-w-0 flex-1 text-left"
+                  >
                     <div className="truncate text-sm font-medium">{hit.name}</div>
                     <div className="text-[10px] text-gray-500">
                       {hit.constellation}
@@ -631,7 +674,7 @@ export default function WatchView() {
                         {heading == null ? '—' : `${Math.round(heading)}° ${compassPoint(heading)}`}
                       </div>
                     )}
-                  </div>
+                  </button>
                   <button
                     type="button"
                     onClick={() => toggleTrack(hit)}
@@ -697,19 +740,116 @@ export default function WatchView() {
             {catalogLoading ? 'Loading active satellites' : boundariesLoading ? 'Loading boundaries' : 'Checking who is overhead'}
           </div>
         )}
+        {selected && (
+          <SatDetail
+            sat={selected}
+            tracked={tracks.some((item) => item.key === satKey(selected))}
+            onClose={() => setSelected(null)}
+            onTrack={() => toggleTrack(selected)}
+          />
+        )}
         <WatchMap
           layers={layers}
           selectedName={areaName || null}
           guideName={level === 3 ? provinceName || null : null}
           hits={visible}
           onArea={onMapArea}
-          onSat={toggleTrack}
-          onTrackKey={toggleTrackKey}
+          onSat={(hit) => setSelected(pickSat(hit))}
+          onTrackKey={showTrackKey}
           trackedKeys={tracks.map((item) => item.key)}
           trackLines={trackLines}
           trackMotion={Object.values(trackMotion)}
         />
       </div>
     </div>
+  );
+}
+
+function SatDetail({
+  sat,
+  tracked,
+  onClose,
+  onTrack,
+}: {
+  sat: PickedSat;
+  tracked: boolean;
+  onClose: () => void;
+  onTrack: () => void;
+}) {
+  const facts = orbitFacts(sat.line1, sat.line2);
+  const origin = originOf(sat.name);
+  let live: { lat: number; lon: number; altKm: number; speedKmS: number } | null = null;
+  let headingDeg: number | null = null;
+  try {
+    const now = new Date();
+    const state = getState(parseTle(sat.line1, sat.line2), now);
+    if (state) {
+      live = state;
+      const ahead = getState(parseTle(sat.line1, sat.line2), new Date(now.getTime() + 20_000));
+      if (ahead) headingDeg = bearingDeg(state.lat, state.lon, ahead.lat, ahead.lon);
+    }
+  } catch {
+    live = null;
+  }
+  const rows: [string, string][] = [
+    ['Type', satelliteType(sat.name)],
+    ['Classification', facts.classification],
+    ['Country', origin?.country ?? 'Not published'],
+    ['Operator', origin?.operator ?? 'Not published'],
+    ['NORAD', sat.noradId == null ? '—' : String(sat.noradId)],
+    ['Designator', facts.designator || '—'],
+    ['Launched', facts.launchYear == null ? '—' : String(facts.launchYear)],
+    ['Life', yearsInOrbit(facts.launchYear)],
+    ['Orbit', facts.regime],
+    ['Altitude', live ? `${live.altKm.toFixed(0)} km` : '—'],
+    ['Speed', live ? `${live.speedKmS.toFixed(2)} km/s` : '—'],
+    ['Heading', headingDeg == null ? '—' : `${Math.round(headingDeg)}° ${compassPoint(headingDeg)}`],
+    ['Position', live ? `${live.lat.toFixed(2)}°, ${live.lon.toFixed(2)}°` : '—'],
+    ['Perigee', facts.perigeeKm == null ? '—' : `${facts.perigeeKm.toFixed(0)} km`],
+    ['Apogee', facts.apogeeKm == null ? '—' : `${facts.apogeeKm.toFixed(0)} km`],
+    ['Period', facts.periodMin == null ? '—' : formatPeriod(facts.periodMin)],
+    ['Inclination', facts.inclinationDeg == null ? '—' : `${facts.inclinationDeg.toFixed(2)}°`],
+    ['Eccentricity', facts.eccentricity == null ? '—' : facts.eccentricity.toFixed(6)],
+  ];
+  if (sat.swathKm != null) rows.push(['Swath', `${sat.swathKm} km`]);
+  if (sat.relation) rows.push(['Relative to area', RELATION_LABEL[sat.relation]]);
+  if (sat.elevationDeg != null) rows.push(['Elevation', `${sat.elevationDeg.toFixed(0)}°`]);
+  if (sat.distanceKm != null) {
+    rows.push(['Distance', sat.distanceKm < 1 ? 'Over the shape' : `${sat.distanceKm.toFixed(0)} km from the area`]);
+  }
+
+  return (
+    <aside className="absolute right-3 top-14 z-[1000] flex max-h-[calc(100%-4.5rem)] w-[300px] flex-col overflow-hidden rounded-md bg-gray-950/95 text-gray-100 shadow-lg ring-1 ring-white/15">
+      <div className="flex items-start gap-2 border-b border-white/10 px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">{sat.name}</p>
+          <p className="text-[10px] text-gray-400">{constellationOf(sat.name)}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded px-1.5 py-0.5 text-[11px] text-gray-300 ring-1 ring-white/15 hover:bg-white/10"
+        >
+          Close
+        </button>
+      </div>
+      <div className="space-y-1.5 overflow-y-auto px-3 py-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-start justify-between gap-3 text-[11px] leading-snug">
+            <span className="shrink-0 text-gray-500">{label}</span>
+            <span className="text-right text-gray-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-white/10 px-3 py-2">
+        <button
+          type="button"
+          onClick={onTrack}
+          className="w-full rounded bg-cyan-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-cyan-500"
+        >
+          {tracked ? 'Track off' : 'Track on'}
+        </button>
+      </div>
+    </aside>
   );
 }
