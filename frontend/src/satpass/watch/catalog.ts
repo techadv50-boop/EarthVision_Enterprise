@@ -127,6 +127,13 @@ type CatalogSource = 'live' | 'saved';
 let memory: { at: number; sats: ActiveSat[]; source: CatalogSource } | null = null;
 let inflight: Promise<ActiveSat[]> | null = null;
 let sourceNote = '';
+const listeners = new Set<(sats: ActiveSat[]) => void>();
+
+/** A fresh Celestrak copy can replace the saved catalog after the page has opened. */
+export function subscribeCatalog(listener: (sats: ActiveSat[]) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
 
 const LIVE_TTL_MS = 6 * 60 * 60 * 1000;
 const SAVED_TTL_MS = 10 * 60 * 1000;
@@ -144,6 +151,7 @@ function remember(sats: ActiveSat[], source: CatalogSource) {
     source === 'saved'
       ? 'Using the saved active catalog. Celestrak is limiting a fresh download from this server.'
       : '';
+  for (const listener of listeners) listener(sats);
 }
 
 function idb(): Promise<IDBDatabase | null> {
@@ -224,29 +232,48 @@ async function readSaved(): Promise<ActiveSat[] | null> {
   return best?.sats ?? null;
 }
 
-async function fetchCatalog(): Promise<ActiveSat[]> {
-  let failure = 'Could not load the active catalog';
+const LIVE_WAIT_MS = 12_000;
+
+async function fetchLive(signal?: AbortSignal): Promise<ActiveSat[]> {
   try {
-    const resp = await fetch('/celestrak/NORAD/elements/gp.php?GROUP=active&FORMAT=TLE');
+    const resp = await fetch('/celestrak/NORAD/elements/gp.php?GROUP=active&FORMAT=TLE', { signal });
     const text = await resp.text();
     if (!resp.ok || isCelestrakStub(text)) {
-      failure = isCelestrakStub(text)
-        ? 'Celestrak asked this server to wait before downloading the active catalog again'
-        : `Celestrak returned ${resp.status}`;
-      throw new Error(failure);
+      throw new Error(
+        isCelestrakStub(text)
+          ? 'Celestrak asked this server to wait before downloading the active catalog again'
+          : `Celestrak returned ${resp.status}`,
+      );
     }
     const sats = parseTleCatalog(text);
     if (!sats.length) throw new Error('Celestrak returned no usable TLEs');
-    remember(sats, 'live');
     void saveIdb(text);
     return sats;
   } catch (err) {
-    const saved = await readSaved();
-    if (saved) {
-      remember(saved, 'saved');
-      return saved;
-    }
-    throw err instanceof Error ? err : new Error(failure);
+    if (signal?.aborted) throw new Error('Celestrak took too long');
+    throw err;
+  }
+}
+
+async function fetchCatalog(): Promise<ActiveSat[]> {
+  const saved = await readSaved();
+  if (saved) {
+    remember(saved, 'saved');
+    void fetchLive()
+      .then((sats) => remember(sats, 'live'))
+      .catch(() => undefined);
+    return saved;
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), LIVE_WAIT_MS);
+  try {
+    const sats = await fetchLive(ctrl.signal);
+    remember(sats, 'live');
+    return sats;
+  } catch (err) {
+    throw err instanceof Error ? err : new Error('Could not load the active catalog');
+  } finally {
+    clearTimeout(timer);
   }
 }
 

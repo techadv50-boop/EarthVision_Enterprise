@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react';
 import WatchMap, { type WatchLayer, type WatchTrackLine, type WatchTrackMotion } from './WatchMap';
 import { compassPoint, getState, groundTrack, parseTle } from './orbit';
 import { bearingDeg } from './predict/footprint';
-import { catalogSourceNote, loadActiveCatalog, satelliteType, type ActiveSat } from './watch/catalog';
+import { catalogSourceNote, loadActiveCatalog, satelliteType, subscribeCatalog, type ActiveSat } from './watch/catalog';
 import { exportOverheadCsv } from './watch/export';
 import { scanActive, type WatchHit, type WatchRelation } from './watch/scan';
 
@@ -101,6 +101,7 @@ export default function WatchView() {
   const [showInView, setShowInView] = useState(true);
   const [areaError, setAreaError] = useState('');
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
+  const [scanFeature, setScanFeature] = useState<GeoJSON.Feature | null>(null);
   const [tracks, setTracks] = useState<TrackPick[]>([]);
   const [trackMotion, setTrackMotion] = useState<Record<string, WatchTrackMotion>>({});
   const scanId = useRef(0);
@@ -109,6 +110,13 @@ export default function WatchView() {
     let cancelled = false;
     setCatalogLoading(true);
     setCatalogError('');
+    const unsubscribe = subscribeCatalog((sats) => {
+      if (cancelled) return;
+      setCatalog(sats);
+      setCatalogNote(catalogSourceNote());
+      setCatalogError('');
+      setCatalogLoading(false);
+    });
     loadActiveCatalog()
       .then((sats) => {
         if (!cancelled) {
@@ -125,6 +133,7 @@ export default function WatchView() {
       });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
@@ -231,6 +240,7 @@ export default function WatchView() {
     setHits([]);
     setCheckedAt(null);
     setAreaName('');
+    setScanFeature(null);
     setProvinceName('');
     setCountryName('');
     setTracks([]);
@@ -359,20 +369,25 @@ export default function WatchView() {
     if (!feature.geometry) return;
     const name = String((feature.properties as { name?: string } | null)?.name || 'Area');
     setAreaName(name);
-    const id = ++scanId.current;
-    setScanning(true);
-    setCatalogError('');
     setHits([]);
     setCheckedAt(null);
+    setCatalogError('');
+    setScanning(true);
     setProgress({ done: 0, total: catalog?.length ?? 0 });
+    setScanFeature(feature);
+  };
+
+  useEffect(() => {
+    if (!scanFeature?.geometry || !catalog) return;
+    const feature = scanFeature;
+    const sats = catalog;
+    const id = ++scanId.current;
+    setScanning(true);
+    setHits([]);
+    setCheckedAt(null);
+    setProgress({ done: 0, total: sats.length });
     void (async () => {
       try {
-        const sats = catalog ?? (await loadActiveCatalog());
-        if (id !== scanId.current) return;
-        if (!catalog) {
-          setCatalog(sats);
-          setCatalogNote(catalogSourceNote());
-        }
         const found = await scanActive(
           sats,
           feature.geometry as GeoJSON.Geometry,
@@ -397,7 +412,10 @@ export default function WatchView() {
         if (id === scanId.current) setScanning(false);
       }
     })();
-  };
+    return () => {
+      scanId.current += 1;
+    };
+  }, [scanFeature, catalog]);
 
   const matched = showInView ? hits : hits.filter((hit) => hit.relation !== 'in-view');
   const visible = matched.slice(0, 250);
