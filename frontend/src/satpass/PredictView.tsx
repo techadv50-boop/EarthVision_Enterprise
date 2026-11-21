@@ -208,7 +208,7 @@ export default function PredictView({
     }
     let cancelled = false;
     setAdminGeojson(null);
-    void fetch(`/aoi/${adminCountry}-${adminLevel}.geojson`)
+    void fetch(`/aoi/${adminCountry}-${adminLevel}.txt`)
       .then((resp) => {
         if (!resp.ok) throw new Error('missing');
         return resp.json();

@@ -39,7 +39,7 @@ export function ensureBaseMapPanes(map: L.Map) {
 /** Offline Natural Earth countries + labels used by Track and Predict maps. */
 export function addBaseMap(map: L.Map) {
   ensureBaseMapPanes(map);
-  fetch('/world-countries-110m.geojson')
+  fetch('/world-countries-110m.txt')
     .then((r) => r.json())
     .then((geo: GeoJSON.FeatureCollection) => {
       L.geoJSON(geo, {

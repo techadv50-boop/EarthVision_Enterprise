@@ -192,7 +192,7 @@ let worldCache: GeoJSON.FeatureCollection | null = null;
 async function loadWorld(): Promise<GeoJSON.FeatureCollection | null> {
   if (worldCache) return worldCache;
   try {
-    const resp = await fetch('/world-countries-110m.geojson');
+    const resp = await fetch('/world-countries-110m.txt');
     if (!resp.ok) return null;
     worldCache = (await resp.json()) as GeoJSON.FeatureCollection;
     return worldCache;

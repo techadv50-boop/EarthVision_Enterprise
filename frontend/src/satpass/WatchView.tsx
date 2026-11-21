@@ -131,7 +131,7 @@ export default function WatchView() {
   useEffect(() => {
     let cancelled = false;
     setAreaError('');
-    void fetch('/world-countries-110m.geojson')
+    void fetch('/world-countries-110m.txt')
       .then((resp) => {
         if (!resp.ok) throw new Error('missing');
         return resp.json() as Promise<GeoJSON.FeatureCollection>;
@@ -159,8 +159,8 @@ export default function WatchView() {
     void (async () => {
       try {
         const [provinces, districts] = await Promise.all([
-          needProvinces ? loadFeatures(`/boundaries/provinces/${file}.json`) : Promise.resolve(current?.provinces || []),
-          needDistricts ? loadFeatures(`/boundaries/districts/${file}.json`) : Promise.resolve(current?.districts),
+          needProvinces ? loadFeatures(`/boundaries/provinces/${file}.txt`) : Promise.resolve(current?.provinces || []),
+          needDistricts ? loadFeatures(`/boundaries/districts/${file}.txt`) : Promise.resolve(current?.districts),
         ]);
         if (cancelled) return;
         setPacks((prev) => ({
