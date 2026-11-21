@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f3efe6;
+  --ink: #1b2430;
+  --card: #fffdf8;
+  --line: #e2d9cc;
+  --accent: #0f6e68;
+  --accent-ink: #ffffff;
+  --muted: #5c6b7a;
+  --danger: #9f2d2d;
+  --warn: #8a5a12;
+  --ok: #1f7a4d;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #10151b;
+  --ink: #e7eef5;
+  --card: #1a222c;
+  --line: #2c3846;
+  --accent: #3dbeb4;
+  --accent-ink: #08211f;
+  --muted: #a8b6c4;
+  --danger: #f0a0a0;
+  --warn: #e6c27a;
+  --ok: #8ed7b0;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Segoe UI", "Noto Sans", "Noto Naskh Arabic", "Noto Sans Arabic", sans-serif;
+}
+
+textarea[dir="rtl"],
+input[dir="rtl"] {
+  font-family: "Noto Naskh Arabic", "Noto Sans Arabic", "Segoe UI", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.recall-card {
+  animation: recall-rise 420ms ease;
+}
+
+@keyframes recall-rise {
+  from {
+    transform: rotateX(10deg) translateY(10px);
+    opacity: 0.35;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recall-card {
+    animation: none;
+  }
+}
+
+@media print {
+  nav,
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+    color: black;
+  }
+  .print-card {
+    box-shadow: none;
+    border-color: #ccc;
+  }
+}

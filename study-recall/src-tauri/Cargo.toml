@@ -1,0 +1,22 @@
+[package]
+name = "study-recall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Study Recall desktop application"
+publish = false
+
+[lib]
+name = "study_recall_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+study-core = { path = "../crates/study-core" }
+tauri = { version = "2", features = [] }
+wait-timeout = { workspace = true }
+tauri-plugin-dialog = "2"

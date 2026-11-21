@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+.DS_Store
+*.sqlite
+*.sqlite-journal
+*.db.bak
+speech-jobs/
+src-tauri/resources/speech/*.exe
+src-tauri/resources/speech/*.dll
+src-tauri/resources/speech/*.bin
