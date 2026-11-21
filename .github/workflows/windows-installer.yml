@@ -7,6 +7,9 @@ on:
       - "study-recall/**"
       - ".github/workflows/windows-installer.yml"
 
+permissions:
+  contents: write
+
 jobs:
   installer:
     runs-on: windows-latest
@@ -55,3 +58,15 @@ jobs:
           name: study-recall-windows-installer
           path: study-recall/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+      - name: Publish the setup file
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Get-ChildItem "target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "The installer was not produced." }
+          $version = (Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $tag = "study-recall-v$version"
+          $notes = "Windows setup for Study Recall $version. Run the downloaded setup file. Uninstall the older Study Recall first if it is still installed, and leave the notes database in place to keep existing chapters."
+          gh release create $tag $exe.FullName --title "Study Recall $version" --notes $notes --target $env:GITHUB_SHA --latest
