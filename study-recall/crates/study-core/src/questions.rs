@@ -741,6 +741,31 @@ fn mcq_for_topics(topics: &[TopicMaterial], difficulty: &str) -> Vec<Draft> {
             });
         }
     }
+    let mut seen_text = std::collections::BTreeSet::new();
+    for statement in &statements {
+        seen_text.insert(norm_key(&statement.text));
+    }
+    for topic in topics {
+        let mut added = 0;
+        for sentence in note_sentences(topic) {
+            if sentence.chars().count() < 12 || sentence.chars().count() > 220 {
+                continue;
+            }
+            if !seen_text.insert(norm_key(&sentence)) {
+                continue;
+            }
+            statements.push(Statement {
+                topic_id: topic.id.clone(),
+                about: topic.title.clone(),
+                text: sentence,
+                passage: topic.reference_text.clone(),
+            });
+            added += 1;
+            if added == 4 {
+                break;
+            }
+        }
+    }
     let mut drafts = Vec::new();
     for statement in &statements {
         let mut distractors = Vec::new();
@@ -786,7 +811,7 @@ fn mcq_for_topics(topics: &[TopicMaterial], difficulty: &str) -> Vec<Draft> {
 }
 
 fn short_for_topic(topic: &TopicMaterial, difficulty: &str) -> Option<Draft> {
-    let points = rubric_points(topic);
+    let points = scoring_points(topic);
     if points.is_empty() || topic.reference_text.trim().is_empty() {
         return None;
     }
@@ -822,14 +847,19 @@ fn short_for_topic(topic: &TopicMaterial, difficulty: &str) -> Option<Draft> {
 }
 
 fn long_for_topics(topics: &[TopicMaterial]) -> Vec<Draft> {
+    let mut drafts = Vec::new();
+    for topic in topics {
+        if let Some(draft) = long_for_one_topic(topic) {
+            drafts.push(draft);
+        }
+    }
     let usable: Vec<&TopicMaterial> = topics
         .iter()
-        .filter(|t| !t.reference_text.trim().is_empty() && !rubric_points(t).is_empty())
+        .filter(|t| !t.reference_text.trim().is_empty() && !scoring_points(t).is_empty())
         .collect();
     if usable.len() < 2 {
-        return Vec::new();
+        return drafts;
     }
-    let mut drafts = Vec::new();
     let windows: Vec<&[&TopicMaterial]> = if usable.len() > 4 {
         vec![&usable[..4], &usable[usable.len() - 4..]]
     } else {
@@ -844,7 +874,7 @@ fn long_for_topics(topics: &[TopicMaterial]) -> Vec<Draft> {
             titles.push(topic.title.clone());
             ids.push(topic.id.clone());
             passage.push_str(&format!("## {}\n{}\n", topic.title, topic.reference_text.trim()));
-            for point in rubric_points(topic) {
+            for point in scoring_points(topic) {
                 if points.len() < 8 {
                     points.push(point);
                 }
@@ -882,6 +912,61 @@ fn long_for_topics(topics: &[TopicMaterial]) -> Vec<Draft> {
         });
     }
     drafts
+}
+
+fn long_for_one_topic(topic: &TopicMaterial) -> Option<Draft> {
+    if topic.reference_text.trim().is_empty() {
+        return None;
+    }
+    let mut points = scoring_points(topic);
+    if points.len() < 2 && word_count(&topic.reference_text) < 40 {
+        return None;
+    }
+    if points.is_empty() {
+        return None;
+    }
+    points.truncate(4);
+    Some(Draft {
+        question_type: "long".into(),
+        prompt: format!(
+            "Explain {} in detail. Base your answer on the ideas in your notes. Include the important definitions, facts, and terms.",
+            topic.title
+        ),
+        options: vec![],
+        correct_answer: points.join(" "),
+        alternatives: vec![],
+        rubric_points: points.clone(),
+        topic_ids: vec![topic.id.clone()],
+        source_topic_id: topic.id.clone(),
+        source_passage: passage_with_points(topic, &points),
+        difficulty: "standard".into(),
+    })
+}
+
+fn scoring_points(topic: &TopicMaterial) -> Vec<String> {
+    let marked = rubric_points(topic);
+    if !marked.is_empty() {
+        return marked;
+    }
+    note_sentences(topic)
+}
+
+fn note_sentences(topic: &TopicMaterial) -> Vec<String> {
+    let mut out = Vec::new();
+    for sentence in sentences(&topic.reference_text) {
+        let sentence = sentence.trim();
+        if word_count(sentence) < 6 || sentence.chars().count() > 400 {
+            continue;
+        }
+        if out.iter().any(|existing: &String| existing == sentence) {
+            continue;
+        }
+        out.push(sentence.to_string());
+        if out.len() == 4 {
+            break;
+        }
+    }
+    out
 }
 
 fn rubric_points(topic: &TopicMaterial) -> Vec<String> {
@@ -1048,6 +1133,37 @@ mod tests {
                     1
                 );
             }
+        }
+    }
+
+    #[test]
+    fn plain_notes_without_concepts_support_mcq_short_and_long() {
+        let topics: Vec<_> = (0..4)
+            .map(|i| TopicMaterial {
+                id: format!("p{i}"),
+                title: format!("Capillaries {i}"),
+                reference_text: format!(
+                    "Capillaries {i} have thin walls that allow exchange. They connect arterioles to venules in the body. Blood cells move through these vessels in a single file."
+                ),
+                language: "en".into(),
+                concepts: vec![],
+            })
+            .collect();
+        let proposal = propose(&topics, "standard");
+        assert!(proposal.fib_available > 0, "{}", proposal.material_note);
+        assert!(proposal.mcq_available > 0, "mcq {}", proposal.mcq_available);
+        assert!(proposal.short_available >= 4, "short {}", proposal.short_available);
+        assert!(proposal.long_available > 0, "long {}", proposal.long_available);
+        let (_, questions) = build_chosen_paper(
+            &topics,
+            "standard",
+            ChosenCounts { fib: 1, mcq: 1, short_q: 1, long_q: 1 },
+            7,
+        )
+        .unwrap();
+        assert_eq!(questions.len(), 4);
+        for question in &questions {
+            validate_question(question).unwrap();
         }
     }
 

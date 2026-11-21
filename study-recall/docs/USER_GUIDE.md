@@ -77,7 +77,7 @@ Go by number of questions. Set how many of each type you want:
 
 The page then calculates the time allocated for that paper from the timers in Settings. Each oral topic is planned as 3 minutes.
 
-The app does not add questions beyond the notes, and it does not pad a small choice up to 100 marks. Each blank is 3 marks, each multiple-choice question is 2, each short question is 5, and each long question is 15. If you also choose oral topics, those begin after the written result.
+A saved paragraph can supply every written type. Fill-in-the-blank, multiple-choice, short, and long questions are taken from those sentences. Multiple-choice questions need statements from more than one topic so the other choices come from your notes too. The app does not add questions beyond the notes, and it does not pad a small choice up to 100 marks. Each blank is 3 marks, each multiple-choice question is 2, each short question is 5, and each long question is 15. If you also choose oral topics, those begin after the written result.
 
 The paper is saved as a snapshot. Later edits to your notes do not change an exam that has already been created.
 
