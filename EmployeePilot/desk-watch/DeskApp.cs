@@ -25,7 +25,7 @@ public class DeskApp : Application
             };
             desktop.MainWindow = Program.TrackMode
                 ? new AlarmWindow(LiveBoard.ReadLocal, playSound: false, lockClose: true)
-                : new DeskWindow();
+                : new MainWindow();
         }
         base.OnFrameworkInitializationCompleted();
     }
