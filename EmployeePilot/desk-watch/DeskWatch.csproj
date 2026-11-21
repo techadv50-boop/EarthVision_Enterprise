@@ -24,6 +24,8 @@
   <ItemGroup>
     <Compile Include="..\standalone\src\WorkPilot.App\AlarmWindow.cs" Link="Shared\AlarmWindow.cs" />
     <Compile Include="..\standalone\src\WorkPilot.App\CrashLog.cs" Link="Shared\CrashLog.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\MainWindow.cs" Link="Shared\MainWindow.cs" />
+    <Compile Include="..\standalone\src\WorkPilot.App\Windows\PilotSetup.cs" Link="Shared\PilotSetup.cs" />
     <Compile Include="..\standalone\src\WorkPilot.App\Windows\EmployeeDesktopLimits.cs" Link="Shared\EmployeeDesktopLimits.cs" />
     <Compile Include="..\standalone\src\WorkPilot.App\Windows\LiveBoard.cs" Link="Shared\LiveBoard.cs" />
     <Compile Include="..\standalone\src\WorkPilot.App\Windows\OfficeRepair.cs" Link="Shared\OfficeRepair.cs" />
