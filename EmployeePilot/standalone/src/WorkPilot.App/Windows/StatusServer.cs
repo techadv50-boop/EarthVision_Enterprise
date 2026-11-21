@@ -58,7 +58,8 @@ public static class StatusServer
             var path = context.Request.Url?.AbsolutePath ?? "/";
             if (path.Equals("/screen.jpg", StringComparison.OrdinalIgnoreCase))
             {
-                var jpeg = ScreenGrab.Current();
+                var lite = context.Request.QueryString["lite"] != "0";
+                var jpeg = ScreenGrab.Current(lite);
                 if (jpeg is null)
                 {
                     context.Response.StatusCode = 503;
@@ -115,11 +116,17 @@ button { font-size: 1rem; min-width: 8rem; min-height: 2.4rem; border: 0; border
 <div class="row">
 <button id="green" type="button">Working</button>
 <button id="red" type="button">Not working</button>
+<button id="mode" type="button">Lite picture</button>
 </div>
 <pre id="detail">Waiting for the employee.</pre>
 <img id="live" alt="Live employee screen">
 <script>
 let audio;
+let lite = true;
+document.getElementById("mode").addEventListener("click", () => {
+  lite = !lite;
+  document.getElementById("mode").textContent = lite ? "Lite picture" : "Clearer picture";
+});
 document.body.addEventListener("click", () => { audio = audio || new AudioContext(); }, { once: true });
 function beep() {
   if (!audio) return;
@@ -162,10 +169,10 @@ function frame() {
   const live = document.getElementById("live");
   const next = new Image();
   next.onload = () => { live.src = next.src; };
-  next.src = "/screen.jpg?t=" + Date.now();
+  next.src = "/screen.jpg?lite=" + (lite ? "1" : "0") + "&t=" + Date.now();
 }
-setInterval(tick, 1200);
-setInterval(frame, 350);
+setInterval(tick, 2000);
+setInterval(frame, 2000);
 tick();
 frame();
 </script>

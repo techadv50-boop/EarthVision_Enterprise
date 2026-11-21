@@ -10,17 +10,19 @@ public static class ScreenGrab
     private static readonly object Gate = new();
     private static byte[]? _jpeg;
     private static DateTime _taken = DateTime.MinValue;
+    private static bool _lite;
 
-    public static byte[]? Current()
+    public static byte[]? Current(bool lite = false)
     {
+        var cache = lite ? TimeSpan.FromSeconds(2) : TimeSpan.FromMilliseconds(700);
         lock (Gate)
         {
-            if (_jpeg is not null && DateTime.UtcNow - _taken < TimeSpan.FromMilliseconds(280))
+            if (_jpeg is not null && _lite == lite && DateTime.UtcNow - _taken < cache)
             {
                 return _jpeg;
             }
         }
-        var fresh = Capture();
+        var fresh = Capture(lite);
         if (fresh is null)
         {
             lock (Gate)
@@ -31,12 +33,13 @@ public static class ScreenGrab
         lock (Gate)
         {
             _jpeg = fresh;
+            _lite = lite;
             _taken = DateTime.UtcNow;
             return fresh;
         }
     }
 
-    private static byte[]? Capture()
+    private static byte[]? Capture(bool lite)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -64,14 +67,14 @@ public static class ScreenGrab
             {
                 graphics.CopyFromScreen(left, top, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
             }
-            var (fitWidth, fitHeight) = ScreenFrame.Fit(width, height, 1280);
+            var (fitWidth, fitHeight) = ScreenFrame.Fit(width, height, lite ? 640 : 960);
             using var scaled = fitWidth == width && fitHeight == height
                 ? null
                 : new Bitmap(screen, new Size(fitWidth, fitHeight));
             using var stream = new MemoryStream();
             var codec = ImageCodecInfo.GetImageEncoders().First(encoder => encoder.MimeType == "image/jpeg");
             using var parameters = new EncoderParameters(1);
-            parameters.Param[0] = new EncoderParameter(Encoder.Quality, 55L);
+            parameters.Param[0] = new EncoderParameter(Encoder.Quality, lite ? 28L : 45L);
             (scaled ?? screen).Save(stream, codec, parameters);
             return stream.ToArray();
         }
